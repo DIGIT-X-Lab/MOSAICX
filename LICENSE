@@ -1,0 +1,49 @@
+DUAL LICENSING NOTICE
+====================
+
+MOSAICX is dual-licensed under the terms of both the GNU Affero General Public License v3.0 (AGPL-3.0) and a Commercial License.
+
+OPEN SOURCE LICENSE
+===================
+
+This software is available under the GNU Affero General Public License v3.0 (AGPL-3.0).
+
+Under this license, you are free to use, modify, and distribute this software, provided that:
+- Any derivative work or application that uses this software must also be open-sourced under AGPL-3.0
+- If you run this software on a server and provide it as a service, you must make the complete source code of your application (including modifications) available to your users
+- You must include this license notice and copyright information in all copies
+
+For the complete AGPL-3.0 license terms, see LICENSE-AGPL-3.0.txt
+
+COMMERCIAL LICENSE
+==================
+
+If you wish to use this software in a commercial product or service without the open-source requirements of AGPL-3.0, you must obtain a commercial license.
+
+Commercial licenses are available from:
+
+    Zenta GmbH
+    
+    For commercial licensing inquiries, please contact:
+    Email: info@zenta.solutions
+    Subject: MOSAICX Commercial License Request
+
+Commercial licensing allows you to:
+- Use this software in proprietary applications
+- Distribute applications containing this software without open-source obligations
+- Customize and modify the software without sharing changes
+- Receive commercial support and maintenance
+
+COPYRIGHT AND ATTRIBUTION
+==========================
+
+Copyright (c) 2024 DIGITX Lab, Department of Radiology, LMU Munich University Hospital
+Developed by Lalith Kumar Shiyam Sundar, PhD
+
+Commercial licensing managed by Zenta GmbH
+
+IMPORTANT NOTICE
+================
+
+By using this software, you agree to comply with the terms of one of the above licenses.
+If you are unsure which license applies to your use case, please contact Zenta GmbH for clarification.
