@@ -8,7 +8,7 @@ from .core.models import ExtractionConfig, ExtractionResult, AnalysisConfig, Ana
 from .core.exceptions import MosaicxError, ExtractionError, ConfigurationError
 from .schema import SchemaBuilder
 
-__version__ = "0.1.0"
+__version__ = "1.0.0"
 
 __all__ = [
     "ReportExtractor",
