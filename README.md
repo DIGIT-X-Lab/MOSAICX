@@ -1,4 +1,9 @@
 # MOSAICX 🏥🤖
+
+<div align="center">
+  <img src="assets/mosaicx_logo.png" alt="MOSAICX Logo" width="800"/>
+</div>
+
 ### Medical cOmputational Suite for Advanced Intelligent eXtraction
 
 [![PyPI version](https://badge.fury.io/py/mosaicx.svg)](https://badge.fury.io/py/mosaicx)
