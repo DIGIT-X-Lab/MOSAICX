@@ -1,0 +1,63 @@
+{
+  "name": "PatientScanInfo",
+  "version": "1.0.0",
+  "description": "Schema for extracted patient and scan metadata",
+  "enums": [],
+  "fields": [
+    {
+      "name": "patient_name",
+      "type": "string",
+      "description": "Full name of the patient",
+      "required": true,
+      "enum": null,
+      "constraints": null,
+      "items": null,
+      "properties": null
+    },
+    {
+      "name": "age",
+      "type": "integer",
+      "description": "Age of the patient in years",
+      "required": true,
+      "enum": null,
+      "constraints": {
+        "regex": null,
+        "minimum": 0.0,
+        "maximum": null,
+        "units": "years"
+      },
+      "items": null,
+      "properties": null
+    },
+    {
+      "name": "sex",
+      "type": "string",
+      "description": "Sex of the patient (e.g., male, female, other)",
+      "required": true,
+      "enum": null,
+      "constraints": null,
+      "items": null,
+      "properties": null
+    },
+    {
+      "name": "date_of_scan",
+      "type": "date",
+      "description": "Date when the scan was performed",
+      "required": true,
+      "enum": null,
+      "constraints": null,
+      "items": null,
+      "properties": null
+    },
+    {
+      "name": "modality",
+      "type": "string",
+      "description": "Imaging modality used for the scan (e.g., MRI, CT). Not strictly validated.",
+      "required": true,
+      "enum": null,
+      "constraints": null,
+      "items": null,
+      "properties": null
+    }
+  ]
+}
