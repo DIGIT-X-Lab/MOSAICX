@@ -71,7 +71,7 @@ from typing import Dict, List
 
 APPLICATION_NAME = "MOSAICX"
 APPLICATION_FULL_NAME = "Medical cOmputational Suite for Advanced Intelligent eXtraction"
-APPLICATION_VERSION = "1.0.2"
+APPLICATION_VERSION = "1.0.3"
 APPLICATION_DESCRIPTION = (
     "Intelligent radiology report extraction using local LLMs for medical data structuring"
 )

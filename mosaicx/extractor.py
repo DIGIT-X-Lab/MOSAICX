@@ -15,30 +15,12 @@ Key Features (schema‑agnostic):
 - Output sanitation, generic type coercion per JSON Schema, strict validation
 - Optional JSON save; rich console feedback
 
-Usage:
-    >>> from mosaicx.extractor import extract_from_pdf
-    >>> result = extract_from_pdf("report.pdf", "PatientRecord")
-    >>> print(result)
-
 Dependencies:
     • docling (^2.0.0)
     • instructor (^1.0.0)
     • ollama (^0.3.0)
     • pydantic
     • openai (OpenAI‑compatible client)
-
-Module Metadata:
-    Author:        Lalith Kumar Shiyam Sundar, PhD
-    Email:         Lalith.shiyam@med.uni-muenchen.de
-    Institution:   DIGIT-X Lab, LMU Radiology | LMU University Hospital
-    License:       AGPL-3.0 (GNU Affero General Public License v3.0) 
-    Version:       1.0.0
-    Created:       2025-09-18
-    Last Modified: 2025-09-18
-
-Copyright:
-    © 2025 DIGIT-X Lab, LMU Radiology | LMU University Hospital
-    Distributed under the AGPL-3.0 license. See LICENSE for details.
 """
 
 from __future__ import annotations
@@ -54,7 +36,7 @@ import re
 # Optional: native Ollama JSON route; handled gracefully if missing
 try:
     import requests  # noqa: F401
-except Exception:  # pragma: no cover
+except Exception:
     requests = None  # type: ignore
 
 # Suppress noisy logging from Docling and HTTP requests
@@ -63,8 +45,8 @@ logging.getLogger("docling.document_converter").setLevel(logging.WARNING)
 logging.getLogger("docling.datamodel.base_models").setLevel(logging.WARNING)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
-logging.getLogger("instructor").setLevel(logging.WARNING)  # Suppress Instructor debug output
-logging.getLogger("instructor.retry").setLevel(logging.WARNING)  # Suppress retry logs
+logging.getLogger("instructor").setLevel(logging.WARNING)
+logging.getLogger("instructor.retry").setLevel(logging.WARNING)
 
 from docling.document_converter import DocumentConverter
 import instructor
@@ -73,24 +55,16 @@ from pydantic import BaseModel, ValidationError
 
 from .constants import (
     DEFAULT_LLM_MODEL,
-    PACKAGE_SCHEMA_PYD_DIR,  # Removed unused PACKAGE_SCHEMA_JSON_DIR (redundant)
+    PACKAGE_SCHEMA_PYD_DIR,
     MOSAICX_COLORS,
 )
 from .display import styled_message, console
 
 
-# ---------------------------------------------------------------------------
-# Errors
-# ---------------------------------------------------------------------------
-
 class ExtractionError(Exception):
     """Custom exception for extraction-related errors."""
     pass
 
-
-# ---------------------------------------------------------------------------
-# Schema loader
-# ---------------------------------------------------------------------------
 
 def load_schema_model(schema_name: str) -> Type[BaseModel]:
     """
@@ -143,10 +117,6 @@ def load_schema_model(schema_name: str) -> Type[BaseModel]:
         raise ExtractionError(f"Failed to load schema from {schema_file}: {e}") from e
 
 
-# ---------------------------------------------------------------------------
-# PDF → Text
-# ---------------------------------------------------------------------------
-
 def extract_text_from_pdf(pdf_path: Union[str, Path]) -> str:
     """
     Extract text from PDF using Docling.
@@ -183,14 +153,14 @@ def extract_text_from_pdf(pdf_path: Union[str, Path]) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Schema‑agnostic JSON output hardening & coercion helpers
+# Helpers to strip chain-of-thought / fences and extract JSON
 # ---------------------------------------------------------------------------
 
-# Strip reasoning and fences (e.g., DeepSeek R1 / fenced JSON)
 _THINK_RE = re.compile(r"<think>.*?</think>", re.IGNORECASE | re.DOTALL)
 _FENCE_RE = re.compile(r"```(?:json)?\s*([\s\S]*?)\s*```", re.IGNORECASE)
 
 def _strip_reasoning_and_fences(text: str) -> str:
+    """Remove <think> blocks and fenced code; return raw text."""
     if not text:
         return ""
     text = _THINK_RE.sub("", text)
@@ -226,10 +196,12 @@ def _extract_outer_json(text: str) -> str:
     return text[start:]
 
 
-# ---- JSON Schema utilities (generic; supports $ref, anyOf/oneOf, formats) ----
+# ---------------------------------------------------------------------------
+# JSON Schema utilities (generic; supports $ref, anyOf/oneOf, formats)
+# ---------------------------------------------------------------------------
 
 def _json_pointer_get(doc: Dict[str, Any], pointer: str) -> Dict[str, Any]:
-    # Supports local refs like "#/$defs/Name" or "#/definitions/Name"
+    """Dereference a JSON pointer (#/$defs/Name or #/definitions/Name)."""
     if not pointer or pointer == "#":
         return doc
     if not pointer.startswith("#/"):
@@ -243,6 +215,7 @@ def _json_pointer_get(doc: Dict[str, Any], pointer: str) -> Dict[str, Any]:
 
 
 def _deref(schema: Dict[str, Any], root: Dict[str, Any]) -> Dict[str, Any]:
+    """Dereference $ref within a schema against the root document."""
     if isinstance(schema, dict) and "$ref" in schema:
         ref = schema["$ref"]
         try:
@@ -514,11 +487,11 @@ def _build_extraction_prompt(text_content: str, schema_json: Dict[str, Any]) -> 
         "- Use null for optional keys not present in the text.\n"
         "- Use only the allowed keys; do not invent keys.\n"
         "- Booleans must be true/false; numbers must be numbers; enums must match canonical values (case-insensitive acceptable for input).\n\n"
-        + summary +
-        "JSON Schema (exact structure):\n"
-        f"{schema_str}\n\n"
-        "Text to extract from:\n"
-        f"{text_content}\n"
+        + summary
+        + "JSON Schema (exact structure):\n"
+        + f"{schema_str}\n\n"
+        + "Text to extract from:\n"
+        + f"{text_content}\n"
     )
 
 
@@ -532,55 +505,62 @@ def extract_structured_data(
     model: str = DEFAULT_LLM_MODEL
 ) -> BaseModel:
     """
-    Schema‑agnostic extraction using Instructor (JSON‑Schema mode) with Ollama fallback.
+    Schema‑agnostic extraction using Instructor (JSON‑Schema mode) with special handling
+    for reasoning models like DeepSeek and GPT‑OSS, plus Ollama fallback.
 
     Steps:
-      1) Try Instructor JSON‑Schema mode (validated return of `schema_class`)
-      2) Fallback to Ollama native /api/generate with format='json' (if `requests` available)
-      3) Sanitize output, extract outer JSON, coerce to JSON Schema, validate via Pydantic
-      4) One-shot auto‑repair by feeding schema + validation errors back to the model
+      1) Try Instructor JSON‑Schema mode (for non‑reasoning models)
+      2) Reasoning models skip Instructor and go directly to Ollama /api/generate
+      3) Fallback to chat.completions (no response_format for reasoning models)
+      4) Sanitize output, extract JSON, coerce to schema, validate via Pydantic
+      5) One-shot auto‑repair if validation fails
     """
     schema_json = schema_class.model_json_schema()
     prompt = _build_extraction_prompt(text_content, schema_json)
 
-    # --- Attempt 1: Instructor JSON‑Schema ---
-    try:
-        client = instructor.from_openai(
-            OpenAI(base_url="http://localhost:11434/v1", api_key="ollama"),
-            mode=instructor.Mode.JSON_SCHEMA,
-        )
-        result = client.chat.completions.create(
-            model=model,
-            response_model=schema_class,
-            messages=[
-                {"role": "system", "content": "Return ONLY valid JSON that matches the schema."},
-                {"role": "user", "content": prompt},
-            ],
-            temperature=0,
-            max_retries=1,
-            # Some OpenAI‑compat servers honor this; if not, it's ignored or raises, which we catch.
-            response_format={"type": "json_object"},  # type: ignore[arg-type]
-        )
-        return result  # already validated instance of schema_class
+    # Detect DeepSeek / GPT‑OSS "reasoning" models by name
+    model_lower = model.lower()
+    is_reasoning_model = any(
+        kw in model_lower for kw in ("deepseek", "gpt-oss", "reasoner", "r1")
+    )
 
-    except Exception as instructor_error:
+    # 1) Instructor JSON‑Schema (only for non‑reasoning models)
+    if not is_reasoning_model:
         try:
-            # Suppress error messages in console output
-            pass
+            client = instructor.from_openai(
+                OpenAI(base_url="http://localhost:11434/v1", api_key="ollama"),
+                mode=instructor.Mode.JSON_SCHEMA,
+            )
+            result = client.chat.completions.create(
+                model=model,
+                response_model=schema_class,
+                messages=[
+                    {"role": "system", "content": "Return ONLY valid JSON that matches the schema."},
+                    {"role": "user", "content": prompt},
+                ],
+                temperature=0,
+                max_retries=1,
+                response_format={"type": "json_object"},  # honored on many models
+            )
+            return result
         except Exception:
-            pass
+            pass  # Silently skip to fallback
 
-    # --- Attempt 2: Ollama native JSON (format='json') ---
+    # 2) Try Ollama native /api/generate
     raw: Optional[str] = None
     if requests is not None:
         try:
+            # For reasoning models, omit unsupported options like top_p; temperature is ignored for DeepSeek【975898227377524†screenshot】
+            options = {"temperature": 0}
+            if not is_reasoning_model:
+                options["top_p"] = 0.1
             resp = requests.post(
                 "http://localhost:11434/api/generate",
                 json={
                     "model": model,
                     "prompt": prompt,
-                    "format": "json",                # enforces JSON on Ollama route
-                    "options": {"temperature": 0, "top_p": 0.1},
+                    "format": "json",
+                    "options": options,
                     "stream": False,
                 },
                 timeout=180,
@@ -588,45 +568,56 @@ def extract_structured_data(
             resp.raise_for_status()
             data = resp.json()
             raw = data.get("response", "")
-        except Exception as e:
-            try:
-                # Suppress error messages in console output
-                pass
-            except Exception:
-                pass
+        except Exception:
+            raw = None
 
-    # --- Attempt 2b: Fallback to chat.completions, forcing JSON if possible ---
+    # 3) Fallback to chat.completions via OpenAI API
     if not raw:
         try:
             client2 = OpenAI(base_url="http://localhost:11434/v1", api_key="ollama")
-            comp = client2.chat.completions.create(
-                model=model,
-                temperature=0,
-                messages=[
-                    {"role": "system", "content": "Return ONLY a valid JSON object. No commentary."},
-                    {"role": "user", "content": prompt},
-                ],
-                response_format={"type": "json_object"},  # type: ignore[arg-type]
-            )
+            messages = [
+                {"role": "system", "content": "Return ONLY a valid JSON object. No commentary."},
+                {"role": "user", "content": prompt},
+            ]
+            if is_reasoning_model:
+                # Reasoning models do not support response_format
+                comp = client2.chat.completions.create(
+                    model=model,
+                    temperature=0,
+                    messages=messages,
+                )
+            else:
+                comp = client2.chat.completions.create(
+                    model=model,
+                    temperature=0,
+                    messages=messages,
+                    response_format={"type": "json_object"},
+                )
+            # Some reasoning models may leave content blank and put the JSON elsewhere,
+            # but we can still search raw text for JSON.
             raw = comp.choices[0].message.content or ""
+            # If the message object has reasoning_content or thinking, merge it
+            msg = comp.choices[0].message
+            for attr in ("reasoning_content", "thinking"):
+                if hasattr(msg, attr):
+                    val = getattr(msg, attr)
+                    if isinstance(val, str):
+                        raw += "\n" + val
         except Exception as e:
             raise ExtractionError(f"Model calls failed: {e}") from e
 
-    # --- Post-process to JSON ---
+    # 4) Post-process, coerce, validate
     cleaned = _extract_outer_json(_strip_reasoning_and_fences(raw))
     try:
         payload = json.loads(cleaned)
     except json.JSONDecodeError as e:
         raise ExtractionError(f"Model returned invalid JSON: {e}\nContent: {raw}") from e
 
-    # --- Generic coercion to schema ---
     coerced = _coerce_to_schema(payload, schema_json, schema_json)
-
-    # --- Validate via Pydantic ---
     try:
         return schema_class(**coerced)
     except ValidationError as ve:
-        # Auto-repair once using the model
+        # 5) One-shot auto-repair
         try:
             client3 = OpenAI(base_url="http://localhost:11434/v1", api_key="ollama")
             repair = client3.chat.completions.create(
@@ -645,23 +636,23 @@ def extract_structured_data(
                         ),
                     },
                 ],
-                response_format={"type": "json_object"},  # type: ignore[arg-type]
+                **({} if is_reasoning_model else {"response_format": {"type": "json_object"}}),
             )
             repaired_text = repair.choices[0].message.content or ""
+            for attr in ("reasoning_content", "thinking"):
+                if hasattr(repair.choices[0].message, attr):
+                    val = getattr(repair.choices[0].message, attr)
+                    if isinstance(val, str):
+                        repaired_text += "\n" + val
             repaired_text = _extract_outer_json(_strip_reasoning_and_fences(repaired_text))
             repaired_payload = json.loads(repaired_text)
             repaired_payload = _coerce_to_schema(repaired_payload, schema_json, schema_json)
             return schema_class(**repaired_payload)
         except Exception:
-            # Surface the original error if repair fails
             raise ExtractionError(
                 f"Failed to validate data: {ve}\nPayload: {json.dumps(coerced, indent=2)}"
             ) from ve
 
-
-# ---------------------------------------------------------------------------
-# Orchestration: PDF → Text → Structured Data
-# ---------------------------------------------------------------------------
 
 def extract_from_pdf(
     pdf_path: Union[str, Path],
@@ -685,31 +676,19 @@ def extract_from_pdf(
         ExtractionError: If any step in the pipeline fails
     """
     pdf_path = Path(pdf_path)
-
-    # Step 1: Load schema model
     with console.status(f"[{MOSAICX_COLORS['info']}]Loading schema model...", spinner="dots"):
         schema_class = load_schema_model(schema_name)
-
     console.print()
     styled_message(f"✨ Schema Model: {schema_class.__name__} ✨", "primary", center=True)
     console.print()
-
-    # Step 2: Extract text from PDF
     with console.status(f"[{MOSAICX_COLORS['accent']}]Reading PDF document...", spinner="dots"):
         text_content = extract_text_from_pdf(pdf_path)
-
-    # Step 3: Structured extraction
     with console.status(f"[{MOSAICX_COLORS['primary']}]Extracting structured data...", spinner="dots"):
         extracted_data = extract_structured_data(text_content, schema_class, model)
-
-    # Step 4: Save result if requested
     if save_result:
         save_path = Path(save_result)
         save_path.parent.mkdir(parents=True, exist_ok=True)
-
         with open(save_path, "w", encoding="utf-8") as f:
             json.dump(extracted_data.model_dump(), f, indent=2, ensure_ascii=False, default=str)
-
         styled_message(f"💾 Saved result → {save_path.name}", "info", center=True)
-
     return extracted_data
