@@ -1,4 +1,3 @@
-# MOSAICX 🏥🤖
 
 <div align="center">
   <img src="assets/mosaicx_logo.png" alt="MOSAICX Logo" width="800"/>
