@@ -14,7 +14,7 @@
 
 MOSAICX turns this nightmare:
 ```
-"Pat.-Nr.: 0022768653, geb. 13.03.1940, Müller, Anna
+"Pat.-Nr.: 111111111, geb. 13.03.1940, Müller, Jane
 Transthorakale Echokardiographie vom 06.10.2020 10:45
 Befund: Mitralklappe physiologische Insuffizienz..."
 ```
@@ -22,7 +22,7 @@ Befund: Mitralklappe physiologische Insuffizienz..."
 Into this blessing:
 ```json
 {
-  "patient_id": "0022768653",
+  "patient_id": "111111111",
   "age": 80,
   "sex": "Female", 
   "mitral_valve_grade": "Normal",
