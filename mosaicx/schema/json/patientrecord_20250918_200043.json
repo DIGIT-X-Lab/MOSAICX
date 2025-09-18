@@ -1,0 +1,53 @@
+{
+  "name": "PatientRecord",
+  "version": "1.0.0",
+  "description": "Patient record with name, age, and diagnosis",
+  "enums": [],
+  "fields": [
+    {
+      "name": "name",
+      "type": "string",
+      "description": "Full name of the patient",
+      "required": true,
+      "enum": null,
+      "constraints": {
+        "regex": null,
+        "minimum": null,
+        "maximum": null,
+        "units": null
+      },
+      "items": null,
+      "properties": null
+    },
+    {
+      "name": "age",
+      "type": "integer",
+      "description": "Age of the patient in years",
+      "required": true,
+      "enum": null,
+      "constraints": {
+        "regex": null,
+        "minimum": 0.0,
+        "maximum": null,
+        "units": "years"
+      },
+      "items": null,
+      "properties": null
+    },
+    {
+      "name": "diagnosis",
+      "type": "string",
+      "description": "Medical diagnosis for the patient",
+      "required": true,
+      "enum": null,
+      "constraints": {
+        "regex": null,
+        "minimum": null,
+        "maximum": null,
+        "units": null
+      },
+      "items": null,
+      "properties": null
+    }
+  ]
+}

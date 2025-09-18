@@ -3,59 +3,47 @@ MOSAICX Main Module - Application Entry Point and Core Functionality
 
 ================================================================================
 MOSAICX: Medical cOmputational Suite for Advanced Intelligent eXtraction
-================================================================================
+===========================================        # Display results beautifully
+        console.print()
+        console.print()
+        styled_message(f"📋 Extraction Results: {schema}", "primary", center=True)
+        console.print()================================
 
 Overview:
 ---------
-This is the main module for the MOSAICX application, serving as the primary entry
-point for all medical data processing workflows. It orchestrates the integration
-of various components including schema validation, data extraction, intelligent
-structuring, and analysis pipelines for medical imaging and clinical data.
+This module serves as the main entry point for the MOSAICX application, providing
+a comprehensive command-line interface for medical data extraction and processing.
+It orchestrates the various components of the system including schema generation,
+natural language processing, and data validation using the schema_builder module
+as the core engine.
 
 Core Functionality:
 ------------------
-• Application initialization and configuration management
-• Command-line interface with argument parsing and validation
-• Workflow orchestration for medical data processing pipelines
-• Schema discovery and Pydantic model registration
-• Integration with display, logging, and error handling systems
-• Plugin architecture for extensible functionality
+• Main CLI command group with rich-click integration
+• Application banner and branding display
+• Schema generation from natural language descriptions
+• Integration with Ollama for local LLM processing
+• Pydantic model compilation and code generation
 
 Architecture:
 ------------
-The main module follows a modular architecture pattern, coordinating between
-specialized subsystems while maintaining clear separation of concerns. It provides
-both programmatic API access and command-line interface functionality for
-different usage scenarios.
+Built using Click framework with rich-click enhancements for modern CLI UX.
+Uses schema_builder.py as the core working prototype for all schema operations.
 
 Usage Examples:
 --------------
-Command-line usage:
-    $ mosaicx --help
-    $ mosaicx extract --description "Patient data with demographics" --output patient_schema
-    $ mosaicx extract --description "DICOM metadata fields" --output dicom --domain imaging
-    $ mosaicx list-schemas
+Generate schema from natural language:
+    >>> mosaicx generate --desc "Patient demographics with age, gender"
+    >>> mosaicx generate --desc "Blood test results" --model llama3
 
-Programmatic usage:
-    >>> from mosaicx import MosaicX
-    >>> app = MosaicX()
-    >>> app.process_medical_data(input_file="data.json")
-    >>> available_schemas = app.list_available_schemas()
+Show banner:
+    >>> mosaicx banner
 
 Dependencies:
 ------------
 External Libraries:
     • rich-click (^1.0.0): Enhanced command-line interface framework
-    • pydantic (^2.0.0): Data validation and settings management
-    • rich (^13.0.0): Terminal output formatting and progress tracking
-    • ollama: LLM integration for natural language processing
-
-Internal Modules:
-    • mosaicx.display: Terminal interface and banner display
-    • mosaicx.nl_to_schema: Natural language to schema conversion
-    • mosaicx.schema: Schema management and Pydantic model registry
-    • mosaicx.utils: Utility functions and helper methods
-    • mosaicx.config: Configuration management and settings
+    • schema_builder: Core schema generation engine (working prototype)
 
 Module Metadata:
 ---------------
@@ -74,169 +62,279 @@ This software is distributed under the AGPL-3.0 license.
 See LICENSE file for full terms and conditions.
 """
 
-import sys
-from pathlib import Path
 from typing import List, Optional
-
+from pathlib import Path
 import rich_click as click
-from rich.console import Console
-from rich.panel import Panel
 
-# MOSAICX imports
-from display import show_main_banner, console, styled_message
-from nl_to_schema import generate_schema_from_nl
+from .display import show_main_banner, console, styled_message
+from rich.align import Align
+from rich.table import Table
+from .schema_builder import (
+    induce_schemaspec_with_ollama,
+    compile_schema_to_model,
+    generate_model_py,
+    fields_table
+)
+from .extractor import extract_from_pdf, ExtractionError
 
-# Module metadata
-__version__ = "1.0.0"
-__author__ = "Lalith Kumar Shiyam Sundar, PhD"
-__email__ = "Lalith.shiyam@med.uni-muenchen.de"
+# Import metadata from constants
+from .constants import (
+    APPLICATION_NAME,
+    APPLICATION_VERSION as __version__,
+    AUTHOR_NAME as __author__,
+    AUTHOR_EMAIL as __email__,
+    DEFAULT_LLM_MODEL,
+    MOSAICX_COLORS,
+    PACKAGE_SCHEMA_JSON_DIR,
+    PACKAGE_SCHEMA_PYD_DIR
+)
 
-# Configure rich-click for better CLI appearance
+# Configure rich-click with Dracula theme colors
 click.rich_click.USE_RICH_MARKUP = True
-click.rich_click.USE_MARKDOWN = True
+click.rich_click.STYLE_OPTION = f"bold {MOSAICX_COLORS['primary']}"
+click.rich_click.STYLE_ARGUMENT = f"bold {MOSAICX_COLORS['info']}"
+click.rich_click.STYLE_COMMAND = f"bold {MOSAICX_COLORS['accent']}"
+click.rich_click.STYLE_SWITCH = f"bold {MOSAICX_COLORS['success']}"
+click.rich_click.STYLE_METAVAR = f"bold {MOSAICX_COLORS['warning']}"
+click.rich_click.STYLE_USAGE = f"bold {MOSAICX_COLORS['primary']}"
+click.rich_click.STYLE_USAGE_COMMAND = f"bold {MOSAICX_COLORS['accent']}"
+click.rich_click.STYLE_HELPTEXT = f"{MOSAICX_COLORS['secondary']}"
+click.rich_click.STYLE_HELPTEXT_FIRST_LINE = f"bold {MOSAICX_COLORS['secondary']}"
+click.rich_click.STYLE_OPTION_DEFAULT = f"dim {MOSAICX_COLORS['muted']}"
+click.rich_click.STYLE_REQUIRED_SHORT = f"bold {MOSAICX_COLORS['error']}"
+click.rich_click.STYLE_REQUIRED_LONG = f"bold {MOSAICX_COLORS['error']}"
+
+# Configure rich-click for professional CLI appearance
+click.rich_click.USE_RICH_MARKUP = False  # Disable colorful markup
+click.rich_click.USE_MARKDOWN = False     # Disable markdown formatting
 click.rich_click.SHOW_ARGUMENTS = True
 click.rich_click.GROUP_ARGUMENTS_OPTIONS = True
+click.rich_click.STYLE_OPTION = "dim"
+click.rich_click.STYLE_ARGUMENT = "dim"
+click.rich_click.STYLE_COMMAND = "bold"
 
 
 @click.group(invoke_without_command=True)
-@click.version_option(version=__version__, prog_name="MOSAICX")
+@click.version_option(version=__version__, prog_name=APPLICATION_NAME)
 @click.option("--verbose", "-v", is_flag=True, help="Enable verbose output")
 @click.pass_context
 def cli(ctx: click.Context, verbose: bool) -> None:
     """
     **MOSAICX: Medical cOmputational Suite for Advanced Intelligent eXtraction**
     
-    A comprehensive toolkit for medical data processing, validation, and analysis.
+    LLMS for Intelligent Structuring • Summarization • Classification
     
-    Use `mosaicx COMMAND --help` for detailed command information.
+    Transform unstructured medical reports into validated, structured data schemas
+    using local LLM processing and advanced natural language understanding.
     """
+    # Always show banner first
+    show_main_banner()
+    
+    # Store verbose flag in context for subcommands
+    ctx.ensure_object(dict)
+    ctx.obj['verbose'] = verbose
+    
+    # If no subcommand provided, show welcome message
     if ctx.invoked_subcommand is None:
-        show_main_banner()
-        styled_message("Use --help to see available commands", "info")
+        styled_message(
+            "Welcome to MOSAICX! Use --help to see available commands.",
+            "info"
+        )
+
+
+@cli.command()
+@click.option("--desc", required=True, help="Natural language description of fields you want")
+@click.option("--model", default=DEFAULT_LLM_MODEL, help="Ollama model name")
+@click.option("--example", multiple=True, help="Optional example text/report (can pass multiple)")
+@click.option("--save-schema", type=click.Path(), help="Write induced SchemaSpec JSON to this path")
+@click.option("--save-model", type=click.Path(), help="Write generated Pydantic class .py to this path")
+@click.option("--debug", is_flag=True, help="Verbose debug logs")
+@click.pass_context
+def generate(
+    ctx: click.Context, 
+    desc: str, 
+    model: str, 
+    example: tuple, 
+    save_schema: Optional[str], 
+    save_model: Optional[str], 
+    debug: bool
+) -> None:
+    """Generate Pydantic schemas from natural language descriptions."""
+    verbose = ctx.obj.get('verbose', False)
     
     if verbose:
-        styled_message("Verbose mode enabled", "info")
-
-
-@cli.command()
-@click.option(
-    "--description", "-d", 
-    required=True,
-    help="Natural language description of the schema to generate"
-)
-@click.option(
-    "--output", "-o",
-    required=True, 
-    help="Output filename for the generated schema (without extension)"
-)
-@click.option(
-    "--domain",
-    default="medical",
-    type=click.Choice(["medical", "imaging", "analysis", "core"]),
-    help="Domain category for schema organization"
-)
-@click.option(
-    "--example", "-e",
-    multiple=True,
-    help="Example data to inform schema generation (can specify multiple)"
-)
-@click.option(
-    "--model", "-m",
-    default="gpt-oss:120b", 
-    help="Ollama model to use for schema generation"
-)
-def extract(
-    description: str,
-    output: str, 
-    domain: str,
-    example: List[str],
-    model: str
-) -> None:
-    """
-    **Extract schema from natural language description**
+        styled_message(f"Generating schema using model: {model}", "info")
+        styled_message(f"Description: {desc}", "info")
     
-    Generate Pydantic models and JSON schemas from natural language descriptions
-    using AI-powered analysis. The generated files will be automatically organized
-    in the MOSAICX schema directory structure.
-    
-    **Examples:**
-    
-    ```bash
-    # Basic usage
-    mosaicx extract -d "Patient demographics with age, gender, ID" -o patient_info
-    
-    # With domain specification
-    mosaicx extract -d "DICOM metadata fields" -o dicom --domain imaging
-    
-    # With examples
-    mosaicx extract -d "Lab results" -o lab_data -e "glucose: 95 mg/dL" -e "hemoglobin: 14.2 g/dL"
-    
-    # Custom model
-    mosaicx extract -d "Radiology report structure" -o radiology --model qwen2:7b-instruct
-    ```
-    """
     try:
-        console.print(
-            Panel.fit(
-                f"[bold cyan]Generating schema: {output}[/bold cyan]\n"
-                f"Domain: {domain}\n"
-                f"Model: {model}\n"
-                f"Description: {description}",
-                title="MOSAICX Schema Extraction",
-                style="cyan"
+        # Use schema_builder as the core engine
+        with console.status(f"[{MOSAICX_COLORS['info']}]Inducing schema...", spinner="dots"):
+            spec = induce_schemaspec_with_ollama(
+                model, 
+                desc, 
+                list(example) if example else None, 
+                debug=debug
             )
-        )
         
-        # Convert examples tuple to list
-        example_list = list(example) if example else None
+        # Auto-generate default filenames based on schema name
+        schema_name = spec.name.lower().replace(" ", "_")
+        timestamp = __import__('datetime').datetime.now().strftime("%Y%m%d_%H%M%S")
+        default_json_name = f"{schema_name}_{timestamp}.json"
+        default_py_name = f"{schema_name}_{timestamp}.py"
         
-        # Generate schema
-        saved_paths = generate_schema_from_nl(
-            description=description,
-            domain=domain,
-            schema_name=output,
-            examples=example_list,
-            model=model,
-            workspace_root=Path.cwd()
-        )
+        # Determine save paths (use defaults if not specified)
+        json_save_path = save_schema if save_schema else Path(PACKAGE_SCHEMA_JSON_DIR) / default_json_name
+        py_save_path = save_model if save_model else Path(PACKAGE_SCHEMA_PYD_DIR) / default_py_name
         
-        # Display success message with file paths
-        success_panel = Panel.fit(
-            f"[bold green]✓ Schema generated successfully![/bold green]\n\n"
-            f"📄 JSON Schema: {saved_paths['json']}\n"
-            f"🐍 Pydantic Model: {saved_paths['pydantic']}\n\n"
-            f"Files are organized in: mosaicx/schema/{domain}/",
-            title="Generation Complete",
-            style="green"
-        )
-        console.print(success_panel)
+        # Ensure directories exist
+        Path(json_save_path).parent.mkdir(parents=True, exist_ok=True)
+        Path(py_save_path).parent.mkdir(parents=True, exist_ok=True)
         
+        # Compile to runtime model
+        with console.status(f"[{MOSAICX_COLORS['accent']}]Compiling Pydantic model...", spinner="dots"):
+            Model = compile_schema_to_model(spec)
+        
+        # Display the model name prominently without a banner
+        console.print()
+        styled_message(f"✨ Schema Model: {Model.__name__} ✨", "primary", center=True)
+        console.print()
+        
+        # Display the fields table with proper spacing
+        table = fields_table(spec)
+        console.print(Align.center(table))
+        
+        # Generate and save files
+        class_code = generate_model_py(spec)
+        
+        # Save schema JSON
+        import json
+        Path(json_save_path).write_text(json.dumps(spec.model_dump(), indent=2))
+        
+        # Save Python code
+        Path(py_save_path).write_text(class_code)
+        
+        # Show file save results prominently at the end
+        console.print()
+        console.print()
+        styled_message("📁 FILES SAVED", "accent", center=True)
+        console.print()
+        
+        # Create aligned file output
+        from rich.table import Table
+        file_table = Table.grid(padding=1)
+        file_table.add_column(style=f"bold {MOSAICX_COLORS['secondary']}", justify="right")
+        file_table.add_column(style=MOSAICX_COLORS['primary'])
+        
+        file_table.add_row("JSON", Path(json_save_path).name)
+        file_table.add_row("Pydantic", Path(py_save_path).name)
+        
+        console.print(Align.center(file_table))
+        
+        if verbose:
+            console.print()
+            styled_message("Generated Python Code:", "secondary", center=True)
+            console.print()
+            from rich.syntax import Syntax
+            syntax = Syntax(class_code, "python", theme="dracula", line_numbers=True, 
+                          background_color=MOSAICX_COLORS["muted"])
+            console.print(Align.center(syntax))
+            
     except Exception as e:
-        styled_message(f"Schema extraction failed: {e}", "error")
-        sys.exit(1)
+        styled_message(f"Schema generation failed: {str(e)}", "error")
+        if debug:
+            console.print_exception()
+        raise click.ClickException(str(e))
 
 
 @cli.command()
-def list_schemas() -> None:
-    """
-    **List all available schemas in the MOSAICX registry**
+@click.option("--pdf", required=True, type=click.Path(exists=True), help="Path to PDF file to extract from")
+@click.option("--schema", required=True, help="Name of the Pydantic schema model to use")
+@click.option("--model", default=DEFAULT_LLM_MODEL, help="Ollama model name for extraction")
+@click.option("--save", type=click.Path(), help="Save extracted JSON result to this path")
+@click.option("--debug", is_flag=True, help="Verbose debug logs")
+@click.pass_context
+def extract(
+    ctx: click.Context,
+    pdf: str,
+    schema: str,
+    model: str,
+    save: Optional[str],
+    debug: bool
+) -> None:
+    """Extract structured data from PDF using a generated Pydantic schema."""
+    verbose = ctx.obj.get('verbose', False)
     
-    Display all Pydantic models and JSON schemas currently available
-    in the MOSAICX schema directory structure.
-    """
-    styled_message("Schema listing functionality will be implemented with schema registry", "info")
-
-
-def main() -> None:
-    """Main entry point for the MOSAICX CLI application."""
+    if verbose:
+        styled_message(f"Extracting from: {pdf}", "info")
+        styled_message(f"Using schema: {schema}", "info")
+        styled_message(f"Using model: {model}", "info")
+    
     try:
-        cli()
-    except KeyboardInterrupt:
-        styled_message("\nOperation cancelled by user", "warning")
-        sys.exit(1)
+        # Perform extraction
+        result = extract_from_pdf(pdf, schema, model, save)
+        
+        # Display results beautifully
+        console.print()
+        console.print()
+        styled_message(f"📋 Extraction Results: {schema}", "primary", center=True)
+        console.print()
+        
+        # Create a beautiful table to display the extracted data
+        from rich.table import Table
+        data_table = Table(
+            show_lines=False,
+            border_style=MOSAICX_COLORS["secondary"],
+            header_style=f"bold {MOSAICX_COLORS['primary']}"
+        )
+        
+        data_table.add_column("Field", style=MOSAICX_COLORS["info"], no_wrap=True)
+        data_table.add_column("Extracted Value", style=MOSAICX_COLORS["accent"])
+        
+        # Add rows for each field in the result
+        result_dict = result.model_dump()
+        for field_name, value in result_dict.items():
+            # Format value for display
+            if value is None:
+                display_value = "[dim]Not found[/dim]"
+            elif isinstance(value, (list, dict)):
+                display_value = str(value)[:50] + "..." if len(str(value)) > 50 else str(value)
+            else:
+                display_value = str(value)
+            
+            data_table.add_row(field_name, display_value)
+        
+        console.print(Align.center(data_table))
+        
+        # Show file save info if saved
+        if save:
+            console.print()
+            console.print()
+            styled_message("📁 EXTRACTION SAVED", "accent", center=True)
+            console.print()
+            styled_message(f"JSON: {Path(save).name}", "primary", center=True)
+        
+        if verbose and debug:
+            console.print()
+            styled_message("Raw extracted data:", "secondary", center=True)
+            console.print()
+            from rich.json import JSON
+            console.print(JSON(result.model_dump_json(indent=2)))
+            
+    except ExtractionError as e:
+        styled_message(f"Extraction failed: {str(e)}", "error")
+        if debug:
+            console.print_exception()
+        raise click.ClickException(str(e))
     except Exception as e:
-        styled_message(f"Unexpected error: {e}", "error")
-        sys.exit(1)
+        styled_message(f"Unexpected error: {str(e)}", "error")
+        if debug:
+            console.print_exception()
+        raise click.ClickException(str(e))
+
+
+def main(args: Optional[List[str]] = None) -> None:
+    """Main entry point for the MOSAICX CLI application."""
+    cli(args)
 
 
 if __name__ == "__main__":

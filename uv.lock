@@ -1328,10 +1328,13 @@ dependencies = [
     { name = "docling" },
     { name = "dspy-ai" },
     { name = "httpx" },
+    { name = "ollama" },
     { name = "openai" },
     { name = "pydantic" },
+    { name = "python-cfonts" },
     { name = "pyyaml" },
     { name = "rich" },
+    { name = "rich-click" },
     { name = "typing-extensions" },
 ]
 
@@ -1368,14 +1371,17 @@ requires-dist = [
     { name = "httpx", specifier = ">=0.25.0" },
     { name = "isort", marker = "extra == 'dev'", specifier = ">=5.12.0" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.5.0" },
+    { name = "ollama", specifier = ">=0.3.0" },
     { name = "openai", specifier = ">=1.0.0" },
     { name = "pre-commit", marker = "extra == 'dev'", specifier = ">=3.3.0" },
     { name = "pydantic", specifier = ">=2.0.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=7.4.0" },
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.21.0" },
     { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=4.1.0" },
+    { name = "python-cfonts", specifier = ">=1.0.0" },
     { name = "pyyaml", specifier = ">=6.0" },
     { name = "rich", specifier = ">=13.0.0" },
+    { name = "rich-click", specifier = ">=1.8.0" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.0.280" },
     { name = "typing-extensions", specifier = ">=4.8.0" },
 ]
@@ -1818,6 +1824,19 @@ version = "12.8.90"
 source = { registry = "https://pypi.org/simple" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/a2/eb/86626c1bbc2edb86323022371c39aa48df6fd8b0a1647bc274577f72e90b/nvidia_nvtx_cu12-12.8.90-py3-none-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:5b17e2001cc0d751a5bc2c6ec6d26ad95913324a4adb86788c944f8ce9ba441f", size = 89954, upload-time = "2025-03-07T01:42:44.131Z" },
+]
+
+[[package]]
+name = "ollama"
+version = "0.5.4"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "httpx" },
+    { name = "pydantic" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/72/62/a36be4555e4218d6c8b35e72e0dfe0823845400097275cd81c9aec4ddf39/ollama-0.5.4.tar.gz", hash = "sha256:75857505a5d42e5e58114a1b78cc8c24596d8866863359d8a2329946a9b6d6f3", size = 45233, upload-time = "2025-09-16T00:25:25.785Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/1b/af/d0a23c8fdec4c8ddb771191d9b36a57fbce6741835a78f1b18ab6d15ae7d/ollama-0.5.4-py3-none-any.whl", hash = "sha256:6374c9bb4f2a371b3583c09786112ba85b006516745689c172a7e28af4d4d1a2", size = 13548, upload-time = "2025-09-16T00:25:24.186Z" },
 ]
 
 [[package]]
@@ -2476,6 +2495,18 @@ wheels = [
 ]
 
 [[package]]
+name = "python-cfonts"
+version = "1.5.2"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "colorama" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/ca/07/2c006c9a98e103dd1dbdc192966ae460a7dc8058cbeac658db67afeda425/python-cfonts-1.5.2.tar.gz", hash = "sha256:85588e71003c7db986afaaa65755bad034c9f10ed29b32c5f2dc18ce9d77c030", size = 29622, upload-time = "2021-06-25T00:34:52.622Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/c4/e0/3b1c9b17f561b8c6d04ce97ecf84bf3c80073a9369f1da7e71da0bd79e7b/python_cfonts-1.5.2-py3-none-any.whl", hash = "sha256:88ddfffae675a2bc4e796baf057c5b989541a710bef4ac3e739edfbb388027ed", size = 29858, upload-time = "2021-06-25T00:34:51.763Z" },
+]
+
+[[package]]
 name = "python-dateutil"
 version = "2.9.0.post0"
 source = { registry = "https://pypi.org/simple" }
@@ -2691,6 +2722,19 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/fe/75/af448d8e52bf1d8fa6a9d089ca6c07ff4453d86c65c145d0a300bb073b9b/rich-14.1.0.tar.gz", hash = "sha256:e497a48b844b0320d45007cdebfeaeed8db2a4f4bcf49f15e455cfc4af11eaa8", size = 224441, upload-time = "2025-07-25T07:32:58.125Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/e3/30/3c4d035596d3cf444529e0b2953ad0466f6049528a879d27534700580395/rich-14.1.0-py3-none-any.whl", hash = "sha256:536f5f1785986d6dbdea3c75205c473f970777b4a0d6c6dd1b696aa05a3fa04f", size = 243368, upload-time = "2025-07-25T07:32:56.73Z" },
+]
+
+[[package]]
+name = "rich-click"
+version = "1.9.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "click" },
+    { name = "rich" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/c8/f9/f00b3c29c77c24d22dbba7d13ecf65278461c1deabecaabdeabc5a2e2203/rich_click-1.9.0.tar.gz", hash = "sha256:212a19875b1e485803a5448130a9157b04c0d0befcc2bc29cb64d3577b93b005", size = 72986, upload-time = "2025-09-16T12:21:29.505Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/b6/dd/0e805c6b4af249ae52a76d02f013c02f0032677481e44bf762343770915f/rich_click-1.9.0-py3-none-any.whl", hash = "sha256:28e6eb34a99c8c45eb910259078bc54dd78cf6f18cc75cb77a50012a98458664", size = 69643, upload-time = "2025-09-16T12:21:28.102Z" },
 ]
 
 [[package]]

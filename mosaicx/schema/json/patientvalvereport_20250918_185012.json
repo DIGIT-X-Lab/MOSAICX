@@ -1,0 +1,145 @@
+{
+  "name": "PatientValveReport",
+  "version": "1.0.0",
+  "description": "Schema for extracting patient demographics, scan information, and valve condition details.",
+  "enums": [
+    {
+      "name": "Sex",
+      "values": [
+        "Male",
+        "Female",
+        "Other"
+      ]
+    },
+    {
+      "name": "ValveGrade",
+      "values": [
+        "Mild",
+        "Moderate",
+        "Severe"
+      ]
+    }
+  ],
+  "fields": [
+    {
+      "name": "patient_id",
+      "type": "string",
+      "description": "Unique identifier for the patient.",
+      "required": true,
+      "enum": null,
+      "constraints": null,
+      "items": null,
+      "properties": null
+    },
+    {
+      "name": "age",
+      "type": "integer",
+      "description": "Patient age in years.",
+      "required": true,
+      "enum": null,
+      "constraints": {
+        "regex": null,
+        "minimum": 0.0,
+        "maximum": null,
+        "units": "years"
+      },
+      "items": null,
+      "properties": null
+    },
+    {
+      "name": "sex",
+      "type": "string",
+      "description": "Patient sex.",
+      "required": true,
+      "enum": "Sex",
+      "constraints": null,
+      "items": null,
+      "properties": null
+    },
+    {
+      "name": "modality_name",
+      "type": "string",
+      "description": "Name of the imaging modality (e.g., MRI, CT).",
+      "required": true,
+      "enum": null,
+      "constraints": null,
+      "items": null,
+      "properties": null
+    },
+    {
+      "name": "scan_date",
+      "type": "date",
+      "description": "Date of the scan.",
+      "required": true,
+      "enum": null,
+      "constraints": {
+        "regex": "^\\d{4}-\\d{2}-\\d{2}$",
+        "minimum": null,
+        "maximum": null,
+        "units": null
+      },
+      "items": null,
+      "properties": null
+    },
+    {
+      "name": "mitral_valve_issue",
+      "type": "boolean",
+      "description": "Whether mitral valve issues are present (true = yes, false = no).",
+      "required": true,
+      "enum": null,
+      "constraints": null,
+      "items": null,
+      "properties": null
+    },
+    {
+      "name": "mitral_valve_grade",
+      "type": "string",
+      "description": "Severity grade of the mitral valve issue, if present.",
+      "required": false,
+      "enum": "ValveGrade",
+      "constraints": null,
+      "items": null,
+      "properties": null
+    },
+    {
+      "name": "mitral_valve_stenosis",
+      "type": "boolean",
+      "description": "Presence of mitral valve stenosis (true = yes, false = no).",
+      "required": false,
+      "enum": null,
+      "constraints": null,
+      "items": null,
+      "properties": null
+    },
+    {
+      "name": "tricuspid_valve_issue",
+      "type": "boolean",
+      "description": "Whether tricuspid valve issues are present (true = yes, false = no).",
+      "required": true,
+      "enum": null,
+      "constraints": null,
+      "items": null,
+      "properties": null
+    },
+    {
+      "name": "tricuspid_valve_grade",
+      "type": "string",
+      "description": "Severity grade of the tricuspid valve issue, if present.",
+      "required": false,
+      "enum": "ValveGrade",
+      "constraints": null,
+      "items": null,
+      "properties": null
+    },
+    {
+      "name": "tricuspid_valve_stenosis",
+      "type": "boolean",
+      "description": "Presence of tricuspid valve stenosis (true = yes, false = no).",
+      "required": false,
+      "enum": null,
+      "constraints": null,
+      "items": null,
+      "properties": null
+    }
+  ]
+}

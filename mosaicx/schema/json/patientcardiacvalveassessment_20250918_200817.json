@@ -1,0 +1,272 @@
+{
+  "name": "PatientCardiacValveAssessment",
+  "version": "1.0.0",
+  "description": "Schema for recording patient demographics, cardiac valve assessment results, and associated scan information.",
+  "enums": [
+    {
+      "name": "Sex",
+      "values": [
+        "Male",
+        "Female",
+        "Other"
+      ]
+    },
+    {
+      "name": "ValveType",
+      "values": [
+        "Aortic",
+        "Mitral",
+        "Tricuspid",
+        "Pulmonary"
+      ]
+    },
+    {
+      "name": "ImagingModality",
+      "values": [
+        "Echocardiogram",
+        "MRI",
+        "CT",
+        "Ultrasound"
+      ]
+    },
+    {
+      "name": "Severity",
+      "values": [
+        "None",
+        "Trace",
+        "Mild",
+        "Moderate",
+        "Severe"
+      ]
+    }
+  ],
+  "fields": [
+    {
+      "name": "patient_id",
+      "type": "string",
+      "description": "Unique identifier for the patient.",
+      "required": true,
+      "enum": null,
+      "constraints": null,
+      "items": null,
+      "properties": null
+    },
+    {
+      "name": "name",
+      "type": "string",
+      "description": "Full name of the patient.",
+      "required": false,
+      "enum": null,
+      "constraints": null,
+      "items": null,
+      "properties": null
+    },
+    {
+      "name": "date_of_birth",
+      "type": "date",
+      "description": "Patient's date of birth.",
+      "required": false,
+      "enum": null,
+      "constraints": null,
+      "items": null,
+      "properties": null
+    },
+    {
+      "name": "age",
+      "type": "integer",
+      "description": "Patient's age in years at the time of assessment.",
+      "required": false,
+      "enum": null,
+      "constraints": {
+        "regex": null,
+        "minimum": 0.0,
+        "maximum": 120.0,
+        "units": "years"
+      },
+      "items": null,
+      "properties": null
+    },
+    {
+      "name": "sex",
+      "type": "string",
+      "description": "Biological sex of the patient.",
+      "required": false,
+      "enum": "Sex",
+      "constraints": null,
+      "items": null,
+      "properties": null
+    },
+    {
+      "name": "report_id",
+      "type": "string",
+      "description": "Unique identifier for this valve assessment report.",
+      "required": true,
+      "enum": null,
+      "constraints": null,
+      "items": null,
+      "properties": null
+    },
+    {
+      "name": "assessment_date",
+      "type": "date",
+      "description": "Date when the valve assessment was performed.",
+      "required": true,
+      "enum": null,
+      "constraints": null,
+      "items": null,
+      "properties": null
+    },
+    {
+      "name": "valve_type",
+      "type": "string",
+      "description": "Cardiac valve being assessed.",
+      "required": true,
+      "enum": "ValveType",
+      "constraints": null,
+      "items": null,
+      "properties": null
+    },
+    {
+      "name": "imaging_modality",
+      "type": "string",
+      "description": "Imaging technique used for the assessment.",
+      "required": true,
+      "enum": "ImagingModality",
+      "constraints": null,
+      "items": null,
+      "properties": null
+    },
+    {
+      "name": "measurements",
+      "type": "object",
+      "description": "Quantitative and qualitative measurements from the valve assessment.",
+      "required": true,
+      "enum": null,
+      "constraints": null,
+      "items": null,
+      "properties": [
+        {
+          "name": "valve_area",
+          "type": "number",
+          "description": "Effective orifice area of the valve.",
+          "required": false,
+          "enum": null,
+          "constraints": {
+            "regex": null,
+            "minimum": 0.0,
+            "maximum": null,
+            "units": "cm2"
+          },
+          "items": null,
+          "properties": null
+        },
+        {
+          "name": "mean_gradient",
+          "type": "number",
+          "description": "Mean transvalvular pressure gradient.",
+          "required": false,
+          "enum": null,
+          "constraints": {
+            "regex": null,
+            "minimum": 0.0,
+            "maximum": null,
+            "units": "mmHg"
+          },
+          "items": null,
+          "properties": null
+        },
+        {
+          "name": "peak_gradient",
+          "type": "number",
+          "description": "Peak transvalvular pressure gradient.",
+          "required": false,
+          "enum": null,
+          "constraints": {
+            "regex": null,
+            "minimum": 0.0,
+            "maximum": null,
+            "units": "mmHg"
+          },
+          "items": null,
+          "properties": null
+        },
+        {
+          "name": "regurgitation_severity",
+          "type": "string",
+          "description": "Severity of valve regurgitation.",
+          "required": false,
+          "enum": "Severity",
+          "constraints": null,
+          "items": null,
+          "properties": null
+        },
+        {
+          "name": "stenosis_severity",
+          "type": "string",
+          "description": "Severity of valve stenosis.",
+          "required": false,
+          "enum": "Severity",
+          "constraints": null,
+          "items": null,
+          "properties": null
+        }
+      ]
+    },
+    {
+      "name": "scan_info",
+      "type": "object",
+      "description": "Details about the imaging acquisition.",
+      "required": false,
+      "enum": null,
+      "constraints": null,
+      "items": null,
+      "properties": [
+        {
+          "name": "scanner_model",
+          "type": "string",
+          "description": "Manufacturer and model of the imaging scanner.",
+          "required": false,
+          "enum": null,
+          "constraints": null,
+          "items": null,
+          "properties": null
+        },
+        {
+          "name": "scan_parameters",
+          "type": "string",
+          "description": "Key acquisition parameters (e.g., slice thickness, echo settings).",
+          "required": false,
+          "enum": null,
+          "constraints": null,
+          "items": null,
+          "properties": null
+        },
+        {
+          "name": "image_quality_score",
+          "type": "number",
+          "description": "Subjective image quality rating on a 0\u20115 scale.",
+          "required": false,
+          "enum": null,
+          "constraints": {
+            "regex": null,
+            "minimum": 0.0,
+            "maximum": 5.0,
+            "units": null
+          },
+          "items": null,
+          "properties": null
+        }
+      ]
+    },
+    {
+      "name": "physician",
+      "type": "string",
+      "description": "Name or identifier of the interpreting physician.",
+      "required": false,
+      "enum": null,
+      "constraints": null,
+      "items": null,
+      "properties": null
+    }
+  ]
+}

@@ -1,0 +1,314 @@
+{
+  "name": "HIPAAIdentifierExtractionSchema",
+  "version": "1.0.0",
+  "description": "Schema for extracting personal health identifiers as defined by the HIPAA Privacy Rule.",
+  "enums": [],
+  "fields": [
+    {
+      "name": "full_name",
+      "type": "string",
+      "description": "Full name of the individual.",
+      "required": false,
+      "enum": null,
+      "constraints": null,
+      "items": null,
+      "properties": null
+    },
+    {
+      "name": "address",
+      "type": "object",
+      "description": "Street address and related geographic details.",
+      "required": false,
+      "enum": null,
+      "constraints": null,
+      "items": null,
+      "properties": [
+        {
+          "name": "street",
+          "type": "string",
+          "description": "Street address line.",
+          "required": false,
+          "enum": null,
+          "constraints": null,
+          "items": null,
+          "properties": null
+        },
+        {
+          "name": "city",
+          "type": "string",
+          "description": "City name.",
+          "required": false,
+          "enum": null,
+          "constraints": null,
+          "items": null,
+          "properties": null
+        },
+        {
+          "name": "state",
+          "type": "string",
+          "description": "State or province.",
+          "required": false,
+          "enum": null,
+          "constraints": null,
+          "items": null,
+          "properties": null
+        },
+        {
+          "name": "postal_code",
+          "type": "string",
+          "description": "ZIP or postal code.",
+          "required": false,
+          "enum": null,
+          "constraints": {
+            "regex": "^\\d{5}(-\\d{4})?$",
+            "minimum": null,
+            "maximum": null,
+            "units": null
+          },
+          "items": null,
+          "properties": null
+        }
+      ]
+    },
+    {
+      "name": "date_of_birth",
+      "type": "date",
+      "description": "Date of birth (year, month, day).",
+      "required": false,
+      "enum": null,
+      "constraints": null,
+      "items": null,
+      "properties": null
+    },
+    {
+      "name": "phone_numbers",
+      "type": "array",
+      "description": "List of phone numbers associated with the individual.",
+      "required": false,
+      "enum": null,
+      "constraints": null,
+      "items": {
+        "name": "phone_number",
+        "type": "string",
+        "description": "Phone number in E.164 format or local format.",
+        "required": true,
+        "enum": null,
+        "constraints": {
+          "regex": "^\\+?[1-9]\\d{1,14}$",
+          "minimum": null,
+          "maximum": null,
+          "units": null
+        },
+        "items": null,
+        "properties": null
+      },
+      "properties": null
+    },
+    {
+      "name": "fax_numbers",
+      "type": "array",
+      "description": "List of fax numbers associated with the individual.",
+      "required": false,
+      "enum": null,
+      "constraints": null,
+      "items": {
+        "name": "fax_number",
+        "type": "string",
+        "description": "Fax number in E.164 format or local format.",
+        "required": true,
+        "enum": null,
+        "constraints": {
+          "regex": "^\\+?[1-9]\\d{1,14}$",
+          "minimum": null,
+          "maximum": null,
+          "units": null
+        },
+        "items": null,
+        "properties": null
+      },
+      "properties": null
+    },
+    {
+      "name": "email_addresses",
+      "type": "array",
+      "description": "List of email addresses associated with the individual.",
+      "required": false,
+      "enum": null,
+      "constraints": null,
+      "items": {
+        "name": "email_address",
+        "type": "string",
+        "description": "Email address.",
+        "required": true,
+        "enum": null,
+        "constraints": {
+          "regex": "^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$",
+          "minimum": null,
+          "maximum": null,
+          "units": null
+        },
+        "items": null,
+        "properties": null
+      },
+      "properties": null
+    },
+    {
+      "name": "social_security_number",
+      "type": "string",
+      "description": "Social Security Number (SSN) in the format XXX-XX-XXXX.",
+      "required": false,
+      "enum": null,
+      "constraints": {
+        "regex": "^\\d{3}-\\d{2}-\\d{4}$",
+        "minimum": null,
+        "maximum": null,
+        "units": null
+      },
+      "items": null,
+      "properties": null
+    },
+    {
+      "name": "medical_record_number",
+      "type": "string",
+      "description": "Medical record number assigned by a health care provider.",
+      "required": false,
+      "enum": null,
+      "constraints": null,
+      "items": null,
+      "properties": null
+    },
+    {
+      "name": "health_plan_beneficiary_number",
+      "type": "string",
+      "description": "Health plan beneficiary number.",
+      "required": false,
+      "enum": null,
+      "constraints": null,
+      "items": null,
+      "properties": null
+    },
+    {
+      "name": "account_number",
+      "type": "string",
+      "description": "Account number (e.g., for billing).",
+      "required": false,
+      "enum": null,
+      "constraints": null,
+      "items": null,
+      "properties": null
+    },
+    {
+      "name": "certificate_license_number",
+      "type": "string",
+      "description": "Certificate or license number.",
+      "required": false,
+      "enum": null,
+      "constraints": null,
+      "items": null,
+      "properties": null
+    },
+    {
+      "name": "vehicle_identifier",
+      "type": "string",
+      "description": "Vehicle identifier or serial number, including license plate numbers.",
+      "required": false,
+      "enum": null,
+      "constraints": null,
+      "items": null,
+      "properties": null
+    },
+    {
+      "name": "device_identifier",
+      "type": "string",
+      "description": "Device identifier or serial number.",
+      "required": false,
+      "enum": null,
+      "constraints": null,
+      "items": null,
+      "properties": null
+    },
+    {
+      "name": "web_urls",
+      "type": "array",
+      "description": "Web URLs associated with the individual.",
+      "required": false,
+      "enum": null,
+      "constraints": null,
+      "items": {
+        "name": "web_url",
+        "type": "string",
+        "description": "A web URL.",
+        "required": true,
+        "enum": null,
+        "constraints": {
+          "regex": "^(https?|ftp)://[^\\s/$.?#].[^\\s]*$",
+          "minimum": null,
+          "maximum": null,
+          "units": null
+        },
+        "items": null,
+        "properties": null
+      },
+      "properties": null
+    },
+    {
+      "name": "ip_addresses",
+      "type": "array",
+      "description": "IP address numbers associated with the individual.",
+      "required": false,
+      "enum": null,
+      "constraints": null,
+      "items": {
+        "name": "ip_address",
+        "type": "string",
+        "description": "IPv4 or IPv6 address.",
+        "required": true,
+        "enum": null,
+        "constraints": {
+          "regex": "^(?:[0-9]{1,3}\\.){3}[0-9]{1,3}$|^([0-9a-fA-F]{0,4}:){1,7}[0-9a-fA-F]{0,4}$",
+          "minimum": null,
+          "maximum": null,
+          "units": null
+        },
+        "items": null,
+        "properties": null
+      },
+      "properties": null
+    },
+    {
+      "name": "biometric_identifier",
+      "type": "string",
+      "description": "Biometric identifier (e.g., fingerprint, voice print).",
+      "required": false,
+      "enum": null,
+      "constraints": null,
+      "items": null,
+      "properties": null
+    },
+    {
+      "name": "facial_image_url",
+      "type": "string",
+      "description": "URL to a full-face photographic image or comparable image.",
+      "required": false,
+      "enum": null,
+      "constraints": {
+        "regex": "^(https?|ftp)://[^\\s/$.?#].[^\\s]*$",
+        "minimum": null,
+        "maximum": null,
+        "units": null
+      },
+      "items": null,
+      "properties": null
+    },
+    {
+      "name": "other_unique_identifier",
+      "type": "string",
+      "description": "Any other unique identifying number, characteristic, or code not covered above.",
+      "required": false,
+      "enum": null,
+      "constraints": null,
+      "items": null,
+      "properties": null
+    }
+  ]
+}

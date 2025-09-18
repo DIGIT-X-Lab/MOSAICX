@@ -70,23 +70,21 @@ from rich.text import Text
 from rich.align import Align
 from rich.panel import Panel
 
-# Module metadata
-__version__ = "1.0.0"
-__author__ = "Lalith Kumar Shiyam Sundar, PhD"
-__email__ = "Lalith.shiyam@med.uni-muenchen.de"
-__institution__ = "DIGIT-X Lab, LMU Radiology | LMU University Hospital"
-__license__ = "AGPL-3.0"
-__copyright__ = "© 2025 DIGIT-X Lab, LMU Radiology | LMU University Hospital"
-
-# Color scheme for consistent branding
-MOSAICX_COLORS = {
-    "primary": "#FC683F",      # Orange accent
-    "secondary": "#B6B6B6",    # Light gray
-    "success": "green",
-    "warning": "yellow", 
-    "error": "red",
-    "info": "blue"
-}
+# Import constants from centralized constants module
+from .constants import (
+    APPLICATION_NAME,
+    APPLICATION_FULL_NAME,
+    APPLICATION_VERSION as __version__,
+    AUTHOR_NAME as __author__,
+    AUTHOR_EMAIL as __email__,
+    INSTITUTION_NAME as __institution__,
+    INSTITUTION_SHORT,
+    LICENSE_TYPE as __license__,
+    COPYRIGHT_NOTICE as __copyright__,
+    MOSAICX_COLORS,
+    BANNER_STYLE,
+    BANNER_COLORS
+)
 
 # Global console instance for consistent styling
 console = Console()
@@ -113,20 +111,20 @@ def show_main_banner() -> None:
     - Development status teaser
     """
     # Clear screen space for banner
-    console.print("\n" * 3)
+    console.print("\n")
     
     # Main MOSAICX banner with gradient colors
     say(
-        "MOSAICX",
-        colors=[MOSAICX_COLORS["secondary"], MOSAICX_COLORS["primary"]],
+        APPLICATION_NAME,
+        colors=BANNER_COLORS,
         align="center",
-        font="block",
+        font=BANNER_STYLE,
         space=False,
     )
 
     # Application name expansion
     expansion = Text(
-        "Medical cOmputational Suite for Advanced Intelligent eXtraction",
+        APPLICATION_FULL_NAME,
         style=MOSAICX_COLORS["secondary"],
         justify="center",
     )
@@ -135,7 +133,7 @@ def show_main_banner() -> None:
 
     # Institutional attribution
     origin = Text(
-        "DIGIT-X Lab @ LMU Radiology | LMU University Hospital", 
+        INSTITUTION_SHORT + " @ " + __institution__, 
         style=MOSAICX_COLORS["primary"]
     )
     console.print(Align.center(origin))
@@ -143,13 +141,13 @@ def show_main_banner() -> None:
 
     # Development status capabilities
     capabilities = Text(
-        "Intelligent Structuring • Summarization • Classification", 
+        "LLMS for Intelligent Structuring • Summarization • Classification", 
         style=MOSAICX_COLORS["secondary"]
     )
     console.print(Align.center(capabilities))
     
     # Add spacing after banner
-    console.print("\n" * 3)
+    console.print("\n")
 
 
 def styled_message(message: str, style: str = "info", center: bool = False) -> None:
