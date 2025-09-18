@@ -3,11 +3,7 @@ MOSAICX Main Module - Application Entry Point and Core Functionality
 
 ================================================================================
 MOSAICX: Medical cOmputational Suite for Advanced Intelligent eXtraction
-===========================================        # Display results beautifully
-        console.print()
-        console.print()
-        styled_message(f"📋 Extraction Results: {schema}", "primary", center=True)
-        console.print()================================
+================================================================================
 
 Overview:
 ---------
@@ -22,6 +18,7 @@ Core Functionality:
 • Main CLI command group with rich-click integration
 • Application banner and branding display
 • Schema generation from natural language descriptions
+• PDF extraction with structured data output
 • Integration with Ollama for local LLM processing
 • Pydantic model compilation and code generation
 
@@ -36,6 +33,9 @@ Generate schema from natural language:
     >>> mosaicx generate --desc "Patient demographics with age, gender"
     >>> mosaicx generate --desc "Blood test results" --model llama3
 
+Extract data from PDF:
+    >>> mosaicx extract --pdf report.pdf --schema PatientRecord
+
 Show banner:
     >>> mosaicx banner
 
@@ -44,6 +44,7 @@ Dependencies:
 External Libraries:
     • rich-click (^1.0.0): Enhanced command-line interface framework
     • schema_builder: Core schema generation engine (working prototype)
+    • extractor: PDF processing and data extraction engine
 
 Module Metadata:
 ---------------
@@ -168,7 +169,7 @@ def generate(
     
     try:
         # Use schema_builder as the core engine
-        with console.status(f"[{MOSAICX_COLORS['info']}]Inducing schema...", spinner="dots"):
+        with console.status(f"[{MOSAICX_COLORS['primary']}]Inducing schema...", spinner="dots"):
             spec = induce_schemaspec_with_ollama(
                 model, 
                 desc, 
