@@ -1,0 +1,149 @@
+{
+  "schemas": {
+    "bloodtestresults_6c7dc9a2_20250919_152622": {
+      "id": "bloodtestresults_6c7dc9a2_20250919_152622",
+      "class_name": "BloodTestResults",
+      "description": "Patient blood test results with complete blood count and basic metabolic panel",
+      "description_hash": "6c7dc9a2",
+      "file_path": "mosaicx/schema/pyd/bloodtestresults_patient_blood_test_20250919_152622.py",
+      "file_name": "bloodtestresults_patient_blood_test_20250919_152622.py",
+      "model_used": "gpt-oss:120b",
+      "temperature": 0.2,
+      "created_at": "2025-09-19T15:26:22.595215",
+      "file_exists": true
+    },
+    "medicationlist_82042d1e_20250919_153054": {
+      "id": "medicationlist_82042d1e_20250919_153054",
+      "class_name": "MedicationList",
+      "description": "Patient medication list with dosages and frequencies",
+      "description_hash": "82042d1e",
+      "file_path": "mosaicx/schema/pyd/medicationlist_patient_medication_list_20250919_153054.py",
+      "file_name": "medicationlist_patient_medication_list_20250919_153054.py",
+      "model_used": "gpt-oss:120b",
+      "temperature": 0.2,
+      "created_at": "2025-09-19T15:30:54.472599",
+      "file_exists": true
+    },
+    "appointmentschedule_2db73c6c_20250919_153157": {
+      "id": "appointmentschedule_2db73c6c_20250919_153157",
+      "class_name": "AppointmentSchedule",
+      "description": "Patient appointment scheduling with doctor availability and room assignments",
+      "description_hash": "2db73c6c",
+      "file_path": "mosaicx/schema/pyd/appointmentschedule_patient_appointment_scheduling_20250919_153157.py",
+      "file_name": "appointmentschedule_patient_appointment_scheduling_20250919_153157.py",
+      "model_used": "gpt-oss:120b",
+      "temperature": 0.2,
+      "created_at": "2025-09-19T15:31:57.128336",
+      "file_exists": true
+    },
+    "patientvitals_339f8002_20250919_153931": {
+      "id": "patientvitals_339f8002_20250919_153931",
+      "class_name": "PatientVitals",
+      "description": "Vital signs of a patient.",
+      "description_hash": "339f8002",
+      "file_path": "mosaicx/schema/pyd/patientvitals_20250919_151730.py",
+      "file_name": "patientvitals_20250919_151730.py",
+      "model_used": "unknown",
+      "temperature": 0.2,
+      "created_at": "2025-09-19T15:39:31.910449",
+      "file_exists": true
+    },
+    "generatedmodel_ff47b925_20250919_153931": {
+      "id": "generatedmodel_ff47b925_20250919_153931",
+      "class_name": "GeneratedModel",
+      "description": "Model representing personal details extracted: age, sex, name, and date of birth.",
+      "description_hash": "ff47b925",
+      "file_path": "mosaicx/schema/pyd/generatedmodel_20250919_152032.py",
+      "file_name": "generatedmodel_20250919_152032.py",
+      "model_used": "unknown",
+      "temperature": 0.2,
+      "created_at": "2025-09-19T15:39:31.910624",
+      "file_exists": true
+    },
+    "appointmentinfo_2f944802_20250919_153931": {
+      "id": "appointmentinfo_2f944802_20250919_153931",
+      "class_name": "AppointmentInfo",
+      "description": "Details of a patient's appointment.",
+      "description_hash": "2f944802",
+      "file_path": "mosaicx/schema/pyd/appointmentinfo_20250919_152144.py",
+      "file_name": "appointmentinfo_20250919_152144.py",
+      "model_used": "unknown",
+      "temperature": 0.2,
+      "created_at": "2025-09-19T15:39:31.910739",
+      "file_exists": true
+    },
+    "bloodtestresults_97e70e2f_20250919_153931": {
+      "id": "bloodtestresults_97e70e2f_20250919_153931",
+      "class_name": "BloodTestResults",
+      "description": "Model representing blood test results including complete blood count and basic metabolic panel.",
+      "description_hash": "97e70e2f",
+      "file_path": "mosaicx/schema/pyd/bloodtestresults_20250919_151828.py",
+      "file_name": "bloodtestresults_20250919_151828.py",
+      "model_used": "unknown",
+      "temperature": 0.2,
+      "created_at": "2025-09-19T15:39:31.910846",
+      "file_exists": true
+    },
+    "generatedmodel_13cb4a14_20250919_154243": {
+      "id": "generatedmodel_13cb4a14_20250919_154243",
+      "class_name": "GeneratedModel",
+      "description": "extract patient phi from the medical report according to the HIPAA standards",
+      "description_hash": "13cb4a14",
+      "file_path": "mosaicx/schema/pyd/generatedmodel_extract_patient_phi_20250919_154243.py",
+      "file_name": "generatedmodel_extract_patient_phi_20250919_154243.py",
+      "model_used": "gpt-oss:120b",
+      "temperature": 0.2,
+      "created_at": "2025-09-19T15:42:43.454158",
+      "file_exists": true
+    },
+    "generatedmodel_f830a54f_20250919_161151": {
+      "id": "generatedmodel_f830a54f_20250919_161151",
+      "class_name": "GeneratedModel",
+      "description": "Please extract the patient's vital signs and basic information from this medical document. Look for and capture the systolic and diastolic blood pressure readings (in mmHg), heart rate (in beats per minute), and body temperature (in degrees Celsius). The document contains information about a patient visit including standard vital sign measurements that would typically be recorded during a routine medical examination. Focus on the numerical values for blood pressure, pulse rate, and temperature readings.",
+      "description_hash": "f830a54f",
+      "file_path": "BasicPatientVitalParameters.py",
+      "file_name": "BasicPatientVitalParameters.py",
+      "model_used": "gpt-oss:120b",
+      "temperature": 0.2,
+      "created_at": "2025-09-19T16:11:51.434038",
+      "file_exists": true
+    },
+    "generatedmodel_f830a54f_20250919_162552": {
+      "id": "generatedmodel_f830a54f_20250919_162552",
+      "class_name": "GeneratedModel",
+      "description": "Please extract the patient's vital signs and basic information from this medical document. Look for and capture the systolic and diastolic blood pressure readings (in mmHg), heart rate (in beats per minute), and body temperature (in degrees Celsius). The document contains information about a patient visit including standard vital sign measurements that would typically be recorded during a routine medical examination. Focus on the numerical values for blood pressure, pulse rate, and temperature readings.",
+      "description_hash": "f830a54f",
+      "file_path": "mosaicx/schema/pyd/generatedmodel_please_extract_patient_20250919_162552.py",
+      "file_name": "generatedmodel_please_extract_patient_20250919_162552.py",
+      "model_used": "gpt-oss:120b",
+      "temperature": 0.2,
+      "created_at": "2025-09-19T16:25:52.813446",
+      "file_exists": true
+    },
+    "generatedmodel_f830a54f_20250919_164514": {
+      "id": "generatedmodel_f830a54f_20250919_164514",
+      "class_name": "GeneratedModel",
+      "description": "Please extract the patient's vital signs and basic information from this medical document. Look for and capture the systolic and diastolic blood pressure readings (in mmHg), heart rate (in beats per minute), and body temperature (in degrees Celsius). The document contains information about a patient visit including standard vital sign measurements that would typically be recorded during a routine medical examination. Focus on the numerical values for blood pressure, pulse rate, and temperature readings.",
+      "description_hash": "f830a54f",
+      "file_path": "mosaicx/schema/pyd/generatedmodel_please_extract_patient_20250919_164514.py",
+      "file_name": "generatedmodel_please_extract_patient_20250919_164514.py",
+      "model_used": "gpt-oss:120b",
+      "temperature": 0.2,
+      "created_at": "2025-09-19T16:45:14.064906",
+      "file_exists": true
+    },
+    "generatedmodel_424fe1cf_20250919_174252": {
+      "id": "generatedmodel_424fe1cf_20250919_174252",
+      "class_name": "GeneratedModel",
+      "description": "Patient demographics",
+      "description_hash": "424fe1cf",
+      "file_path": "mosaicx/schema/pyd/generatedmodel_patient_demographics_20250919_174252.py",
+      "file_name": "generatedmodel_patient_demographics_20250919_174252.py",
+      "model_used": "mistral",
+      "temperature": 0.2,
+      "created_at": "2025-09-19T17:42:52.102854",
+      "file_exists": true
+    }
+  },
+  "version": "1.0.0"
+}

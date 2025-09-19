@@ -38,6 +38,7 @@ dependencies = [
     "ollama>=0.3.0",
     "python-cfonts>=1.0.0",
     "instructor>=1.0.0",
+    "reportlab>=4.4.4",
 ]
 
 [project.optional-dependencies]

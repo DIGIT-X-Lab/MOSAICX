@@ -66,12 +66,14 @@ class ExtractionError(Exception):
     pass
 
 
-def load_schema_model(schema_name: str) -> Type[BaseModel]:
+def load_schema_model(schema_identifier: str) -> Type[BaseModel]:
     """
     Load a Pydantic model from the generated schema files.
 
     Args:
-        schema_name: Name of the schema model class
+        schema_identifier: Can be either:
+            - A file path (absolute or relative) to the schema file
+            - A schema name for backward compatibility (will do fuzzy search)
 
     Returns:
         The Pydantic model class
@@ -79,20 +81,40 @@ def load_schema_model(schema_name: str) -> Type[BaseModel]:
     Raises:
         ExtractionError: If schema file not found or cannot be loaded
     """
-    pyd_dir = Path(PACKAGE_SCHEMA_PYD_DIR)
+    from pathlib import Path
+    
+    # Check if it's a file path (contains / or \ or ends with .py)
+    if ('/' in schema_identifier or '\\' in schema_identifier or 
+        schema_identifier.endswith('.py') or schema_identifier.startswith('mosaicx/')):
+        # Treat as file path
+        schema_file = Path(schema_identifier)
+        if not schema_file.is_absolute():
+            # Make it relative to current directory
+            schema_file = Path.cwd() / schema_file
+        
+        if not schema_file.exists():
+            raise ExtractionError(f"Schema file not found: {schema_file}")
+        
+        # For file path, we need to find the class dynamically    
+        schema_name = None  # Will be found dynamically
+            
+    else:
+        # Backward compatibility: fuzzy search by schema name  
+        pyd_dir = Path(PACKAGE_SCHEMA_PYD_DIR)
+        schema_name = schema_identifier
 
-    matching_files: List[Path] = [
-        py_file for py_file in pyd_dir.glob("*.py")
-        if schema_name.lower() in py_file.name.lower()
-    ]
+        matching_files: List[Path] = [
+            py_file for py_file in pyd_dir.glob("*.py")
+            if schema_name.lower() in py_file.name.lower()
+        ]
 
-    if not matching_files:
-        raise ExtractionError(
-            f"No schema file found for '{schema_name}' in {pyd_dir}. "
-            f"Generate a schema first using: mosaicx generate --desc '...'"
-        )
+        if not matching_files:
+            raise ExtractionError(
+                f"No schema file found for '{schema_name}' in {pyd_dir}. "
+                f"Generate a schema first using: mosaicx generate --desc '...'"
+            )
 
-    schema_file = max(matching_files, key=lambda f: f.stat().st_mtime)
+        schema_file = max(matching_files, key=lambda f: f.stat().st_mtime)
 
     try:
         spec = importlib.util.spec_from_file_location("schema_module", schema_file)
@@ -102,16 +124,23 @@ def load_schema_model(schema_name: str) -> Type[BaseModel]:
         sys.modules["schema_module"] = module
         spec.loader.exec_module(module)
 
+        # Find the BaseModel class in the module
         for attr_name in dir(module):
             attr = getattr(module, attr_name)
             if (
                 isinstance(attr, type)
                 and issubclass(attr, BaseModel)
-                and attr.__name__ == schema_name
+                and attr is not BaseModel  # Exclude the base BaseModel class itself
             ):
-                return attr
+                # If we have a specific schema_name to match, check it
+                if schema_name is None or attr.__name__ == schema_name:
+                    return attr
 
-        raise ExtractionError(f"Schema class '{schema_name}' not found in {schema_file}")
+        # If we get here, no suitable class was found
+        if schema_name:
+            raise ExtractionError(f"Schema class '{schema_name}' not found in {schema_file}")
+        else:
+            raise ExtractionError(f"No BaseModel class found in {schema_file}")
 
     except Exception as e:
         raise ExtractionError(f"Failed to load schema from {schema_file}: {e}") from e
