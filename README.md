@@ -38,9 +38,7 @@ Befund: Mitralklappe physiologische Insuffizienz..."
 
 This is not just data extraction. This is infrastructure—the systematic foundation that enables healthcare data to move, connect, and speak in a common language that both humans and AI can understand.
 
----
-
-## 🚀 **Quick Start (Because Time is Money)**
+## 🚀 **Quick Start
 
 ### Prerequisites
 
@@ -392,45 +390,6 @@ mosaicx extract --pdf problematic.pdf --schema MySchema --model mistral --debug
 - **Error recovery**: Robust handling of edge cases common in real-world medical documents
 - **Audit trails**: Complete tracking of data transformation processes for clinical research compliance
 
----
-
-## Clinical Validation and Performance
-
-### **Real-World Clinical Deployment**
-
-MOSAICX has been systematically validated across diverse clinical document types and institutional workflows:
-
-**📊 Validated Document Types:**
-- ✅ **Radiology reports** (CT, MRI, ultrasound findings with quantitative measurements)
-- ✅ **Cardiology assessments** (echocardiography, stress tests, catheterization reports)
-- ✅ **Laboratory results** (complete blood counts, biochemistry panels, biomarkers)
-- ✅ **Pathology findings** (surgical pathology, cytology, immunohistochemistry)
-- ✅ **Multi-language documents** (German clinical documentation with English standardization)
-
-**⚙️ Infrastructure Performance:**
-- 📈 **Processing capability**: 50,000+ clinical documents systematically structured
-- 🎯 **Extraction accuracy**: 85-92% field-level accuracy on routine clinical reports
-- 🔄 **Reproducibility**: Consistent results across institutional deployments
-- ⚡ **Processing speed**: Real-time extraction suitable for clinical workflow integration
-
-**🤖 Validated Model Performance:**
-
-| Model Architecture | Clinical Accuracy | Processing Speed | Memory Usage | Recommended Use Case |
-|-------------------|------------------|------------------|--------------|---------------------|
-| **Mistral 7B** | 87-92% | Fast (2-5s/report) | 8GB RAM | Routine clinical documents |
-| **Llama 3.1 8B** | 85-90% | Moderate (3-8s/report) | 12GB RAM | Complex terminology extraction |
-| **DeepSeek R1** | 90-94% | Slower (8-15s/report) | 16GB RAM | Critical accuracy requirements |
-
-*Performance metrics based on systematic evaluation across 5,000+ anonymized clinical reports from LMU Klinikum*
-
-### **Clinical Integration Standards**
-- **HL7 FHIR compatibility**: Structured outputs align with healthcare interoperability standards
-- **Clinical data governance**: Built-in audit trails and data lineage tracking
-- **Quality assurance**: Multi-layer validation ensures clinical data integrity
-- **Regulatory compliance**: Designed for healthcare environments with strict data governance requirements
-
----
-
 ## 🔧 **Troubleshooting**
 
 ### **Common Issues & Solutions**
@@ -482,51 +441,6 @@ mosaicx generate --desc "Patient demographics including age, sex, ID, and cardia
 - Ollama version (`ollama --version`)
 - The exact error message
 - A minimal example (anonymized data!)
-
----
-
----
-
-## Contributing to Healthcare Data Infrastructure
-
-### **How You Can Contribute**
-
-MOSAICX is part of a larger vision for connected healthcare intelligence. We welcome contributions that advance this systematic approach to medical data transformation:
-
-**🏗️ Infrastructure Development:**
-- **Multi-language clinical terminologies** (French, Spanish, Italian medical documentation)
-- **Extended medical domains** (surgical reports, discharge summaries, clinical trials data)
-- **Interoperability standards** (HL7 FHIR, OMOP CDM integration)
-- **Quality assurance tools** (validation pipelines, clinical accuracy assessment)
-
-**🔬 Clinical Research Applications:**
-- **Longitudinal studies** using systematically structured clinical data
-- **Population health analytics** built on standardized extraction schemas
-- **Clinical decision support** integrating structured data across care episodes
-- **Reproducible research** leveraging validated data transformation pipelines
-
-**📊 Systematic Validation:**
-- **Clinical accuracy studies** across different document types and institutions
-- **Performance benchmarking** on diverse healthcare environments
-- **Integration testing** with existing clinical information systems
-- **User experience research** with clinical workflow integration
-
-### **Development Principles**
-
-When contributing to MOSAICX, we ask that you consider:
-
-1. **Clinical Utility**: Does this advance real clinical care or research needs?
-2. **Systematic Approach**: Is this reproducible and scalable across healthcare settings?
-3. **Data Quality**: Does this maintain or improve the integrity of structured clinical data?
-4. **Infrastructure Thinking**: How does this connect with broader healthcare data systems?
-
-### **Getting Started**
-1. **Fork** the repository and review existing clinical validation studies
-2. **Identify** a specific healthcare data challenge or use case
-3. **Develop** solutions that prioritize reproducibility and clinical accuracy
-4. **Validate** improvements using real (anonymized) clinical documentation
-5. **Document** clinical applications and performance characteristics
-6. **Submit** contributions with comprehensive testing and clinical context
 
 ---
 
