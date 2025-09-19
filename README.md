@@ -12,7 +12,7 @@
   <a href="https://ollama.ai"><img alt="Ollama Compatible" src="https://img.shields.io/badge/Ollama-Compatible-6272a4?style=for-the-badge&logo=ghost&logoColor=white"></a>
 </p>
 
-## The Foundation of Healthcare Data Transformation
+## MOSAICX: The Foundation of Healthcare Data Transformation
 
 MOSAICX represents the first intentional step toward building a living, breathing ecosystem for healthcare data intelligence. At DIGIT-X Lab, we believe that meaningful clinical insights begin with one fundamental challenge: **structuring the unstructured**.
 
