@@ -692,3 +692,40 @@ def extract_from_pdf(
             json.dump(extracted_data.model_dump(), f, indent=2, ensure_ascii=False, default=str)
         styled_message(f"💾 Saved result → {save_path.name}", "info", center=True)
     return extracted_data
+
+
+def extract_from_text(
+    text_content: str,
+    schema_name: str,
+    model: str = DEFAULT_LLM_MODEL,
+    save_result: Optional[Union[str, Path]] = None
+) -> BaseModel:
+    """
+    Complete pipeline: Raw Text → Structured Data.
+
+    Args:
+        text_content: Raw text to extract from
+        schema_name: Name of the schema model class (must exist in generated Pydantic files)
+        model: Ollama model name to use
+        save_result: Optional path to save extracted JSON result
+
+    Returns:
+        Instance of the schema class with extracted data
+
+    Raises:
+        ExtractionError: If any step in the pipeline fails
+    """
+    with console.status(f"[{MOSAICX_COLORS['info']}]Loading schema model...", spinner="dots"):
+        schema_class = load_schema_model(schema_name)
+    console.print()
+    styled_message(f"✨ Schema Model: {schema_class.__name__} ✨", "primary", center=True)
+    console.print()
+    with console.status(f"[{MOSAICX_COLORS['primary']}]Extracting structured data...", spinner="dots"):
+        extracted_data = extract_structured_data(text_content, schema_class, model)
+    if save_result:
+        save_path = Path(save_result)
+        save_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(save_path, "w", encoding="utf-8") as f:
+            json.dump(extracted_data.model_dump(), f, indent=2, ensure_ascii=False, default=str)
+        styled_message(f"💾 Saved result → {save_path.name}", "info", center=True)
+    return extracted_data

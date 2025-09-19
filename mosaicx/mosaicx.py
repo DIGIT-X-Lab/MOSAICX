@@ -76,7 +76,7 @@ from .schema_builder import (
     generate_model_py,
     fields_table
 )
-from .extractor import extract_from_pdf, ExtractionError
+from .extractor import extract_from_pdf, extract_from_text, ExtractionError
 
 # Import metadata from constants
 from .constants import (
@@ -248,7 +248,7 @@ def generate(
 
 
 @cli.command()
-@click.option("--pdf", required=True, type=click.Path(exists=True), help="Path to PDF file to extract from")
+@click.option("--source", required=True, help="Path to PDF file or raw text to extract from")
 @click.option("--schema", required=True, help="Name of the Pydantic schema model to use")
 @click.option("--model", default=DEFAULT_LLM_MODEL, help="Ollama model name for extraction")
 @click.option("--save", type=click.Path(), help="Save extracted JSON result to this path")
@@ -256,23 +256,32 @@ def generate(
 @click.pass_context
 def extract(
     ctx: click.Context,
-    pdf: str,
+    source: str,
     schema: str,
     model: str,
     save: Optional[str],
     debug: bool
 ) -> None:
-    """Extract structured data from PDF using a generated Pydantic schema."""
+    """Extract structured data from PDF or raw text using a generated Pydantic schema."""
     verbose = ctx.obj.get('verbose', False)
     
     if verbose:
-        styled_message(f"Extracting from: {pdf}", "info")
+        styled_message(f"Extracting from: {source}", "info")
         styled_message(f"Using schema: {schema}", "info")
         styled_message(f"Using model: {model}", "info")
     
     try:
-        # Perform extraction
-        result = extract_from_pdf(pdf, schema, model, save)
+        # Determine if source is a PDF file path or raw text
+        is_pdf = False
+        source_path = Path(source)
+        if source_path.exists() and source_path.suffix.lower() == ".pdf":
+            is_pdf = True
+        
+        if is_pdf:
+            result = extract_from_pdf(source, schema, model, save)
+        else:
+            # Treat as raw text
+            result = extract_from_text(source, schema, model, save)
         
         # Display results beautifully
         console.print()
