@@ -3,13 +3,14 @@
   <img src="assets/mosaicx_logo.png" alt="MOSAICX Logo" width="800"/>
 </div>
 
-### Medical cOmputational Suite for Advanced Intelligent eXtraction
-
-[![PyPI version](https://badge.fury.io/py/mosaicx.svg)](https://badge.fury.io/py/mosaicx)
-[![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
-[![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL%20v3-blue.svg)](https://www.gnu.org/licenses/agpl-3.0)
-
----
+<p align="center">
+  <a href="https://pypi.org/project/mosaicx/"><img alt="PyPI" src="https://img.shields.io/pypi/v/mosaicx.svg?label=PyPI&style=for-the-badge&logo=python&logoColor=white&color=bd93f9"></a>
+  <a href="https://www.python.org/downloads/"><img alt="Python" src="https://img.shields.io/badge/Python-3.11%2B-50fa7b?style=for-the-badge&logo=python&logoColor=white"></a>
+  <a href="https://www.gnu.org/licenses/agpl-3.0"><img alt="License" src="https://img.shields.io/badge/License-AGPL--3.0-ff79c6?style=for-the-badge&logo=gnu&logoColor=white"></a>
+  <a href="https://pepy.tech/project/mosaicx"><img alt="Downloads" src="https://img.shields.io/pepy/dt/mosaicx?style=for-the-badge&color=8be9fd&label=Downloads"></a>
+  <a href="https://pydantic.dev"><img alt="Pydantic v2" src="https://img.shields.io/badge/Pydantic-v2-ffb86c?style=for-the-badge&logo=pydantic&logoColor=white"></a>
+  <a href="https://ollama.ai"><img alt="Ollama Compatible" src="https://img.shields.io/badge/Ollama-Compatible-6272a4?style=for-the-badge&logo=ghost&logoColor=white"></a>
+</p>
 
 ## The Foundation of Healthcare Data Transformation
 
