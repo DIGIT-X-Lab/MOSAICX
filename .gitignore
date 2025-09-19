@@ -71,7 +71,8 @@ ehthumbs.db
 Thumbs.db
 
 # Project specific
-*.pdf
+# Allow committing PDFs that are intentionally included for testing/documentation
+# (Previously: *.pdf)
 *.txt
 reports/
 output/
