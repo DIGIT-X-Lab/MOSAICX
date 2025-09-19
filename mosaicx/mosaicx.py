@@ -273,9 +273,12 @@ def extract(
     try:
         # Determine if source is a PDF file path or raw text
         is_pdf = False
-        source_path = Path(source)
-        if source_path.exists() and source_path.suffix.lower() == ".pdf":
-            is_pdf = True
+        # Only treat as file if it is a short string and exists as a file
+        try:
+            if len(source) < 512 and Path(source).exists() and Path(source).suffix.lower() == ".pdf":
+                is_pdf = True
+        except Exception:
+            is_pdf = False
         
         if is_pdf:
             result = extract_from_pdf(source, schema, model, save)
