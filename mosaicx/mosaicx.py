@@ -282,7 +282,7 @@ def generate(
         
         # Add rows with all the information - ensuring consistent formatting
         main_table.add_row(
-            "🏷️  Class Name", 
+            "🏷️ Class Name", 
             f"[bold {MOSAICX_COLORS['primary']}]{class_name}[/bold {MOSAICX_COLORS['primary']}]"
         )
         main_table.add_row(
