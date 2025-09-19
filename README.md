@@ -467,7 +467,6 @@ DIGIT-X Lab actively collaborates with clinical researchers, healthcare informat
 
 **Contact for research collaboration:**
 - **Email**: lalith.shiyam@med.uni-muenchen.de  
-- **Lab website**: https://www.digit-x-lab.com
 - **Institution**: DIGIT-X Lab, Department of Radiology, LMU Klinikum, Munich
 
 ### **Citation**
