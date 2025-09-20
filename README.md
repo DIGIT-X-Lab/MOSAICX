@@ -2,14 +2,13 @@
 <div align="center">
   <img src="assets/mosaicx_logo.png" alt="MOSAICX Logo" width="800"/>
 </div>
-
 <p align="center">
-  <a href="https://pypi.org/project/mosaicx/"><img alt="PyPI" src="https://img.shields.io/pypi/v/mosaicx.svg?label=PyPI&style=for-the-badge&logo=python&logoColor=white&color=bd93f9"></a>
-  <a href="https://www.python.org/downloads/"><img alt="Python" src="https://img.shields.io/badge/Python-3.11%2B-50fa7b?style=for-the-badge&logo=python&logoColor=white"></a>
-  <a href="https://www.gnu.org/licenses/agpl-3.0"><img alt="License" src="https://img.shields.io/badge/License-AGPL--3.0-ff79c6?style=for-the-badge&logo=gnu&logoColor=white"></a>
-  <a href="https://pepy.tech/project/mosaicx"><img alt="Downloads" src="https://img.shields.io/pepy/dt/mosaicx?style=for-the-badge&color=8be9fd&label=Downloads"></a>
-  <a href="https://pydantic.dev"><img alt="Pydantic v2" src="https://img.shields.io/badge/Pydantic-v2-ffb86c?style=for-the-badge&logo=pydantic&logoColor=white"></a>
-  <a href="https://ollama.ai"><img alt="Ollama Compatible" src="https://img.shields.io/badge/Ollama-Compatible-6272a4?style=for-the-badge&logo=ghost&logoColor=white"></a>
+  <a href="https://pypi.org/project/mosaicx/"><img alt="PyPI" src="https://img.shields.io/pypi/v/mosaicx.svg?label=PyPI&style=flat-square&logo=python&logoColor=white&color=bd93f9"></a>
+  <a href="https://www.python.org/downloads/"><img alt="Python" src="https://img.shields.io/badge/Python-3.11%2B-50fa7b?style=flat-square&logo=python&logoColor=white"></a>
+  <a href="https://www.gnu.org/licenses/agpl-3.0"><img alt="License" src="https://img.shields.io/badge/License-AGPL--3.0-ff79c6?style=flat-square&logo=gnu&logoColor=white"></a>
+  <a href="https://pepy.tech/project/mosaicx"><img alt="Downloads" src="https://img.shields.io/pepy/dt/mosaicx?style=flat-square&color=8be9fd&label=Downloads"></a>
+  <a href="https://pydantic.dev"><img alt="Pydantic v2" src="https://img.shields.io/badge/Pydantic-v2-ffb86c?style=flat-square&logo=pydantic&logoColor=white"></a>
+  <a href="https://ollama.ai"><img alt="Ollama Compatible" src="https://img.shields.io/badge/Ollama-Compatible-6272a4?style=flat-square&logo=ghost&logoColor=white"></a>
 </p>
 
 ## MOSAICX: The Foundation of Healthcare Data Transformation
