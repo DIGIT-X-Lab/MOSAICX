@@ -56,7 +56,7 @@ curl -fsSL https://ollama.com/install.sh | sh
 **🤖 Install a compatible model:**
 ```bash
 # Recommended: Fast and reliable for medical text
-ollama pull mistral
+ollama pull gpt-oss:120b
 
 # Alternative: Larger model for complex cases  
 ollama pull llama3.1
@@ -83,7 +83,7 @@ uv add mosaicx
 mosaicx --help
 
 # Test with your installed model
-mosaicx generate --desc "Patient demographics" --model mistral
+mosaicx generate --desc "Patient demographics" --model gpt-oss:120b
 ```
 
 ### Complete Workflow Guide
@@ -92,16 +92,16 @@ mosaicx generate --desc "Patient demographics" --model mistral
 
 ```bash
 # Step 1: Generate your schema from natural language
-mosaicx generate --desc "Echocardiography report with patient ID, age, sex, and all cardiac valve conditions including severity grades" --model mistral
+mosaicx generate --desc "Echocardiography report with patient ID, age, sex, and all cardiac valve conditions including severity grades" --model gpt-oss:120b
 
 # Step 2: See what schemas you have
 mosaicx schemas
 
 # Step 3: Extract data from your PDF
-mosaicx extract --pdf echo_report.pdf --schema EchocardiographyReport --model mistral --save results.json
+mosaicx extract --pdf echo_report.pdf --schema EchocardiographyReport --model gpt-oss:120b --save results.json
 
 # Step 4: Repeat for more files
-mosaicx extract --pdf another_report.pdf --schema EchocardiographyReport --model mistral
+mosaicx extract --pdf another_report.pdf --schema EchocardiographyReport --model gpt-oss:120b
 ```
 
 **💡 Pro Tips for Better Results:**
@@ -152,7 +152,7 @@ Let's say you have echocardiography reports and want to extract structured data:
 # 1. Generate schema with detailed description
 mosaicx generate \
   --desc "Echocardiography report containing patient_id (string), age (integer), sex (Male/Female), exam_date (YYYY-MM-DD format), mitral_valve_condition (Normal/Mild/Moderate/Severe), aortic_valve_condition (Normal/Mild/Moderate/Severe), ejection_fraction (percentage as integer), and clinical_impression (free text)" \
-  --model mistral
+  --model gpt-oss:120b
 
 # Output: Created schema 'EchocardiographyReport_20250919_143022'
 
@@ -164,12 +164,12 @@ mosaicx schemas
 mosaicx extract \
   --pdf patient_001_echo.pdf \
   --schema EchocardiographyReport_20250919_143022 \
-  --model mistral \
+  --model gpt-oss:120b \
   --save patient_001_results.json
 
 # 4. Extract from multiple reports (same schema)
-mosaicx extract --pdf patient_002_echo.pdf --schema EchocardiographyReport_20250919_143022 --model mistral
-mosaicx extract --pdf patient_003_echo.pdf --schema EchocardiographyReport_20250919_143022 --model mistral
+mosaicx extract --pdf patient_002_echo.pdf --schema EchocardiographyReport_20250919_143022 --model gpt-oss:120b
+mosaicx extract --pdf patient_003_echo.pdf --schema EchocardiographyReport_20250919_143022 --model gpt-oss:120b
 
 # 5. Results saved as structured JSON ready for analysis!
 ```
@@ -229,7 +229,7 @@ MOSAICX implements a systematic approach to medical data transformation that pri
 
 **1. Intelligent Schema Generation** 
 ```bash
-mosaicx generate --desc "Echocardiography report with comprehensive cardiac valve assessment" --model mistral
+mosaicx generate --desc "Echocardiography report with comprehensive cardiac valve assessment" --model gpt-oss:120b
 ```
 
 Our approach begins with **clinical intent**: you describe your data requirements in natural language, and MOSAICX generates validated Pydantic schemas that encode both structure and clinical semantics.
@@ -252,7 +252,7 @@ This is not just code generation—it's **clinical data infrastructure** with bu
 
 **2. Systematic Data Extraction**
 ```bash  
-mosaicx extract --pdf echo_report.pdf --schema EchocardiographyReport --model mistral --save structured_data.json
+mosaicx extract --pdf echo_report.pdf --schema EchocardiographyReport --model gpt-oss:120b --save structured_data.json
 ```
 
 **The extraction process prioritizes:**
@@ -324,14 +324,14 @@ mosaicx generate --desc "Surgical pathology report including patient_id (string)
 **Model Selection Strategy:**
 ```bash
 # Fast processing for simple extractions
-mosaicx extract --pdf simple_report.pdf --schema SimpleSchema --model mistral
+mosaicx extract --pdf simple_report.pdf --schema SimpleSchema --model gpt-oss:120b
 
 # Better accuracy for complex medical terminology  
 mosaicx extract --pdf complex_report.pdf --schema ComplexSchema --model llama3.1
 
 # Batch processing with consistent model
 for pdf in reports/*.pdf; do
-    mosaicx extract --pdf "$pdf" --schema MedicalReport --model mistral --save "results/$(basename "$pdf" .pdf).json"
+    mosaicx extract --pdf "$pdf" --schema MedicalReport --model gpt-oss:120b --save "results/$(basename "$pdf" .pdf).json"
 done
 ```
 
@@ -349,10 +349,10 @@ mosaicx generate --desc "Patient demographics (patient_id as 8-digit number, age
 **Result Verification:**
 ```bash
 # Save results for manual review
-mosaicx extract --pdf report.pdf --schema MySchema --model mistral --save results_to_review.json
+mosaicx extract --pdf report.pdf --schema MySchema --model gpt-oss:120b --save results_to_review.json
 
 # Use debug mode for problematic extractions
-mosaicx extract --pdf problematic.pdf --schema MySchema --model mistral --debug
+mosaicx extract --pdf problematic.pdf --schema MySchema --model gpt-oss:120b --debug
 ```
 
 ---
