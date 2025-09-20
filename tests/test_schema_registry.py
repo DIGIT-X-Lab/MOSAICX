@@ -9,7 +9,7 @@ import json
 from unittest.mock import Mock, patch, mock_open
 from pathlib import Path
 
-from mosaicx.schema_registry import (
+from mosaicx.schema.registry import (
     register_schema,
     list_schemas,
     get_schema_by_id,
@@ -27,7 +27,7 @@ class TestSchemaRegistry:
         test_file = temp_dir / "test_schema.py"
         test_file.write_text("class TestModel(BaseModel): pass")
         
-        with patch('mosaicx.schema_registry.SCHEMA_REGISTRY_FILE', temp_dir / "registry.json"):
+        with patch('mosaicx.schema.registry.SCHEMA_REGISTRY_FILE', temp_dir / "registry.json"):
             schema_id = register_schema(
                 class_name="TestModel",
                 description="Test schema for unit testing",
@@ -45,7 +45,7 @@ class TestSchemaRegistry:
         test_file.write_text("class TestModel(BaseModel): pass")
         registry_file = temp_dir / "registry.json"
         
-        with patch('mosaicx.schema_registry.SCHEMA_REGISTRY_FILE', registry_file):
+        with patch('mosaicx.schema.registry.SCHEMA_REGISTRY_FILE', registry_file):
             # Register first time
             schema_id1 = register_schema(
                 class_name="TestModel",
@@ -68,13 +68,13 @@ class TestSchemaRegistry:
         """Test listing schemas when registry is empty."""
         registry_file = temp_dir / "empty_registry.json"
         
-        with patch('mosaicx.schema_registry.SCHEMA_REGISTRY_FILE', registry_file):
+        with patch('mosaicx.schema.registry.SCHEMA_REGISTRY_FILE', registry_file):
             schemas = list_schemas()
             assert schemas == []
     
     def test_list_schemas_with_data(self, temp_dir, mock_schema_registry):
         """Test listing schemas with existing data."""
-        with patch('mosaicx.schema_registry.SCHEMA_REGISTRY_FILE', mock_schema_registry):
+        with patch('mosaicx.schema.registry.SCHEMA_REGISTRY_FILE', mock_schema_registry):
             schemas = list_schemas()
             assert len(schemas) == 1
             assert schemas[0]['id'] == 'test_schema_001'
@@ -82,7 +82,7 @@ class TestSchemaRegistry:
     
     def test_get_schema_by_id_found(self, temp_dir, mock_schema_registry):
         """Test getting schema by ID when it exists."""
-        with patch('mosaicx.schema_registry.SCHEMA_REGISTRY_FILE', mock_schema_registry):
+        with patch('mosaicx.schema.registry.SCHEMA_REGISTRY_FILE', mock_schema_registry):
             schema = get_schema_by_id('test_schema_001')
             assert schema is not None
             assert schema['class_name'] == 'PatientRecord'
@@ -91,7 +91,7 @@ class TestSchemaRegistry:
         """Test getting schema by ID when it doesn't exist."""
         registry_file = temp_dir / "empty_registry.json"
         
-        with patch('mosaicx.schema_registry.SCHEMA_REGISTRY_FILE', registry_file):
+        with patch('mosaicx.schema.registry.SCHEMA_REGISTRY_FILE', registry_file):
             schema = get_schema_by_id('nonexistent_id')
             assert schema is None
     
@@ -129,7 +129,7 @@ class TestSchemaRegistry:
         
         registry_file.write_text(json.dumps(registry_data, indent=2))
         
-        with patch('mosaicx.schema_registry.SCHEMA_REGISTRY_FILE', registry_file):
+        with patch('mosaicx.schema.registry.SCHEMA_REGISTRY_FILE', registry_file):
             removed_count = cleanup_missing_files()
             
         assert removed_count == 1  # One file should be removed
@@ -139,7 +139,7 @@ class TestSchemaRegistry:
         assert len(updated_data) == 1
         assert "test_schema_002" in updated_data
     
-    @patch('mosaicx.schema_registry.PACKAGE_SCHEMA_PYD_DIR')
+    @patch('mosaicx.schema.registry.PACKAGE_SCHEMA_PYD_DIR')
     def test_scan_and_register_existing_schemas(self, mock_schema_dir, temp_dir):
         """Test scanning and registering existing schema files."""
         # Setup mock directory
@@ -164,7 +164,7 @@ class VitalSigns(BaseModel):
         
         registry_file = temp_dir / "registry.json"
         
-        with patch('mosaicx.schema_registry.SCHEMA_REGISTRY_FILE', registry_file):
+        with patch('mosaicx.schema.registry.SCHEMA_REGISTRY_FILE', registry_file):
             registered_count = scan_and_register_existing_schemas()
             
         assert registered_count >= 0  # Should register available files
@@ -181,7 +181,7 @@ class TestSchemaSearch:
     
     def test_search_by_filename(self, temp_dir, mock_schema_registry):
         """Test searching schemas by filename."""
-        with patch('mosaicx.schema_registry.SCHEMA_REGISTRY_FILE', mock_schema_registry):
+        with patch('mosaicx.schema.registry.SCHEMA_REGISTRY_FILE', mock_schema_registry):
             schemas = list_schemas()
             
             # Search for schema by partial filename match
@@ -190,7 +190,7 @@ class TestSchemaSearch:
     
     def test_search_by_class_name(self, temp_dir, mock_schema_registry):
         """Test searching schemas by class name."""
-        with patch('mosaicx.schema_registry.SCHEMA_REGISTRY_FILE', mock_schema_registry):
+        with patch('mosaicx.schema.registry.SCHEMA_REGISTRY_FILE', mock_schema_registry):
             schemas = list_schemas()
             
             # Search for schema by class name
@@ -199,7 +199,7 @@ class TestSchemaSearch:
     
     def test_search_by_description(self, temp_dir, mock_schema_registry):
         """Test searching schemas by description."""
-        with patch('mosaicx.schema_registry.SCHEMA_REGISTRY_FILE', mock_schema_registry):
+        with patch('mosaicx.schema.registry.SCHEMA_REGISTRY_FILE', mock_schema_registry):
             schemas = list_schemas()
             
             # Search for schema by description content
@@ -216,7 +216,7 @@ class TestRegistryFileOperations:
         test_file = temp_dir / "test.py"
         test_file.write_text("class Test(BaseModel): pass")
         
-        with patch('mosaicx.schema_registry.SCHEMA_REGISTRY_FILE', registry_file):
+        with patch('mosaicx.schema.registry.SCHEMA_REGISTRY_FILE', registry_file):
             schema_id = register_schema(
                 class_name="Test",
                 description="Test schema",
@@ -231,7 +231,7 @@ class TestRegistryFileOperations:
         registry_file = temp_dir / "corrupted_registry.json"
         registry_file.write_text("invalid json content")
         
-        with patch('mosaicx.schema_registry.SCHEMA_REGISTRY_FILE', registry_file):
+        with patch('mosaicx.schema.registry.SCHEMA_REGISTRY_FILE', registry_file):
             # Should handle corruption gracefully
             schemas = list_schemas()
             assert schemas == []
@@ -246,7 +246,7 @@ class TestRegistryFileOperations:
         test_file.write_text("class Test(BaseModel): pass")
         
         try:
-            with patch('mosaicx.schema_registry.SCHEMA_REGISTRY_FILE', registry_file):
+            with patch('mosaicx.schema.registry.SCHEMA_REGISTRY_FILE', registry_file):
                 # Should handle permission error
                 schema_id = register_schema(
                     class_name="Test",

@@ -12,7 +12,7 @@ from datetime import datetime
 from typing import Dict, List, Optional, Any
 import hashlib
 
-from .constants import PACKAGE_SCHEMA_PYD_DIR
+from ..constants import PACKAGE_SCHEMA_PYD_DIR
 
 
 class SchemaRegistry:

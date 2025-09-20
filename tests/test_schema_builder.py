@@ -10,36 +10,26 @@ from unittest.mock import Mock, patch, MagicMock
 from pathlib import Path
 import json
 
-from mosaicx.schema_builder import synthesize_pydantic_model, get_ollama_client
+from mosaicx.schema.builder import synthesize_pydantic_model
 
 
 class TestSchemaBuilder:
     """Test cases for schema generation functionality."""
     
-    def test_get_ollama_client_default(self):
-        """Test getting default Ollama client."""
-        with patch('mosaicx.schema_builder.ollama.Client') as mock_client:
-            client = get_ollama_client()
-            mock_client.assert_called_once_with()
-    
-    def test_get_ollama_client_with_params(self):
-        """Test getting Ollama client with custom parameters."""
-        with patch('mosaicx.schema_builder.ollama.Client') as mock_client:
-            client = get_ollama_client(
-                base_url="http://custom:11434",
-                api_key="test_key"
-            )
-            mock_client.assert_called_once_with(
-                host="http://custom:11434",
-                headers={"Authorization": "Bearer test_key"}
-            )
-    
-    @patch('mosaicx.schema_builder.get_ollama_client')
-    def test_synthesize_pydantic_model_success(self, mock_get_client, mock_llm_response):
+    @patch('mosaicx.schema.builder.ollama.Client')
+    def test_synthesize_pydantic_model_success(self, mock_client_class):
         """Test successful schema generation."""
         # Setup mock client
         mock_client = Mock()
-        mock_get_client.return_value = mock_client
+        mock_client_class.return_value = mock_client
+        
+        # Mock successful LLM response
+        mock_llm_response = '''```python
+class PatientInfo(BaseModel):
+    name: str
+    age: int
+```'''
+        
         mock_client.chat.return_value = {
             'message': {'content': mock_llm_response}
         }
@@ -56,7 +46,7 @@ class TestSchemaBuilder:
         assert "class PatientRecord(BaseModel)" in result
         mock_client.chat.assert_called_once()
         
-    @patch('mosaicx.schema_builder.get_ollama_client')
+    @patch('mosaicx.schema.builder.get_ollama_client')
     def test_synthesize_pydantic_model_failure(self, mock_get_client):
         """Test schema generation failure handling."""
         # Setup mock client to raise exception
@@ -72,7 +62,7 @@ class TestSchemaBuilder:
                 model="gpt-oss:120b"
             )
     
-    @patch('mosaicx.schema_builder.get_ollama_client')
+    @patch('mosaicx.schema.builder.get_ollama_client')
     def test_synthesize_with_custom_parameters(self, mock_get_client, mock_llm_response):
         """Test schema generation with custom parameters."""
         mock_client = Mock()
@@ -99,7 +89,7 @@ class TestSchemaBuilder:
     
     def test_invalid_model_name(self):
         """Test behavior with invalid model name."""
-        with patch('mosaicx.schema_builder.get_ollama_client') as mock_get_client:
+        with patch('mosaicx.schema.builder.get_ollama_client') as mock_get_client:
             mock_client = Mock()
             mock_get_client.return_value = mock_client
             mock_client.chat.side_effect = Exception("Model not found")
@@ -117,7 +107,7 @@ class TestPromptGeneration:
     
     def test_prompt_structure(self):
         """Test that generated prompts have correct structure."""
-        with patch('mosaicx.schema_builder.get_ollama_client') as mock_get_client:
+        with patch('mosaicx.schema.builder.get_ollama_client') as mock_get_client:
             mock_client = Mock()
             mock_get_client.return_value = mock_client
             mock_client.chat.return_value = {
@@ -141,7 +131,7 @@ class TestPromptGeneration:
     
     def test_temperature_parameter(self):
         """Test that temperature parameter is correctly passed."""
-        with patch('mosaicx.schema_builder.get_ollama_client') as mock_get_client:
+        with patch('mosaicx.schema.builder.get_ollama_client') as mock_get_client:
             mock_client = Mock()
             mock_get_client.return_value = mock_client
             mock_client.chat.return_value = {

@@ -10,7 +10,7 @@ Overview:
 This module serves as the main entry point for the MOSAICX application, providing
 a comprehensive command-line interface for medical data extraction and processing.
 It orchestrates the various components of the system including schema generation,
-natural language processing, and data validation using the schema_builder module
+natural language processing, and data validation using the schema.builder module
 as the core engine.
 
 Core Functionality:
@@ -25,7 +25,7 @@ Core Functionality:
 Architecture:
 ------------
 Built using Click framework with rich-click enhancements for modern CLI UX.
-Uses schema_builder.py as the core working prototype for all schema operations.
+Uses schema.builder module as the core working prototype for all schema operations.
 
 Usage Examples:
 --------------
@@ -43,7 +43,7 @@ Dependencies:
 ------------
 External Libraries:
     • rich-click (^1.0.0): Enhanced command-line interface framework
-    • schema_builder: Core schema generation engine (working prototype)
+    • schema.builder: Core schema generation engine (working prototype)
     • extractor: PDF processing and data extraction engine
 
 Module Metadata:
@@ -69,9 +69,9 @@ import rich_click as click
 
 from .display import show_main_banner, console, styled_message
 from rich.align import Align
-from .schema_builder import synthesize_pydantic_model
+from .schema.builder import synthesize_pydantic_model
 from .extractor import extract_from_pdf, ExtractionError
-from .schema_registry import (
+from .schema.registry import (
     register_schema, 
     list_schemas, 
     get_schema_by_id, 

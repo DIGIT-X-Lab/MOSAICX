@@ -143,6 +143,42 @@
       "temperature": 0.2,
       "created_at": "2025-09-19T17:42:52.102854",
       "file_exists": true
+    },
+    "generatedmodel_f830a54f_20250919_184145": {
+      "id": "generatedmodel_f830a54f_20250919_184145",
+      "class_name": "GeneratedModel",
+      "description": "Please extract the patient's vital signs and basic information from this medical document. Look for and capture the systolic and diastolic blood pressure readings (in mmHg), heart rate (in beats per minute), and body temperature (in degrees Celsius). The document contains information about a patient visit including standard vital sign measurements that would typically be recorded during a routine medical examination. Focus on the numerical values for blood pressure, pulse rate, and temperature readings.",
+      "description_hash": "f830a54f",
+      "file_path": "mosaicx/schema/pyd/generatedmodel_please_extract_patient_20250919_184145.py",
+      "file_name": "generatedmodel_please_extract_patient_20250919_184145.py",
+      "model_used": "gpt-oss:120b",
+      "temperature": 0.2,
+      "created_at": "2025-09-19T18:41:45.775398",
+      "file_exists": true
+    },
+    "generatedmodel_4ab39e63_20250919_191156": {
+      "id": "generatedmodel_4ab39e63_20250919_191156",
+      "class_name": "GeneratedModel",
+      "description": "Please extract the patient name, age, weight, bmi, blood pressure (systolic), bp (diastolic), heart rate, temperature,attending physician",
+      "description_hash": "4ab39e63",
+      "file_path": "mosaicx/schema/pyd/generatedmodel_please_extract_patient_20250919_191156.py",
+      "file_name": "generatedmodel_please_extract_patient_20250919_191156.py",
+      "model_used": "gpt-oss:120b",
+      "temperature": 0.2,
+      "created_at": "2025-09-19T19:11:56.061513",
+      "file_exists": true
+    },
+    "generatedmodel_4ab39e63_20250920_121303": {
+      "id": "generatedmodel_4ab39e63_20250920_121303",
+      "class_name": "GeneratedModel",
+      "description": "Please extract the patient name, age, weight, bmi, blood pressure (systolic), bp (diastolic), heart rate, temperature,attending physician",
+      "description_hash": "4ab39e63",
+      "file_path": "mosaicx/schema/pyd/generatedmodel_please_extract_patient_20250920_121303.py",
+      "file_name": "generatedmodel_please_extract_patient_20250920_121303.py",
+      "model_used": "gpt-oss:120b",
+      "temperature": 0.2,
+      "created_at": "2025-09-20T12:13:03.233759",
+      "file_exists": true
     }
   },
   "version": "1.0.0"

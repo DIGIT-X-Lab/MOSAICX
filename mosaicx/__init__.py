@@ -7,7 +7,7 @@ and analysis with a focus on intelligent structuring and extraction.
 Main Components:
     - mosaicx.display: Terminal interface and banner display
     - mosaicx.mosaicx: Main application entry point and CLI
-    - mosaicx.schema_builder: Core schema generation engine (working prototype)
+    - mosaicx.schema: Core schema generation and management modules
     - mosaicx.constants: Centralized configuration and metadata
 """
 

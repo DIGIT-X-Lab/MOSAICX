@@ -17,7 +17,7 @@ from mosaicx.mosaicx import cli
 class TestEndToEndWorkflows:
     """Integration tests for complete user workflows."""
     
-    @patch('mosaicx.schema_builder.get_ollama_client')
+    @patch('mosaicx.schema.builder.get_ollama_client')
     @patch('mosaicx.extractor.get_ollama_client')
     def test_complete_generate_and_extract_workflow(self, mock_extract_client, mock_gen_client):
         """Test complete workflow: generate schema -> extract data."""
@@ -79,7 +79,7 @@ class PatientRecord(BaseModel):
         """Test schema registration and lookup workflow."""
         runner = CliRunner()
         with runner.isolated_filesystem():
-            with patch('mosaicx.schema_builder.get_ollama_client') as mock_client:
+            with patch('mosaicx.schema.builder.get_ollama_client') as mock_client:
                 mock_client.return_value.chat.return_value = {
                     'message': {'content': 'class TestSchema(BaseModel): pass'}
                 }
@@ -125,7 +125,7 @@ class TestErrorHandling:
         """Test handling of network/LLM connection errors."""
         runner = CliRunner()
         
-        with patch('mosaicx.schema_builder.get_ollama_client') as mock_client:
+        with patch('mosaicx.schema.builder.get_ollama_client') as mock_client:
             mock_client.side_effect = Exception("Connection failed")
             
             result = runner.invoke(cli, [
@@ -185,7 +185,7 @@ class TestCLIUsability:
         """Test verbose output provides useful information."""
         runner = CliRunner()
         with runner.isolated_filesystem():
-            with patch('mosaicx.schema_builder.get_ollama_client') as mock_client:
+            with patch('mosaicx.schema.builder.get_ollama_client') as mock_client:
                 mock_client.return_value.chat.return_value = {
                     'message': {'content': 'class Test(BaseModel): pass'}
                 }
@@ -265,7 +265,7 @@ class TestModel(BaseModel):
             - Treatment plans and follow-up schedules
             """
             
-            with patch('mosaicx.schema_builder.get_ollama_client') as mock_client:
+            with patch('mosaicx.schema.builder.get_ollama_client') as mock_client:
                 mock_client.return_value.chat.return_value = {
                     'message': {'content': '''
 from pydantic import BaseModel
@@ -299,7 +299,7 @@ class TestCompatibilityTesting:
         runner = CliRunner()
         for model in test_models:
             with runner.isolated_filesystem():
-                with patch('mosaicx.schema_builder.get_ollama_client') as mock_client:
+                with patch('mosaicx.schema.builder.get_ollama_client') as mock_client:
                     mock_client.return_value.chat.return_value = {
                         'message': {'content': 'class TestModel(BaseModel): pass'}
                     }

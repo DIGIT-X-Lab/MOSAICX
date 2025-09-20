@@ -9,13 +9,13 @@ from unittest.mock import Mock, patch, MagicMock
 import tempfile
 from pathlib import Path
 
-from mosaicx.schema_builder import synthesize_pydantic_model
+from mosaicx.schema.builder import synthesize_pydantic_model
 
 
 class TestSchemaBuilder:
     """Test cases for schema builder functionality."""
     
-    @patch('mosaicx.schema_builder.ollama.Client')
+    @patch('mosaicx.schema.builder.ollama.Client')
     def test_synthesize_pydantic_model_basic(self, mock_ollama):
         """Test basic schema synthesis functionality."""
         # Mock Ollama response
@@ -48,7 +48,7 @@ class PatientRecord(BaseModel):
         assert "name: str" in result
         assert "age: int" in result
     
-    @patch('mosaicx.schema_builder.ollama.Client')
+    @patch('mosaicx.schema.builder.ollama.Client')
     def test_synthesize_with_custom_model(self, mock_ollama):
         """Test schema synthesis with custom model."""
         mock_client = Mock()
@@ -75,7 +75,7 @@ class TestModel(BaseModel):
         call_args = mock_client.chat.call_args
         assert call_args[1]['model'] == 'mistral:latest'
     
-    @patch('mosaicx.schema_builder.ollama.Client')
+    @patch('mosaicx.schema.builder.ollama.Client')
     def test_synthesize_with_temperature(self, mock_ollama):
         """Test schema synthesis with custom temperature."""
         mock_client = Mock()
@@ -97,7 +97,7 @@ class TestModel(BaseModel):
         call_args = mock_client.chat.call_args
         assert call_args[1]['options']['temperature'] == 0.8
     
-    @patch('mosaicx.schema_builder.ollama.Client')
+    @patch('mosaicx.schema.builder.ollama.Client')
     def test_synthesize_error_handling(self, mock_ollama):
         """Test error handling in schema synthesis."""
         mock_client = Mock()
@@ -111,7 +111,7 @@ class TestModel(BaseModel):
                 description="Test model"
             )
     
-    @patch('mosaicx.schema_builder.ollama.Client')
+    @patch('mosaicx.schema.builder.ollama.Client')
     def test_synthesize_malformed_response(self, mock_ollama):
         """Test handling of malformed LLM response."""
         mock_client = Mock()
@@ -133,7 +133,7 @@ class TestModel(BaseModel):
         assert result is not None
         assert isinstance(result, str)
     
-    @patch('mosaicx.schema_builder.ollama.Client')
+    @patch('mosaicx.schema.builder.ollama.Client')
     def test_synthesize_complex_description(self, mock_ollama):
         """Test schema synthesis with complex medical description."""
         mock_client = Mock()
@@ -186,7 +186,7 @@ class MedicalRecord(BaseModel):
         with pytest.raises(ValueError):
             synthesize_pydantic_model(description=None)
     
-    @patch('mosaicx.schema_builder.ollama.Client')
+    @patch('mosaicx.schema.builder.ollama.Client')
     def test_synthesize_with_api_parameters(self, mock_ollama):
         """Test schema synthesis with custom API parameters."""
         mock_client = Mock()
