@@ -51,7 +51,7 @@ Author:        Lalith Kumar Shiyam Sundar, PhD
 Email:         Lalith.shiyam@med.uni-muenchen.de  
 Institution:   DIGIT-X Lab, LMU Radiology | LMU University Hospital
 License:       AGPL-3.0 (GNU Affero General Public License v3.0)
-Version:       1.0.0
+Version:       1.0.8
 Created:       2025-09-18
 Last Modified: 2025-09-18
 
@@ -71,7 +71,7 @@ from typing import Dict, List
 
 APPLICATION_NAME = "MOSAICX"
 APPLICATION_FULL_NAME = "Medical cOmputational Suite for Advanced Intelligent eXtraction"
-APPLICATION_VERSION = "1.0.4"
+APPLICATION_VERSION = "1.0.8"
 APPLICATION_DESCRIPTION = (
     "Intelligent radiology report extraction using local LLMs for medical data structuring"
 )
