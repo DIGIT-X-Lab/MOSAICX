@@ -493,6 +493,7 @@ def render_summary_rich(ps: PatientSummary) -> None:
     console.print()
     console.print(Align.center(overall_panel))
 
+
 def write_summary_json(ps: PatientSummary, json_path: Path) -> None:
     """Write the PatientSummary to a JSON file (UTF-8, pretty)."""
     json_path.parent.mkdir(parents=True, exist_ok=True)

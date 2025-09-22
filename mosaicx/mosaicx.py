@@ -188,8 +188,9 @@ def cli(ctx: click.Context, verbose: bool) -> None:
             "Welcome to MOSAICX! Use --help to see available commands.",
             "info"
         )
-
-
+# -----------------------------------------------------------------------------
+# Generate Pydantic schema from natural language description
+# -----------------------------------------------------------------------------
 @cli.command()
 @click.option("--desc", required=True, help="Natural language description of the data structure you want")
 @click.option("--class-name", default="GeneratedModel", help="Name for the generated Pydantic class")
@@ -282,7 +283,7 @@ def generate(
         
         # Add rows with all the information - ensuring consistent formatting
         main_table.add_row(
-            "🏷️ Class Name", 
+            "🏷️  Class Name", 
             f"[bold {MOSAICX_COLORS['primary']}]{class_name}[/bold {MOSAICX_COLORS['primary']}]"
         )
         main_table.add_row(
@@ -329,6 +330,9 @@ def generate(
             console.print_exception()
         raise click.ClickException(str(e))
 
+# -----------------------------------------------------------------------------
+# List and manage generated schemas
+# -----------------------------------------------------------------------------
 
 @cli.command("schemas")
 @click.option("--class-name", help="Filter by class name (partial match)")
@@ -436,7 +440,9 @@ def list_schemas_cmd(
         f"💡 Tip: Use schema ID, filename, or file path in extract commands",
         "info"
     )
-
+# -----------------------------------------------------------------------------
+# Extract structured data from PDF using a generated schema
+# -----------------------------------------------------------------------------
 
 @cli.command()
 @click.option("--pdf", required=True, type=click.Path(exists=True), help="Path to PDF file to extract from")
@@ -558,6 +564,79 @@ def extract(
             console.print_exception()
         raise click.ClickException(str(e))
 
+# -----------------------------------------------------------------------------
+# Summarize multiple reports into a timeline and overall summary
+# -----------------------------------------------------------------------------
+
+@cli.command()
+@click.option(
+    "--report",
+    "reports",
+    multiple=True,
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    help="One or more report files (.pdf or .txt). Use multiple --report flags.",
+)
+@click.option(
+    "--dir",
+    "input_dir",
+    type=click.Path(exists=True, file_okay=False, path_type=Path),
+    help="Directory containing reports (recursively scans *.pdf, *.txt).",
+)
+@click.option("--patient", "patient_id", type=str, help="Patient identifier (optional).")
+@click.option("--model", default=DEFAULT_LLM_MODEL, show_default=True, help="Model for summarization.")
+@click.option("--base-url", help="OpenAI-compatible API base URL (e.g., http://localhost:11434/v1).")
+@click.option("--api-key", help="API key (e.g., 'ollama' for Ollama).")
+@click.option("--temperature", type=float, default=0.2, show_default=True, help="Sampling temperature.")
+@click.option("--json-out", type=click.Path(path_type=Path), help="Save a JSON summary to this path.")
+@click.option("--debug", is_flag=True, help="Show tracebacks on errors.")
+@click.pass_context
+def summarize(
+    ctx: click.Context,
+    reports: tuple[Path, ...],
+    input_dir: Optional[Path],
+    patient_id: Optional[str],
+    model: str,
+    base_url: Optional[str],
+    api_key: Optional[str],
+    temperature: float,
+    json_out: Optional[Path],
+    debug: bool,
+) -> None:
+    """Summarize one or many reports (same patient) into a critical timeline and concise overall summary."""
+    from .summarizer import summarize_reports_to_terminal_and_json
+
+    verbose = ctx.obj.get("verbose", False)
+
+    paths: List[Path] = list(reports)
+    if input_dir:
+        for p in input_dir.rglob("*"):
+            if p.suffix.lower() in {".pdf", ".txt"}:
+                paths.append(p)
+
+    if not paths:
+        raise click.ClickException("Provide at least one --report or a --dir with .pdf/.txt files.")
+
+    if verbose:
+        styled_message(f"Summarizing {len(paths)} file(s)", "info")
+        if patient_id:
+            styled_message(f"Patient: {patient_id}", "info")
+
+    try:
+        with console.status(f"[{MOSAICX_COLORS['primary']}]Summarizing reports...", spinner="dots"):
+            summarize_reports_to_terminal_and_json(
+                paths,
+                patient_id=patient_id,
+                model=model,
+                base_url=base_url,
+                api_key=api_key,
+                temperature=temperature,
+                json_out=json_out,
+            )
+    except Exception as e:
+        styled_message(f"Summarization failed: {e}", "error")
+        if debug:
+            console.print_exception()
+        raise click.ClickException(str(e))
 
 def main(args: Optional[List[str]] = None) -> None:
     """Main entry point for the MOSAICX CLI application."""
