@@ -14,6 +14,7 @@ import pytest
 from click.testing import CliRunner
 
 from mosaicx.mosaicx import cli, extract, generate
+from mosaicx.constants import APPLICATION_VERSION
 
 
 class TestCLIInterface:
@@ -33,7 +34,7 @@ class TestCLIInterface:
         result = runner.invoke(cli, ["--version"])
 
         assert result.exit_code == 0
-        assert "1.0.8" in result.output
+        assert APPLICATION_VERSION in result.output
 
     def test_cli_verbose_flag(self) -> None:
         runner = CliRunner()

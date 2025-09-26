@@ -52,7 +52,7 @@ Author:        Lalith Kumar Shiyam Sundar, PhD
 Email:         Lalith.shiyam@med.uni-muenchen.de  
 Institution:   DIGIT-X Lab, LMU Radiology | LMU University Hospital
 License:       AGPL-3.0 (GNU Affero General Public License v3.0)
-Version:       1.0.0
+Version:       (dynamic via APPLICATION_VERSION)
 Created:       2025-09-18
 Last Modified: 2025-09-18
 
