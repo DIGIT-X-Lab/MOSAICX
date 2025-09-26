@@ -1,4 +1,33 @@
-"""Report summarisation helpers for MOSAICX API."""
+"""
+MOSAICX API - Report Summarisation Helpers
+
+================================================================================
+MOSAICX: Medical cOmputational Suite for Advanced Intelligent eXtraction
+================================================================================
+
+Structure first. Insight follows.
+
+Author: Lalith Kumar Shiyam Sundar, PhD
+Lab: DIGIT-X Lab
+Department: Department of Radiology
+University: LMU University Hospital | LMU Munich
+
+Overview:
+---------
+Provide a thin veneer over the summariser pipeline so applications and tests
+can generate longitudinal patient narratives without invoking the CLI.  The
+API accepts loose collections of paths, resolves report content, and returns a
+validated ``PatientSummary`` instance.
+
+Key Behaviours:
+--------------
+- Accepts single files, directories, or mixed iterables of paths, scanning
+  recursively for ``.pdf`` and ``.txt`` sources.
+- Shares LLM configuration defaults with other modules to maintain consistent
+  behaviour across extraction and summarisation features.
+- Raises explicit errors for missing inputs to aid early validation in calling
+  services.
+"""
 
 from __future__ import annotations
 

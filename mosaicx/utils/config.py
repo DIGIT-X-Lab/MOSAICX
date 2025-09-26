@@ -1,4 +1,30 @@
-"""Shared configuration helpers for OpenAI-compatible endpoints."""
+"""
+MOSAICX Configuration Utilities - OpenAI-Compatible Endpoints
+
+================================================================================
+MOSAICX: Medical cOmputational Suite for Advanced Intelligent eXtraction
+================================================================================
+
+Structure first. Insight follows.
+
+Author: Lalith Kumar Shiyam Sundar, PhD
+Lab: DIGIT-X Lab
+Department: Department of Radiology
+University: LMU University Hospital | LMU Munich
+
+Overview:
+---------
+Resolve endpoint metadata for the LLM integrations used across schema
+generation, extraction, and summarisation.  Functions here encapsulate common
+fallback rules so both the CLI and API consume identical defaults.
+
+Capabilities:
+------------
+- Merge explicit CLI arguments, environment variables, and project defaults.
+- Detect local Ollama hosts and surface their legacy ``/api/generate`` URL for
+  compatibility with streaming endpoints.
+- Normalise URLs to avoid trailing slashes while preserving user intent.
+"""
 
 from __future__ import annotations
 

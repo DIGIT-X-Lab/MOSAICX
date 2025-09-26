@@ -1,23 +1,37 @@
 # mosaicx/summarizer.py
 """
-MOSAICX Summarizer — Timeline + Standardized Summary (Radiology-first, extensible)
+MOSAICX Summariser - Timeline and Narrative Generation
 
-Capabilities
------------
-- Summarize one or more reports for the same patient into:
-  1) A timeline of critical events
-  2) A concise overall summary
-- Render to terminal (Rich) and to PDF (ReportLab)
-- Robust LLM fallbacks:
-  A) Instructor JSON → Pydantic (strict)
-  B) Raw JSON extraction → Pydantic (strict)
-  C) Heuristic summary (deterministic; never fails)
+================================================================================
+MOSAICX: Medical cOmputational Suite for Advanced Intelligent eXtraction
+================================================================================
 
-Design choices
---------------
-- Radiology-first prompt, but schema is specialty-agnostic (can extend later).
-- Local-friendly: uses OpenAI-compatible endpoints; defaults to Ollama if env not set.
-- Keeps MOSAICX Dracula palette (via MOSAICX_COLORS).
+Structure first. Insight follows.
+
+Author: Lalith Kumar Shiyam Sundar, PhD
+Lab: DIGIT-X Lab
+Department: Department of Radiology
+University: LMU University Hospital | LMU Munich
+
+Overview:
+---------
+Generate structured patient timelines and concise narrative summaries from one
+or more radiology reports. The summariser powers the CLI ``summarize`` command
+and can be embedded directly for notebook experimentation or workflow
+automation.
+
+Capabilities:
+-------------
+- Multi-report ingestion with specialty-agnostic timeline synthesis.
+- Rich terminal rendering via ``rich`` plus optional PDF export using ReportLab.
+- Layered LLM fallbacks (Instructor JSON, raw JSON, deterministic heuristics) to
+  ensure a summary is produced even under degraded conditions.
+
+Design Notes:
+-------------
+- Defaults to OpenAI-compatible endpoints while remaining friendly to local
+  Ollama deployments through shared configuration helpers.
+- Preserves MOSAICX colour palette for consistent UI theming across outputs.
 """
 
 from __future__ import annotations

@@ -1,14 +1,30 @@
 """
 MOSAICX Package - Medical cOmputational Suite for Advanced Intelligent eXtraction
 
-This package provides comprehensive tools for medical data processing, validation,
-and analysis with a focus on intelligent structuring and extraction.
+================================================================================
+MOSAICX: Medical cOmputational Suite for Advanced Intelligent eXtraction
+================================================================================
 
-Main Components:
-    - mosaicx.display: Terminal interface and banner display
-    - mosaicx.mosaicx: Main application entry point and CLI
-    - mosaicx.schema: Core schema generation and management modules
-    - mosaicx.constants: Centralized configuration and metadata
+Structure first. Insight follows.
+
+Author: Lalith Kumar Shiyam Sundar, PhD
+Lab: DIGIT-X Lab
+Department: Department of Radiology
+University: LMU University Hospital | LMU Munich
+
+Overview:
+---------
+Provide cohesive tooling for schema generation, PDF extraction, and report
+summarisation, backed by consistent branding and configuration.  Importing the
+package exposes the primary console helpers as well as programmatic APIs for
+embedding MOSAICX capabilities within larger systems.
+
+Key Modules:
+------------
+- ``mosaicx.display``: Terminal interface components and banner rendering.
+- ``mosaicx.cli`` / ``mosaicx.mosaicx``: Command-line integration with Click.
+- ``mosaicx.schema``: Generation pipeline, registry, and stored artifacts.
+- ``mosaicx.constants``: Centralised configuration, metadata, and styling.
 """
 
 from .mosaicx import main

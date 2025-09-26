@@ -1,4 +1,31 @@
-"""Schema generation helpers for MOSAICX API."""
+"""
+MOSAICX API - Schema Generation Helpers
+
+================================================================================
+MOSAICX: Medical cOmputational Suite for Advanced Intelligent eXtraction
+================================================================================
+
+Structure first. Insight follows.
+
+Author: Lalith Kumar Shiyam Sundar, PhD
+Lab: DIGIT-X Lab
+Department: Department of Radiology
+University: LMU University Hospital | LMU Munich
+
+Overview:
+---------
+Programmatic façade around the schema synthesis pipeline used by the CLI.
+Callers supply natural-language descriptions and receive strongly typed
+Pydantic modules ready for persistence or direct execution.  This mirrors the
+``mosaicx generate`` command while keeping the interface friendly for tests and
+notebooks.
+
+Features:
+---------
+- Returns structured ``GeneratedSchema`` objects with convenience writers.
+- Normalises legacy Pydantic ``regex`` arguments to v2-compatible ``pattern``.
+- Delegates filename selection to the registry helpers for predictable naming.
+"""
 
 from __future__ import annotations
 

@@ -1,4 +1,32 @@
-"""MOSAICX CLI application wiring the API to Click commands."""
+"""
+MOSAICX CLI Application - Orchestrated Console Commands
+
+================================================================================
+MOSAICX: Medical cOmputational Suite for Advanced Intelligent eXtraction
+================================================================================
+
+Structure first. Insight follows.
+
+Author: Lalith Kumar Shiyam Sundar, PhD
+Lab: DIGIT-X Lab
+Department: Department of Radiology
+University: LMU University Hospital | LMU Munich
+
+Overview:
+---------
+Implements the public ``mosaicx`` Click command group, providing polished
+terminal interactions for schema generation, PDF extraction, and longitudinal
+summaries.  The module centralises shared styling, option handling, and
+verbose feedback so the CLI mirrors the behaviour of the programmatic API.
+
+Highlights:
+-----------
+- Rich-enabled help output with MOSAICX colour palette and typography.
+- Schema lifecycle commands that integrate tightly with the registry module.
+- Graceful fallbacks when optional dependencies (``rich_click``, Docling,
+  Instructor, ReportLab) are absent.
+- Shared ``styled_message`` helper usage for consistent status reporting.
+"""
 
 from __future__ import annotations
 

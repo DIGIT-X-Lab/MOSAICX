@@ -1,4 +1,33 @@
-"""PDF extraction helpers for MOSAICX API."""
+"""
+MOSAICX API - PDF Extraction Helpers
+
+================================================================================
+MOSAICX: Medical cOmputational Suite for Advanced Intelligent eXtraction
+================================================================================
+
+Structure first. Insight follows.
+
+Author: Lalith Kumar Shiyam Sundar, PhD
+Lab: DIGIT-X Lab
+Department: Department of Radiology
+University: LMU University Hospital | LMU Munich
+
+Overview:
+---------
+Expose high-level functions that transform radiology PDFs into validated
+Pydantic records, matching the behaviour of the CLI ``extract`` command.
+Inputs are resolved to schema classes automatically and the resulting payloads
+offer multiple serialisation options for downstream systems.
+
+Highlights:
+-----------
+- ``ExtractionResult`` dataclass wraps the model instance with handy
+  ``to_dict`` / ``to_json`` utilities and filesystem writers.
+- Delegates schema loading, PDF parsing, and LLM orchestration to the
+  underlying extractor module while keeping the API surface compact.
+- Shares default model configuration with the rest of the package via
+  ``DEFAULT_LLM_MODEL``.
+"""
 
 from __future__ import annotations
 

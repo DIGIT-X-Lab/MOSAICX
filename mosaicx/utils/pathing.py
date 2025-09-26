@@ -1,4 +1,32 @@
-"""Path and lookup helpers for schema assets."""
+"""
+MOSAICX Path Utilities - Schema Asset Resolution
+
+================================================================================
+MOSAICX: Medical cOmputational Suite for Advanced Intelligent eXtraction
+================================================================================
+
+Structure first. Insight follows.
+
+Author: Lalith Kumar Shiyam Sundar, PhD
+Lab: DIGIT-X Lab
+Department: Department of Radiology
+University: LMU University Hospital | LMU Munich
+
+Overview:
+---------
+Provide resilient filesystem lookups for generated schema modules regardless
+of how users reference them (registry ID, filename, or explicit path).  The
+helpers favour MOSAICX's managed directories while still respecting manual
+paths and the current working directory to support scripting workflows.
+
+Key Behaviours:
+--------------
+- Inspect the schema registry for canonical locations before falling back to
+  direct path resolution.
+- Normalise legacy references by automatically appending ``.py`` when absent.
+- Guard against missing assets by returning ``None`` rather than raising,
+  allowing caller-controlled error handling.
+"""
 
 from __future__ import annotations
 

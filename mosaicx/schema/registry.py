@@ -1,9 +1,31 @@
 """
-MOSAICX Schema Registry - Schema Management and Tracking
+MOSAICX Schema Registry - Managed Catalogue of Generated Models
 
-This module provides functionality to register, track, and manage generated
-Pydantic schemas, making it easy for users to identify and select the right
-schema for their needs.
+================================================================================
+MOSAICX: Medical cOmputational Suite for Advanced Intelligent eXtraction
+================================================================================
+
+Structure first. Insight follows.
+
+Author: Lalith Kumar Shiyam Sundar, PhD
+Lab: DIGIT-X Lab
+Department: Department of Radiology
+University: LMU University Hospital | LMU Munich
+
+Overview:
+---------
+Persist metadata for generated Pydantic schemas so they can be rediscovered,
+filtered, and audited over time.  The registry underpins CLI commands and API
+helpers that need to enumerate available models or reconcile filesystem
+changes.
+
+Responsibilities:
+-----------------
+- Assign deterministic identifiers using description hashes and timestamps.
+- Track provenance details such as LLM model, temperature, and source prompt.
+- Clean up stale entries when the underlying files are removed.
+- Provide convenience lookups by identifier, class name, or fuzzy description
+  matches.
 """
 
 import json

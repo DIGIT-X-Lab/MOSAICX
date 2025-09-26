@@ -1,26 +1,36 @@
 """
-MOSAICX Document Extraction Module — PDF → Structured Data
+MOSAICX Document Extraction - PDF to Structured Data
 
-MOSAICX: Medical cOmputational Suite for Advanced Intelligence for X‑ray analysis
+================================================================================
+MOSAICX: Medical cOmputational Suite for Advanced Intelligent eXtraction
+================================================================================
 
-This module extracts structured data from PDFs using:
-- **Docling** for text extraction
-- **Instructor + Ollama** for schema‑driven, validated outputs (Pydantic)
+Structure first. Insight follows.
 
-Pipeline: PDF → Text → LLM + JSON Schema → Pydantic model
+Author: Lalith Kumar Shiyam Sundar, PhD
+Lab: DIGIT-X Lab
+Department: Department of Radiology
+University: LMU University Hospital | LMU Munich
 
-Key Features (schema‑agnostic):
-- Works with **any** generated Pydantic model (no schema-specific code)
-- Instructor JSON‑Schema mode with robust Ollama fallback (`format="json"`)
-- Output sanitation, generic type coercion per JSON Schema, strict validation
-- Optional JSON save; rich console feedback
+Overview:
+---------
+Streamline the transformation of radiology PDFs into validated Pydantic records
+using Docling for text extraction and OpenAI-compatible LLMs for schema-guided
+structuring. The module underpins the API and CLI ``extract`` flows and
+provides reusable helpers for scriptable pipelines.
 
-Dependencies:
-    • docling (^2.0.0)
-    • instructor (^1.0.0)
-    • ollama (^0.3.0)
-    • pydantic
-    • openai (OpenAI‑compatible client)
+Processing Pipeline:
+--------------------
+1. Convert PDFs to Markdown using Docling's converter.
+2. Invoke Instructor/OpenAI-compatible clients with strict JSON schemas.
+3. Coerce LLM output into typed Pydantic models with rich validation feedback.
+
+Highlights:
+-----------
+- Works with any generated schema module, avoiding schema-specific branching.
+- Offers graceful fallbacks when optional dependencies (Instructor, Ollama,
+  OpenAI) are unavailable.
+- Surfaces coloured status messages via ``mosaicx.display`` to aid CLI users.
 """
 
 from __future__ import annotations

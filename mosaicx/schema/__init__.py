@@ -1,8 +1,31 @@
 """
-MOSAICX Schema Module
+MOSAICX Schema Package - Generation, Registry, and Storage
 
-This module contains schema generation, management, and storage functionality.
-Includes schema builder and registry components along with generated schemas.
+================================================================================
+MOSAICX: Medical cOmputational Suite for Advanced Intelligent eXtraction
+================================================================================
+
+Structure first. Insight follows.
+
+Author: Lalith Kumar Shiyam Sundar, PhD
+Lab: DIGIT-X Lab
+Department: Department of Radiology
+University: LMU University Hospital | LMU Munich
+
+Overview:
+---------
+Bundle together the schema synthesis pipeline, registry tracking, and generated
+artifacts that underpin the extraction and summarisation workflows.  Importing
+this package exposes helpers that create Pydantic models, manage their
+metadata, and locate persisted files within the MOSAICX tree.
+
+Composition:
+------------
+- ``builder``: Natural-language to Pydantic generation utilities.
+- ``registry``: JSON-backed catalogue of schema metadata with housekeeping
+  helpers.
+- ``pyd`` / ``json`` subpackages: On-disk storage for generated Python modules
+  and SchemaSpec representations.
 """
 
 # Import main functions from builder and registry modules

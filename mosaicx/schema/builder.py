@@ -1,28 +1,39 @@
 """
-Simplified Schema Builder for MOSAICX
-------------------------------------
+MOSAICX Schema Builder - Direct Pydantic Model Synthesis
 
-This module provides a lightweight entry point for generating a single
-Pydantic BaseModel class directly from a natural‑language description.
-It leverages any OpenAI‑compatible endpoint (e.g., OpenAI, LM Studio, Ollama)
-to synthesize clean Python code. The goal is to avoid the heavier
-SchemaSpec induction pipeline when a straightforward model definition
-is sufficient.
+================================================================================
+MOSAICX: Medical cOmputational Suite for Advanced Intelligent eXtraction
+================================================================================
 
-Example usage:
+Structure first. Insight follows.
 
-    python -m mosaicx.schema_builder_simple \
+Author: Lalith Kumar Shiyam Sundar, PhD
+Lab: DIGIT-X Lab
+Department: Department of Radiology
+University: LMU University Hospital | LMU Munich
+
+Overview:
+---------
+Offer a lightweight entry point for generating a single Pydantic BaseModel from
+natural-language descriptions. The builder targets scenarios where the full
+SchemaSpec induction pipeline is unnecessary, favouring quick iteration via any
+OpenAI-compatible endpoint such as OpenAI, LM Studio, or Ollama.
+
+Usage Example:
+--------------
+    python -m mosaicx.schema.builder \
         --desc "Patient demographics with age, gender, and diagnosis" \
         --class-name PatientInfo \
         --model gpt-oss:120b \
         --outfile patient_info.py
 
-Environment variables:
-
-    OPENAI_BASE_URL and OPENAI_API_KEY are used if --base-url or --api-key
-    are not supplied. For local Ollama servers, set
-    OPENAI_BASE_URL=http://localhost:11434/v1 and OPENAI_API_KEY=ollama.
-
+Environment Integration:
+------------------------
+- Reads ``OPENAI_BASE_URL`` and ``OPENAI_API_KEY`` when CLI overrides are absent.
+- Defaults to Ollama-friendly settings (``http://localhost:11434/v1`` / ``ollama``)
+  so air-gapped experimentation remains possible.
+- Extracts clean code blocks from model responses, normalising output for direct
+  persistence on disk.
 """
 
 from __future__ import annotations
