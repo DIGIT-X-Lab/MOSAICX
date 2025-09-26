@@ -84,7 +84,6 @@ ollama pull deepseek-r1:7b          # Reasoning model
 
 # Verify installation
 mosaicx --version
-mosaicx banner
 ```
 
 
