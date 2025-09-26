@@ -28,9 +28,11 @@ Environment variables:
 from __future__ import annotations
 
 import argparse
-import os
 import re
+import sys
 from typing import Optional
+
+from ..utils import resolve_openai_config
 
 try:
     # The OpenAI class is available via the openai package.  We avoid
@@ -96,10 +98,9 @@ def synthesize_pydantic_model(
         )
 
     # Resolve endpoint and key. Default to Ollama settings.
-    base_url = base_url or os.getenv("OPENAI_BASE_URL") or "http://localhost:11434/v1"
-    api_key = api_key or os.getenv("OPENAI_API_KEY") or "ollama"
+    resolved_base_url, resolved_api_key = resolve_openai_config(base_url, api_key)
 
-    client = OpenAI(base_url=base_url, api_key=api_key)
+    client = OpenAI(base_url=resolved_base_url, api_key=resolved_api_key)
 
     system = (
         "You are an expert Python engineer. Given a natural language "
@@ -112,7 +113,7 @@ def synthesize_pydantic_model(
         "- Use precise types (int, float, bool, str, EmailStr, Literal, "
         "List[T], Dict[K,V])\n"
         "- Use Field for constraints (gt, ge, lt, le, min_length, max_length, "
-        "regex, default)\n"
+        "pattern, default)\n"
         "- Include docstrings for the class and fields when possible\n"
         "- No explanations, no extra text—only the class code."
     )
@@ -181,7 +182,7 @@ def main() -> None:
     # Read description from file or stdin if indicated
     desc_text = args.desc
     if desc_text.strip() == "-":
-        desc_text = os.sys.stdin.read()
+        desc_text = sys.stdin.read()
 
     code = synthesize_pydantic_model(
         desc_text,

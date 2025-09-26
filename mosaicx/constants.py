@@ -129,7 +129,7 @@ Rules:
 - Mark required fields with "required": true; others false or omit.
 - Use "enums" to define allowed values; reference via field.enum.
 - Include short 'description' for each field when clear.
-- Use 'constraints' (regex/minimum/maximum/units) when the description implies them.
+- Use 'constraints' (pattern/minimum/maximum/units) when the description implies them.
 - If uncertain, include the field but set required=false.
 
 SchemaSpec (JSON shape):
@@ -145,7 +145,7 @@ SchemaSpec (JSON shape):
       "description": str | null,
       "required": bool,
       "enum": str | null,
-      "constraints": { "regex": str|null, "minimum": float|null, "maximum": float|null, "units": str|null } | null,
+      "constraints": { "pattern": str|null, "minimum": float|null, "maximum": float|null, "units": str|null } | null,
       "items": { FieldSpec } | null,
       "properties": [ FieldSpec, ... ] | null
     }

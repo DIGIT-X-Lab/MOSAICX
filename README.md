@@ -119,9 +119,6 @@ mosaicx schemas --help            # Schema management options
 - **Base URL**: `http://localhost:11434/v1` (Ollama default)
 - **API Key**: `ollama` (Ollama default)
 
----
-
-## 📋 **Core Workflows**
 
 ### 1. Schema Generation from Natural Language
 
@@ -165,7 +162,7 @@ mosaicx generate \
   --class-name CBCReport \
   --model llama3.1:8b-instruct \
   --temperature 0.1 \
-  --save-model schemas/cbc_report.py
+  --schema-path schemas/cbc_report.py
 
 # Generated Pydantic Model:
 ```python
@@ -192,11 +189,12 @@ class CBCReport(BaseModel):
 ```
 
 **Available Options:**
+
 - `--desc` (required): Natural language description
 - `--class-name`: Pydantic class name (default: "GeneratedModel")
 - `--model`: LLM model to use (default: "gpt-oss:120b")
 - `--temperature`: Sampling temperature 0.0-2.0 (default: 0.2)
-- `--save-model`: Save schema to file path
+- `--schema-path`: Write the generated schema to this file
 - `--base-url`: Custom API endpoint
 - `--api-key`: Custom API key
 - `--debug`: Enable verbose logging
@@ -219,30 +217,23 @@ mosaicx extract \
   --save results/structured_data.json
 ```
 
-**Extracted Structured Data:**
-```json
-{
-  "patient_id": "ECG-001-2025",
-  "exam_date": "2025-09-15T00:00:00",
-  "lvef_percent": 55.0,
-  "mitral_valve_grade": "Mild",
-  "aortic_valve_grade": "Normal",
-  "tricuspid_valve_grade": "Normal",
-  "clinical_impression": "Normal left ventricular systolic function. Mild mitral regurgitation."
-}
+Example CLI output (abridged – actual Rich formatting includes colors and panels):
+
 ```
+📋 Extraction results based on schema: EchoReport
 
-**Available Options:**
-- `--pdf` (required): Path to PDF file
-- `--schema` (required): Schema identifier (ID, filename, or path)
-- `--model`: LLM model to use (default: "gpt-oss:120b")
-- `--save`: Save JSON result to file path
-- `--debug`: Enable verbose logging
+Field                  Extracted Value
+patient_id             ECG-001-2025
+exam_date              2025-09-15T00:00:00
+lvef_percent           55.0
+mitral_valve_grade     Mild
+aortic_valve_grade     Normal
+tricuspid_valve_grade  Normal
+clinical_impression    Normal left ventricular systolic function...
 
-**Schema Identifier Formats:**
-- **Schema ID**: `EchoReport_20250925_143022`
-- **Filename**: `echo_schema.py`
-- **File Path**: `./schemas/echo_report.py`
+📁 Extraction saved
+JSON: results/structured_data.json
+```
 
 ### 3. Clinical Report Summarization
 
@@ -266,41 +257,81 @@ mosaicx summarize \
   --json-out P001_summary.json
 ```
 
-**Available Options:**
-- `--report`: Individual report file (repeatable)
-- `--dir`: Directory containing reports (processes .pdf/.txt)
-- `--patient`: Patient identifier for summary
-- `--model`: LLM model (default: "gpt-oss:120b")
-- `--temperature`: Sampling temperature (default: 0.2)
-- `--json-out`: Save summary to JSON file
-- `--print-json`: Display JSON output in terminal
-- `--base-url`: Custom API endpoint
-- `--api-key`: Custom API key
+Example CLI output (abridged – actual Rich formatting includes colors and panels):
 
-**Complete JSON Output:**
-```json
+```
+Patient: P001
+DOB: —        Sex: —        Updated: 2025-09-25T14:30:22Z
+
+Timeline
+Date         Source                    Critical Note
+2025-08-01   CT Chest/Abdomen/Pelvis   Baseline study: Multiple pulmonary nodules...
+2025-09-15   CT Chest Follow-up        Interval growth: RUL nodule now 12mm...
+
+Overall Summary
+Progressive pulmonary nodular disease with interval growth of the RUL lesion and new LLL nodule. [Source: CT Chest Follow-up]
+```
+
+---
+
+## 🐍 **Using MOSAICX as a Python Library**
+
+The CLI features are also exposed as pure Python helpers so you can script or integrate them into other services.
+
+```python
+from pathlib import Path
+
+from mosaicx import (
+    extract_pdf,
+    generate_schema,
+    summarize_reports,
+)
+
+# 1) Generate a Pydantic schema from a plain-language description
+schema = generate_schema(
+    "Patient vitals with name, heart rate, systolic_bp, diastolic_bp",
+    class_name="PatientVitals",
+    model="gpt-oss:120b",
+)
+schema_path = schema.write(Path("schemas/patient_vitals.py"))
+
+# 2) Extract structured data from a PDF using that schema
+extraction = extract_pdf(
+    pdf_path="tests/datasets/sample_patient_vitals.pdf",
+    schema_path=schema_path,
+)
+payload = extraction.to_dict()
+
+# 3) Summarize one or more clinical reports
+summary = summarize_reports(
+    paths=["tests/datasets/sample_patient_vitals.pdf"],
+    patient_id="demo-patient",
+)
+```
+
+Example Python output (illustrative values):
+
+```python
+payload
 {
-  "patient": {
-    "patient_id": "P001",
-    "dob": null,
-    "sex": null,
-    "last_updated": "2025-09-25T14:30:22Z"
-  },
-  "timeline": [
-    {
-      "date": "2025-08-01", 
-      "source": "CT Chest/Abdomen/Pelvis", 
-      "note": "Baseline study: Multiple pulmonary nodules, largest 8mm RUL"
-    },
-    {
-      "date": "2025-09-15", 
-      "source": "CT Chest Follow-up", 
-      "note": "Interval growth: RUL nodule now 12mm, new 6mm LLL nodule"
-    }
-  ],
-  "overall": "Progressive pulmonary nodular disease with interval growth of known RUL lesion and new LLL nodule, concerning for malignancy."
+    "patient_name": "John Doe",
+    "heart_rate": 72,
+    "systolic_bp": 118,
+    "diastolic_bp": 76,
+}
+
+summary.overall
+'Stable vital signs with normal heart rate and blood pressure. [Source: sample_patient_vitals.pdf]'
+
+summary.timeline[0].model_dump()
+{
+    "date": None,
+    "source": "sample_patient_vitals.pdf",
+    "note": "Vitals within normal limits; no acute concerns.",
 }
 ```
+
+All helpers accept optional `model`, `base_url`, and `api_key` arguments; when omitted the defaults mirror the CLI (environment variables first, then local Ollama).
 
 ---
 

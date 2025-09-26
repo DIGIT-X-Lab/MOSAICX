@@ -48,9 +48,20 @@ logging.getLogger("httpcore").setLevel(logging.WARNING)
 logging.getLogger("instructor").setLevel(logging.WARNING)
 logging.getLogger("instructor.retry").setLevel(logging.WARNING)
 
-from docling.document_converter import DocumentConverter
-import instructor
-from openai import OpenAI
+try:
+    from docling.document_converter import DocumentConverter
+except ModuleNotFoundError:  # pragma: no cover - optional dependency
+    DocumentConverter = None  # type: ignore[assignment]
+
+try:
+    import instructor  # type: ignore[import-not-found]
+except ModuleNotFoundError:  # pragma: no cover - optional dependency
+    instructor = None  # type: ignore[assignment]
+
+try:
+    from openai import OpenAI
+except ModuleNotFoundError:  # pragma: no cover - optional dependency
+    OpenAI = None  # type: ignore[assignment]
 from pydantic import BaseModel, ValidationError
 
 from .constants import (
@@ -59,6 +70,7 @@ from .constants import (
     MOSAICX_COLORS,
 )
 from .display import styled_message, console
+from .utils import derive_ollama_generate_url, resolve_openai_config
 
 
 class ExtractionError(Exception):
@@ -166,6 +178,9 @@ def extract_text_from_pdf(pdf_path: Union[str, Path]) -> str:
 
     if pdf_path.suffix.lower() != ".pdf":
         raise ExtractionError(f"File is not a PDF: {pdf_path}")
+
+    if DocumentConverter is None:
+        raise ExtractionError("docling is required for PDF extraction. Install 'docling'.")
 
     try:
         converter = DocumentConverter()
@@ -531,7 +546,10 @@ def _build_extraction_prompt(text_content: str, schema_json: Dict[str, Any]) -> 
 def extract_structured_data(
     text_content: str,
     schema_class: Type[BaseModel],
-    model: str = DEFAULT_LLM_MODEL
+    model: str = DEFAULT_LLM_MODEL,
+    base_url: Optional[str] = None,
+    api_key: Optional[str] = None,
+    temperature: float = 0.0,
 ) -> BaseModel:
     """
     Schema‑agnostic extraction using Instructor (JSON‑Schema mode) with special handling
@@ -544,8 +562,16 @@ def extract_structured_data(
       4) Sanitize output, extract JSON, coerce to schema, validate via Pydantic
       5) One-shot auto‑repair if validation fails
     """
+    if instructor is None or OpenAI is None:
+        raise ExtractionError(
+            "Instructor and openai packages are required for schema-driven extraction. "
+            "Install optional dependencies to use this feature."
+        )
+
     schema_json = schema_class.model_json_schema()
     prompt = _build_extraction_prompt(text_content, schema_json)
+    resolved_base_url, resolved_api_key = resolve_openai_config(base_url, api_key)
+    effective_temperature = max(0.0, temperature)
 
     # Detect DeepSeek / GPT‑OSS "reasoning" models by name
     model_lower = model.lower()
@@ -557,7 +583,7 @@ def extract_structured_data(
     if not is_reasoning_model:
         try:
             client = instructor.from_openai(
-                OpenAI(base_url="http://localhost:11434/v1", api_key="ollama"),
+                OpenAI(base_url=resolved_base_url, api_key=resolved_api_key),
                 mode=instructor.Mode.JSON_SCHEMA,
             )
             result = client.chat.completions.create(
@@ -567,7 +593,7 @@ def extract_structured_data(
                     {"role": "system", "content": "Return ONLY valid JSON that matches the schema."},
                     {"role": "user", "content": prompt},
                 ],
-                temperature=0,
+                temperature=effective_temperature,
                 max_retries=1,
                 response_format={"type": "json_object"},  # honored on many models
             )
@@ -577,14 +603,15 @@ def extract_structured_data(
 
     # 2) Try Ollama native /api/generate
     raw: Optional[str] = None
-    if requests is not None:
+    generate_url = derive_ollama_generate_url(resolved_base_url)
+    if requests is not None and generate_url:
         try:
             # For reasoning models, omit unsupported options like top_p; temperature is ignored for DeepSeek【975898227377524†screenshot】
-            options = {"temperature": 0}
+            options = {"temperature": effective_temperature}
             if not is_reasoning_model:
                 options["top_p"] = 0.1
             resp = requests.post(
-                "http://localhost:11434/api/generate",
+                generate_url,
                 json={
                     "model": model,
                     "prompt": prompt,
@@ -603,7 +630,7 @@ def extract_structured_data(
     # 3) Fallback to chat.completions via OpenAI API
     if not raw:
         try:
-            client2 = OpenAI(base_url="http://localhost:11434/v1", api_key="ollama")
+            client2 = OpenAI(base_url=resolved_base_url, api_key=resolved_api_key)
             messages = [
                 {"role": "system", "content": "Return ONLY a valid JSON object. No commentary."},
                 {"role": "user", "content": prompt},
@@ -612,13 +639,13 @@ def extract_structured_data(
                 # Reasoning models do not support response_format
                 comp = client2.chat.completions.create(
                     model=model,
-                    temperature=0,
+                    temperature=effective_temperature,
                     messages=messages,
                 )
             else:
                 comp = client2.chat.completions.create(
                     model=model,
-                    temperature=0,
+                    temperature=effective_temperature,
                     messages=messages,
                     response_format={"type": "json_object"},
                 )
@@ -648,10 +675,10 @@ def extract_structured_data(
     except ValidationError as ve:
         # 5) One-shot auto-repair
         try:
-            client3 = OpenAI(base_url="http://localhost:11434/v1", api_key="ollama")
+            client3 = OpenAI(base_url=resolved_base_url, api_key=resolved_api_key)
             repair = client3.chat.completions.create(
                 model=model,
-                temperature=0,
+                temperature=effective_temperature,
                 messages=[
                     {"role": "system", "content": "Return ONLY a valid JSON object that matches the schema exactly."},
                     {
@@ -685,17 +712,26 @@ def extract_structured_data(
 
 def extract_from_pdf(
     pdf_path: Union[str, Path],
-    schema_name: str,
+    schema_name: Optional[str] = None,
+    *,
+    schema_file_path: Optional[str] = None,
     model: str = DEFAULT_LLM_MODEL,
-    save_result: Optional[Union[str, Path]] = None
+    base_url: Optional[str] = None,
+    api_key: Optional[str] = None,
+    temperature: float = 0.0,
+    save_result: Optional[Union[str, Path]] = None,
 ) -> BaseModel:
     """
     Complete pipeline: PDF → Text → Structured Data.
 
     Args:
         pdf_path: Path to the PDF file
-        schema_name: Name of the schema model class (must exist in generated Pydantic files)
-        model: Ollama model name to use
+        schema_name: Optional schema identifier (ID, filename, or file path)
+        schema_file_path: Optional explicit schema file path (deprecated alias)
+        model: Model identifier for the OpenAI-compatible endpoint
+        base_url: Optional custom base URL for the OpenAI-compatible endpoint
+        api_key: Optional API key for the endpoint
+        temperature: Sampling temperature forwarded to the LLM calls
         save_result: Optional path to save extracted JSON result
 
     Returns:
@@ -705,15 +741,26 @@ def extract_from_pdf(
         ExtractionError: If any step in the pipeline fails
     """
     pdf_path = Path(pdf_path)
+    schema_reference = schema_file_path or schema_name
+    if not schema_reference:
+        raise ExtractionError("A schema identifier or file path must be provided")
+    schema_reference_str = str(schema_reference)
     with console.status(f"[{MOSAICX_COLORS['info']}]Loading schema model...", spinner="dots"):
-        schema_class = load_schema_model(schema_name)
+        schema_class = load_schema_model(schema_reference_str)
     console.print()
     styled_message(f"✨ Schema Model: {schema_class.__name__} ✨", "primary", center=True)
     console.print()
     with console.status(f"[{MOSAICX_COLORS['accent']}]Reading PDF document...", spinner="dots"):
         text_content = extract_text_from_pdf(pdf_path)
     with console.status(f"[{MOSAICX_COLORS['primary']}]Extracting structured data...", spinner="dots"):
-        extracted_data = extract_structured_data(text_content, schema_class, model)
+        extracted_data = extract_structured_data(
+            text_content,
+            schema_class,
+            model=model,
+            base_url=base_url,
+            api_key=api_key,
+            temperature=temperature,
+        )
     if save_result:
         save_path = Path(save_result)
         save_path.parent.mkdir(parents=True, exist_ok=True)

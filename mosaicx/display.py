@@ -64,7 +64,11 @@ See LICENSE file for full terms and conditions.
 """
 
 from typing import Optional, Dict, Any
-from cfonts import say
+
+try:
+    from cfonts import say  # type: ignore[import-not-found]
+except ModuleNotFoundError:  # pragma: no cover - optional dependency
+    say = None  # type: ignore[assignment]
 from rich.console import Console
 from rich.text import Text
 from rich.align import Align
@@ -113,14 +117,17 @@ def show_main_banner() -> None:
     # Clear screen space for banner
     console.print("\n")
     
-    # Main MOSAICX banner with gradient colors
-    say(
-        APPLICATION_NAME,
-        colors=BANNER_COLORS,
-        align="center",
-        font=BANNER_STYLE,
-        space=False,
-    )
+    if say is not None:
+        # Main MOSAICX banner with gradient colors
+        say(
+            APPLICATION_NAME,
+            colors=BANNER_COLORS,
+            align="center",
+            font=BANNER_STYLE,
+            space=False,
+        )
+    else:
+        console.rule(f" [bold]{APPLICATION_NAME}[/bold] ", style=MOSAICX_COLORS["accent"])
 
     # Application name expansion
     expansion = Text(

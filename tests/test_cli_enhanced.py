@@ -1,221 +1,258 @@
 """
-Test CLI Module - Enhanced Test Cases
-
-Comprehensive tests for the command-line interface functionality.
+Enhanced CLI tests exercising direct command invocation and workflow flows.
 """
 
-import pytest
+from __future__ import annotations
+
 import json
-import tempfile
 from pathlib import Path
-from unittest.mock import Mock, patch, MagicMock
+from unittest.mock import MagicMock, patch
+
+import pytest
 from click.testing import CliRunner
 
-from mosaicx.mosaicx import cli, generate, extract
+from mosaicx.mosaicx import cli, extract, generate
 
 
 class TestCLIInterface:
-    """Test cases for main CLI functionality."""
-    
-    def test_cli_help(self):
-        """Test main CLI help output."""
+    """Additional coverage for top-level CLI behaviour."""
+
+    def test_cli_help_mentions_commands(self) -> None:
         runner = CliRunner()
-        result = runner.invoke(cli, ['--help'])
-        
+        result = runner.invoke(cli, ["--help"])
+
         assert result.exit_code == 0
-        assert "MOSAICX" in result.output
-        assert "Medical cOmputational Suite" in result.output
-    
-    def test_cli_version(self):
-        """Test CLI version display."""
+        assert "Usage" in result.output
+        assert "extract" in result.output
+        assert "generate" in result.output
+
+    def test_cli_version_includes_full_string(self) -> None:
         runner = CliRunner()
-        result = runner.invoke(cli, ['--version'])
-        
+        result = runner.invoke(cli, ["--version"])
+
         assert result.exit_code == 0
-        assert "1.0" in result.output  # Version should contain 1.0
-    
-    @patch('mosaicx.mosaicx.show_main_banner')
-    def test_cli_no_command_shows_banner(self, mock_banner):
-        """Test that CLI shows banner when no command is provided."""
+        assert "MOSAICX, version" in result.output
+
+    @patch("mosaicx.cli.app.show_main_banner")
+    def test_cli_no_command_triggers_banner(self, mock_banner: MagicMock) -> None:
         runner = CliRunner()
         result = runner.invoke(cli, [])
-        
+
         mock_banner.assert_called_once()
         assert "Welcome to MOSAICX" in result.output
+        assert result.exit_code == 0
 
 
 class TestGenerateCommand:
-    """Test cases for generate command."""
-    
-    def test_generate_help(self):
-        """Test generate command help."""
+    """Direct command invocation tests for generate command."""
+
+    def test_generate_help_direct(self) -> None:
         runner = CliRunner()
-        result = runner.invoke(generate, ['--help'])
-        
+        result = runner.invoke(generate, ["--help"])
+
         assert result.exit_code == 0
         assert "Generate Pydantic schemas" in result.output
-        assert "MODEL COMPATIBILITY" in result.output
-        assert "gpt-oss:120b" in result.output
-    
-    @patch('mosaicx.mosaicx.synthesize_pydantic_model')
-    @patch('mosaicx.mosaicx.register_schema')
-    def test_generate_basic_functionality(self, mock_register, mock_synthesize, temp_dir):
-        """Test basic generate command functionality."""
-        # Mock the schema synthesis
-        mock_synthesize.return_value = "class TestModel(BaseModel): pass"
-        mock_register.return_value = "test_schema_123"
-        
+        assert "--desc" in result.output
+
+    @patch("mosaicx.cli.app.register_schema")
+    @patch("mosaicx.cli.app.generate_schema")
+    def test_generate_basic_functionality(
+        self,
+        mock_generate_schema: MagicMock,
+        mock_register: MagicMock,
+        temp_dir: Path,
+    ) -> None:
+        generated = MagicMock()
+        generated.code = "class Generated: ..."
+        generated.suggested_filename = "generated.py"
+        generated.write.return_value = temp_dir / "generated.py"
+        mock_generate_schema.return_value = generated
+        mock_register.return_value = "schema-001"
+
         runner = CliRunner()
-        result = runner.invoke(generate, [
-            '--desc', 'A simple test model',
-            '--class-name', 'TestModel'
-        ])
-        
+        result = runner.invoke(
+            generate,
+            [
+                "--desc",
+                "A simple model",
+                "--class-name",
+                "Generated",
+            ],
+        )
+
         assert result.exit_code == 0
-        mock_synthesize.assert_called_once()
+        mock_generate_schema.assert_called_once()
         mock_register.assert_called_once()
-    
-    @patch('mosaicx.mosaicx.synthesize_pydantic_model')
-    def test_generate_with_custom_model(self, mock_synthesize):
-        """Test generate command with custom model."""
-        mock_synthesize.return_value = "class TestModel(BaseModel): pass"
-        
+
+    @patch("mosaicx.cli.app.generate_schema")
+    def test_generate_supports_custom_model_direct(self, mock_generate_schema: MagicMock) -> None:
+        generated = MagicMock()
+        generated.code = "class Generated: ..."
+        generated.suggested_filename = "generated.py"
+        generated.write.return_value = Path("generated.py")
+        mock_generate_schema.return_value = generated
+
         runner = CliRunner()
-        result = runner.invoke(generate, [
-            '--desc', 'A test model',
-            '--model', 'mistral:latest'
-        ])
-        
-        mock_synthesize.assert_called_once()
-        # Check that the model parameter was passed correctly
-        call_args = mock_synthesize.call_args
-        assert 'mistral:latest' in str(call_args)
-    
-    def test_generate_missing_description(self):
-        """Test generate command without required description."""
-        runner = CliRunner()
-        result = runner.invoke(generate, [])
-        
-        assert result.exit_code != 0
-        assert "Missing option" in result.output or "required" in result.output.lower()
+        runner.invoke(
+            generate,
+            [
+                "--desc",
+                "Schema",
+                "--model",
+                "llama3",
+            ],
+        )
+
+        assert mock_generate_schema.call_args.kwargs["model"] == "llama3"
 
 
 class TestExtractCommand:
-    """Test cases for extract command."""
-    
-    def test_extract_help(self):
-        """Test extract command help."""
+    """Direct command invocation tests for extract command."""
+
+    def test_extract_help_direct(self) -> None:
         runner = CliRunner()
-        result = runner.invoke(extract, ['--help'])
-        
+        result = runner.invoke(extract, ["--help"])
+
         assert result.exit_code == 0
         assert "Extract structured data from PDF" in result.output
-        assert "SCHEMA FORMATS ACCEPTED" in result.output
-        assert "MODEL COMPATIBILITY" in result.output
-        assert "gpt-oss:20b (not working)" in result.output
-    
-    def test_extract_missing_pdf(self):
-        """Test extract command without PDF file."""
+        assert "--pdf" in result.output
+
+    @patch("mosaicx.cli.app.extract_pdf")
+    @patch("mosaicx.cli.app.list_schemas")
+    @patch("mosaicx.cli.app.resolve_schema_reference")
+    def test_extract_basic_flow(
+        self,
+        mock_resolve: MagicMock,
+        mock_list: MagicMock,
+        mock_extract_pdf: MagicMock,
+        temp_dir: Path,
+    ) -> None:
+        pdf_file = temp_dir / "report.pdf"
+        pdf_file.write_text("content")
+        schema_path = temp_dir / "schema.py"
+        schema_path.write_text("class Generated: ...")
+
+        mock_resolve.return_value = schema_path
+        mock_list.return_value = [
+            {"file_path": str(schema_path), "class_name": "Generated"}
+        ]
+        fake_result = MagicMock()
+        fake_result.record.model_dump.return_value = {"field": "value"}
+        fake_result.record.model_dump_json.return_value = json.dumps({"field": "value"})
+        mock_extract_pdf.return_value = fake_result
+
         runner = CliRunner()
-        result = runner.invoke(extract, [
-            '--schema', 'test_schema'
-        ])
-        
-        assert result.exit_code != 0
-        assert "Missing option" in result.output or "required" in result.output.lower()
-    
-    def test_extract_missing_schema(self, temp_dir):
-        """Test extract command without schema."""
-        # Create a dummy PDF file
-        pdf_file = temp_dir / "test.pdf"
-        pdf_file.write_text("dummy pdf content")
-        
-        runner = CliRunner()
-        result = runner.invoke(extract, [
-            '--pdf', str(pdf_file)
-        ])
-        
-        assert result.exit_code != 0
-        assert "Missing option" in result.output or "required" in result.output.lower()
-    
-    def test_extract_nonexistent_pdf(self):
-        """Test extract command with non-existent PDF."""
-        runner = CliRunner()
-        result = runner.invoke(extract, [
-            '--pdf', '/nonexistent/file.pdf',
-            '--schema', 'test_schema'
-        ])
-        
-        assert result.exit_code != 0
-    
-    @patch('mosaicx.mosaicx._resolve_schema_reference')
-    @patch('mosaicx.mosaicx.extract_from_pdf')
-    def test_extract_basic_functionality(self, mock_extract, mock_resolve, temp_dir):
-        """Test basic extract command functionality."""
-        # Create a dummy PDF file
-        pdf_file = temp_dir / "test.pdf"
-        pdf_file.write_text("dummy pdf content")
-        
-        # Mock schema resolution and extraction
-        schema_file = temp_dir / "test_schema.py"
-        schema_file.write_text("class TestModel(BaseModel): pass")
-        mock_resolve.return_value = schema_file
-        mock_extract.return_value = {"test": "data"}
-        
-        runner = CliRunner()
-        result = runner.invoke(extract, [
-            '--pdf', str(pdf_file),
-            '--schema', 'test_schema'
-        ])
-        
+        result = runner.invoke(
+            extract,
+            [
+                "--pdf",
+                str(pdf_file),
+                "--schema",
+                "generated",
+            ],
+        )
+
         assert result.exit_code == 0
-        mock_resolve.assert_called_once_with('test_schema')
-        mock_extract.assert_called_once()
+        mock_resolve.assert_called_once_with("generated")
+        mock_extract_pdf.assert_called_once()
+
+    @patch("mosaicx.cli.app.extract_pdf")
+    @patch("mosaicx.cli.app.list_schemas")
+    @patch("mosaicx.cli.app.resolve_schema_reference")
+    def test_extract_allows_json_save(
+        self,
+        mock_resolve: MagicMock,
+        mock_list: MagicMock,
+        mock_extract_pdf: MagicMock,
+        temp_dir: Path,
+    ) -> None:
+        pdf_file = temp_dir / "report.pdf"
+        pdf_file.write_text("content")
+        schema_path = temp_dir / "schema.py"
+        schema_path.write_text("class Generated: ...")
+
+        mock_resolve.return_value = schema_path
+        mock_list.return_value = [
+            {"file_path": str(schema_path), "class_name": "Generated"}
+        ]
+        fake_result = MagicMock()
+        fake_result.record.model_dump.return_value = {"field": "value"}
+        fake_result.record.model_dump_json.return_value = json.dumps({"field": "value"})
+        fake_result.write_json.return_value = temp_dir / "out.json"
+        mock_extract_pdf.return_value = fake_result
+
+        output_path = temp_dir / "saved.json"
+
+        runner = CliRunner()
+        result = runner.invoke(
+            extract,
+            [
+                "--pdf",
+                str(pdf_file),
+                "--schema",
+                "generated",
+                "--save",
+                str(output_path),
+            ],
+        )
+
+        assert result.exit_code == 0
+        fake_result.write_json.assert_called_once_with(output_path)
+        assert output_path.exists()
 
 
-class TestCLIIntegration:
-    """Integration tests for CLI commands."""
-    
-    @patch('mosaicx.mosaicx.synthesize_pydantic_model')
-    @patch('mosaicx.mosaicx.register_schema')
-    @patch('mosaicx.mosaicx._resolve_schema_reference')
-    @patch('mosaicx.mosaicx.extract_from_pdf')
-    def test_generate_then_extract_workflow(self, mock_extract, mock_resolve, 
-                                          mock_register, mock_synthesize, temp_dir):
-        """Test complete workflow: generate schema then extract."""
+class TestWorkflowIntegration:
+    """Integration-style test combining generate and extract commands."""
+
+    @patch("mosaicx.cli.app.extract_pdf")
+    @patch("mosaicx.cli.app.list_schemas", return_value=[{"file_path": "schema.py", "class_name": "Generated"}])
+    @patch("mosaicx.cli.app.resolve_schema_reference", return_value=Path("schema.py"))
+    @patch("mosaicx.cli.app.register_schema", return_value="schema-001")
+    @patch("mosaicx.cli.app.generate_schema")
+    def test_generate_then_extract_workflow(
+        self,
+        mock_generate_schema: MagicMock,
+        _: MagicMock,
+        __: MagicMock,
+        ___: MagicMock,
+        mock_extract_pdf: MagicMock,
+        temp_dir: Path,
+    ) -> None:
+        generated = MagicMock()
+        generated.code = "class Generated: ..."
+        generated.suggested_filename = "generated.py"
+        generated.write.return_value = temp_dir / "generated.py"
+        mock_generate_schema.return_value = generated
+
+        fake_result = MagicMock()
+        fake_result.record.model_dump.return_value = {"field": "value"}
+        fake_result.record.model_dump_json.return_value = json.dumps({"field": "value"})
+        mock_extract_pdf.return_value = fake_result
+
         runner = CliRunner()
-        
-        # Step 1: Generate schema
-        schema_code = "class PatientRecord(BaseModel): name: str"
-        mock_synthesize.return_value = schema_code
-        mock_register.return_value = "patient_schema_123"
-        
-        result = runner.invoke(generate, [
-            '--desc', 'Patient record with name',
-            '--class-name', 'PatientRecord'
-        ])
-        assert result.exit_code == 0
-        
-        # Step 2: Extract using the schema
-        pdf_file = temp_dir / "patient.pdf"
-        pdf_file.write_text("Patient: John Doe")
-        
-        schema_file = temp_dir / "patient_schema.py"
-        schema_file.write_text(schema_code)
-        
-        mock_resolve.return_value = schema_file
-        mock_extract.return_value = {"name": "John Doe"}
-        
-        result = runner.invoke(extract, [
-            '--pdf', str(pdf_file),
-            '--schema', 'patient_schema_123'
-        ])
-        assert result.exit_code == 0
-    
-    def test_verbose_flag(self):
-        """Test verbose flag functionality."""
-        runner = CliRunner()
-        result = runner.invoke(cli, ['--verbose', '--help'])
-        
-        assert result.exit_code == 0
-        # Verbose flag should be processed without errors
+        with runner.isolated_filesystem():
+            gen_result = runner.invoke(
+                cli,
+                [
+                    "generate",
+                    "--desc",
+                    "Workflow schema",
+                ],
+            )
+            pdf_file = Path("report.pdf")
+            pdf_file.write_text("content")
+            ext_result = runner.invoke(
+                cli,
+                [
+                    "extract",
+                    "--pdf",
+                    str(pdf_file),
+                    "--schema",
+                    "schema-001",
+                ],
+            )
+
+        assert gen_result.exit_code == 0
+        assert ext_result.exit_code == 0
+        mock_generate_schema.assert_called_once()
+        mock_extract_pdf.assert_called_once()

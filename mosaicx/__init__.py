@@ -13,6 +13,13 @@ Main Components:
 
 from .mosaicx import main
 from .display import show_main_banner, console
+from .api import (
+    generate_schema,
+    extract_pdf,
+    summarize_reports,
+    GeneratedSchema,
+    ExtractionResult,
+)
 
 # Import metadata from constants
 from .constants import (
@@ -21,4 +28,13 @@ from .constants import (
     AUTHOR_EMAIL as __email__
 )
 
-__all__ = ["main", "show_main_banner", "console"]
+__all__ = [
+    "main",
+    "show_main_banner",
+    "console",
+    "generate_schema",
+    "extract_pdf",
+    "summarize_reports",
+    "GeneratedSchema",
+    "ExtractionResult",
+]

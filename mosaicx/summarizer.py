@@ -23,7 +23,6 @@ Design choices
 from __future__ import annotations
 
 import json
-import os
 import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -41,27 +40,49 @@ from rich.table import Table
 # Package theming & UI helpers
 from .display import console, styled_message
 from .constants import MOSAICX_COLORS
+from .utils import resolve_openai_config
 
 # Text extraction for PDF
-from docling.document_converter import DocumentConverter
+try:
+    from docling.document_converter import DocumentConverter  # type: ignore[import-not-found]
+except ModuleNotFoundError:  # pragma: no cover - optional dependency
+    DocumentConverter = None  # type: ignore[assignment]
 
-# LLM (OpenAI-compatible) + Instructor forcing
-import instructor
-from instructor import Mode
-from openai import OpenAI
+try:
+    import instructor  # type: ignore[import-not-found]
+    from instructor import Mode  # type: ignore[import-not-found]
+except ModuleNotFoundError:  # pragma: no cover - optional dependency
+    instructor = None  # type: ignore[assignment]
+    Mode = None  # type: ignore[assignment]
 
-# PDF rendering
-from reportlab.lib import colors as rl_colors
-from reportlab.lib.pagesizes import A4
-from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
-from reportlab.lib.units import cm
-from reportlab.platypus import (
-    Paragraph,
-    SimpleDocTemplate,
-    Spacer,
-    Table as RLTable,
-    TableStyle,
-)
+try:
+    from openai import OpenAI  # type: ignore[import-not-found]
+except ModuleNotFoundError:  # pragma: no cover - optional dependency
+    OpenAI = None  # type: ignore[assignment]
+
+try:
+    from reportlab.lib import colors as rl_colors  # type: ignore[import-not-found]
+    from reportlab.lib.pagesizes import A4  # type: ignore[import-not-found]
+    from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet  # type: ignore[import-not-found]
+    from reportlab.lib.units import cm  # type: ignore[import-not-found]
+    from reportlab.platypus import (  # type: ignore[import-not-found]
+        Paragraph,
+        SimpleDocTemplate,
+        Spacer,
+        Table as RLTable,
+        TableStyle,
+    )
+except ModuleNotFoundError:  # pragma: no cover - optional dependency
+    rl_colors = None  # type: ignore[assignment]
+    A4 = None  # type: ignore[assignment]
+    ParagraphStyle = None  # type: ignore[assignment]
+    getSampleStyleSheet = None  # type: ignore[assignment]
+    cm = None  # type: ignore[assignment]
+    Paragraph = None  # type: ignore[assignment]
+    SimpleDocTemplate = None  # type: ignore[assignment]
+    Spacer = None  # type: ignore[assignment]
+    RLTable = None  # type: ignore[assignment]
+    TableStyle = None  # type: ignore[assignment]
 
 
 # =============================================================================
@@ -156,13 +177,13 @@ def _guess_modality(text: str) -> Optional[str]:
 def _read_text(path: Path) -> str:
     """Read .txt or .pdf. For PDFs, use Docling; fall back gracefully."""
     if path.suffix.lower() == ".pdf":
+        if DocumentConverter is None:
+            return ""
         try:
             conv = DocumentConverter()
             res = conv.convert(path)
-            # Docling v2 commonly exposes .document.export_to_markdown()
             if hasattr(res, "document") and hasattr(res.document, "export_to_markdown"):
                 return res.document.export_to_markdown()
-            # Some builds expose .text
             return getattr(res, "text", "") or ""
         except Exception:
             return ""
@@ -328,9 +349,10 @@ FINAL CHECKS
 
 
 def _instructor_client(base_url: Optional[str], api_key: Optional[str]) -> OpenAI:
-    base_url = base_url or os.getenv("OPENAI_BASE_URL") or "http://localhost:11434/v1"
-    api_key = api_key or os.getenv("OPENAI_API_KEY") or "ollama"
-    client = OpenAI(base_url=base_url, api_key=api_key)
+    if OpenAI is None or instructor is None or Mode is None:
+        raise RuntimeError("Instructor/OpenAI dependencies are not installed.")
+    resolved_base_url, resolved_api_key = resolve_openai_config(base_url, api_key)
+    client = OpenAI(base_url=resolved_base_url, api_key=resolved_api_key)
     return instructor.patch(client, mode=Mode.JSON)
 
 
@@ -352,6 +374,16 @@ def summarize_with_llm(
 
     Fallback notices are shown at most once per process, and are transient (disappear).
     """
+    if OpenAI is None or instructor is None or Mode is None:
+        _flash_once(
+            "missing_llm_deps",
+            "Optional dependencies for LLM summarization not installed. Using heuristic summary.",
+            color_key="warning",
+            duration=0.6,
+        )
+    if OpenAI is None or instructor is None or Mode is None:
+        return _heuristic_summary(docs, patient_id)
+
     # Build user content
     parts: List[str] = []
     if patient_id:
@@ -409,9 +441,10 @@ def summarize_with_llm(
             {"role": "system", "content": f"{SUMM_SYSTEM}\n{json_guard}"},
             {"role": "user", "content": user},
         ]
+        resolved_base_url, resolved_api_key = resolve_openai_config(base_url, api_key)
         raw_client = OpenAI(
-            base_url=base_url or os.getenv("OPENAI_BASE_URL") or "http://localhost:11434/v1",
-            api_key=api_key or os.getenv("OPENAI_API_KEY") or "ollama",
+            base_url=resolved_base_url,
+            api_key=resolved_api_key,
         )
         resp = raw_client.chat.completions.create(
             model=model,
