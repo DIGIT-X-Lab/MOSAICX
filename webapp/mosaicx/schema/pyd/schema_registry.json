@@ -1,0 +1,17 @@
+{
+  "schemas": {
+    "generatedmodel_cb7d4ad9_20250927_170931": {
+      "id": "generatedmodel_cb7d4ad9_20250927_170931",
+      "class_name": "GeneratedModel",
+      "description": "Please extract patient name, patient number, date of study, birthdate, sex (male/female/other), mitral valve insufficiency (yes/no), if yes which grade (mild, moderate, severe), special note: if they mention physiological insufficiency, it is 'normal' and not a pathology, so just say 'none'. Please do the same for tricuspid valve. Important note, remember the grading could also be a number and go upto 5 (V, roman numeral), make an educated guess on which grade it should be among the three grades and please add the number corresponding to it in another section, if it's not present - no issues. Also i would like to have a confidence score for each entry and also the actual text which you used to infer the output",
+      "description_hash": "cb7d4ad9",
+      "file_path": "mosaicx/schema/pyd/generatedmodel_please_extract_patient_20250927_170931.py",
+      "file_name": "generatedmodel_please_extract_patient_20250927_170931.py",
+      "model_used": "mistral:latest",
+      "temperature": 0.2,
+      "created_at": "2025-09-27T17:09:31.046806",
+      "file_exists": true
+    }
+  },
+  "version": "1.0.0"
+}

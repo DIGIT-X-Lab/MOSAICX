@@ -79,6 +79,24 @@ output/
 temp/
 .tmp/
 
+# Backup files
+*backup*
+*_backup_*
+*.bak
+
+# Docker
+.dockerignore
+docker-compose.override.yml
+.docker/
+
+# Development files
+.vscode/settings.json
+.vscode/launch.json
+*.swp
+*.swo
+*~
+.DS_Store
+
 # Logs
 *.log
 logs/

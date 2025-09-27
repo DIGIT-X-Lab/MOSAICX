@@ -1,0 +1,68 @@
+services:
+  # Ollama LLM Server (Optional - can use external Ollama instead)
+  ollama:
+    image: ollama/ollama:latest
+    container_name: mosaicx-ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama-data:/root/.ollama
+    networks:
+      - mosaicx-network
+    restart: unless-stopped
+    # Uncomment for GPU support on Linux
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: 1
+    #           capabilities: [gpu]
+
+  # MOSAICX FastAPI Backend - Uses Ollama
+  mosaicx-backend:
+    build:
+      context: ../
+      dockerfile: webapp/backend/Dockerfile
+    container_name: mosaicx-backend
+    ports:
+      - "8000:8000"
+    environment:
+      # Use containerized Ollama instead of host
+      - OPENAI_BASE_URL=http://ollama:11434/v1
+      - OPENAI_API_KEY=ollama
+      - MOSAICX_DEFAULT_MODEL=gpt-oss:120b
+    volumes:
+      - /tmp/mosaicx_uploads:/tmp/mosaicx_uploads
+      - /tmp/mosaicx_schemas:/tmp/mosaicx_schemas
+    depends_on:
+      - ollama
+    networks:
+      - mosaicx-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Smart Contract Generator Frontend (nginx)
+  mosaicx-frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: mosaicx-frontend
+    ports:
+      - "3000:80"
+    depends_on:
+      - mosaicx-backend
+    networks:
+      - mosaicx-network
+    restart: unless-stopped
+
+networks:
+  mosaicx-network:
+    driver: bridge
+
+volumes:
+  ollama-data:

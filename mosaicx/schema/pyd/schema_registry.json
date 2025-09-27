@@ -227,6 +227,66 @@
       "temperature": 0.2,
       "created_at": "2025-09-26T18:08:09.534936",
       "file_exists": true
+    },
+    "generatedmodel_f4452bc1_20250927_010521": {
+      "id": "generatedmodel_f4452bc1_20250927_010521",
+      "class_name": "GeneratedModel",
+      "description": "Extract patient name and age",
+      "description_hash": "f4452bc1",
+      "file_path": "mosaicx/schema/pyd/generatedmodel_extract_patient_name_20250927_010521.py",
+      "file_name": "generatedmodel_extract_patient_name_20250927_010521.py",
+      "model_used": "deepseek-r1:8b",
+      "temperature": 0.2,
+      "created_at": "2025-09-27T01:05:21.272459",
+      "file_exists": true
+    },
+    "generatedmodel_b774ccaa_20250927_125006": {
+      "id": "generatedmodel_b774ccaa_20250927_125006",
+      "class_name": "GeneratedModel",
+      "description": "patient name and age",
+      "description_hash": "b774ccaa",
+      "file_path": "mosaicx/schema/pyd/generatedmodel_patient_name_age_20250927_125006.py",
+      "file_name": "generatedmodel_patient_name_age_20250927_125006.py",
+      "model_used": "llama3.2:latest",
+      "temperature": 0.2,
+      "created_at": "2025-09-27T12:50:06.782539",
+      "file_exists": true
+    },
+    "generatedmodel_f4452bc1_20250927_165334": {
+      "id": "generatedmodel_f4452bc1_20250927_165334",
+      "class_name": "GeneratedModel",
+      "description": "Extract patient name and age",
+      "description_hash": "f4452bc1",
+      "file_path": "mosaicx/schema/pyd/generatedmodel_extract_patient_name_20250927_165334.py",
+      "file_name": "generatedmodel_extract_patient_name_20250927_165334.py",
+      "model_used": "deepseek-r1:8b",
+      "temperature": 0.2,
+      "created_at": "2025-09-27T16:53:34.445280",
+      "file_exists": true
+    },
+    "generatedmodel_f4452bc1_20250927_165428": {
+      "id": "generatedmodel_f4452bc1_20250927_165428",
+      "class_name": "GeneratedModel",
+      "description": "Extract patient name and age",
+      "description_hash": "f4452bc1",
+      "file_path": "mosaicx/schema/pyd/generatedmodel_extract_patient_name_20250927_165428.py",
+      "file_name": "generatedmodel_extract_patient_name_20250927_165428.py",
+      "model_used": "mistral:latest",
+      "temperature": 0.2,
+      "created_at": "2025-09-27T16:54:28.296530",
+      "file_exists": true
+    },
+    "generatedmodel_cb7d4ad9_20250927_165450": {
+      "id": "generatedmodel_cb7d4ad9_20250927_165450",
+      "class_name": "GeneratedModel",
+      "description": "Please extract patient name, patient number, date of study, birthdate, sex (male/female/other), mitral valve insufficiency (yes/no), if yes which grade (mild, moderate, severe), special note: if they mention physiological insufficiency, it is 'normal' and not a pathology, so just say 'none'. Please do the same for tricuspid valve. Important note, remember the grading could also be a number and go upto 5 (V, roman numeral), make an educated guess on which grade it should be among the three grades and please add the number corresponding to it in another section, if it's not present - no issues. Also i would like to have a confidence score for each entry and also the actual text which you used to infer the output",
+      "description_hash": "cb7d4ad9",
+      "file_path": "mosaicx/schema/pyd/generatedmodel_please_extract_patient_20250927_165450.py",
+      "file_name": "generatedmodel_please_extract_patient_20250927_165450.py",
+      "model_used": "mistral:latest",
+      "temperature": 0.2,
+      "created_at": "2025-09-27T16:54:50.533646",
+      "file_exists": true
     }
   },
   "version": "1.0.0"

@@ -29,10 +29,49 @@ In healthcare, unstructured documents—radiology reports, clinical notes, patho
 - 🔬 **Schema Generation**: Transform natural language descriptions into validated Pydantic models
 - 📄 **Document Extraction**: Convert PDFs and clinical documents to structured JSON using generated schemas  
 - 📊 **Clinical Summarization**: Generate timeline-based summaries of radiology reports with standardized outputs
+- ⚡ **CLI & API**: Powerful command-line interface and Python API for production workflows
 - 🏥 **Privacy-First**: Process sensitive medical data locally using Ollama-compatible LLMs
 - 🎯 **Production-Ready**: Robust error handling, validation, and reproducible outputs
+- 🌐 **Demo WebApp**: Interactive web interface for demonstrations and testing
 
 > *Powered by local LLMs via **Ollama**, PDF processing via **Docling**, and strict validation via **Pydantic v2***
+
+## 🌐 **Demo WebApp**
+
+Interactive web interface for **demonstrations and testing only**. Use CLI/API for production workflows.
+
+### **Quick Demo Start:**
+```bash
+cd webapp && ./start.sh
+```
+
+**Demo Features:**
+- 🔬 **Smart Contract Generator**: Create Pydantic schemas from natural language
+- 📄 **PDF Extractor**: Drag-and-drop PDF processing  
+- 📊 **Report Summarizer**: Timeline-based clinical analysis
+
+**Access Demo:** http://localhost:3000 | [Full Setup Guide →](webapp/README.md)
+
+**Access**: http://localhost:3000
+
+**Requirements:**
+- **Docker**: Desktop or Engine 20.10+
+- **RAM**: 16GB+ (32GB recommended for large models)  
+- **Storage**: 10GB+ for containers and models
+- **GPU**: Optional but recommended for large models
+
+**Architecture Notes:**
+- **Option 1**: WebApp containers → Host Ollama (via `host.docker.internal:11434`)
+- **Option 2**: WebApp containers → Ollama container (via internal Docker network)
+
+**Features:**
+- 🔬 **Smart Contract Generator**: Create Pydantic models from natural language
+- 📄 **PDF Extractor**: Drag-and-drop PDF processing with real-time results  
+- 📊 **Report Summarizer**: Timeline-based clinical report analysis
+- 📋 **Sample Data**: Pre-loaded medical PDFs and schema templates
+- 🎨 **Glass Morphism UI**: Electric cyan theme with professional medical interface
+
+[**→ Full WebApp Documentation**](webapp/README.md)
 
 ---
 

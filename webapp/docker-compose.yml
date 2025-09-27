@@ -1,0 +1,44 @@
+services:
+  # MOSAICX FastAPI Backend - Uses local Ollama with MPS acceleration
+  mosaicx-backend:
+    build:
+      context: ../
+      dockerfile: webapp/backend/Dockerfile
+    container_name: mosaicx-backend
+    ports:
+      - "8000:8000"
+    environment:
+      - OPENAI_BASE_URL=http://host.docker.internal:11434/v1
+      - OPENAI_API_KEY=ollama
+      - MOSAICX_DEFAULT_MODEL=gpt-oss:120b
+    volumes:
+      - /tmp/mosaicx_uploads:/tmp/mosaicx_uploads
+      - /tmp/mosaicx_schemas:/tmp/mosaicx_schemas
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - mosaicx-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Smart Contract Generator Frontend (nginx)
+  mosaicx-frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: mosaicx-frontend
+    ports:
+      - "3000:80"
+    depends_on:
+      - mosaicx-backend
+    networks:
+      - mosaicx-network
+    restart: unless-stopped
+
+networks:
+  mosaicx-network:
+    driver: bridge
