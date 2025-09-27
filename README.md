@@ -52,8 +52,6 @@ cd webapp && ./start.sh
 
 **Access Demo:** http://localhost:3000 | [Full Setup Guide →](webapp/README.md)
 
-**Access**: http://localhost:3000
-
 **Requirements:**
 - **Docker**: Desktop or Engine 20.10+
 - **RAM**: 16GB+ (32GB recommended for large models)  
