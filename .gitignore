@@ -73,7 +73,6 @@ Thumbs.db
 # Project specific
 # Allow committing PDFs that are intentionally included for testing/documentation
 # (Previously: *.pdf)
-*.txt
 reports/
 output/
 temp/
@@ -85,17 +84,17 @@ temp/
 *.bak
 
 # Docker
-.dockerignore
 docker-compose.override.yml
 .docker/
+
+# Allow essential files but ignore logs and temp text files
+*.log.txt
+*temp*.txt
+*debug*.txt
 
 # Development files
 .vscode/settings.json
 .vscode/launch.json
-*.swp
-*.swo
-*~
-.DS_Store
 
 # Logs
 *.log
@@ -113,4 +112,3 @@ config/local_*
 .mypy_cache/
 .dmypy.json
 dmypy.json
-.env

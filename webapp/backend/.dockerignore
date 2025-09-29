@@ -1,0 +1,20 @@
+# Ignore unnecessary files during Docker build
+.git
+.github
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.env
+.venv
+venv/
+.pytest_cache
+.coverage
+*.log
+.DS_Store
+Thumbs.db
+
+# Ignore other webapp components during backend build
+webapp/frontend
+webapp/shared/sample_data
+*.md
