@@ -81,15 +81,19 @@ def mock_schema_registry(temp_dir):
     """Mock schema registry with sample data."""
     registry_file = temp_dir / "schema_registry.json"
     registry_data = {
-        "test_schema_001": {
-            "id": "test_schema_001",
-            "class_name": "PatientRecord",
-            "description": SAMPLE_SCHEMA_DESCRIPTION,
-            "file_path": str(temp_dir / "test_schema.py"),
-            "created_at": "2025-09-19T10:00:00",
-            "model_used": "gpt-oss:120b",
-            "temperature": 0.2
-        }
+        "schemas": {
+            "test_schema_001": {
+                "id": "test_schema_001",
+                "class_name": "PatientRecord",
+                "description": SAMPLE_SCHEMA_DESCRIPTION,
+                "file_path": str(temp_dir / "test_schema.py"),
+                "created_at": "2025-09-19T10:00:00",
+                "model_used": "gpt-oss:120b",
+                "temperature": 0.2,
+                "scope": "test",
+            }
+        },
+        "version": "1.0.0",
     }
     registry_file.write_text(json.dumps(registry_data, indent=2))
     return registry_file

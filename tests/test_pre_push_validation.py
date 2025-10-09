@@ -87,7 +87,7 @@ class TestPrePushValidation:
         extract_result = subprocess.run([
             "mosaicx", "extract",
             "--pdf", str(test_datasets["extract_pdf"]),
-            "--schema", "mosaicx/schema/pyd/generatedmodel_extract_patient_name_20250927_010521.py",
+            "--schema", "mosaicx/schema/templates/python/patient_identity.py",
             "--model", "mistral:latest"
         ], capture_output=True, text=True, timeout=120)
         
@@ -131,7 +131,7 @@ class TestPrePushValidation:
         """Test Python API PDF extraction"""
         extraction = extract_pdf(
             pdf_path=str(test_datasets["extract_pdf"]),
-            schema_path="mosaicx/schema/pyd/generatedmodel_extract_patient_name_20250927_010521.py",
+            schema_path="mosaicx/schema/templates/python/patient_identity.py",
         )
         
         assert extraction is not None
@@ -195,7 +195,7 @@ class TestPrePushValidation:
         with pytest.raises(Exception):
             extract_pdf(
                 pdf_path="nonexistent_file.pdf",
-                schema_path="mosaicx/schema/pyd/generatedmodel_extract_patient_name_20250927_010521.py"
+                schema_path="mosaicx/schema/templates/python/patient_identity.py",
             )
         
         # Test invalid schema path
@@ -233,7 +233,7 @@ class TestPrePushValidation:
         start_time = time.time()
         extraction = extract_pdf(
             pdf_path=str(test_datasets["extract_pdf"]),
-            schema_path="mosaicx/schema/pyd/generatedmodel_extract_patient_name_20250927_010521.py",
+            schema_path="mosaicx/schema/templates/python/patient_identity.py",
         )
         extract_time = time.time() - start_time
         assert extract_time < 45  # Should complete in under 45 seconds

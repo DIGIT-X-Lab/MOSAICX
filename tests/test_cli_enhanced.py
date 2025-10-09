@@ -105,6 +105,36 @@ class TestGenerateCommand:
 
         assert mock_generate_schema.call_args.kwargs["model"] == "llama3"
 
+    @patch("mosaicx.cli.app.register_schema")
+    @patch("mosaicx.cli.app.generate_schema")
+    def test_generate_template_flag(
+        self,
+        mock_generate_schema: MagicMock,
+        mock_register: MagicMock,
+    ) -> None:
+        generated = MagicMock()
+        generated.code = "class Generated: ..."
+        generated.suggested_filename = "generated.py"
+        generated.write.return_value = Path("mosaicx/schema/templates/python/generated.py")
+        mock_generate_schema.return_value = generated
+        mock_register.return_value = "schema-002"
+
+        runner = CliRunner()
+        result = runner.invoke(
+            generate,
+            [
+                "--desc",
+                "Template schema",
+                "--template",
+            ],
+        )
+
+        assert result.exit_code == 0
+        generated.write.assert_called_once()
+        args, kwargs = generated.write.call_args
+        assert args == (None,)
+        assert kwargs == {"template": True}
+
 
 class TestExtractCommand:
     """Direct command invocation tests for extract command."""

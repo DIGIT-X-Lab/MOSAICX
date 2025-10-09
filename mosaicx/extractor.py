@@ -76,8 +76,9 @@ from pydantic import BaseModel, ValidationError
 
 from .constants import (
     DEFAULT_LLM_MODEL,
-    PACKAGE_SCHEMA_PYD_DIR,
     MOSAICX_COLORS,
+    PACKAGE_SCHEMA_TEMPLATES_PY_DIR,
+    USER_SCHEMA_DIR,
 )
 from .display import styled_message, console
 from .utils import derive_ollama_generate_url, resolve_openai_config
@@ -122,18 +123,27 @@ def load_schema_model(schema_identifier: str) -> Type[BaseModel]:
             
     else:
         # Backward compatibility: fuzzy search by schema name  
-        pyd_dir = Path(PACKAGE_SCHEMA_PYD_DIR)
         schema_name = schema_identifier
-
-        matching_files: List[Path] = [
-            py_file for py_file in pyd_dir.glob("*.py")
-            if schema_name.lower() in py_file.name.lower()
+        search_roots: List[Path] = [
+            USER_SCHEMA_DIR,
+            Path(PACKAGE_SCHEMA_TEMPLATES_PY_DIR),
         ]
+        matching_files: List[Path] = []
+        for root in search_roots:
+            root = root.expanduser()
+            if not root.exists():
+                continue
+            matching_files.extend(
+                py_file
+                for py_file in root.glob("*.py")
+                if schema_name.lower() in py_file.name.lower()
+            )
 
         if not matching_files:
+            search_hint = ", ".join(str(root) for root in search_roots if root.exists()) or "configured schema directories"
             raise ExtractionError(
-                f"No schema file found for '{schema_name}' in {pyd_dir}. "
-                f"Generate a schema first using: mosaicx generate --desc '...'"
+                f"No schema file found for '{schema_name}' in {search_hint}. "
+                "Generate a schema first using: mosaicx generate --desc '...'"
             )
 
         schema_file = max(matching_files, key=lambda f: f.stat().st_mtime)

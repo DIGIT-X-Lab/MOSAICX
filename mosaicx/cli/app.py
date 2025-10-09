@@ -120,6 +120,11 @@ def cli(ctx: click.Context, verbose: bool) -> None:
 
     ctx.ensure_object(dict)
     ctx.obj["verbose"] = verbose
+    try:
+        scan_and_register_existing_schemas()
+    except Exception as exc:  # pragma: no cover - defensive guard
+        if verbose:
+            styled_message(f"Schema auto-discovery skipped: {exc}", "warning")
 
     if ctx.invoked_subcommand is None:
         styled_message(
@@ -136,6 +141,7 @@ def cli(ctx: click.Context, verbose: bool) -> None:
 @click.option("--api-key", help="API key for the endpoint")
 @click.option("--temperature", type=float, default=0.2, help="Sampling temperature (0.0–2.0)")
 @click.option("--schema-path", type=click.Path(path_type=Path), help="Write generated Pydantic schema (.py) to this path")
+@click.option("--template", "store_as_template", is_flag=True, help="Save generated schema into the bundled template directory")
 @click.option("--output", callback=_deprecated_schema_output_alias, expose_value=False, hidden=True)
 @click.option("--save-model", callback=_deprecated_schema_output_alias, expose_value=False, hidden=True)
 @click.option("--debug", is_flag=True, help="Verbose debug logs")
@@ -149,6 +155,7 @@ def generate(
     api_key: Optional[str],
     temperature: float,
     schema_path: Optional[Path],
+    store_as_template: bool,
     debug: bool,
 ) -> None:
     """Generate Pydantic schemas from natural language descriptions."""
@@ -161,6 +168,9 @@ def generate(
         styled_message(f"Description: {desc}", "info")
 
     try:
+        if store_as_template and schema_path is not None:
+            raise click.BadParameter("Cannot use --template together with --schema-path.")
+
         with console.status(f"[{MOSAICX_COLORS['primary']}]Generating Pydantic model...", spinner="dots"):
             generated = generate_schema(
                 description=desc,
@@ -171,7 +181,7 @@ def generate(
                 temperature=temperature,
             )
 
-        target_path = generated.write(schema_path)
+        target_path = generated.write(schema_path, template=store_as_template)
 
         schema_id = register_schema(
             class_name=class_name,
@@ -229,6 +239,11 @@ def generate(
 
         main_table.add_row("💻 Code Preview", code_panel)
         console.print(Align.center(main_table))
+        console.print()
+        if store_as_template:
+            styled_message(f"Stored template in: {target_path}", "success")
+        elif schema_path:
+            styled_message(f"Saved schema to: {target_path}", "success")
 
     except Exception as exc:
         styled_message(f"Schema generation failed: {exc}", "error")
@@ -367,36 +382,51 @@ def extract(
             styled_message(f"Base URL: {base_url}", "info")
 
     try:
-        resolved_schema_path = resolve_schema_reference(schema)
-        if not resolved_schema_path:
-            raise click.ClickException(f"Could not find schema: {schema}")
+        with console.status(
+            f"[{MOSAICX_COLORS['primary']}]Preparing extraction...", spinner="dots"
+        ) as status:
+            status.update(f"[{MOSAICX_COLORS['accent']}]Resolving schema reference…")
+            resolved_schema_path = resolve_schema_reference(schema)
+            if not resolved_schema_path:
+                raise click.ClickException(f"Could not find schema: {schema}")
 
-        if verbose:
-            styled_message(f"Resolved schema to: {resolved_schema_path}", "info")
+            if verbose:
+                styled_message(f"Resolved schema to: {resolved_schema_path}", "info")
 
-        all_schemas = list_schemas()
-        schema_class_name = None
-        resolved_path_str = str(resolved_schema_path)
-        for schema_info in all_schemas:
-            if resolved_path_str == schema_info["file_path"]:
-                schema_class_name = schema_info["class_name"]
-                break
+            status.update(f"[{MOSAICX_COLORS['accent']}]Loading schema metadata…")
+            all_schemas = list_schemas()
+            schema_class_name = None
+            resolved_path_str = str(resolved_schema_path)
+            for schema_info in all_schemas:
+                if resolved_path_str == schema_info["file_path"]:
+                    schema_class_name = schema_info["class_name"]
+                    break
 
-        if not schema_class_name:
-            raise click.ClickException(f"Could not find class name for schema: {schema}")
+            if schema_class_name is None:
+                try:
+                    from ..extractor import load_schema_model
 
-        if verbose:
-            styled_message(f"Using schema class: {schema_class_name}", "info")
+                    schema_class = load_schema_model(str(resolved_schema_path))
+                    schema_class_name = schema_class.__name__
+                except Exception:
+                    schema_class_name = resolved_schema_path.stem
 
-        extraction = extract_pdf(
-            pdf_path=pdf,
-            schema_path=resolved_schema_path,
-            model=model,
-            base_url=base_url,
-            api_key=api_key,
-            temperature=temperature,
-        )
+            if verbose:
+                styled_message(f"Using schema class: {schema_class_name}", "info")
 
+            status.update(
+                f"[{MOSAICX_COLORS['accent']}]Running extraction with {model}…"
+            )
+            extraction = extract_pdf(
+                pdf_path=pdf,
+                schema_path=resolved_schema_path,
+                model=model,
+                base_url=base_url,
+                api_key=api_key,
+                temperature=temperature,
+            )
+
+        console.print()
         result_dict = extraction.record.model_dump()
 
         console.print()

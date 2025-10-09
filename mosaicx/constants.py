@@ -37,11 +37,12 @@ Import specific constants:
 
 Import all constants:
     >>> from mosaicx import constants
-    >>> console.print("Success!", style=constants.MOSAICX_COLORS["success"])
+    >>> console.print("Success!", style=constants.MOSAICX_COLORS['success'])
 
 Module Dependencies:
 -------------------
 Standard Library:
+    • os: Environment variables for user override paths
     • pathlib: Path handling for file system constants
     • typing: Type annotations for complex constant structures
 
@@ -62,6 +63,9 @@ This software is distributed under the AGPL-3.0 license.
 See LICENSE file for full terms and conditions.
 """
 
+from __future__ import annotations
+
+import os
 from pathlib import Path
 from typing import Dict, List
 
@@ -72,6 +76,23 @@ try:
 except ModuleNotFoundError:  # pragma: no cover - Python < 3.11 fallback
     tomllib = None  # type: ignore[assignment]
 
+# =============================================================================
+# PATH ROOTS
+# =============================================================================
+
+PACKAGE_ROOT = Path(__file__).resolve().parent
+PROJECT_ROOT = PACKAGE_ROOT.parent
+
+_DEFAULT_HOME = Path.home()
+USER_DATA_DIR = Path(os.getenv("MOSAICX_HOME", str(_DEFAULT_HOME / ".mosaicx")))
+USER_SCHEMA_DIR = USER_DATA_DIR / "schemas"
+SCHEMA_REGISTRY_PATH = USER_DATA_DIR / "schema_registry.json"
+
+PACKAGE_SCHEMA_DIR = PACKAGE_ROOT / "schema"
+PACKAGE_SCHEMA_TEMPLATES_DIR = PACKAGE_SCHEMA_DIR / "templates"
+PACKAGE_SCHEMA_TEMPLATES_PY_DIR = PACKAGE_SCHEMA_TEMPLATES_DIR / "python"
+PACKAGE_SCHEMA_TEMPLATES_JSON_DIR = PACKAGE_SCHEMA_TEMPLATES_DIR / "json"
+
 
 def _load_application_version() -> str:
     """Resolve the application version from package metadata or pyproject."""
@@ -79,8 +100,7 @@ def _load_application_version() -> str:
     try:
         return pkg_version("mosaicx")
     except PackageNotFoundError:
-        project_root = Path(__file__).resolve().parent.parent
-        pyproject_path = project_root / "pyproject.toml"
+        pyproject_path = PROJECT_ROOT / "pyproject.toml"
         if tomllib is not None and pyproject_path.exists():
             try:
                 with pyproject_path.open("rb") as handle:
@@ -133,7 +153,7 @@ MOSAICX_COLORS: Dict[str, str] = {
     "error": "#ff5555",        # Dracula Red - error
     "info": "#8be9fd",         # Dracula Cyan - info
     "accent": "#bd93f9",       # Dracula Purple - accent
-    "muted": "#44475a"         # Dracula Current Line - muted text
+    "muted": "#44475a",        # Dracula Current Line - muted text
 }
 
 # Banner and display configuration
@@ -191,8 +211,14 @@ DEFAULT_MAX_RETRIES = 2
 # Schema generation defaults
 DEFAULT_SCHEMA_VERSION = "1.0.0"
 SUPPORTED_FIELD_TYPES = [
-    "string", "integer", "number", "boolean", 
-    "date", "datetime", "array", "object"
+    "string",
+    "integer",
+    "number",
+    "boolean",
+    "date",
+    "datetime",
+    "array",
+    "object",
 ]
 
 # File processing defaults
@@ -207,19 +233,14 @@ DEFAULT_ENCODING = "utf-8"
 # File extensions
 SCHEMA_EXTENSIONS = {
     "json": ".json",
-    "yaml": ".yaml", 
-    "python": ".py"
+    "yaml": ".yaml",
+    "python": ".py",
 }
 
 # Default directories (relative to project root)
 DEFAULT_OUTPUT_DIR = "output"
 DEFAULT_SCHEMA_DIR = "schemas"
 DEFAULT_MODELS_DIR = "models"
-
-# Schema-specific directories within the package
-PACKAGE_SCHEMA_DIR = "mosaicx/schema"
-PACKAGE_SCHEMA_JSON_DIR = "mosaicx/schema/json"
-PACKAGE_SCHEMA_PYD_DIR = "mosaicx/schema/pyd"
 
 # =============================================================================
 # API & SERVICE CONFIGURATION
@@ -240,31 +261,31 @@ MAX_REQUEST_RETRIES = 3
 __all__ = [
     # Application metadata
     "APPLICATION_NAME",
-    "APPLICATION_FULL_NAME", 
+    "APPLICATION_FULL_NAME",
     "APPLICATION_VERSION",
     "APPLICATION_DESCRIPTION",
-    
+
     # Author information
     "AUTHOR_NAME",
-    "AUTHOR_EMAIL", 
+    "AUTHOR_EMAIL",
     "INSTITUTION_NAME",
     "INSTITUTION_SHORT",
-    
+
     # Licensing
     "LICENSE_TYPE",
     "LICENSE_FULL_NAME",
     "COPYRIGHT_YEAR",
-    "COPYRIGHT_HOLDER", 
+    "COPYRIGHT_HOLDER",
     "COPYRIGHT_NOTICE",
-    
+
     # UI & Branding
     "MOSAICX_COLORS",
     "BANNER_STYLE",
     "BANNER_COLORS",
-    
+
     # Configuration
     "DEFAULT_LLM_MODEL",
-    "DEFAULT_TEMPERATURE", 
+    "DEFAULT_TEMPERATURE",
     "DEFAULT_MAX_RETRIES",
     "DEFAULT_SCHEMA_VERSION",
     "SUPPORTED_FIELD_TYPES",
@@ -272,19 +293,25 @@ __all__ = [
     "SUPPORTED_FORMATS",
     "DEFAULT_ENCODING",
     "SCHEMA_GENERATION_SYSTEM_PROMPT",
-    
+
     # Paths
+    "PACKAGE_ROOT",
+    "PROJECT_ROOT",
+    "USER_DATA_DIR",
+    "USER_SCHEMA_DIR",
+    "SCHEMA_REGISTRY_PATH",
     "SCHEMA_EXTENSIONS",
     "DEFAULT_OUTPUT_DIR",
-    "DEFAULT_SCHEMA_DIR", 
+    "DEFAULT_SCHEMA_DIR",
     "DEFAULT_MODELS_DIR",
     "PACKAGE_SCHEMA_DIR",
-    "PACKAGE_SCHEMA_JSON_DIR",
-    "PACKAGE_SCHEMA_PYD_DIR",
-    
+    "PACKAGE_SCHEMA_TEMPLATES_DIR",
+    "PACKAGE_SCHEMA_TEMPLATES_PY_DIR",
+    "PACKAGE_SCHEMA_TEMPLATES_JSON_DIR",
+
     # API Configuration
     "DEFAULT_OLLAMA_HOST",
     "OLLAMA_TIMEOUT",
     "DEFAULT_REQUEST_TIMEOUT",
-    "MAX_REQUEST_RETRIES"
+    "MAX_REQUEST_RETRIES",
 ]

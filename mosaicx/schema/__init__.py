@@ -24,8 +24,8 @@ Composition:
 - ``builder``: Natural-language to Pydantic generation utilities.
 - ``registry``: JSON-backed catalogue of schema metadata with housekeeping
   helpers.
-- ``pyd`` / ``json`` subpackages: On-disk storage for generated Python modules
-  and SchemaSpec representations.
+- ``templates/python``: Curated Pydantic models bundled with the package.
+- ``templates/json``: Placeholder for JSON schema templates shipped alongside the code.
 """
 
 # Import main functions from builder and registry modules

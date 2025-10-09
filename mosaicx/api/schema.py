@@ -34,7 +34,11 @@ from pathlib import Path
 from typing import Optional, Sequence, Union
 import re
 
-from ..constants import DEFAULT_LLM_MODEL, PACKAGE_SCHEMA_PYD_DIR
+from ..constants import (
+    DEFAULT_LLM_MODEL,
+    USER_SCHEMA_DIR,
+    PACKAGE_SCHEMA_TEMPLATES_PY_DIR,
+)
 from ..schema.builder import synthesize_pydantic_model
 from ..schema.registry import get_suggested_filename
 
@@ -48,12 +52,32 @@ class GeneratedSchema:
     code: str
     suggested_filename: str
 
-    def write(self, destination: Optional[Path | str] = None) -> Path:
-        """Persist the schema to disk and return the final path."""
-        target = Path(destination) if destination else Path(PACKAGE_SCHEMA_PYD_DIR) / self.suggested_filename
+    def write(
+        self,
+        destination: Optional[Path | str] = None,
+        *,
+        template: bool = False,
+    ) -> Path:
+        """Persist the schema to disk and return the final path.
+
+        Args:
+            destination: Optional explicit location for the generated file.
+            template: When ``True``, store the schema in the bundled
+                template directory regardless of ``destination``.
+        """
+        if destination and template:
+            raise ValueError("Specify either destination or template=True, not both.")
+
+        if template:
+            target = PACKAGE_SCHEMA_TEMPLATES_PY_DIR / self.suggested_filename
+        elif destination:
+            target = Path(destination).expanduser()
+        else:
+            target = USER_SCHEMA_DIR / self.suggested_filename
+
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(self.code)
-        return target
+        target.write_text(self.code, encoding="utf-8")
+        return target.resolve(strict=False)
 
 
 def generate_schema(

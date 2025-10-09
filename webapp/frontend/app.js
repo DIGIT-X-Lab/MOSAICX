@@ -10,7 +10,7 @@ const AppState = {
 
 // Schema Storage
 const SchemaStore = {
-    addSchema(name, content, prompt, filename = null) {
+    addSchema(name, content, prompt, filename = null, filePath = null) {
         const timestamp = new Date().toISOString();
         const id = Date.now().toString();
         
@@ -25,7 +25,15 @@ const SchemaStore = {
             filename = `generatedmodel_${sanitizedDescription}_${dateStr}.py`;
         }
         
-        const schema = { id, name, content, prompt, timestamp, filename };
+        const schema = {
+            id,
+            name,
+            content,
+            prompt,
+            timestamp,
+            filename,
+            file_path: filePath || filename,
+        };
         AppState.generatedSchemas.push(schema);
         this.updateSchemaDropdowns();
         try { localStorage.setItem('mosaicx_schemas', JSON.stringify(AppState.generatedSchemas)); } catch (e) {}
@@ -347,12 +355,18 @@ async function generateSchema() {
             
             // Use the exact filename from CLI-style response
             console.log('🔍 Full server response:', data);
-            const serverFilename = data.file_path ? data.file_path.split('/').pop() : null;
+            const serverFilename = data.file_path ? data.file_path.split(/[\\/]/).pop() : null;
             console.log('🔍 Extracted filename:', serverFilename);
             console.log('🔍 This filename will be used for extraction:', serverFilename);
             
             // Store schema locally with the server's actual filename
-            const schemaId = SchemaStore.addSchema(schemaName, schemaCode, description, serverFilename);
+            const schemaId = SchemaStore.addSchema(
+                schemaName,
+                schemaCode,
+                description,
+                serverFilename,
+                data.file_path || null,
+            );
             
             Utils.showNotification('Schema generated successfully! 🎉 Available in PDF Extractor.', 'success');
             
@@ -462,11 +476,11 @@ async function extractPDF() {
         console.log('🔍 Schema prompt:', selectedSchema.prompt);
         
         let schemaPath;
-        if (selectedSchema.filename) {
-            // Use full relative path that MOSAICX expects
-            schemaPath = `mosaicx/schema/pyd/${selectedSchema.filename}`;
+        if (selectedSchema.file_path) {
+            schemaPath = selectedSchema.file_path;
+        } else if (selectedSchema.filename) {
+            schemaPath = selectedSchema.filename;
         } else {
-            // Fallback for older schemas - use the schema ID as name
             schemaPath = selectedSchema.id;
         }
         

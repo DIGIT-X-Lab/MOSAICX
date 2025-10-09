@@ -40,11 +40,9 @@ from pydantic import BaseModel, Field, ValidationError
 from mosaicx import (
     generate_schema,
     extract_pdf,
-    GeneratedSchema,
-    ExtractionResult,
-    console
+    console,
 )
-from mosaicx.constants import APPLICATION_VERSION, MOSAICX_COLORS
+from mosaicx.constants import APPLICATION_VERSION, MOSAICX_COLORS, USER_SCHEMA_DIR
 from mosaicx.display import styled_message
 
 # Configure logging
@@ -226,24 +224,17 @@ async def generate_schema_endpoint(request: SchemaGenerationRequest):
         if result.returncode != 0:
             raise Exception(f"CLI schema generation failed: {result.stderr}")
             
-        # Find the newest .py file in the schema directory (the one just created)
-        import glob
-        import os
-        
-        schema_files = glob.glob("/app/mosaicx/schema/pyd/*.py")
+        # Find the newest .py file in the managed schema directory
+        schema_dir = USER_SCHEMA_DIR
+        schema_dir.mkdir(parents=True, exist_ok=True)
+        schema_files = list(schema_dir.glob("*.py"))
         if not schema_files:
             raise Exception("No schema files found after generation")
-            
-        # Get the most recently created file
-        newest_file = max(schema_files, key=os.path.getctime)
-        actual_filename = os.path.basename(newest_file)
-        schema_id = actual_filename.replace('.py', '')
-        
-        # Read the actual schema file content
-        with open(newest_file, 'r') as f:
-            python_code = f.read()
-        
-        saved_path = f"mosaicx/schema/pyd/{actual_filename}"
+
+        newest_file = max(schema_files, key=lambda path: path.stat().st_mtime)
+        python_code = newest_file.read_text(encoding="utf-8")
+        schema_id = newest_file.stem
+        saved_path = str(newest_file)
         
         return SchemaGenerationResponse(
             schema_id=schema_id,
