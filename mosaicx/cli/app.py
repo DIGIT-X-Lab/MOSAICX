@@ -54,6 +54,7 @@ from ..constants import (
 )
 from ..display import console, show_main_banner, styled_message
 from ..extractor import ExtractionError
+from ..document_loader import DOC_SUFFIXES
 from ..schema.registry import (
     cleanup_missing_files,
     get_schema_by_id,
@@ -350,7 +351,14 @@ def list_schemas_cmd(
 
 
 @cli.command()
-@click.option("--pdf", required=True, type=click.Path(exists=True), help="Path to PDF file to extract from")
+@click.option(
+    "--document",
+    "--doc",
+    "document",
+    required=True,
+    type=click.Path(exists=True),
+    help="Path to a clinical document (PDF, DOCX, PPTX, TXT, ...)",
+)
 @click.option("--schema", required=True, help="Schema identifier (ID, filename, or file path)")
 @click.option("--model", default=DEFAULT_LLM_MODEL, help="Model name for extraction")
 @click.option("--base-url", help="OpenAI-compatible API base URL")
@@ -361,7 +369,7 @@ def list_schemas_cmd(
 @click.pass_context
 def extract(
     ctx: click.Context,
-    pdf: str,
+    document: str,
     schema: str,
     model: str,
     base_url: Optional[str],
@@ -370,12 +378,12 @@ def extract(
     output_path: Optional[Path],
     debug: bool,
 ) -> None:
-    """Extract structured data from PDF using a generated Pydantic schema."""
+    """Extract structured data from a clinical document using a Pydantic schema."""
 
     verbose = ctx.obj.get("verbose", False)
 
     if verbose:
-        styled_message(f"Extracting from: {pdf}", "info")
+        styled_message(f"Extracting from: {document}", "info")
         styled_message(f"Using schema: {schema}", "info")
         styled_message(f"Using model: {model}", "info")
         if base_url:
@@ -418,7 +426,7 @@ def extract(
                 f"[{MOSAICX_COLORS['accent']}]Running extraction with {model}…"
             )
             extraction = extract_pdf(
-                pdf_path=pdf,
+                pdf_path=document,
                 schema_path=resolved_schema_path,
                 model=model,
                 base_url=base_url,
@@ -491,13 +499,13 @@ def extract(
     "reports",
     multiple=True,
     type=click.Path(exists=True, dir_okay=False, path_type=Path),
-    help="One or more report files (.pdf or .txt). Use multiple --report flags.",
+    help="One or more report files (PDF, DOCX, PPTX, TXT, ...). Use multiple --report flags.",
 )
 @click.option(
     "--dir",
     "input_dir",
     type=click.Path(exists=True, file_okay=False, path_type=Path),
-    help="Directory containing reports (recursively scans *.pdf, *.txt).",
+    help="Directory containing reports (recursively scans supported formats).",
 )
 @click.option("--patient", "patient_id", type=str, help="Patient identifier (optional).")
 @click.option("--model", default=DEFAULT_LLM_MODEL, show_default=True, help="Model for summarization.")
@@ -523,14 +531,30 @@ def summarize(
 
     verbose = ctx.obj.get("verbose", False)
 
+    allowed_suffixes = set(DOC_SUFFIXES.keys())
+
+    def _supported(path: Path) -> bool:
+        return path.suffix.lower() in allowed_suffixes
+
     paths: List[Path] = list(reports)
+    invalid_reports = [p for p in paths if not _supported(p)]
+    if invalid_reports:
+        suffixes = ", ".join(sorted({p.suffix.lower() or "<none>" for p in invalid_reports}))
+        raise click.ClickException(
+            f"Unsupported report extension(s): {suffixes}. "
+            f"Supported formats: {', '.join(sorted(allowed_suffixes))}."
+        )
+
     if input_dir:
         for candidate in input_dir.rglob("*"):
-            if candidate.suffix.lower() in {".pdf", ".txt"}:
+            if _supported(candidate):
                 paths.append(candidate)
 
     if not paths:
-        raise click.ClickException("Provide at least one --report or a --dir with .pdf/.txt files.")
+        raise click.ClickException(
+            "Provide at least one --report or a --dir containing supported formats "
+            f"({', '.join(sorted(allowed_suffixes))})."
+        )
 
     if verbose:
         styled_message(f"Summarizing {len(paths)} file(s)", "info")

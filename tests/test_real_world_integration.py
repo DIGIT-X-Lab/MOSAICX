@@ -12,7 +12,7 @@ import tempfile
 from unittest.mock import patch, Mock
 
 from mosaicx.mosaicx import cli
-from mosaicx.extractor import extract_text_from_pdf
+from mosaicx.extractor import extract_text_from_document
 
 
 class TestRealWorldIntegration:
@@ -28,7 +28,7 @@ class TestRealWorldIntegration:
         assert sample_pdf_path.exists(), f"Sample PDF not found at {sample_pdf_path}"
         
         # Extract text from the real PDF
-        extracted_text = extract_text_from_pdf(str(sample_pdf_path))
+        extracted_text = extract_text_from_document(str(sample_pdf_path))
         
         # Verify key information is extracted
         assert "Sarah Johnson" in extracted_text
@@ -152,7 +152,7 @@ class PatientVitals(BaseModel):
             # Step 2: Extract data from real PDF
             extract_result = runner.invoke(cli, [
                 'extract',
-                '--pdf', str(test_pdf),
+                '--document', str(test_pdf),
                 '--schema', 'vitals_schema.py',
                 '--save', 'extracted_vitals.json'
             ])
@@ -217,11 +217,11 @@ class PatientVitals(BaseModel):
 
     def test_error_handling_with_invalid_pdf(self):
         """Test error handling when PDF processing fails."""
-        from mosaicx.extractor import extract_text_from_pdf, ExtractionError
+        from mosaicx.extractor import extract_text_from_document, ExtractionError
         
         # Test with non-existent file
         with pytest.raises((FileNotFoundError, ExtractionError)):
-            extract_text_from_pdf("nonexistent.pdf")
+            extract_text_from_document("nonexistent.pdf")
         
         # Test with invalid file
         with tempfile.NamedTemporaryFile(mode='w', suffix='.pdf', delete=False) as f:
@@ -230,7 +230,7 @@ class PatientVitals(BaseModel):
         
         try:
             with pytest.raises(ExtractionError):
-                extract_text_from_pdf(invalid_pdf)
+                extract_text_from_document(invalid_pdf)
         finally:
             Path(invalid_pdf).unlink(missing_ok=True)
 
@@ -274,7 +274,7 @@ class TestPerformanceWithRealData:
         import time
         
         start_time = time.time()
-        extracted_text = extract_text_from_pdf(str(sample_pdf_path))
+        extracted_text = extract_text_from_document(str(sample_pdf_path))
         end_time = time.time()
         
         processing_time = end_time - start_time

@@ -58,12 +58,12 @@ class PatientRecord(BaseModel):
             test_pdf.write_text('Patient: John Doe, Age: 45, Gender: Male')
             
             # Step 2: Extract data using generated schema
-            with patch('mosaicx.extractor.extract_text_from_pdf') as mock_extract_text:
+            with patch('mosaicx.extractor.extract_text_from_document') as mock_extract_text:
                 mock_extract_text.return_value = "Patient: John Doe, Age: 45, Gender: Male"
                 
                 extract_result = runner.invoke(cli, [
                     'extract',
-                    '--pdf', 'test_patient.pdf',
+                    '--document', 'test_patient.pdf',
                     '--schema', 'patient_schema.py',
                     '--save', 'extracted_data.json'
                 ])
@@ -114,7 +114,7 @@ class TestErrorHandling:
             
             result = runner.invoke(cli, [
                 'extract',
-                '--pdf', 'invalid.pdf',
+                '--document', 'invalid.pdf',
                 '--schema', 'test_schema.py'
             ])
             
@@ -150,7 +150,7 @@ class TestErrorHandling:
             
             result = runner.invoke(cli, [
                 'extract',
-                '--pdf', 'test.pdf',
+                '--document', 'test.pdf',
                 '--schema', 'invalid_schema.py'
             ])
             
@@ -233,7 +233,7 @@ class TestModel(BaseModel):
     summary: str
 ''')
             
-            with patch('mosaicx.extractor.extract_text_from_pdf') as mock_extract:
+            with patch('mosaicx.extractor.extract_text_from_document') as mock_extract:
                 mock_extract.return_value = "Summary: Large document processed"
                 
                 with patch('mosaicx.extractor.get_ollama_client') as mock_client:
@@ -243,7 +243,7 @@ class TestModel(BaseModel):
                     
                     result = runner.invoke(cli, [
                         'extract',
-                        '--pdf', 'large.pdf',
+                        '--document', 'large.pdf',
                         '--schema', 'test_schema.py'
                     ])
                     
@@ -336,11 +336,11 @@ class TestCompatibilityTesting:
                 
                 schema_path.write_text('class TestModel(BaseModel): pass')
                 
-                with patch('mosaicx.extractor.extract_text_from_pdf'):
+                with patch('mosaicx.extractor.extract_text_from_document'):
                     with patch('mosaicx.extractor.get_ollama_client'):
                         result = runner.invoke(cli, [
                             'extract',
-                            '--pdf', 'test.pdf',
+                            '--document', 'test.pdf',
                             '--schema', schema_format
                         ])
                         

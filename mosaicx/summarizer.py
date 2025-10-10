@@ -55,12 +55,7 @@ from rich.table import Table
 from .display import console, styled_message
 from .constants import MOSAICX_COLORS
 from .utils import resolve_openai_config
-
-# Text extraction for PDF
-try:
-    from docling.document_converter import DocumentConverter  # type: ignore[import-not-found]
-except ModuleNotFoundError:  # pragma: no cover - optional dependency
-    DocumentConverter = None  # type: ignore[assignment]
+from .document_loader import DOC_SUFFIXES, DocumentLoadingError, load_document
 
 try:
     import instructor  # type: ignore[import-not-found]
@@ -189,18 +184,13 @@ def _guess_modality(text: str) -> Optional[str]:
 
 
 def _read_text(path: Path) -> str:
-    """Read .txt or .pdf. For PDFs, use Docling; fall back gracefully."""
-    if path.suffix.lower() == ".pdf":
-        if DocumentConverter is None:
-            return ""
-        try:
-            conv = DocumentConverter()
-            res = conv.convert(path)
-            if hasattr(res, "document") and hasattr(res.document, "export_to_markdown"):
-                return res.document.export_to_markdown()
-            return getattr(res, "text", "") or ""
-        except Exception:
-            return ""
+    """Read supported clinical documents via Docling; fall back to plain text."""
+    try:
+        loaded = load_document(path)
+        if loaded.markdown and loaded.markdown.strip():
+            return loaded.markdown
+    except DocumentLoadingError:
+        pass
     try:
         return path.read_text(encoding="utf-8", errors="ignore")
     except Exception:
@@ -570,7 +560,8 @@ def summarize_reports_to_terminal_and_json(
     """
     docs = load_reports(paths)
     if not docs:
-        raise ValueError("No textual content found in the provided inputs (.pdf/.txt).")
+        supported = ", ".join(sorted(DOC_SUFFIXES.keys()))
+        raise ValueError(f"No textual content found in the provided inputs (supported: {supported}).")
 
     ps = summarize_with_llm(
         docs,
@@ -591,6 +582,5 @@ def summarize_reports_to_terminal_and_json(
         json_out = Path("output") / f"summary_{base}_{ts}.json"
     write_summary_json(ps, json_out)
     styled_message(f"Saved JSON: {json_out}", "accent")
-
 
     return ps

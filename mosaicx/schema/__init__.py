@@ -35,6 +35,7 @@ from .registry import (
     register_schema,
     list_schemas,
     get_schema_by_id,
+    get_schema_by_path,
     get_suggested_filename,
     cleanup_missing_files,
     scan_and_register_existing_schemas
@@ -49,6 +50,7 @@ __all__ = [
     'register_schema',
     'list_schemas',
     'get_schema_by_id',
+    'get_schema_by_path',
     'get_suggested_filename',
     'cleanup_missing_files',
     'scan_and_register_existing_schemas'

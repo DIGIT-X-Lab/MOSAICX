@@ -64,7 +64,7 @@ const SchemaStore = {
 const API_BASE = '/api/v1';
 const ENDPOINTS = {
     generateSchema: `${API_BASE}/generate-schema`,
-    extractPDF: `${API_BASE}/extract-pdf`,
+    extractDocument: `${API_BASE}/extract-document`,
     summarizeFiles: `${API_BASE}/summarize-files`
 };
 
@@ -368,7 +368,7 @@ async function generateSchema() {
                 data.file_path || null,
             );
             
-            Utils.showNotification('Schema generated successfully! 🎉 Available in PDF Extractor.', 'success');
+            Utils.showNotification('Schema generated successfully! 🎉 Available in Document Extractor.', 'success');
             
             // Scroll to results
             resultsContainer.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
@@ -398,15 +398,15 @@ async function generateSchema() {
 
 // Schema is now saved automatically by the backend during generation
 
-// PDF Extractor Functions
-async function extractPDF() {
-    console.log('🔍 PDF Extract function called');
-    console.log('🚨 EXTRACT PDF FUNCTION IS RUNNING!');
+// Document Extractor Functions
+async function extractDocument() {
+    console.log('🔍 Document extract function called');
+    console.log('🚨 EXTRACT DOCUMENT FUNCTION IS RUNNING!');
     const fileInput = document.getElementById('extractFiles');
-    console.log('🔍 PDF Extract - File input element:', fileInput);
-    console.log('🔍 PDF Extract - All input properties:', Object.getOwnPropertyNames(fileInput));
-    console.log('🔍 PDF Extract - input.files:', fileInput.files, fileInput.files ? fileInput.files.length : 'null');
-    console.log('🔍 PDF Extract - input._droppedFiles:', fileInput._droppedFiles, fileInput._droppedFiles ? fileInput._droppedFiles.length : 'null');
+    console.log('🔍 Document extract - File input element:', fileInput);
+    console.log('🔍 Document extract - All input properties:', Object.getOwnPropertyNames(fileInput));
+    console.log('🔍 Document extract - input.files:', fileInput.files, fileInput.files ? fileInput.files.length : 'null');
+    console.log('🔍 Document extract - input._droppedFiles:', fileInput._droppedFiles, fileInput._droppedFiles ? fileInput._droppedFiles.length : 'null');
     
     // Try to get files from multiple sources
     let files = null;
@@ -423,12 +423,12 @@ async function extractPDF() {
         files = window._lastDroppedFiles;
     }
     
-    console.log('🔍 PDF Extract - Final files chosen:', files, files ? files.length : 'null', files ? Array.from(files).map(f => f.name) : 'no files');
+    console.log('🔍 Document extract - Final files chosen:', files, files ? files.length : 'null', files ? Array.from(files).map(f => f.name) : 'no files');
     
     const schemaId = document.getElementById('extractSchema').value;
     const model = document.getElementById('extractModel').value;
-    console.log('🔍 PDF Extract - Schema ID:', schemaId);
-    console.log('🔍 PDF Extract - Model:', model);
+    console.log('🔍 Document extract - Schema ID:', schemaId);
+    console.log('🔍 Document extract - Model:', model);
     
     if (!files || files.length === 0) {
         console.error('❌ No files found! Debugging file input state...');
@@ -438,7 +438,7 @@ async function extractPDF() {
         console.log('- fileInput.files exists:', !!fileInput?.files);
         console.log('- fileInput._droppedFiles exists:', !!fileInput?._droppedFiles);
         
-        Utils.showNotification('Please select at least one PDF file', 'warning');
+        Utils.showNotification('Please select at least one supported document', 'warning');
         return;
     }
     
@@ -463,7 +463,7 @@ async function extractPDF() {
     
     try {
         // Show loading state
-        Utils.showLoading('Extracting data from your PDFs...', 'extractResults');
+        Utils.showLoading('Extracting data from your documents...', 'extractResults');
         
         const formData = new FormData();
         // Server expects 'file' (singular), not 'files' (plural)
@@ -492,7 +492,7 @@ async function extractPDF() {
         formData.append('base_url', 'http://host.docker.internal:11434/v1');
         formData.append('api_key', 'ollama');
         
-        console.log('🚀 Sending PDF extraction request with:');
+        console.log('🚀 Sending document extraction request with:');
         console.log('- Files:', Array.from(files).map(f => ({
             name: f.name, 
             size: f.size, 
@@ -512,7 +512,7 @@ async function extractPDF() {
             hasContent: firstFile.size > 0
         });
         
-        const response = await fetch(ENDPOINTS.extractPDF, {
+        const response = await fetch(ENDPOINTS.extractDocument, {
             method: 'POST',
             body: formData
         });
@@ -593,7 +593,7 @@ async function extractPDF() {
         resultsContainer.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
         
     } catch (error) {
-        console.error('PDF extraction error:', error);
+        console.error('Document extraction error:', error);
         Utils.hideLoading('extractResults');
         Utils.showNotification(`Error: ${error.message}`, 'error');
     }
@@ -804,7 +804,7 @@ function setupFormHandlers() {
     if (extractForm) {
         extractForm.addEventListener('submit', function(e) {
             e.preventDefault();
-            extractPDF();
+            extractDocument();
         });
     }
     
@@ -1195,7 +1195,7 @@ function initializeApp() {
     // DIRECT EXTRACTION BYPASS - CALL THIS TO SKIP ALL VALIDATION
     window.directExtract = function() {
         console.log('🚨 DIRECT EXTRACT CALLED - BYPASSING ALL VALIDATION');
-        extractPDF();
+        extractDocument();
     };
 
     // Test function to check current file status
@@ -1207,8 +1207,8 @@ function initializeApp() {
         console.log('input._droppedFiles:', fileInput._droppedFiles, fileInput._droppedFiles ? fileInput._droppedFiles.length : 'null');
         console.log('window._lastDroppedFiles:', window._lastDroppedFiles, window._lastDroppedFiles ? window._lastDroppedFiles.length : 'null');
         
-        // Test if extractPDF function exists and can be called
-        console.log('extractPDF function exists:', typeof extractPDF);
+        // Test if extractDocument function exists and can be called
+        console.log('extractDocument function exists:', typeof extractDocument);
         
         return {
             inputFiles: fileInput.files ? fileInput.files.length : 0,

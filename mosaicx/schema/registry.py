@@ -184,6 +184,13 @@ class SchemaRegistry:
         self._save_registry()
         
         return schema_id
+
+    def get_schema_by_path(self, file_path: Path) -> Optional[Dict[str, Any]]:
+        """Return registry metadata for ``file_path`` if tracked."""
+        schema_id = self._existing_entry_for_path(file_path)
+        if not schema_id:
+            return None
+        return self.get_schema_by_id(schema_id)
     
     def list_schemas(
         self, 
@@ -344,6 +351,11 @@ def get_schema_by_id(schema_id: str) -> Optional[Dict[str, Any]]:
     return _registry.get_schema_by_id(schema_id)
 
 
+def get_schema_by_path(file_path: Path) -> Optional[Dict[str, Any]]:
+    """Get schema metadata for a resolved file path."""
+    return _registry.get_schema_by_path(file_path)
+
+
 def get_suggested_filename(class_name: str, description: str) -> str:
     """Get suggested filename from the global registry."""
     return _registry.get_suggested_filename(class_name, description)
@@ -360,40 +372,67 @@ def scan_and_register_existing_schemas() -> int:
 
 
 def _extract_schema_info_from_file(file_path: Path) -> tuple[str | None, str | None]:
-    """Extract class name and description from a schema file.
-    
-    Args:
-        file_path: Path to the schema file
-        
-    Returns:
-        Tuple of (class_name, description) or (None, None) if extraction fails
-    """
+    """Extract the primary class name and description from a schema file."""
+    import ast
     import re
-    
+
     try:
-        content = file_path.read_text(encoding="utf-8")
-        
-        # Extract class name using regex
-        class_match = re.search(r'class\s+(\w+)\s*\(BaseModel\)', content)
-        if not class_match:
+        source_text = file_path.read_text(encoding="utf-8")
+        module = ast.parse(source_text)
+
+        root_schema_class: str | None = None
+        for node in module.body:
+            if isinstance(node, ast.Assign):
+                for target in node.targets:
+                    if isinstance(target, ast.Name) and target.id == "ROOT_SCHEMA_CLASS":
+                        value = getattr(node.value, "value", None)
+                        if isinstance(value, str):
+                            root_schema_class = value
+                            break
+                if root_schema_class:
+                    break
+
+        # Collect BaseModel subclasses in definition order
+        candidates: list[ast.ClassDef] = []
+        for node in module.body:
+            if isinstance(node, ast.ClassDef):
+                if any(
+                    isinstance(base, ast.Name) and base.id == "BaseModel"
+                    or isinstance(base, ast.Attribute) and base.attr == "BaseModel"
+                    for base in node.bases
+                ):
+                    candidates.append(node)
+
+        if not candidates:
             return None, None
-        
-        class_name = class_match.group(1)
-        
-        # Extract description from class docstring
-        docstring_match = re.search(r'class\s+\w+\s*\(BaseModel\):\s*"""([^"]+)"""', content, re.DOTALL)
-        if docstring_match:
-            description = docstring_match.group(1).strip()
-            # Clean up the description - take first line if multiline
-            description = description.split('\n')[0].strip()
+
+        stem_lower = file_path.stem.lower()
+
+        def camel_to_snake(name: str) -> str:
+            return re.sub(r"(?<!^)(?=[A-Z])", "_", name).lower()
+
+        if root_schema_class:
+            chosen = next((node for node in candidates if node.name == root_schema_class), None)
+            if not chosen:
+                return None, None
         else:
-            # Fallback: try to infer from filename
-            base_name = file_path.stem
-            # Remove timestamp part
-            clean_name = re.sub(r'_\d{8}_\d{6}$', '', base_name)
-            description = f"Generated schema for {clean_name}"
-        
+            # Prefer classes whose snake-case name appears in the filename
+            matching = [
+                node for node in candidates if camel_to_snake(node.name) in stem_lower
+            ]
+
+            chosen = matching[-1] if matching else candidates[-1]
+
+        class_name = chosen.name
+
+        docstring = ast.get_docstring(chosen) or ""
+        if docstring:
+            description = docstring.strip().splitlines()[0].strip()
+        else:
+            base_name = re.sub(r'_\d{8}_\d{6}$', '', file_path.stem)
+            description = f"Generated schema for {base_name}"
+
         return class_name, description
-        
+
     except Exception:
         return None, None

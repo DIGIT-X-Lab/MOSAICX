@@ -17,7 +17,7 @@ class TestPDFExtraction:
     
     def test_extract_from_pdf_success(self, sample_pdf_file, sample_schema_file):
         """Test successful PDF extraction."""
-        with patch('mosaicx.extractor.extract_text_from_pdf') as mock_extract_text:
+        with patch('mosaicx.extractor.extract_text_from_document') as mock_extract_text:
             with patch('mosaicx.extractor.get_ollama_client') as mock_get_client:
                 with patch('mosaicx.extractor.load_schema_model') as mock_load_schema:
                     # Setup mocks
@@ -68,7 +68,7 @@ class TestPDFExtraction:
                 schema_path="nonexistent_schema.py"
             )
     
-    @patch('mosaicx.extractor.extract_text_from_pdf')
+    @patch('mosaicx.extractor.extract_text_from_document')
     @patch('mosaicx.extractor.get_ollama_client')
     @patch('mosaicx.extractor.load_schema_model')
     def test_extract_pdf_text_extraction_failure(self, mock_load_schema, mock_get_client, mock_extract_text, sample_pdf_file, sample_schema_file):
@@ -81,7 +81,7 @@ class TestPDFExtraction:
                 schema_path=str(sample_schema_file)
             )
     
-    @patch('mosaicx.extractor.extract_text_from_pdf')
+    @patch('mosaicx.extractor.extract_text_from_document')
     @patch('mosaicx.extractor.get_ollama_client')
     @patch('mosaicx.extractor.load_schema_model')
     def test_extract_llm_processing_failure(self, mock_load_schema, mock_get_client, mock_extract_text, sample_pdf_file, sample_schema_file):
@@ -98,7 +98,7 @@ class TestPDFExtraction:
                 schema_path=str(sample_schema_file)
             )
     
-    @patch('mosaicx.extractor.extract_text_from_pdf')
+    @patch('mosaicx.extractor.extract_text_from_document')
     @patch('mosaicx.extractor.get_ollama_client')
     @patch('mosaicx.extractor.load_schema_model')
     def test_extract_invalid_json_response(self, mock_load_schema, mock_get_client, mock_extract_text, sample_pdf_file, sample_schema_file):
@@ -172,7 +172,7 @@ class TestTextExtraction:
     """Test cases for text extraction utilities."""
     
     @patch('mosaicx.extractor.fitz')
-    def test_extract_text_from_pdf_success(self, mock_fitz, sample_pdf_file):
+    def test_extract_text_from_document_success(self, mock_fitz, sample_pdf_file):
         """Test successful text extraction from PDF."""
         # Mock PyMuPDF
         mock_doc = Mock()
@@ -183,14 +183,14 @@ class TestTextExtraction:
         mock_doc.__exit__ = Mock(return_value=None)
         mock_fitz.open.return_value = mock_doc
         
-        from mosaicx.extractor import extract_text_from_pdf
+        from mosaicx.extractor import extract_text_from_document
         
-        text = extract_text_from_pdf(str(sample_pdf_file))
+        text = extract_text_from_document(str(sample_pdf_file))
         assert text == "Sample extracted text from PDF"
         mock_fitz.open.assert_called_once_with(str(sample_pdf_file))
     
     @patch('mosaicx.extractor.fitz')
-    def test_extract_text_from_pdf_empty(self, mock_fitz, sample_pdf_file):
+    def test_extract_text_from_document_empty(self, mock_fitz, sample_pdf_file):
         """Test text extraction from empty PDF."""
         mock_doc = Mock()
         mock_doc.__iter__ = Mock(return_value=iter([]))
@@ -198,20 +198,20 @@ class TestTextExtraction:
         mock_doc.__exit__ = Mock(return_value=None)
         mock_fitz.open.return_value = mock_doc
         
-        from mosaicx.extractor import extract_text_from_pdf
+        from mosaicx.extractor import extract_text_from_document
         
-        text = extract_text_from_pdf(str(sample_pdf_file))
+        text = extract_text_from_document(str(sample_pdf_file))
         assert text == ""
     
     @patch('mosaicx.extractor.fitz')
-    def test_extract_text_from_pdf_error(self, mock_fitz, sample_pdf_file):
+    def test_extract_text_from_document_error(self, mock_fitz, sample_pdf_file):
         """Test handling of PDF extraction errors."""
         mock_fitz.open.side_effect = Exception("PDF corrupted")
         
-        from mosaicx.extractor import extract_text_from_pdf
+        from mosaicx.extractor import extract_text_from_document
         
         with pytest.raises(Exception):
-            extract_text_from_pdf(str(sample_pdf_file))
+            extract_text_from_document(str(sample_pdf_file))
 
 
 class TestDataValidation:
@@ -252,7 +252,7 @@ class TestExtractionOptions:
     
     def test_extract_with_custom_model(self, sample_pdf_file, sample_schema_file):
         """Test extraction with custom LLM model."""
-        with patch('mosaicx.extractor.extract_text_from_pdf'):
+        with patch('mosaicx.extractor.extract_text_from_document'):
             with patch('mosaicx.extractor.get_ollama_client'):
                 with patch('mosaicx.extractor.load_schema_model'):
                     # Test with different model
@@ -265,7 +265,7 @@ class TestExtractionOptions:
     
     def test_extract_with_debug_mode(self, sample_pdf_file, sample_schema_file):
         """Test extraction with debug mode enabled."""
-        with patch('mosaicx.extractor.extract_text_from_pdf'):
+        with patch('mosaicx.extractor.extract_text_from_document'):
             with patch('mosaicx.extractor.get_ollama_client'):
                 with patch('mosaicx.extractor.load_schema_model'):
                     # Test with debug flag

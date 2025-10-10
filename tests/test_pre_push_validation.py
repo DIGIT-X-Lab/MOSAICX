@@ -86,7 +86,7 @@ class TestPrePushValidation:
         # Extract using existing simple schema
         extract_result = subprocess.run([
             "mosaicx", "extract",
-            "--pdf", str(test_datasets["extract_pdf"]),
+            "--document", str(test_datasets["extract_pdf"]),
             "--schema", "mosaicx/schema/templates/python/patient_identity.py",
             "--model", "mistral:latest"
         ], capture_output=True, text=True, timeout=120)

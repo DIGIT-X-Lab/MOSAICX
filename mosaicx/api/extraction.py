@@ -1,5 +1,5 @@
 """
-MOSAICX API - PDF Extraction Helpers
+MOSAICX API - Document Extraction Helpers
 
 ================================================================================
 MOSAICX: Medical cOmputational Suite for Advanced Intelligent eXtraction
@@ -14,7 +14,7 @@ University: LMU University Hospital | LMU Munich
 
 Overview:
 ---------
-Expose high-level functions that transform radiology PDFs into validated
+Expose high-level functions that transform clinical documents into validated
 Pydantic records, matching the behaviour of the CLI ``extract`` command.
 Inputs are resolved to schema classes automatically and the resulting payloads
 offer multiple serialisation options for downstream systems.
@@ -38,16 +38,21 @@ from typing import Optional, Union
 from pydantic import BaseModel
 
 from ..constants import DEFAULT_LLM_MODEL
-from ..extractor import extract_structured_data, extract_text_from_pdf, load_schema_model
+from ..extractor import (
+    extract_structured_data,
+    extract_text_from_document,
+    extract_text_from_pdf,
+    load_schema_model,
+)
 
 
 @dataclass(slots=True)
 class ExtractionResult:
-    """Structured extraction payload produced by :func:`extract_pdf`."""
+    """Structured extraction payload produced by :func:`extract_document`."""
 
     record: BaseModel
     schema_path: Path
-    pdf_path: Path
+    document_path: Path
 
     def to_dict(self) -> dict:
         """Return the extracted data as a plain ``dict``."""
@@ -64,6 +69,33 @@ class ExtractionResult:
         return path
 
 
+def extract_document(
+    document_path: Union[Path, str],
+    schema_path: Union[Path, str],
+    *,
+    model: str = DEFAULT_LLM_MODEL,
+    base_url: Optional[str] = None,
+    api_key: Optional[str] = None,
+    temperature: float = 0.0,
+) -> ExtractionResult:
+    """Extract structured data from a clinical document."""
+
+    doc_path = Path(document_path)
+    schema_path = Path(schema_path)
+
+    schema_class = load_schema_model(str(schema_path))
+    text_content = extract_text_from_document(doc_path)
+    record = extract_structured_data(
+        text_content,
+        schema_class,
+        model=model,
+        base_url=base_url,
+        api_key=api_key,
+        temperature=temperature,
+    )
+    return ExtractionResult(record=record, schema_path=schema_path, document_path=doc_path)
+
+
 def extract_pdf(
     pdf_path: Union[Path, str],
     schema_path: Union[Path, str],
@@ -73,22 +105,16 @@ def extract_pdf(
     api_key: Optional[str] = None,
     temperature: float = 0.0,
 ) -> ExtractionResult:
-    """Extract structured data from a PDF."""
+    """Backward-compatible wrapper for :func:`extract_document`."""
 
-    pdf_path = Path(pdf_path)
-    schema_path = Path(schema_path)
-
-    schema_class = load_schema_model(str(schema_path))
-    text_content = extract_text_from_pdf(pdf_path)
-    record = extract_structured_data(
-        text_content,
-        schema_class,
+    return extract_document(
+        document_path=pdf_path,
+        schema_path=schema_path,
         model=model,
         base_url=base_url,
         api_key=api_key,
         temperature=temperature,
     )
-    return ExtractionResult(record=record, schema_path=schema_path, pdf_path=pdf_path)
 
 
-__all__ = ["ExtractionResult", "extract_pdf"]
+__all__ = ["ExtractionResult", "extract_document", "extract_pdf"]

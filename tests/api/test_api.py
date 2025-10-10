@@ -58,7 +58,7 @@ def patch_extract_dependencies(monkeypatch: pytest.MonkeyPatch) -> None:
         return schema_cls(name=text.split(":")[-1].strip())
 
     monkeypatch.setattr("mosaicx.api.extraction.load_schema_model", fake_load_schema_model)
-    monkeypatch.setattr("mosaicx.api.extraction.extract_text_from_pdf", fake_extract_text)
+    monkeypatch.setattr("mosaicx.api.extraction.extract_text_from_document", fake_extract_text)
     monkeypatch.setattr("mosaicx.api.extraction.extract_structured_data", fake_extract_structured)
 
 
@@ -69,7 +69,7 @@ def test_extract_pdf_accepts_string_paths(tmp_path: Path, patch_extract_dependen
     result = extract_pdf(str(pdf_path), str(dummy_schema_file))
 
     assert result.schema_path == dummy_schema_file
-    assert result.pdf_path == pdf_path
+    assert result.document_path == pdf_path
     assert result.to_dict()["name"] == "Alice"
 
     out_path = tmp_path / "out.json"

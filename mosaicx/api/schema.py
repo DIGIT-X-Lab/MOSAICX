@@ -43,6 +43,34 @@ from ..schema.builder import synthesize_pydantic_model
 from ..schema.registry import get_suggested_filename
 
 
+def _ensure_root_schema_constant(code: str, class_name: str) -> str:
+    """Ensure generated code declares ``ROOT_SCHEMA_CLASS``."""
+    if "ROOT_SCHEMA_CLASS" in code:
+        return code
+
+    lines = code.splitlines()
+    last_import_idx = -1
+    for idx, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped.startswith("from ") or stripped.startswith("import "):
+            last_import_idx = idx
+            continue
+        if stripped == "":
+            continue
+        break
+
+    insert_at = last_import_idx + 1 if last_import_idx >= 0 else 0
+    before = lines[:insert_at]
+    after = lines[insert_at:]
+
+    new_lines = before + [f'ROOT_SCHEMA_CLASS = "{class_name}"']
+    if not after or after[0].strip():
+        new_lines.append("")
+    new_lines.extend(after)
+
+    return "\n".join(new_lines).rstrip() + "\n"
+
+
 @dataclass(slots=True)
 class GeneratedSchema:
     """Container for a generated Pydantic schema."""
@@ -107,6 +135,7 @@ def generate_schema(
 
     # Normalise legacy Pydantic v1 "regex" keyword to the v2 "pattern" name.
     code = re.sub(r"\bregex(?=\s*=)", "pattern", code)
+    code = _ensure_root_schema_constant(code, class_name)
     suggested = get_suggested_filename(class_name, prompt)
     return GeneratedSchema(
         class_name=class_name,

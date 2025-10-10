@@ -144,8 +144,8 @@ class TestExtractCommand:
         result = runner.invoke(extract, ["--help"])
 
         assert result.exit_code == 0
-        assert "Extract structured data from PDF" in result.output
-        assert "--pdf" in result.output
+        assert "Extract structured data from a clinical document" in result.output
+        assert "--document" in result.output
 
     @patch("mosaicx.cli.app.extract_pdf")
     @patch("mosaicx.cli.app.list_schemas")
@@ -175,7 +175,7 @@ class TestExtractCommand:
         result = runner.invoke(
             extract,
             [
-                "--pdf",
+                "--document",
                 str(pdf_file),
                 "--schema",
                 "generated",
@@ -217,7 +217,7 @@ class TestExtractCommand:
         result = runner.invoke(
             extract,
             [
-                "--pdf",
+                "--document",
                 str(pdf_file),
                 "--schema",
                 "generated",
@@ -275,7 +275,7 @@ class TestWorkflowIntegration:
                 cli,
                 [
                     "extract",
-                    "--pdf",
+                    "--document",
                     str(pdf_file),
                     "--schema",
                     "schema-001",

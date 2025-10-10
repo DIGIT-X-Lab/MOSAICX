@@ -78,7 +78,7 @@ if [[ ! -f "$EXTRACT_SCHEMA" ]]; then
     exit 1
 fi
 
-if mosaicx extract --pdf "$EXTRACT_PDF" --schema "$EXTRACT_SCHEMA" --model mistral:latest > /tmp/mosaicx_test_extract.log 2>&1; then
+if mosaicx extract --document "$EXTRACT_PDF" --schema "$EXTRACT_SCHEMA" --model mistral:latest > /tmp/mosaicx_test_extract.log 2>&1; then
     echo "✅ PDF extraction successful"
     if grep -q "Extraction results" /tmp/mosaicx_test_extract.log && grep -q "name" /tmp/mosaicx_test_extract.log; then
         echo "✅ Extraction output format correct"
