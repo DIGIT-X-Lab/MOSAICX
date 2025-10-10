@@ -33,7 +33,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional, Union
+from typing import Optional, Union, Callable
 
 from pydantic import BaseModel
 
@@ -77,6 +77,7 @@ def extract_document(
     base_url: Optional[str] = None,
     api_key: Optional[str] = None,
     temperature: float = 0.0,
+    status_callback: Optional[Callable[[str], None]] = None,
 ) -> ExtractionResult:
     """Extract structured data from a clinical document."""
 
@@ -84,7 +85,12 @@ def extract_document(
     schema_path = Path(schema_path)
 
     schema_class = load_schema_model(str(schema_path))
-    text_content = extract_text_from_document(doc_path)
+    extraction = extract_text_from_document(
+        doc_path,
+        return_details=True,
+        status_callback=status_callback,
+    )
+    text_content = extraction.markdown
     record = extract_structured_data(
         text_content,
         schema_class,
@@ -104,6 +110,7 @@ def extract_pdf(
     base_url: Optional[str] = None,
     api_key: Optional[str] = None,
     temperature: float = 0.0,
+    status_callback: Optional[Callable[[str], None]] = None,
 ) -> ExtractionResult:
     """Backward-compatible wrapper for :func:`extract_document`."""
 
@@ -114,6 +121,7 @@ def extract_pdf(
         base_url=base_url,
         api_key=api_key,
         temperature=temperature,
+        status_callback=status_callback,
     )
 
 

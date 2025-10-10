@@ -55,7 +55,8 @@ from rich.table import Table
 from .display import console, styled_message
 from .constants import MOSAICX_COLORS
 from .utils import resolve_openai_config
-from .document_loader import DOC_SUFFIXES, DocumentLoadingError, load_document
+from .document_loader import DOC_SUFFIXES
+from .text_extraction import TextExtractionError, extract_text_with_fallback
 
 try:
     import instructor  # type: ignore[import-not-found]
@@ -184,12 +185,12 @@ def _guess_modality(text: str) -> Optional[str]:
 
 
 def _read_text(path: Path) -> str:
-    """Read supported clinical documents via Docling; fall back to plain text."""
+    """Read clinical documents via layered extraction; fall back to plain text."""
     try:
-        loaded = load_document(path)
-        if loaded.markdown and loaded.markdown.strip():
-            return loaded.markdown
-    except DocumentLoadingError:
+        result = extract_text_with_fallback(path)
+        if result.markdown and result.markdown.strip():
+            return result.markdown
+    except TextExtractionError:
         pass
     try:
         return path.read_text(encoding="utf-8", errors="ignore")

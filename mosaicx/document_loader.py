@@ -20,8 +20,23 @@ try:
         WordFormatOption,
         PowerpointFormatOption,
     )
+    from docling.datamodel.pipeline_options import (
+        PdfPipelineOptions,
+        EasyOcrOptions,
+    )
+    from docling.datamodel.accelerator_options import AcceleratorOptions
 except ModuleNotFoundError:  # pragma: no cover - optional dependency
     DocumentConverter = None  # type: ignore[assignment]
+    PdfPipelineOptions = None  # type: ignore[assignment]
+    EasyOcrOptions = None  # type: ignore[assignment]
+    AcceleratorOptions = None  # type: ignore[assignment]
+
+try:
+    import torch  # type: ignore[import-not-found]
+except ModuleNotFoundError:  # pragma: no cover - optional dependency
+    torch = None  # type: ignore[assignment]
+
+from .constants import DEFAULT_ACCELERATOR_DEVICE
 
 
 class DocumentLoadingError(RuntimeError):
@@ -47,6 +62,7 @@ class LoadedDocument:
     markdown: str
     page_analysis: List[PageAnalysis]
     docling_document: Optional[object] = None
+    conversion_result: Optional[object] = None
 
 
 DOC_SUFFIXES: Dict[str, InputFormat] = {
@@ -63,13 +79,45 @@ DOC_SUFFIXES: Dict[str, InputFormat] = {
 PLAIN_TEXT_SUFFIXES = {".txt", ".md", ".rtf"}
 
 
+def _detect_accelerator_device() -> str:
+    if DEFAULT_ACCELERATOR_DEVICE in {"cpu", "cuda", "mps"}:
+        return DEFAULT_ACCELERATOR_DEVICE  # type: ignore[return-value]
+
+    if torch is not None:
+        try:
+            if torch.cuda.is_available():  # type: ignore[attr-defined]
+                return "cuda"
+        except Exception:
+            pass
+        try:
+            if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():  # type: ignore[attr-defined]
+                return "mps"
+        except Exception:
+            pass
+
+    return "cpu"
+
+
+def _resolve_accelerator_options() -> Optional["AcceleratorOptions"]:
+    if AcceleratorOptions is None:
+        return None
+    device = _detect_accelerator_device()
+    return AcceleratorOptions(device=device)
+
+
 def _build_format_options() -> Dict[InputFormat, FormatOption]:
     """Return format options tuned for the formats we currently support."""
     options: Dict[InputFormat, FormatOption] = {
-        InputFormat.PDF: PdfFormatOption(),
         InputFormat.DOCX: WordFormatOption(),
         InputFormat.PPTX: PowerpointFormatOption(),
     }
+    accelerator_options = _resolve_accelerator_options()
+    if PdfPipelineOptions is not None and accelerator_options is not None:
+        options[InputFormat.PDF] = PdfFormatOption(
+            pipeline_options=PdfPipelineOptions(accelerator_options=accelerator_options)
+        )
+    else:
+        options[InputFormat.PDF] = PdfFormatOption()
     return options
 
 
@@ -146,7 +194,14 @@ def _read_plain_text(path: Path) -> str:
         raise DocumentLoadingError(f"Failed to read text from {path}: {exc}") from exc
 
 
-def load_document(path: Union[str, Path]) -> LoadedDocument:
+def load_document(
+    path: Union[str, Path],
+    *,
+    force_ocr: bool = False,
+    languages: Optional[List[str]] = None,
+    generate_images: bool = False,
+    images_scale: float = 1.0,
+) -> LoadedDocument:
     """Convert ``path`` into a :class:`LoadedDocument` using Docling when possible."""
     doc_path = Path(path).expanduser().resolve()
     if not doc_path.exists():
@@ -162,9 +217,9 @@ def load_document(path: Union[str, Path]) -> LoadedDocument:
         )
 
     # Plain-text flow without Docling if possible.
-    if suffix in PLAIN_TEXT_SUFFIXES:
+    if suffix in PLAIN_TEXT_SUFFIXES and not (force_ocr or generate_images):
         text = _read_plain_text(doc_path)
-        return LoadedDocument(path=doc_path, markdown=text, page_analysis=[])
+        return LoadedDocument(path=doc_path, markdown=text, page_analysis=[], conversion_result=None)
 
     if DocumentConverter is None:
         raise DocumentLoadingError(
@@ -172,6 +227,33 @@ def load_document(path: Union[str, Path]) -> LoadedDocument:
         )
 
     format_options = _build_format_options()
+
+    if input_format == InputFormat.PDF:
+        pipeline_options = None
+        accelerator_options = _resolve_accelerator_options()
+        if force_ocr and PdfPipelineOptions is not None and EasyOcrOptions is not None:
+            lang_list = languages or ["en", "de"]
+            pipeline_options = PdfPipelineOptions(
+                do_ocr=True,
+                generate_page_images=generate_images,
+                images_scale=images_scale,
+                ocr_options=EasyOcrOptions(
+                    lang=lang_list,
+                    force_full_page_ocr=True,
+                    bitmap_area_threshold=0.0,
+                    use_gpu=None,
+                ),
+                accelerator_options=accelerator_options,
+            )
+        elif generate_images and PdfPipelineOptions is not None:
+            pipeline_options = PdfPipelineOptions(
+                generate_page_images=True,
+                images_scale=images_scale,
+                accelerator_options=accelerator_options,
+            )
+
+        if pipeline_options is not None:
+            format_options[InputFormat.PDF] = PdfFormatOption(pipeline_options=pipeline_options)
     converter = DocumentConverter(format_options=format_options)
 
     try:
@@ -193,6 +275,7 @@ def load_document(path: Union[str, Path]) -> LoadedDocument:
         markdown=markdown,
         page_analysis=page_analysis,
         docling_document=getattr(result, "document", None),
+        conversion_result=result,
     )
 
 

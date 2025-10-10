@@ -255,6 +255,8 @@ mosaicx extract \
 
 Supported formats include PDF, DOC/DOCX, PPT/PPTX, TXT/MD, and RTF—mix them freely in a single run.
 
+Behind the scenes MOSAICX layers extraction: native Docling text, then forced OCR, and finally Gemma3:27b via Ollama for vision-language transcription when required.
+
 Example CLI output (abridged – actual Rich formatting includes colors and panels):
 
 ```

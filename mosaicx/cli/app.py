@@ -422,9 +422,16 @@ def extract(
             if verbose:
                 styled_message(f"Using schema class: {schema_class_name}", "info")
 
-            status.update(
+            running_message = (
                 f"[{MOSAICX_COLORS['accent']}]Running extraction with {model}…"
             )
+            status.update(running_message)
+            fallback_used = {"flag": False}
+
+            def _report_fallback(message: str) -> None:
+                fallback_used["flag"] = True
+                status.update(f"[{MOSAICX_COLORS['accent']}]Using {message}…")
+
             extraction = extract_pdf(
                 pdf_path=document,
                 schema_path=resolved_schema_path,
@@ -432,7 +439,10 @@ def extract(
                 base_url=base_url,
                 api_key=api_key,
                 temperature=temperature,
+                status_callback=_report_fallback,
             )
+            if fallback_used["flag"]:
+                status.update(running_message)
 
         console.print()
         result_dict = extraction.record.model_dump()

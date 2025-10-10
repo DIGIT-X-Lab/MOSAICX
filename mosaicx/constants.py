@@ -208,6 +208,17 @@ DEFAULT_LLM_MODEL = "gpt-oss:120b"
 DEFAULT_TEMPERATURE = 0
 DEFAULT_MAX_RETRIES = 2
 
+# Layered text extraction defaults
+DEFAULT_VLM_MODEL = os.getenv("MOSAICX_VLM_MODEL", "gemma3:27b")
+DEFAULT_VLM_BASE_URL = os.getenv("MOSAICX_VLM_BASE_URL", "http://localhost:11434")
+DEFAULT_OCR_LANGS: List[str] = [
+    lang.strip()
+    for lang in os.getenv("MOSAICX_OCR_LANGS", "en,de").split(",")
+    if lang.strip()
+]
+DEFAULT_FORCE_OCR = os.getenv("MOSAICX_FORCE_OCR", "true").lower() in {"1", "true", "yes", "on"}
+DEFAULT_ACCELERATOR_DEVICE = os.getenv("MOSAICX_ACCELERATOR_DEVICE", "").lower() or None
+
 # Schema generation defaults
 DEFAULT_SCHEMA_VERSION = "1.0.0"
 SUPPORTED_FIELD_TYPES = [
@@ -287,6 +298,11 @@ __all__ = [
     "DEFAULT_LLM_MODEL",
     "DEFAULT_TEMPERATURE",
     "DEFAULT_MAX_RETRIES",
+    "DEFAULT_VLM_MODEL",
+    "DEFAULT_VLM_BASE_URL",
+    "DEFAULT_OCR_LANGS",
+    "DEFAULT_FORCE_OCR",
+    "DEFAULT_ACCELERATOR_DEVICE",
     "DEFAULT_SCHEMA_VERSION",
     "SUPPORTED_FIELD_TYPES",
     "DEFAULT_OUTPUT_FORMAT",

@@ -36,7 +36,7 @@ Highlights:
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Type, Union
+from typing import Any, Dict, List, Optional, Type, Union, Callable
 import json
 import importlib.util
 import sys
@@ -75,7 +75,8 @@ from .constants import (
     PACKAGE_SCHEMA_TEMPLATES_PY_DIR,
     USER_SCHEMA_DIR,
 )
-from .document_loader import DocumentLoadingError, load_document
+from .document_loader import DocumentLoadingError
+from .text_extraction import TextExtractionError, extract_text_with_fallback
 from .schema.registry import get_schema_by_id, get_schema_by_path
 from .display import styled_message, console
 from .utils import derive_ollama_generate_url, resolve_openai_config
@@ -227,12 +228,19 @@ def load_schema_model(schema_identifier: str) -> Type[BaseModel]:
         raise ExtractionError(f"Failed to load schema from {schema_file}: {e}") from e
 
 
-def extract_text_from_document(document_path: Union[str, Path]) -> str:
+def extract_text_from_document(
+    document_path: Union[str, Path],
+    *,
+    return_details: bool = False,
+    status_callback: Optional[Callable[[str], None]] = None,
+) -> Union[str, LayeredTextResult]:
     """
     Extract text from a supported clinical document using Docling.
 
     Args:
         document_path: Path to the document file
+        return_details: When True, return the full LayeredTextResult
+        status_callback: Optional callable invoked when a fallback mode is used
 
     Returns:
         Extracted text content (Markdown)
@@ -242,19 +250,33 @@ def extract_text_from_document(document_path: Union[str, Path]) -> str:
     """
     doc_path = Path(document_path)
     try:
-        loaded = load_document(doc_path)
-    except DocumentLoadingError as exc:
+        extraction = extract_text_with_fallback(doc_path)
+    except (DocumentLoadingError, TextExtractionError) as exc:
         raise ExtractionError(str(exc)) from exc
 
-    text_content = loaded.markdown
-    if not text_content or not text_content.strip():
-        raise ExtractionError(f"No text content extracted from {loaded.path}")
-    return text_content
+    if not extraction.markdown or not extraction.markdown.strip():
+        raise ExtractionError(f"No text content extracted from {doc_path}")
+
+    if status_callback and extraction.mode != "native":
+        status_callback(f"{extraction.mode.upper()} fallback for {doc_path.name}")
+
+    if return_details:
+        return extraction
+    return extraction.markdown
 
 
-def extract_text_from_pdf(pdf_path: Union[str, Path]) -> str:
+def extract_text_from_pdf(
+    pdf_path: Union[str, Path],
+    *,
+    return_details: bool = False,
+    status_callback: Optional[Callable[[str], None]] = None,
+) -> Union[str, LayeredTextResult]:
     """Backward-compatible alias for :func:`extract_text_from_document`."""
-    return extract_text_from_document(pdf_path)
+    return extract_text_from_document(
+        pdf_path,
+        return_details=return_details,
+        status_callback=status_callback,
+    )
 
 
 # ---------------------------------------------------------------------------

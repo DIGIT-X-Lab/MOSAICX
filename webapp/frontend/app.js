@@ -624,7 +624,7 @@ async function summarizeDirectory() {
         
         const formData = new FormData();
         Array.from(files).forEach(file => {
-            formData.append('pdf_files', file);
+            formData.append('documents', file);
         });
         formData.append('patient_id', 'patient');
         formData.append('model', model);
@@ -682,7 +682,7 @@ async function summarizeDirectory() {
                     </div>
                     <div style="margin-bottom: 20px;">
                         <div style="color: rgba(226,232,240,0.8); font-size: 14px; margin-bottom: 10px;">
-                            📄 Processed ${files.length} file(s) | Patient: ${data.patient_id || 'Unknown'}
+                            📄 Processed ${data.files_processed ? data.files_processed.length : files.length} file(s) | Patient: ${data.patient_id || 'Unknown'}
                         </div>
                         ${data.overall_summary ? `
                         <div style="background: rgba(124,58,237,0.1); border: 1px solid rgba(124,58,237,0.3); 
