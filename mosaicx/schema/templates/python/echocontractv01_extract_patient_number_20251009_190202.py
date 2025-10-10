@@ -15,7 +15,7 @@ class EchoContractV01(BaseModel):
     modality: str = Field(..., description="Imaging modality used")
 
     tricuspid_valve_insufficiency: Literal["True", "False"] = Field(...,
-        description="Presence of tricuspid valve insufficiency")
+        description="Presence of tricuspid valve insufficiency. Note: Physiological insufficiency is classified as 'False'")
     tricuspid_valve_grade: Literal["None", "Mild", "Medium", "Severe"] = Field(...,
         description="Severity grade of tricuspid valve insufficiency. Note: Physiological insufficiency is classified as 'none'")
     tricuspid_valve_confidence: float = Field(..., ge=0.0, le=1.0,
@@ -24,7 +24,7 @@ class EchoContractV01(BaseModel):
         description="Extracted text supporting the tricuspid valve conclusion")
 
     mitral_valve_insufficiency: Literal["True", "False"] = Field(...,
-        description="Presence of mitral valve insufficiency")
+        description="Presence of mitral valve insufficiency. Note: Physiological insufficiency is classified as 'False'")
     mitral_valve_grade: Literal["None", "Mild", "Medium", "Severe"] = Field(...,
         description="Severity grade of mitral valve insufficiency. Note: Physiological insufficiency is classified as 'none'")
     mitral_valve_confidence: float = Field(..., ge=0.0, le=1.0,
