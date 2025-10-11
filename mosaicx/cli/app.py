@@ -30,6 +30,7 @@ Highlights:
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import List, Optional
 
@@ -42,7 +43,13 @@ except ModuleNotFoundError:  # pragma: no cover - fallback when rich_click missi
     _rich_click_config = None
 from rich.align import Align
 
-from ..api import extract_pdf, generate_schema, summarize_reports
+from ..api import (
+    extract_pdf,
+    generate_schema,
+    summarize_reports,
+    standardize_document,
+    save_standardize_artifacts,
+)
 from ..constants import (
     APPLICATION_NAME,
     APPLICATION_VERSION as __version__,
@@ -504,6 +511,215 @@ def extract(
 
 @cli.command()
 @click.option(
+    "--document",
+    "--doc",
+    "document",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    help="Path to the clinical document to standardize.",
+)
+@click.option("--schema", required=True, help="Schema identifier (ID, filename, or file path).")
+@click.option("--model", default=DEFAULT_LLM_MODEL, show_default=True, help="Model used for structuring.")
+@click.option("--base-url", help="OpenAI-compatible API base URL.")
+@click.option("--api-key", help="API key for the endpoint.")
+@click.option("--temperature", type=float, default=0.0, show_default=True, help="Sampling temperature for the LLM.")
+@click.option(
+    "--artifact",
+    "artifacts",
+    type=click.Choice(["json", "pdf", "txt", "docx"], case_sensitive=False),
+    multiple=True,
+    default=("json",),
+    help="Choose one or more output artifacts (repeat flag for multiples).",
+)
+@click.option(
+    "--narrative/--no-narrative",
+    default=False,
+    help="Generate an LLM-written narrative summary to accompany the structured output.",
+)
+@click.option(
+    "--narrative-temperature",
+    type=float,
+    default=None,
+    help="Sampling temperature for the narrative LLM (defaults to 0.2 when not provided).",
+)
+@click.option("--out-dir", type=click.Path(path_type=Path), help="Directory for auto-named artifacts.")
+@click.option("--json-out", type=click.Path(path_type=Path), help="Explicit path for JSON output.")
+@click.option("--pdf-out", type=click.Path(path_type=Path), help="Explicit path for PDF output.")
+@click.option("--text-out", type=click.Path(path_type=Path), help="Explicit path for TXT output.")
+@click.option("--docx-out", type=click.Path(path_type=Path), help="Explicit path for DOCX output.")
+@click.option(
+    "--record-json",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    help="Use a pre-extracted JSON record (skips document extraction).",
+)
+@click.option("--debug", is_flag=True, help="Show tracebacks on errors.")
+@click.pass_context
+def standardize(
+    ctx: click.Context,
+    document: Optional[Path],
+    schema: str,
+    model: str,
+    base_url: Optional[str],
+    api_key: Optional[str],
+    temperature: float,
+    artifacts: tuple[str, ...],
+    narrative: bool,
+    narrative_temperature: Optional[float],
+    out_dir: Optional[Path],
+    json_out: Optional[Path],
+    pdf_out: Optional[Path],
+    text_out: Optional[Path],
+    docx_out: Optional[Path],
+    record_json: Optional[Path],
+    debug: bool,
+) -> None:
+    """Standardize a document into a structured report using a schema."""
+
+    verbose = ctx.obj.get("verbose", False)
+
+    record_payload: Optional[dict] = None
+    if record_json is not None:
+        try:
+            record_payload = json.loads(record_json.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as exc:
+            raise click.ClickException(f"Invalid JSON in {record_json}: {exc}") from exc
+        if verbose:
+            styled_message(f"Using pre-extracted JSON: {record_json}", "info")
+
+    if document is None and record_payload is None:
+        raise click.ClickException("Provide either --document or --record-json (or both).")
+
+    if verbose and document is not None:
+        styled_message(f"Standardizing document: {document}", "info")
+    if verbose:
+        styled_message(f"Using schema: {schema}", "info")
+        styled_message(f"Model: {model}", "info")
+
+    try:
+        with console.status(
+            f"[{MOSAICX_COLORS['primary']}]Preparing standardization...", spinner="dots"
+        ) as status:
+            status.update(f"[{MOSAICX_COLORS['accent']}]Resolving schema reference…")
+            resolved_schema_path = resolve_schema_reference(schema)
+            if not resolved_schema_path:
+                raise click.ClickException(f"Could not find schema: {schema}")
+
+            status.update(f"[{MOSAICX_COLORS['accent']}]Loading schema module…")
+            fallback_used = {"flag": False}
+
+            def _report(message: str) -> None:
+                fallback_used["flag"] = True
+                status.update(f"[{MOSAICX_COLORS['accent']}]Using {message}…")
+
+            result = standardize_document(
+                document_path=document,
+                schema_path=resolved_schema_path,
+                record_data=record_payload,
+                model=model,
+                base_url=base_url,
+                api_key=api_key,
+                temperature=temperature,
+                generate_narrative=narrative,
+                narrative_temperature=narrative_temperature,
+                status_callback=_report,
+            )
+            if fallback_used["flag"]:
+                status.update(f"[{MOSAICX_COLORS['accent']}]Finalizing structured report…")
+
+        console.print()
+        styled_message(
+            f"📊 Structured report ({result.schema_name})", "primary", center=True
+        )
+        console.print()
+
+        if result.narrative:
+            from rich.panel import Panel
+
+            console.print(
+                Panel(
+                    result.narrative,
+                    title="Narrative Summary",
+                    border_style=MOSAICX_COLORS["accent"],
+                )
+            )
+            console.print()
+        elif narrative and result.narrative_error:
+            msg = result.narrative_error.splitlines()[0]
+            if len(msg) > 160:
+                msg = msg[:157] + "..."
+            styled_message(f"Narrative generation failed: {msg}", "warning")
+            console.print()
+
+        from rich.table import Table
+
+        table = Table(
+            show_lines=False,
+            border_style=MOSAICX_COLORS["secondary"],
+            header_style=f"bold {MOSAICX_COLORS['primary']}",
+        )
+        table.add_column("Field", style=MOSAICX_COLORS["info"], no_wrap=True)
+        table.add_column("Value", style=MOSAICX_COLORS["accent"])
+
+        for field, value in result.to_dict().items():
+            if value is None:
+                display_value = "[dim]Not provided[/dim]"
+            elif isinstance(value, (list, dict)):
+                text = json.dumps(value, ensure_ascii=False)
+                display_value = text[:70] + "…" if len(text) > 70 else text
+            else:
+                display_value = str(value)
+            table.add_row(field, display_value)
+
+        console.print(Align.center(table))
+
+        normalized_artifacts = tuple(dict.fromkeys(a.lower() for a in artifacts)) or ("json",)
+        selected = set(normalized_artifacts)
+
+        effective_json = json_out
+        if effective_json and "json" not in selected:
+            styled_message("Ignoring --json-out because JSON artifact disabled.", "warning")
+            effective_json = None
+
+        wants_text = any(opt in selected for opt in ("txt", "text"))
+        effective_text = text_out
+        if effective_text and not wants_text:
+            styled_message("Ignoring --text-out because TXT artifact disabled.", "warning")
+            effective_text = None
+
+        effective_pdf = pdf_out
+        if effective_pdf and "pdf" not in selected:
+            styled_message("Ignoring --pdf-out because PDF artifact disabled.", "warning")
+            effective_pdf = None
+
+        effective_docx = docx_out
+        if effective_docx and "docx" not in selected:
+            styled_message("Ignoring --docx-out because DOCX artifact disabled.", "warning")
+            effective_docx = None
+
+        save_standardize_artifacts(
+            result,
+            artifacts=normalized_artifacts,
+            json_path=effective_json,
+            pdf_path=effective_pdf,
+            text_path=effective_text,
+            docx_path=effective_docx,
+            out_dir=out_dir,
+            emit_messages=True,
+        )
+
+    except ExtractionError as exc:
+        styled_message(f"Standardization failed: {exc}", "error")
+        if debug:
+            console.print_exception()
+        raise click.ClickException(str(exc))
+    except Exception as exc:
+        styled_message(f"Unexpected error: {exc}", "error")
+        if debug:
+            console.print_exception()
+        raise click.ClickException(str(exc))
+
+
+@cli.command()
+@click.option(
     "--report",
     "reports",
     multiple=True,
@@ -637,6 +853,7 @@ __all__ = [
     "generate",
     "list_schemas_cmd",
     "extract",
+    "standardize",
     "summarize",
     "main",
 ]
