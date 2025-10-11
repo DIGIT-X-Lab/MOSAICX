@@ -242,16 +242,20 @@ Extract structured information from clinical documents:
 ```bash
 # Basic extraction
 mosaicx extract \
-  --pdf patient_reports/echo_001.pdf \
+  --document patient_reports/echo_001.pdf \
   --schema EchoReport
 
 # Advanced extraction with custom model
 mosaicx extract \
-  --pdf "case studies/complex_cardiology_report.pdf" \
+  --document "case studies/complex_cardiology_report.pdf" \
   --schema CBCReport_20250925_143022 \
   --model qwen2.5:7b-instruct \
   --save results/structured_data.json
 ```
+
+Supported formats include PDF, DOC/DOCX, PPT/PPTX, TXT/MD, and RTF—mix them freely in a single run.
+
+Behind the scenes MOSAICX layers extraction: native Docling text, then forced OCR, and finally Gemma3:27b via Ollama for vision-language transcription when required.
 
 Example CLI output (abridged – actual Rich formatting includes colors and panels):
 
@@ -292,6 +296,8 @@ mosaicx summarize \
   --temperature 0.1 \
   --json-out P001_summary.json
 ```
+
+Supported formats include PDF, DOC/DOCX, PPT/PPTX, TXT/MD, and RTF—mix them freely in a single run.
 
 Example CLI output (abridged – actual Rich formatting includes colors and panels):
 
@@ -429,7 +435,7 @@ done
 
 # Batch extraction using same schema
 find ./reports -name "*.pdf" -exec mosaicx extract \
-  --pdf {} \
+  --document {} \
   --schema UniversalLabReport \
   --save "structured_data/{}.json" \;
 ```
@@ -447,7 +453,7 @@ mosaicx generate \
 
 # Local LM Studio
 mosaicx extract \
-  --pdf report.pdf \
+  --document report.pdf \
   --schema PathologyReport \
   --base-url http://localhost:1234/v1 \
   --api-key lm-studio \
@@ -472,7 +478,7 @@ export MOSAICX_DEFAULT_MODEL="gpt-oss:120b"
 
 # Now use simplified commands
 mosaicx generate --desc "Simple patient record"
-mosaicx extract --pdf report.pdf --schema PatientRecord
+mosaicx extract --document report.pdf --schema PatientRecord
 ```
 
 ---
@@ -546,7 +552,7 @@ ollama pull llama3.1:8b-instruct-q4_0    # 4-bit quantization
 **Error Handling:**
 ```bash
 # Enable debug mode for troubleshooting
-mosaicx extract --pdf document.pdf --schema MySchema --debug
+mosaicx extract --document document.pdf --schema MySchema --debug
 
 # Implement retry logic for production systems
 # Validate outputs against clinical standards
@@ -634,7 +640,7 @@ Enable verbose logging to diagnose issues:
 ```bash
 # Enable debug for all commands
 mosaicx --debug generate --desc "Test schema"
-mosaicx extract --pdf document.pdf --schema MySchema --debug
+mosaicx extract --document document.pdf --schema MySchema --debug
 mosaicx summarize --dir ./reports --debug
 
 # Check Ollama status
@@ -695,7 +701,7 @@ mosaicx generate --desc "Test" --temperature 0.2  # Valid range: 0.0-2.0
 ```bash
 # Enable maximum verbosity
 export MOSAICX_LOG_LEVEL=DEBUG
-mosaicx extract --pdf document.pdf --schema MySchema --debug > debug.log 2>&1
+mosaicx extract --document document.pdf --schema MySchema --debug > debug.log 2>&1
 ```
 
 **System Information:**

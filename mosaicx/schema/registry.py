@@ -28,13 +28,18 @@ Responsibilities:
   matches.
 """
 
-import json
-from pathlib import Path
-from datetime import datetime
-from typing import Dict, List, Optional, Any
 import hashlib
+import json
+from datetime import datetime
+from pathlib import Path
+from typing import Any, Dict, List, Optional
 
-from ..constants import PACKAGE_SCHEMA_PYD_DIR
+from ..constants import (
+    PACKAGE_SCHEMA_TEMPLATES_PY_DIR,
+    PROJECT_ROOT,
+    SCHEMA_REGISTRY_PATH,
+    USER_SCHEMA_DIR,
+)
 
 
 class SchemaRegistry:
@@ -46,11 +51,13 @@ class SchemaRegistry:
         Args:
             registry_path: Path to the registry JSON file. If None, uses default location.
         """
-        if registry_path is None:
-            registry_path = Path(PACKAGE_SCHEMA_PYD_DIR) / "schema_registry.json"
-        
-        self.registry_path = registry_path
+        self.registry_path = Path(registry_path or SCHEMA_REGISTRY_PATH).expanduser()
         self.registry_path.parent.mkdir(parents=True, exist_ok=True)
+        self._search_roots: List[Path] = [
+            USER_SCHEMA_DIR,
+            PACKAGE_SCHEMA_TEMPLATES_PY_DIR,
+        ]
+        USER_SCHEMA_DIR.mkdir(parents=True, exist_ok=True)
         
         # Load existing registry or create new one
         self._registry = self._load_registry()
@@ -74,6 +81,47 @@ class SchemaRegistry:
                 json.dump(self._registry, f, indent=2, default=str)
         except IOError as e:
             print(f"Warning: Could not save schema registry: {e}")
+
+    def _normalise_path(self, candidate: Path) -> Path:
+        """Return an absolute, expanded version of ``candidate``."""
+        candidate = Path(candidate).expanduser()
+        try:
+            return candidate.resolve(strict=False)
+        except FileNotFoundError:
+            return candidate
+
+    def _existing_entry_for_path(self, file_path: Path) -> Optional[str]:
+        """Return the schema ID if the path is already tracked."""
+        normalised = self._normalise_path(file_path)
+        for schema_id, entry in self._registry.get("schemas", {}).items():
+            existing_path = entry.get("file_path")
+            if not existing_path:
+                continue
+            existing_norm = self._normalise_path(Path(existing_path))
+            if existing_norm == normalised:
+                return schema_id
+        return None
+
+    def _determine_scope(self, file_path: Path) -> str:
+        """Categorise the schema based on its location."""
+        probes: List[tuple[Path, str]] = [
+            (USER_SCHEMA_DIR, "user"),
+            (PACKAGE_SCHEMA_TEMPLATES_PY_DIR, "template"),
+        ]
+        tests_root = PROJECT_ROOT / "tests"
+        if tests_root.exists():
+            probes.append((tests_root, "test"))
+
+        for root, label in probes:
+            if not root:
+                continue
+            try:
+                file_path.relative_to(root.resolve(strict=False))
+            except Exception:
+                continue
+            else:
+                return label
+        return "external"
     
     def _generate_description_hash(self, description: str) -> str:
         """Generate a short hash from the description for grouping."""
@@ -99,22 +147,34 @@ class SchemaRegistry:
         Returns:
             Schema ID for referencing this schema
         """
+        resolved_path = self._normalise_path(file_path)
         timestamp = datetime.now().isoformat()
         description_hash = self._generate_description_hash(description)
-        schema_id = f"{class_name.lower()}_{description_hash}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        existing_id = self._existing_entry_for_path(resolved_path)
+        schema_id = (
+            existing_id
+            if existing_id
+            else f"{class_name.lower()}_{description_hash}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        )
         
         schema_entry = {
             "id": schema_id,
             "class_name": class_name,
             "description": description,
             "description_hash": description_hash,
-            "file_path": str(file_path),
-            "file_name": file_path.name,
+            "file_path": str(resolved_path),
+            "file_name": resolved_path.name,
             "model_used": model_used,
             "temperature": temperature,
             "created_at": timestamp,
-            "file_exists": file_path.exists()
+            "updated_at": timestamp,
+            "scope": self._determine_scope(resolved_path),
+            "file_exists": resolved_path.exists(),
         }
+
+        if existing_id:
+            existing_entry = self._registry.get("schemas", {}).get(existing_id, {})
+            schema_entry["created_at"] = existing_entry.get("created_at", timestamp)
         
         # Store in registry
         if "schemas" not in self._registry:
@@ -124,6 +184,13 @@ class SchemaRegistry:
         self._save_registry()
         
         return schema_id
+
+    def get_schema_by_path(self, file_path: Path) -> Optional[Dict[str, Any]]:
+        """Return registry metadata for ``file_path`` if tracked."""
+        schema_id = self._existing_entry_for_path(file_path)
+        if not schema_id:
+            return None
+        return self.get_schema_by_id(schema_id)
     
     def list_schemas(
         self, 
@@ -153,15 +220,23 @@ class SchemaRegistry:
         
         # Update file_exists status
         for schema in schemas:
-            schema["file_exists"] = Path(schema["file_path"]).exists()
+            path = self._normalise_path(schema["file_path"])
+            schema["file_exists"] = path.exists()
+            schema["file_path"] = str(path)
+            schema.setdefault("scope", self._determine_scope(path))
         
         return schemas
     
     def get_schema_by_id(self, schema_id: str) -> Optional[Dict[str, Any]]:
         """Get a specific schema by its ID."""
-        schema = self._registry.get("schemas", {}).get(schema_id)
-        if schema:
-            schema["file_exists"] = Path(schema["file_path"]).exists()
+        raw = self._registry.get("schemas", {}).get(schema_id)
+        if not raw:
+            return None
+        schema = dict(raw)
+        path = self._normalise_path(schema["file_path"])
+        schema["file_exists"] = path.exists()
+        schema["file_path"] = str(path)
+        schema.setdefault("scope", self._determine_scope(path))
         return schema
     
     def get_schemas_by_class_name(self, class_name: str) -> List[Dict[str, Any]]:
@@ -182,7 +257,7 @@ class SchemaRegistry:
         
         schema_ids_to_remove = []
         for schema_id, schema in schemas.items():
-            if not Path(schema["file_path"]).exists():
+            if not self._normalise_path(schema["file_path"]).exists():
                 schema_ids_to_remove.append(schema_id)
         
         for schema_id in schema_ids_to_remove:
@@ -222,6 +297,40 @@ class SchemaRegistry:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         return f"{class_name.lower()}_{desc_part}_{timestamp}.py"
 
+    def scan_and_register_existing(self) -> int:
+        """Discover untracked schema files across known directories."""
+        registered_count = 0
+        tracked_paths = {
+            self._normalise_path(entry["file_path"])
+            for entry in self._registry.get("schemas", {}).values()
+        }
+
+        for root in self._search_roots:
+            if not root or not root.exists():
+                continue
+            for candidate in root.glob("*.py"):
+                if candidate.name.startswith("__"):
+                    continue
+                resolved = self._normalise_path(candidate)
+                if resolved in tracked_paths:
+                    continue
+
+                class_name, description = _extract_schema_info_from_file(resolved)
+                if not class_name:
+                    continue
+
+                self.register_schema(
+                    class_name=class_name,
+                    description=description or f"Schema extracted from {resolved.name}",
+                    file_path=resolved,
+                    model_used="unknown",
+                    temperature=0.2,
+                )
+                tracked_paths.add(resolved)
+                registered_count += 1
+
+        return registered_count
+
 
 # Global registry instance
 _registry = SchemaRegistry()
@@ -242,6 +351,11 @@ def get_schema_by_id(schema_id: str) -> Optional[Dict[str, Any]]:
     return _registry.get_schema_by_id(schema_id)
 
 
+def get_schema_by_path(file_path: Path) -> Optional[Dict[str, Any]]:
+    """Get schema metadata for a resolved file path."""
+    return _registry.get_schema_by_path(file_path)
+
+
 def get_suggested_filename(class_name: str, description: str) -> str:
     """Get suggested filename from the global registry."""
     return _registry.get_suggested_filename(class_name, description)
@@ -253,93 +367,72 @@ def cleanup_missing_files() -> int:
 
 
 def scan_and_register_existing_schemas() -> int:
-    """Scan the schema directory and register any untracked schema files.
-    
-    This is useful for migrating existing schemas that were created before
-    the registry system was implemented.
-    
-    Returns:
-        Number of new schemas registered
-    """
-    import re
-    from pathlib import Path
-    
-    schema_dir = Path(PACKAGE_SCHEMA_PYD_DIR)
-    if not schema_dir.exists():
-        return 0
-    
-    registered_count = 0
-    existing_files = {schema['file_name'] for schema in _registry.list_schemas()}
-    
-    # Scan all .py files in the schema directory
-    for py_file in schema_dir.glob("*.py"):
-        if py_file.name == "__init__.py":
-            continue
-            
-        # Skip if already registered
-        if py_file.name in existing_files:
-            continue
-        
-        try:
-            # Try to extract class name and description from the file
-            class_name, description = _extract_schema_info_from_file(py_file)
-            
-            if class_name and description:
-                # Register the schema with estimated metadata
-                schema_id = _registry.register_schema(
-                    class_name=class_name,
-                    description=description,
-                    file_path=py_file,
-                    model_used="unknown",  # Can't determine from existing files
-                    temperature=0.2  # Default value
-                )
-                registered_count += 1
-                print(f"Registered existing schema: {py_file.name} -> {schema_id}")
-            else:
-                print(f"Could not extract info from: {py_file.name}")
-                
-        except Exception as e:
-            print(f"Error processing {py_file.name}: {e}")
-            continue
-    
-    return registered_count
+    """Scan known schema directories and register any untracked schema files."""
+    return _registry.scan_and_register_existing()
 
 
 def _extract_schema_info_from_file(file_path: Path) -> tuple[str | None, str | None]:
-    """Extract class name and description from a schema file.
-    
-    Args:
-        file_path: Path to the schema file
-        
-    Returns:
-        Tuple of (class_name, description) or (None, None) if extraction fails
-    """
+    """Extract the primary class name and description from a schema file."""
+    import ast
     import re
-    
+
     try:
-        content = file_path.read_text()
-        
-        # Extract class name using regex
-        class_match = re.search(r'class\s+(\w+)\s*\(BaseModel\)', content)
-        if not class_match:
+        source_text = file_path.read_text(encoding="utf-8")
+        module = ast.parse(source_text)
+
+        root_schema_class: str | None = None
+        for node in module.body:
+            if isinstance(node, ast.Assign):
+                for target in node.targets:
+                    if isinstance(target, ast.Name) and target.id == "ROOT_SCHEMA_CLASS":
+                        value = getattr(node.value, "value", None)
+                        if isinstance(value, str):
+                            root_schema_class = value
+                            break
+                if root_schema_class:
+                    break
+
+        # Collect BaseModel subclasses in definition order
+        candidates: list[ast.ClassDef] = []
+        for node in module.body:
+            if isinstance(node, ast.ClassDef):
+                if any(
+                    isinstance(base, ast.Name) and base.id == "BaseModel"
+                    or isinstance(base, ast.Attribute) and base.attr == "BaseModel"
+                    for base in node.bases
+                ):
+                    candidates.append(node)
+
+        if not candidates:
             return None, None
-        
-        class_name = class_match.group(1)
-        
-        # Extract description from class docstring
-        docstring_match = re.search(r'class\s+\w+\s*\(BaseModel\):\s*"""([^"]+)"""', content, re.DOTALL)
-        if docstring_match:
-            description = docstring_match.group(1).strip()
-            # Clean up the description - take first line if multiline
-            description = description.split('\n')[0].strip()
+
+        stem_lower = file_path.stem.lower()
+
+        def camel_to_snake(name: str) -> str:
+            return re.sub(r"(?<!^)(?=[A-Z])", "_", name).lower()
+
+        if root_schema_class:
+            chosen = next((node for node in candidates if node.name == root_schema_class), None)
+            if not chosen:
+                return None, None
         else:
-            # Fallback: try to infer from filename
-            base_name = file_path.stem
-            # Remove timestamp part
-            clean_name = re.sub(r'_\d{8}_\d{6}$', '', base_name)
-            description = f"Generated schema for {clean_name}"
-        
+            # Prefer classes whose snake-case name appears in the filename
+            matching = [
+                node for node in candidates if camel_to_snake(node.name) in stem_lower
+            ]
+
+            chosen = matching[-1] if matching else candidates[-1]
+
+        class_name = chosen.name
+
+        docstring = ast.get_docstring(chosen) or ""
+        if docstring:
+            description = docstring.strip().splitlines()[0].strip()
+        else:
+            base_name = re.sub(r'_\d{8}_\d{6}$', '', file_path.stem)
+            description = f"Generated schema for {base_name}"
+
         return class_name, description
-        
+
     except Exception:
         return None, None

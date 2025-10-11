@@ -27,7 +27,7 @@
                 📋 Smart Contract Generator
             </button>
             <button class="tab-btn" onclick="showTab('extract')" role="tab" aria-selected="false" aria-controls="extract-panel">
-                📄 PDF Extractor
+                📄 Document Extractor
             </button>
             <button class="tab-btn" onclick="showTab('summarize')" role="tab" aria-selected="false" aria-controls="summarize-panel">
                 📊 Report Summarizer
@@ -88,18 +88,18 @@
             </div>
         </div>
 
-        <!-- PDF Extractor Tab -->
+        <!-- Document Extractor Tab -->
         <div id="extract" class="tab-content" role="tabpanel" aria-labelledby="extract-tab">
             <div class="card">
-                <h2 class="card-title">📄 AI-Powered PDF Data Extractor</h2>
+                <h2 class="card-title">📄 AI-Powered Document Data Extractor</h2>
                 <p class="card-description">
-                    Upload PDF documents and extract structured data using AI. Perfect for processing 
-                    medical reports, research papers, and clinical documentation with high accuracy.
+                    Upload clinical documents (PDF, DOCX, PPTX, TXT, RTF) and extract structured data using AI.
+                    Perfect for processing medical reports, research papers, and clinical documentation with high accuracy.
                 </p>
                 
                 <form id="extractForm" class="grid">
                     <div class="form-group">
-                        <label for="extractFiles" class="form-label">Select PDF Files</label>
+                        <label for="extractFiles" class="form-label">Select Document Files</label>
                         <div class="file-upload">
                             <input 
                                 type="file" 
@@ -107,12 +107,12 @@
                                 name="files" 
                                 class="file-upload-input" 
                                 multiple 
-                                accept=".pdf"
+                                accept=".pdf,.doc,.docx,.ppt,.pptx,.txt,.md,.rtf"
                             >
                             <label for="extractFiles" class="file-upload-label">
                                 <span class="file-upload-icon">📁</span>
                                 <div>
-                                    <div class="file-upload-text">Choose PDF Files</div>
+                                    <div class="file-upload-text">Choose Document Files</div>
                                     <div style="font-size: 0.875rem; color: var(--text-muted); margin-top: 0.25rem;">
                                         Drag & drop files here or click to browse
                                     </div>
@@ -170,7 +170,7 @@
                                 name="files" 
                                 class="file-upload-input" 
                                 multiple 
-                                accept=".pdf,.txt,.docx"
+                                accept=".pdf,.doc,.docx,.ppt,.pptx,.txt,.md,.rtf"
                                 required
                             >
                             <label for="summarizeFiles" class="file-upload-label">
@@ -178,7 +178,7 @@
                                 <div>
                                     <div class="file-upload-text">Choose Report Files</div>
                                     <div style="font-size: 0.875rem; color: var(--text-muted); margin-top: 0.25rem;">
-                                        Supports PDF, TXT, and DOCX formats
+                                        Supports PDF, DOCX, DOC, PPTX, PPT, TXT, MD, and RTF formats
                                     </div>
                                 </div>
                             </label>

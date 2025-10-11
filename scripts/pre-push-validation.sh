@@ -66,7 +66,7 @@ echo ""
 echo "🧪 Test 3: CLI PDF Extraction"
 echo "----------------------------------------"
 EXTRACT_PDF="tests/datasets/extract/sample_patient_vitals.pdf"
-EXTRACT_SCHEMA="mosaicx/schema/pyd/generatedmodel_extract_patient_name_20250927_010521.py"
+EXTRACT_SCHEMA="mosaicx/schema/templates/python/patient_identity.py"
 
 if [[ ! -f "$EXTRACT_PDF" ]]; then
     echo "❌ Test PDF not found: $EXTRACT_PDF"
@@ -78,7 +78,7 @@ if [[ ! -f "$EXTRACT_SCHEMA" ]]; then
     exit 1
 fi
 
-if mosaicx extract --pdf "$EXTRACT_PDF" --schema "$EXTRACT_SCHEMA" --model mistral:latest > /tmp/mosaicx_test_extract.log 2>&1; then
+if mosaicx extract --document "$EXTRACT_PDF" --schema "$EXTRACT_SCHEMA" --model mistral:latest > /tmp/mosaicx_test_extract.log 2>&1; then
     echo "✅ PDF extraction successful"
     if grep -q "Extraction results" /tmp/mosaicx_test_extract.log && grep -q "name" /tmp/mosaicx_test_extract.log; then
         echo "✅ Extraction output format correct"
@@ -141,7 +141,7 @@ try:
     # Test extraction
     extraction = extract_pdf(
         pdf_path="tests/datasets/extract/sample_patient_vitals.pdf",
-        schema_path="mosaicx/schema/pyd/generatedmodel_extract_patient_name_20250927_010521.py",
+        schema_path="mosaicx/schema/templates/python/patient_identity.py",
     )
     payload = extraction.to_dict()
     if "name" in payload:

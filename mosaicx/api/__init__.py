@@ -9,7 +9,7 @@ DIGIT-X Lab, LMU Radiology | Lalith Kumar Shiyam Sundar, PhD
 Overview
 --------
 This subpackage exposes the same capabilities as the MOSAICX CLI—schema
-generation, PDF extraction, longitudinal summarisation—while remaining free of
+generation, document extraction, longitudinal summarisation—while remaining free of
 terminal side effects.  Use it inside notebooks, production services, or test
 harnesses to drive the MOSAICX pipeline through a clean, composable API.
 
@@ -27,13 +27,14 @@ automation and interactive sessions.
 """
 
 from .schema import GeneratedSchema, generate_schema
-from .extraction import ExtractionResult, extract_pdf
+from .extraction import ExtractionResult, extract_document, extract_pdf
 from .summary import summarize_reports
 
 __all__ = [
     "GeneratedSchema",
     "generate_schema",
     "ExtractionResult",
+    "extract_document",
     "extract_pdf",
     "summarize_reports",
 ]

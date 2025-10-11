@@ -30,7 +30,6 @@ Highlights:
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Optional
 
@@ -54,6 +53,7 @@ from ..constants import (
 )
 from ..display import console, show_main_banner, styled_message
 from ..extractor import ExtractionError
+from ..document_loader import DOC_SUFFIXES
 from ..schema.registry import (
     cleanup_missing_files,
     get_schema_by_id,
@@ -61,7 +61,7 @@ from ..schema.registry import (
     register_schema,
     scan_and_register_existing_schemas,
 )
-from ..summarizer import render_summary_rich, write_summary_json
+from ..summarizer import render_summary_rich, save_summary_artifacts
 from ..utils import resolve_schema_reference
 
 
@@ -120,6 +120,11 @@ def cli(ctx: click.Context, verbose: bool) -> None:
 
     ctx.ensure_object(dict)
     ctx.obj["verbose"] = verbose
+    try:
+        scan_and_register_existing_schemas()
+    except Exception as exc:  # pragma: no cover - defensive guard
+        if verbose:
+            styled_message(f"Schema auto-discovery skipped: {exc}", "warning")
 
     if ctx.invoked_subcommand is None:
         styled_message(
@@ -136,6 +141,7 @@ def cli(ctx: click.Context, verbose: bool) -> None:
 @click.option("--api-key", help="API key for the endpoint")
 @click.option("--temperature", type=float, default=0.2, help="Sampling temperature (0.0–2.0)")
 @click.option("--schema-path", type=click.Path(path_type=Path), help="Write generated Pydantic schema (.py) to this path")
+@click.option("--template", "store_as_template", is_flag=True, help="Save generated schema into the bundled template directory")
 @click.option("--output", callback=_deprecated_schema_output_alias, expose_value=False, hidden=True)
 @click.option("--save-model", callback=_deprecated_schema_output_alias, expose_value=False, hidden=True)
 @click.option("--debug", is_flag=True, help="Verbose debug logs")
@@ -149,6 +155,7 @@ def generate(
     api_key: Optional[str],
     temperature: float,
     schema_path: Optional[Path],
+    store_as_template: bool,
     debug: bool,
 ) -> None:
     """Generate Pydantic schemas from natural language descriptions."""
@@ -161,6 +168,9 @@ def generate(
         styled_message(f"Description: {desc}", "info")
 
     try:
+        if store_as_template and schema_path is not None:
+            raise click.BadParameter("Cannot use --template together with --schema-path.")
+
         with console.status(f"[{MOSAICX_COLORS['primary']}]Generating Pydantic model...", spinner="dots"):
             generated = generate_schema(
                 description=desc,
@@ -171,7 +181,7 @@ def generate(
                 temperature=temperature,
             )
 
-        target_path = generated.write(schema_path)
+        target_path = generated.write(schema_path, template=store_as_template)
 
         schema_id = register_schema(
             class_name=class_name,
@@ -229,6 +239,11 @@ def generate(
 
         main_table.add_row("💻 Code Preview", code_panel)
         console.print(Align.center(main_table))
+        console.print()
+        if store_as_template:
+            styled_message(f"Stored template in: {target_path}", "success")
+        elif schema_path:
+            styled_message(f"Saved schema to: {target_path}", "success")
 
     except Exception as exc:
         styled_message(f"Schema generation failed: {exc}", "error")
@@ -335,7 +350,14 @@ def list_schemas_cmd(
 
 
 @cli.command()
-@click.option("--pdf", required=True, type=click.Path(exists=True), help="Path to PDF file to extract from")
+@click.option(
+    "--document",
+    "--doc",
+    "document",
+    required=True,
+    type=click.Path(exists=True),
+    help="Path to a clinical document (PDF, DOCX, PPTX, TXT, ...)",
+)
 @click.option("--schema", required=True, help="Schema identifier (ID, filename, or file path)")
 @click.option("--model", default=DEFAULT_LLM_MODEL, help="Model name for extraction")
 @click.option("--base-url", help="OpenAI-compatible API base URL")
@@ -346,7 +368,7 @@ def list_schemas_cmd(
 @click.pass_context
 def extract(
     ctx: click.Context,
-    pdf: str,
+    document: str,
     schema: str,
     model: str,
     base_url: Optional[str],
@@ -355,48 +377,73 @@ def extract(
     output_path: Optional[Path],
     debug: bool,
 ) -> None:
-    """Extract structured data from PDF using a generated Pydantic schema."""
+    """Extract structured data from a clinical document using a Pydantic schema."""
 
     verbose = ctx.obj.get("verbose", False)
 
     if verbose:
-        styled_message(f"Extracting from: {pdf}", "info")
+        styled_message(f"Extracting from: {document}", "info")
         styled_message(f"Using schema: {schema}", "info")
         styled_message(f"Using model: {model}", "info")
         if base_url:
             styled_message(f"Base URL: {base_url}", "info")
 
     try:
-        resolved_schema_path = resolve_schema_reference(schema)
-        if not resolved_schema_path:
-            raise click.ClickException(f"Could not find schema: {schema}")
+        with console.status(
+            f"[{MOSAICX_COLORS['primary']}]Preparing extraction...", spinner="dots"
+        ) as status:
+            status.update(f"[{MOSAICX_COLORS['accent']}]Resolving schema reference…")
+            resolved_schema_path = resolve_schema_reference(schema)
+            if not resolved_schema_path:
+                raise click.ClickException(f"Could not find schema: {schema}")
 
-        if verbose:
-            styled_message(f"Resolved schema to: {resolved_schema_path}", "info")
+            if verbose:
+                styled_message(f"Resolved schema to: {resolved_schema_path}", "info")
 
-        all_schemas = list_schemas()
-        schema_class_name = None
-        resolved_path_str = str(resolved_schema_path)
-        for schema_info in all_schemas:
-            if resolved_path_str == schema_info["file_path"]:
-                schema_class_name = schema_info["class_name"]
-                break
+            status.update(f"[{MOSAICX_COLORS['accent']}]Loading schema metadata…")
+            all_schemas = list_schemas()
+            schema_class_name = None
+            resolved_path_str = str(resolved_schema_path)
+            for schema_info in all_schemas:
+                if resolved_path_str == schema_info["file_path"]:
+                    schema_class_name = schema_info["class_name"]
+                    break
 
-        if not schema_class_name:
-            raise click.ClickException(f"Could not find class name for schema: {schema}")
+            if schema_class_name is None:
+                try:
+                    from ..extractor import load_schema_model
 
-        if verbose:
-            styled_message(f"Using schema class: {schema_class_name}", "info")
+                    schema_class = load_schema_model(str(resolved_schema_path))
+                    schema_class_name = schema_class.__name__
+                except Exception:
+                    schema_class_name = resolved_schema_path.stem
 
-        extraction = extract_pdf(
-            pdf_path=pdf,
-            schema_path=resolved_schema_path,
-            model=model,
-            base_url=base_url,
-            api_key=api_key,
-            temperature=temperature,
-        )
+            if verbose:
+                styled_message(f"Using schema class: {schema_class_name}", "info")
 
+            running_message = (
+                f"[{MOSAICX_COLORS['accent']}]Running extraction with {model}…"
+            )
+            status.update(running_message)
+            fallback_used = {"flag": False}
+
+            def _report_fallback(message: str) -> None:
+                fallback_used["flag"] = True
+                status.update(f"[{MOSAICX_COLORS['accent']}]Using {message}…")
+
+            extraction = extract_pdf(
+                pdf_path=document,
+                schema_path=resolved_schema_path,
+                model=model,
+                base_url=base_url,
+                api_key=api_key,
+                temperature=temperature,
+                status_callback=_report_fallback,
+            )
+            if fallback_used["flag"]:
+                status.update(running_message)
+
+        console.print()
         result_dict = extraction.record.model_dump()
 
         console.print()
@@ -461,13 +508,13 @@ def extract(
     "reports",
     multiple=True,
     type=click.Path(exists=True, dir_okay=False, path_type=Path),
-    help="One or more report files (.pdf or .txt). Use multiple --report flags.",
+    help="One or more report files (PDF, DOCX, PPTX, TXT, ...). Use multiple --report flags.",
 )
 @click.option(
     "--dir",
     "input_dir",
     type=click.Path(exists=True, file_okay=False, path_type=Path),
-    help="Directory containing reports (recursively scans *.pdf, *.txt).",
+    help="Directory containing reports (recursively scans supported formats).",
 )
 @click.option("--patient", "patient_id", type=str, help="Patient identifier (optional).")
 @click.option("--model", default=DEFAULT_LLM_MODEL, show_default=True, help="Model for summarization.")
@@ -475,6 +522,15 @@ def extract(
 @click.option("--api-key", help="API key (e.g., 'ollama' for Ollama).")
 @click.option("--temperature", type=float, default=0.2, show_default=True, help="Sampling temperature.")
 @click.option("--output", "--json-out", "json_out", type=click.Path(path_type=Path), help="Save a JSON summary to this path.")
+@click.option(
+    "--format",
+    "formats",
+    type=click.Choice(["json", "pdf"], case_sensitive=False),
+    multiple=True,
+    default=("json",),
+    help="Choose output artifact(s); repeat for multiple values (default: json).",
+)
+@click.option("--pdf-out", type=click.Path(path_type=Path), help="Save a PDF summary to this path.")
 @click.option("--debug", is_flag=True, help="Show tracebacks on errors.")
 @click.pass_context
 def summarize(
@@ -487,20 +543,38 @@ def summarize(
     api_key: Optional[str],
     temperature: float,
     json_out: Optional[Path],
+    formats: tuple[str, ...],
+    pdf_out: Optional[Path],
     debug: bool,
 ) -> None:
     """Summarize one or many reports (same patient) into a critical timeline and concise overall summary."""
 
     verbose = ctx.obj.get("verbose", False)
 
+    allowed_suffixes = set(DOC_SUFFIXES.keys())
+
+    def _supported(path: Path) -> bool:
+        return path.suffix.lower() in allowed_suffixes
+
     paths: List[Path] = list(reports)
+    invalid_reports = [p for p in paths if not _supported(p)]
+    if invalid_reports:
+        suffixes = ", ".join(sorted({p.suffix.lower() or "<none>" for p in invalid_reports}))
+        raise click.ClickException(
+            f"Unsupported report extension(s): {suffixes}. "
+            f"Supported formats: {', '.join(sorted(allowed_suffixes))}."
+        )
+
     if input_dir:
         for candidate in input_dir.rglob("*"):
-            if candidate.suffix.lower() in {".pdf", ".txt"}:
+            if _supported(candidate):
                 paths.append(candidate)
 
     if not paths:
-        raise click.ClickException("Provide at least one --report or a --dir with .pdf/.txt files.")
+        raise click.ClickException(
+            "Provide at least one --report or a --dir containing supported formats "
+            f"({', '.join(sorted(allowed_suffixes))})."
+        )
 
     if verbose:
         styled_message(f"Summarizing {len(paths)} file(s)", "info")
@@ -520,13 +594,29 @@ def summarize(
 
         render_summary_rich(summary)
 
-        if json_out is None:
-            ts = datetime.now(tz=timezone.utc).strftime("%Y%m%d_%H%M%S")
-            base = (patient_id or "patient").lower()
-            json_out = Path("output") / f"summary_{base}_{ts}.json"
+        normalized_formats = tuple(dict.fromkeys(f.lower() for f in formats)) if formats else ("json",)
+        if not normalized_formats:
+            normalized_formats = ("json",)
+        selected_formats = set(normalized_formats)
 
-        write_summary_json(summary, json_out)
-        styled_message(f"Saved JSON: {json_out}", "accent")
+        json_path = json_out
+        if json_path and "json" not in selected_formats:
+            styled_message("Ignoring --output because JSON artifact disabled.", "warning")
+            json_path = None
+
+        pdf_path = pdf_out
+        if pdf_path and "pdf" not in selected_formats:
+            styled_message("Ignoring --pdf-out because PDF artifact disabled.", "warning")
+            pdf_path = None
+
+        save_summary_artifacts(
+            summary,
+            artifacts=normalized_formats,
+            json_path=json_path,
+            pdf_path=pdf_path,
+            patient_id=patient_id,
+            emit_messages=True,
+        )
 
     except Exception as exc:
         styled_message(f"Summarization failed: {exc}", "error")

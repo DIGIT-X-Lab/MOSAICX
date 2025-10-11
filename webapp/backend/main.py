@@ -7,11 +7,11 @@ DIGIT-X Lab, LMU Radiology | Lalith Kumar Shiyam Sundar, PhD
 ================================================================================
 
 A modern web interface for MOSAICX capabilities, providing REST endpoints
-for schema generation, PDF extraction, and clinical report summarization.
+for schema generation, document extraction, and clinical report summarization.
 
 Structure:
 - /api/v1/generate-schema: Create Pydantic models from natural language
-- /api/v1/extract-pdf: Extract structured data from medical PDFs  
+- /api/v1/extract-document: Extract structured data from medical documents  
 - /api/v1/summarize-reports: Generate timeline summaries from clinical reports
 - /api/v1/schemas: Manage schema registry
 """
@@ -24,6 +24,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional, List, Dict, Any
 import tempfile
+import shutil
 import asyncio
 from contextlib import asynccontextmanager
 
@@ -37,14 +38,8 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, ValidationError
 
 # Import MOSAICX API
-from mosaicx import (
-    generate_schema,
-    extract_pdf,
-    GeneratedSchema,
-    ExtractionResult,
-    console
-)
-from mosaicx.constants import APPLICATION_VERSION, MOSAICX_COLORS
+from mosaicx import generate_schema, console
+from mosaicx.constants import APPLICATION_VERSION, MOSAICX_COLORS, USER_SCHEMA_DIR
 from mosaicx.display import styled_message
 
 # Configure logging
@@ -86,10 +81,10 @@ class ExtractionRequest(BaseModel):
 
 class ExtractionResponse(BaseModel):
     success: bool = Field(..., description="Whether extraction was successful")
-    extracted_data: Dict[str, Any] = Field(..., description="Structured data extracted from PDF")
+    extracted_data: Dict[str, Any] = Field(..., description="Structured data extracted from a document")
     schema_used: str = Field(..., description="Schema identifier used for extraction")
     model_used: str = Field(..., description="LLM model used for extraction")
-    file_name: str = Field(..., description="Original PDF filename")
+    file_name: str = Field(..., description="Original document filename")
 
 
 class SummarizationRequest(BaseModel):
@@ -108,7 +103,7 @@ class SummarizationResponse(BaseModel):
 
 
 class DirectorySummarizationRequest(BaseModel):
-    directory_path: str = Field(..., description="Path to directory containing PDF files")
+    directory_path: str = Field(..., description="Path to directory containing clinical documents")
     patient_id: Optional[str] = Field("patient", description="Patient identifier for the summary")
     model: Optional[str] = Field("gpt-oss:120b", description="LLM model for processing")
     temperature: Optional[float] = Field(0.2, ge=0.0, le=2.0, description="Sampling temperature")
@@ -118,10 +113,10 @@ class DirectorySummarizationRequest(BaseModel):
 
 class DirectorySummarizationResponse(BaseModel):
     patient_id: str = Field(..., description="Patient identifier")
-    files_processed: List[str] = Field(..., description="List of PDF files that were processed")
+    files_processed: List[str] = Field(..., description="List of documents that were processed")
     timeline: List[Dict[str, Any]] = Field(..., description="Chronological timeline of reports")
     overall_summary: str = Field(..., description="Overall clinical summary")
-    total_files: int = Field(..., description="Total number of PDF files processed")
+    total_files: int = Field(..., description="Total number of documents processed")
 
 
 # Application startup/shutdown
@@ -226,24 +221,17 @@ async def generate_schema_endpoint(request: SchemaGenerationRequest):
         if result.returncode != 0:
             raise Exception(f"CLI schema generation failed: {result.stderr}")
             
-        # Find the newest .py file in the schema directory (the one just created)
-        import glob
-        import os
-        
-        schema_files = glob.glob("/app/mosaicx/schema/pyd/*.py")
+        # Find the newest .py file in the managed schema directory
+        schema_dir = USER_SCHEMA_DIR
+        schema_dir.mkdir(parents=True, exist_ok=True)
+        schema_files = list(schema_dir.glob("*.py"))
         if not schema_files:
             raise Exception("No schema files found after generation")
-            
-        # Get the most recently created file
-        newest_file = max(schema_files, key=os.path.getctime)
-        actual_filename = os.path.basename(newest_file)
-        schema_id = actual_filename.replace('.py', '')
-        
-        # Read the actual schema file content
-        with open(newest_file, 'r') as f:
-            python_code = f.read()
-        
-        saved_path = f"mosaicx/schema/pyd/{actual_filename}"
+
+        newest_file = max(schema_files, key=lambda path: path.stat().st_mtime)
+        python_code = newest_file.read_text(encoding="utf-8")
+        schema_id = newest_file.stem
+        saved_path = str(newest_file)
         
         return SchemaGenerationResponse(
             schema_id=schema_id,
@@ -262,28 +250,35 @@ async def generate_schema_endpoint(request: SchemaGenerationRequest):
         )
 
 
-@app.post("/api/v1/extract-pdf", response_model=ExtractionResponse)
-async def extract_pdf_endpoint(
-    file: UploadFile = File(..., description="PDF file to extract data from"),
+from mosaicx.document_loader import DOC_SUFFIXES
+
+
+@app.post("/api/v1/extract-document", response_model=ExtractionResponse)
+async def extract_document_endpoint(
+    file: UploadFile = File(..., description="Clinical document to extract data from"),
     schema_identifier: str = Form(..., description="Schema ID, filename, or path"),
     model: str = Form("gpt-oss:120b", description="LLM model for extraction"),
     base_url: Optional[str] = Form(None, description="Custom API endpoint"),
     api_key: Optional[str] = Form(None, description="Custom API key")
 ):
     """
-    Extract structured data from a PDF using a specified schema
+    Extract structured data from a clinical document using a specified schema.
     """
-    if not file.filename.lower().endswith('.pdf'):
+    suffix = Path(file.filename).suffix.lower()
+    if suffix not in DOC_SUFFIXES:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Only PDF files are supported"
+            detail=(
+                "Unsupported file format. "
+                f"Supported extensions: {', '.join(sorted(DOC_SUFFIXES))}"
+            ),
         )
     
     # Save uploaded file temporarily
-    temp_pdf_path = Path(f"/tmp/mosaicx_uploads/{file.filename}")
+    temp_doc_path = Path(f"/tmp/mosaicx_uploads/{file.filename}")
     
     try:
-        with open(temp_pdf_path, "wb") as buffer:
+        with open(temp_doc_path, "wb") as buffer:
             content = await file.read()
             buffer.write(content)
         
@@ -295,7 +290,7 @@ async def extract_pdf_endpoint(
         
         cmd = [
             "python", "-m", "mosaicx", "extract",
-            "--pdf", str(temp_pdf_path),
+            "--document", str(temp_doc_path),
             "--schema", schema_identifier,
             "--model", model,
             "--output", f"/tmp/mosaicx_extraction_result.json"
@@ -324,22 +319,22 @@ async def extract_pdf_endpoint(
         )
         
     except Exception as e:
-        logger.error(f"PDF extraction failed: {str(e)}")
+        logger.error(f"Document extraction failed: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"PDF extraction failed: {str(e)}"
+            detail=f"Document extraction failed: {str(e)}"
         )
     
     finally:
         # Clean up temporary file
-        if temp_pdf_path.exists():
-            temp_pdf_path.unlink()
+        if temp_doc_path.exists():
+            temp_doc_path.unlink()
 
 
 @app.post("/api/v1/summarize-reports", response_model=SummarizationResponse)
 async def summarize_reports_endpoint(
     request: SummarizationRequest,
-    files: List[UploadFile] = File(..., description="PDF reports to summarize")
+    files: List[UploadFile] = File(..., description="Clinical documents to summarize")
 ):
     """
     Generate timeline-based summaries from clinical reports using CLI
@@ -347,39 +342,40 @@ async def summarize_reports_endpoint(
     if not files:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="At least one PDF file is required"
+            detail="At least one document is required"
         )
-    
-    temp_paths = []
-    
+
+    allowed_suffixes = set(DOC_SUFFIXES.keys())
+
+    import tempfile
+    import shutil
+
+    temp_dir = Path(tempfile.mkdtemp(prefix='mosaicx_summarize_'))
+    json_output = tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False)
+    json_path = json_output.name
+    json_output.close()
+
     try:
         # Save all uploaded files to temporary directory
         for file in files:
-            if not file.filename.lower().endswith('.pdf'):
+            suffix = Path(file.filename).suffix.lower()
+            if suffix not in allowed_suffixes:
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
-                    detail=f"Only PDF files are supported. Found: {file.filename}"
+                    detail=(
+                        f"Unsupported file format for summarization: {file.filename}. "
+                        f"Supported extensions: {', '.join(sorted(allowed_suffixes))}"
+                    ),
                 )
-            
             # Save file to temp directory
-            temp_path = Path(temp_dir) / file.filename
-            temp_paths.append(temp_path)
+            temp_path = temp_dir / file.filename
             
             with open(temp_path, "wb") as buffer:
                 content = await file.read()
                 buffer.write(content)
         
         console.print(styled_message(f"📊 Summarizing {len(files)} reports for patient using CLI: {request.patient_id}", "info"))
-        
-        # Create temporary directory for files
-        import tempfile
-        temp_dir = tempfile.mkdtemp(prefix='mosaicx_summarize_')
-        
-        # Create temporary JSON output file
-        json_output = tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False)
-        json_path = json_output.name
-        json_output.close()
-        
+
         # Build CLI command for summarization using --dir
         cmd = [
             "python", "-m", "mosaicx", "summarize",
@@ -435,13 +431,6 @@ async def summarize_reports_endpoint(
                 reports_processed=len(files)
             )
         
-        finally:
-            # Clean up the temporary JSON file
-            try:
-                os.unlink(json_path)
-            except:
-                pass
-        
     except Exception as e:
         logger.error(f"Report summarization failed: {str(e)}")
         raise HTTPException(
@@ -450,25 +439,22 @@ async def summarize_reports_endpoint(
         )
     
     finally:
-            # Clean up the temporary JSON file and directory
-            try:
-                os.unlink(json_path)
-            except:
-                pass
-            
-            # Clean up temporary directory and files
-            import shutil
-            try:
-                shutil.rmtree(temp_dir)
-            except:
-                pass
+        try:
+            os.unlink(json_path)
+        except Exception:
+            pass
+
+        try:
+            shutil.rmtree(temp_dir)
+        except Exception:
+            pass
 
 
 
 @app.post("/api/v1/summarize-directory", response_model=DirectorySummarizationResponse)
 async def summarize_directory_endpoint(request: DirectorySummarizationRequest):
     """
-    Process all PDF files in a directory and generate comprehensive summary using CLI
+    Process all supported clinical documents in a directory and generate a summary using the CLI.
     """
     try:
         directory_path = Path(request.directory_path)
@@ -486,15 +472,28 @@ async def summarize_directory_endpoint(request: DirectorySummarizationRequest):
                 detail=f"Path is not a directory: {request.directory_path}"
             )
         
-        # Find all PDF files in the directory
-        pdf_files = list(directory_path.glob("*.pdf"))
-        if not pdf_files:
+        allowed_suffixes = set(DOC_SUFFIXES.keys())
+        doc_files = [
+            candidate
+            for candidate in directory_path.rglob("*")
+            if candidate.is_file() and candidate.suffix.lower() in allowed_suffixes
+        ]
+
+        if not doc_files:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"No PDF files found in directory: {request.directory_path}"
+                detail=(
+                    f"No supported documents found in directory: {request.directory_path}. "
+                    f"Supported extensions: {', '.join(sorted(allowed_suffixes))}"
+                )
             )
         
-        console.print(styled_message(f"📊 Processing {len(pdf_files)} PDFs from directory using CLI: {request.directory_path}", "info"))
+        console.print(
+            styled_message(
+                f"📊 Processing {len(doc_files)} document(s) from directory using CLI: {request.directory_path}",
+                "info",
+            )
+        )
         
         # Create temporary JSON output file
         import tempfile
@@ -542,10 +541,10 @@ async def summarize_directory_endpoint(request: DirectorySummarizationRequest):
             
             return DirectorySummarizationResponse(
                 patient_id=patient_info.get('patient_id', request.patient_id),
-                files_processed=[f.name for f in pdf_files],
+                files_processed=[f.name for f in doc_files],
                 timeline=timeline,
                 overall_summary=overall_summary,
-                total_files=len(pdf_files)
+                total_files=len(doc_files)
             )
             
         except (json.JSONDecodeError, FileNotFoundError) as e:
@@ -553,10 +552,10 @@ async def summarize_directory_endpoint(request: DirectorySummarizationRequest):
             console.print(styled_message(f"⚠️ JSON parsing failed: {e}", "warning"))
             return DirectorySummarizationResponse(
                 patient_id=request.patient_id,
-                files_processed=[f.name for f in pdf_files],
+                files_processed=[f.name for f in doc_files],
                 timeline=[],
                 overall_summary=result.stdout.strip() if result.stdout else "Summarization completed but no output captured",
-                total_files=len(pdf_files)
+                total_files=len(doc_files)
             )
         
         finally:
@@ -579,34 +578,42 @@ async def summarize_files_endpoint(
     patient_id: str = Form("patient"),
     model: str = Form("gpt-oss:120b"),
     temperature: float = Form(0.2),
-    pdf_files: List[UploadFile] = File(...)
+    documents: List[UploadFile] = File(..., description="Clinical documents to summarize"),
 ):
     """
-    Process multiple uploaded PDF files and generate comprehensive summary using CLI
+    Process multiple uploaded clinical documents and generate a summary using the CLI.
     """
     try:
-        # Validate we have PDF files
-        if not pdf_files:
+        # Validate we have documents
+        if not documents:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="No PDF files provided"
+                detail="No documents provided"
             )
         
-        # Filter for actual PDF files
-        valid_pdfs = []
-        for file in pdf_files:
-            if not file.filename.lower().endswith('.pdf'):
-                logger.warning(f"Skipping non-PDF file: {file.filename}")
+        allowed_suffixes = set(DOC_SUFFIXES.keys())
+
+        # Filter for supported files
+        valid_documents = []
+        for file in documents:
+            suffix = Path(file.filename).suffix.lower()
+            if suffix not in allowed_suffixes:
+                logger.warning(f"Skipping unsupported document: {file.filename}")
                 continue
-            valid_pdfs.append(file)
+            valid_documents.append(file)
         
-        if not valid_pdfs:
+        if not valid_documents:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="No valid PDF files found"
+                detail=(
+                    "No valid documents found. "
+                    f"Supported extensions: {', '.join(sorted(allowed_suffixes))}"
+                )
             )
         
-        console.print(styled_message(f"📊 Processing {len(valid_pdfs)} uploaded PDFs using CLI", "info"))
+        console.print(
+            styled_message(f"📊 Processing {len(valid_documents)} uploaded document(s) using CLI", "info")
+        )
         
         # Create temporary directory for files
         import tempfile
@@ -615,7 +622,7 @@ async def summarize_files_endpoint(
         # Save uploaded files to temporary directory
         temp_files = []
         try:
-            for file in valid_pdfs:
+            for file in valid_documents:
                 # Extract just the filename without directory path
                 clean_filename = Path(file.filename).name
                 temp_path = Path(temp_dir) / clean_filename
@@ -672,7 +679,7 @@ async def summarize_files_endpoint(
                 
                 return DirectorySummarizationResponse(
                     patient_id=patient_info.get('patient_id', patient_id),
-                    files_processed=[Path(f.filename).name for f in valid_pdfs],
+                    files_processed=[Path(f.filename).name for f in valid_documents],
                     timeline=timeline,
                     overall_summary=overall_summary,
                     total_files=len(temp_files)
@@ -683,29 +690,22 @@ async def summarize_files_endpoint(
                 console.print(styled_message(f"⚠️ JSON parsing failed: {e}", "warning"))
                 return DirectorySummarizationResponse(
                     patient_id=patient_id,
-                    files_processed=[Path(f.filename).name for f in valid_pdfs],
+                    files_processed=[Path(f.filename).name for f in valid_documents],
                     timeline=[],
                     overall_summary=result.stdout.strip() if result.stdout else "Summarization completed but no output captured",
                     total_files=len(temp_files)
                 )
             
-            finally:
-                # Clean up the temporary JSON file and directory
-                try:
-                    os.unlink(json_path)
-                except:
-                    pass
-                
-                # Clean up temporary directory and all files
-                import shutil
-                try:
-                    shutil.rmtree(temp_dir)
-                except Exception as cleanup_error:
-                    logger.warning(f"Failed to cleanup temp directory {temp_dir}: {cleanup_error}")
-            
         finally:
-            # Additional cleanup if needed
-            pass
+            try:
+                os.unlink(json_path)
+            except Exception:
+                pass
+
+            try:
+                shutil.rmtree(temp_dir)
+            except Exception as cleanup_error:
+                logger.warning(f"Failed to cleanup temp directory {temp_dir}: {cleanup_error}")
         
     except Exception as e:
         logger.error(f"File summarization failed: {str(e)}")

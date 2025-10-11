@@ -1,5 +1,5 @@
 """
-MOSAICX Document Extraction - PDF to Structured Data
+MOSAICX Document Extraction - Documents to Structured Data
 
 ================================================================================
 MOSAICX: Medical cOmputational Suite for Advanced Intelligent eXtraction
@@ -14,14 +14,14 @@ University: LMU University Hospital | LMU Munich
 
 Overview:
 ---------
-Streamline the transformation of radiology PDFs into validated Pydantic records
+Streamline the transformation of clinical documents into validated Pydantic records
 using Docling for text extraction and OpenAI-compatible LLMs for schema-guided
 structuring. The module underpins the API and CLI ``extract`` flows and
 provides reusable helpers for scriptable pipelines.
 
 Processing Pipeline:
 --------------------
-1. Convert PDFs to Markdown using Docling's converter.
+1. Convert documents to Markdown using Docling's converter.
 2. Invoke Instructor/OpenAI-compatible clients with strict JSON schemas.
 3. Coerce LLM output into typed Pydantic models with rich validation feedback.
 
@@ -36,7 +36,7 @@ Highlights:
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Type, Union
+from typing import Any, Dict, List, Optional, Type, Union, Callable
 import json
 import importlib.util
 import sys
@@ -59,11 +59,6 @@ logging.getLogger("instructor").setLevel(logging.WARNING)
 logging.getLogger("instructor.retry").setLevel(logging.WARNING)
 
 try:
-    from docling.document_converter import DocumentConverter
-except ModuleNotFoundError:  # pragma: no cover - optional dependency
-    DocumentConverter = None  # type: ignore[assignment]
-
-try:
     import instructor  # type: ignore[import-not-found]
 except ModuleNotFoundError:  # pragma: no cover - optional dependency
     instructor = None  # type: ignore[assignment]
@@ -76,9 +71,13 @@ from pydantic import BaseModel, ValidationError
 
 from .constants import (
     DEFAULT_LLM_MODEL,
-    PACKAGE_SCHEMA_PYD_DIR,
     MOSAICX_COLORS,
+    PACKAGE_SCHEMA_TEMPLATES_PY_DIR,
+    USER_SCHEMA_DIR,
 )
+from .document_loader import DocumentLoadingError
+from .text_extraction import TextExtractionError, extract_text_with_fallback
+from .schema.registry import get_schema_by_id, get_schema_by_path
 from .display import styled_message, console
 from .utils import derive_ollama_generate_url, resolve_openai_config
 
@@ -104,106 +103,180 @@ def load_schema_model(schema_identifier: str) -> Type[BaseModel]:
         ExtractionError: If schema file not found or cannot be loaded
     """
     from pathlib import Path
-    
-    # Check if it's a file path (contains / or \ or ends with .py)
-    if ('/' in schema_identifier or '\\' in schema_identifier or 
-        schema_identifier.endswith('.py') or schema_identifier.startswith('mosaicx/')):
-        # Treat as file path
-        schema_file = Path(schema_identifier)
-        if not schema_file.is_absolute():
-            # Make it relative to current directory
-            schema_file = Path.cwd() / schema_file
-        
+
+    registry_entry = get_schema_by_id(schema_identifier)
+    schema_name: Optional[str] = None
+
+    if registry_entry:
+        schema_file = Path(registry_entry["file_path"])
+        schema_name = registry_entry.get("class_name")
         if not schema_file.exists():
             raise ExtractionError(f"Schema file not found: {schema_file}")
-        
-        # For file path, we need to find the class dynamically    
-        schema_name = None  # Will be found dynamically
-            
     else:
-        # Backward compatibility: fuzzy search by schema name  
-        pyd_dir = Path(PACKAGE_SCHEMA_PYD_DIR)
-        schema_name = schema_identifier
+        # Check if it's a file path (contains / or \ or ends with .py)
+        if (
+            "/" in schema_identifier
+            or "\\" in schema_identifier
+            or schema_identifier.endswith(".py")
+            or schema_identifier.startswith("mosaicx/")
+        ):
+            schema_file = Path(schema_identifier)
+            if not schema_file.is_absolute():
+                schema_file = Path.cwd() / schema_file
 
-        matching_files: List[Path] = [
-            py_file for py_file in pyd_dir.glob("*.py")
-            if schema_name.lower() in py_file.name.lower()
-        ]
+            if not schema_file.exists():
+                raise ExtractionError(f"Schema file not found: {schema_file}")
 
-        if not matching_files:
-            raise ExtractionError(
-                f"No schema file found for '{schema_name}' in {pyd_dir}. "
-                f"Generate a schema first using: mosaicx generate --desc '...'"
-            )
+            registered = get_schema_by_path(schema_file)
+            if registered:
+                schema_name = registered.get("class_name")
+        else:
+            # Backward compatibility: fuzzy search by schema name
+            schema_name = schema_identifier
+            search_roots: List[Path] = [
+                USER_SCHEMA_DIR,
+                Path(PACKAGE_SCHEMA_TEMPLATES_PY_DIR),
+            ]
+            matching_files: List[Path] = []
+            for root in search_roots:
+                root = root.expanduser()
+                if not root.exists():
+                    continue
+                matching_files.extend(
+                    py_file
+                    for py_file in root.glob("*.py")
+                    if schema_name.lower() in py_file.name.lower()
+                )
 
-        schema_file = max(matching_files, key=lambda f: f.stat().st_mtime)
+            if not matching_files:
+                search_hint = (
+                    ", ".join(str(root) for root in search_roots if root.exists())
+                    or "configured schema directories"
+                )
+                raise ExtractionError(
+                    f"No schema file found for '{schema_identifier}' in {search_hint}. "
+                    "Generate a schema first using: mosaicx generate --desc '...'"
+                )
+
+            schema_file = max(matching_files, key=lambda f: f.stat().st_mtime)
 
     try:
         spec = importlib.util.spec_from_file_location("schema_module", schema_file)
-        if spec is None or spec.loader is None:  # safety
+        if spec is None or spec.loader is None:
             raise RuntimeError("Failed to create module spec.")
         module = importlib.util.module_from_spec(spec)
         sys.modules["schema_module"] = module
         spec.loader.exec_module(module)
 
-        # Find the BaseModel class in the module
-        for attr_name in dir(module):
-            attr = getattr(module, attr_name)
+        def camel_to_snake(name: str) -> str:
+            return re.sub(r"(?<!^)(?=[A-Z])", "_", name).lower()
+
+        root_schema_class = getattr(module, "ROOT_SCHEMA_CLASS", None)
+        if isinstance(root_schema_class, str) and (
+            schema_name is None or schema_name == root_schema_class
+        ):
+            attr = getattr(module, root_schema_class, None)
             if (
                 isinstance(attr, type)
                 and issubclass(attr, BaseModel)
-                and attr is not BaseModel  # Exclude the base BaseModel class itself
+                and attr is not BaseModel
             ):
-                # If we have a specific schema_name to match, check it
-                if schema_name is None or attr.__name__ == schema_name:
+                return attr
+            raise ExtractionError(
+                f"ROOT_SCHEMA_CLASS points to '{root_schema_class}' but no matching BaseModel exists in {schema_file}"
+            )
+
+        # Collect candidate models preserving definition order
+        candidates: List[Type[BaseModel]] = []
+        for attr_name, attr in module.__dict__.items():
+            if (
+                isinstance(attr, type)
+                and issubclass(attr, BaseModel)
+                and attr is not BaseModel
+            ):
+                candidates.append(attr)
+
+        if not candidates:
+            raise ExtractionError(f"No BaseModel class found in {schema_file}")
+
+        if schema_name:
+            for candidate in candidates:
+                if candidate.__name__ == schema_name:
+                    return candidate
+            raise ExtractionError(f"Schema class '{schema_name}' not found in {schema_file}")
+
+        exports = getattr(module, "__all__", None)
+        if isinstance(exports, (list, tuple)):
+            for name in exports:
+                attr = getattr(module, name, None)
+                if isinstance(attr, type) and issubclass(attr, BaseModel) and attr is not BaseModel:
                     return attr
 
-        # If we get here, no suitable class was found
-        if schema_name:
-            raise ExtractionError(f"Schema class '{schema_name}' not found in {schema_file}")
-        else:
-            raise ExtractionError(f"No BaseModel class found in {schema_file}")
+        stem_lower = schema_file.stem.lower()
+        matching = [
+            candidate
+            for candidate in candidates
+            if camel_to_snake(candidate.__name__) in stem_lower
+        ]
+        if matching:
+            return matching[-1]
+
+        # Fallback: prefer the last defined BaseModel (outer schemas typically appear last)
+        return candidates[-1]
 
     except Exception as e:
         raise ExtractionError(f"Failed to load schema from {schema_file}: {e}") from e
 
 
-def extract_text_from_pdf(pdf_path: Union[str, Path]) -> str:
+def extract_text_from_document(
+    document_path: Union[str, Path],
+    *,
+    return_details: bool = False,
+    status_callback: Optional[Callable[[str], None]] = None,
+) -> Union[str, LayeredTextResult]:
     """
-    Extract text from PDF using Docling.
+    Extract text from a supported clinical document using Docling.
 
     Args:
-        pdf_path: Path to the PDF file
+        document_path: Path to the document file
+        return_details: When True, return the full LayeredTextResult
+        status_callback: Optional callable invoked when a fallback mode is used
 
     Returns:
         Extracted text content (Markdown)
 
     Raises:
-        ExtractionError: If PDF cannot be processed
+        ExtractionError: If the document cannot be processed
     """
-    pdf_path = Path(pdf_path)
-
-    if not pdf_path.exists():
-        raise ExtractionError(f"PDF file not found: {pdf_path}")
-
-    if pdf_path.suffix.lower() != ".pdf":
-        raise ExtractionError(f"File is not a PDF: {pdf_path}")
-
-    if DocumentConverter is None:
-        raise ExtractionError("docling is required for PDF extraction. Install 'docling'.")
-
+    doc_path = Path(document_path)
     try:
-        converter = DocumentConverter()
-        result = converter.convert(pdf_path)
-        text_content = result.document.export_to_markdown()
+        extraction = extract_text_with_fallback(doc_path)
+    except (DocumentLoadingError, TextExtractionError) as exc:
+        raise ExtractionError(str(exc)) from exc
 
-        if not text_content or not text_content.strip():
-            raise ExtractionError(f"No text content extracted from {pdf_path}")
+    if not extraction.markdown or not extraction.markdown.strip():
+        raise ExtractionError(f"No text content extracted from {doc_path}")
 
-        return text_content
+    if status_callback and extraction.mode != "native":
+        status_callback(f"{extraction.mode.upper()} fallback for {doc_path.name}")
 
-    except Exception as e:
-        raise ExtractionError(f"Failed to extract text from PDF {pdf_path}: {e}") from e
+    if return_details:
+        return extraction
+    return extraction.markdown
+
+
+def extract_text_from_pdf(
+    pdf_path: Union[str, Path],
+    *,
+    return_details: bool = False,
+    status_callback: Optional[Callable[[str], None]] = None,
+) -> Union[str, LayeredTextResult]:
+    """Backward-compatible alias for :func:`extract_text_from_document`."""
+    return extract_text_from_document(
+        pdf_path,
+        return_details=return_details,
+        status_callback=status_callback,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -732,10 +805,10 @@ def extract_from_pdf(
     save_result: Optional[Union[str, Path]] = None,
 ) -> BaseModel:
     """
-    Complete pipeline: PDF → Text → Structured Data.
+    Complete pipeline: Document → Text → Structured Data.
 
     Args:
-        pdf_path: Path to the PDF file
+        pdf_path: Path to the document file
         schema_name: Optional schema identifier (ID, filename, or file path)
         schema_file_path: Optional explicit schema file path (deprecated alias)
         model: Model identifier for the OpenAI-compatible endpoint
@@ -760,8 +833,8 @@ def extract_from_pdf(
     console.print()
     styled_message(f"✨ Schema Model: {schema_class.__name__} ✨", "primary", center=True)
     console.print()
-    with console.status(f"[{MOSAICX_COLORS['accent']}]Reading PDF document...", spinner="dots"):
-        text_content = extract_text_from_pdf(pdf_path)
+    with console.status(f"[{MOSAICX_COLORS['accent']}]Reading document contents...", spinner="dots"):
+        text_content = extract_text_from_document(pdf_path)
     with console.status(f"[{MOSAICX_COLORS['primary']}]Extracting structured data...", spinner="dots"):
         extracted_data = extract_structured_data(
             text_content,

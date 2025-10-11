@@ -31,9 +31,12 @@ Key Behaviours:
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Optional
+from typing import Iterable, Optional
 
-from ..constants import PACKAGE_SCHEMA_PYD_DIR
+from ..constants import (
+    PACKAGE_SCHEMA_TEMPLATES_PY_DIR,
+    USER_SCHEMA_DIR,
+)
 from ..schema.registry import get_schema_by_id
 
 
@@ -41,21 +44,33 @@ def resolve_schema_reference(schema_ref: str) -> Optional[Path]:
     """Resolve a schema identifier (ID, filename, or path) to a filesystem path."""
 
     schema_by_id = get_schema_by_id(schema_ref)
+    fallback_name: Optional[str] = None
     if schema_by_id:
         schema_path = Path(schema_by_id["file_path"])
         if schema_path.exists():
             return schema_path
+        fallback_name = schema_by_id.get("file_name")
 
-    schema_dir = Path(PACKAGE_SCHEMA_PYD_DIR)
-    if schema_dir.exists():
-        direct = schema_dir / schema_ref
-        if direct.exists() and direct.suffix == ".py":
-            return direct
+    search_roots: Iterable[Path] = (
+        root
+        for root in [USER_SCHEMA_DIR, PACKAGE_SCHEMA_TEMPLATES_PY_DIR]
+        if isinstance(root, Path)
+    )
+    for root in search_roots:
+        if not root.exists():
+            continue
 
-        if not schema_ref.endswith(".py"):
-            with_ext = schema_dir / f"{schema_ref}.py"
-            if with_ext.exists():
-                return with_ext
+        for candidate_name in (schema_ref, fallback_name):
+            if not candidate_name:
+                continue
+            candidate_path = root / candidate_name
+            if candidate_path.exists() and candidate_path.suffix == ".py":
+                return candidate_path
+
+            if not candidate_name.endswith(".py"):
+                with_ext = root / f"{candidate_name}.py"
+                if with_ext.exists():
+                    return with_ext
 
     explicit = Path(schema_ref)
     if explicit.exists() and explicit.suffix == ".py":

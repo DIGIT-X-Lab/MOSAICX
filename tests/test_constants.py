@@ -167,8 +167,8 @@ class TestEnvironmentConstants:
         """Test that path constants are defined if needed."""
         # Test would depend on what path constants are defined
         try:
-            from mosaicx.constants import PACKAGE_SCHEMA_PYD_DIR
-            assert PACKAGE_SCHEMA_PYD_DIR is not None
+            from mosaicx.constants import PACKAGE_SCHEMA_TEMPLATES_PY_DIR
+            assert PACKAGE_SCHEMA_TEMPLATES_PY_DIR is not None
         except ImportError:
             # If not defined, that's fine for this test
             pass
