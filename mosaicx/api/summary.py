@@ -113,6 +113,7 @@ def summarize_reports(
             json_path=json_path,
             pdf_path=pdf_path,
             patient_id=patient_id,
+            model_name=model,
             emit_messages=False,
         )
 
