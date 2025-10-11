@@ -30,7 +30,6 @@ Highlights:
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Optional
 
@@ -62,7 +61,7 @@ from ..schema.registry import (
     register_schema,
     scan_and_register_existing_schemas,
 )
-from ..summarizer import render_summary_rich, write_summary_json
+from ..summarizer import render_summary_rich, save_summary_artifacts
 from ..utils import resolve_schema_reference
 
 
@@ -523,6 +522,15 @@ def extract(
 @click.option("--api-key", help="API key (e.g., 'ollama' for Ollama).")
 @click.option("--temperature", type=float, default=0.2, show_default=True, help="Sampling temperature.")
 @click.option("--output", "--json-out", "json_out", type=click.Path(path_type=Path), help="Save a JSON summary to this path.")
+@click.option(
+    "--format",
+    "formats",
+    type=click.Choice(["json", "pdf"], case_sensitive=False),
+    multiple=True,
+    default=("json",),
+    help="Choose output artifact(s); repeat for multiple values (default: json).",
+)
+@click.option("--pdf-out", type=click.Path(path_type=Path), help="Save a PDF summary to this path.")
 @click.option("--debug", is_flag=True, help="Show tracebacks on errors.")
 @click.pass_context
 def summarize(
@@ -535,6 +543,8 @@ def summarize(
     api_key: Optional[str],
     temperature: float,
     json_out: Optional[Path],
+    formats: tuple[str, ...],
+    pdf_out: Optional[Path],
     debug: bool,
 ) -> None:
     """Summarize one or many reports (same patient) into a critical timeline and concise overall summary."""
@@ -584,13 +594,29 @@ def summarize(
 
         render_summary_rich(summary)
 
-        if json_out is None:
-            ts = datetime.now(tz=timezone.utc).strftime("%Y%m%d_%H%M%S")
-            base = (patient_id or "patient").lower()
-            json_out = Path("output") / f"summary_{base}_{ts}.json"
+        normalized_formats = tuple(dict.fromkeys(f.lower() for f in formats)) if formats else ("json",)
+        if not normalized_formats:
+            normalized_formats = ("json",)
+        selected_formats = set(normalized_formats)
 
-        write_summary_json(summary, json_out)
-        styled_message(f"Saved JSON: {json_out}", "accent")
+        json_path = json_out
+        if json_path and "json" not in selected_formats:
+            styled_message("Ignoring --output because JSON artifact disabled.", "warning")
+            json_path = None
+
+        pdf_path = pdf_out
+        if pdf_path and "pdf" not in selected_formats:
+            styled_message("Ignoring --pdf-out because PDF artifact disabled.", "warning")
+            pdf_path = None
+
+        save_summary_artifacts(
+            summary,
+            artifacts=normalized_formats,
+            json_path=json_path,
+            pdf_path=pdf_path,
+            patient_id=patient_id,
+            emit_messages=True,
+        )
 
     except Exception as exc:
         styled_message(f"Summarization failed: {exc}", "error")

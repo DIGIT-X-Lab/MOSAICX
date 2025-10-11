@@ -36,7 +36,12 @@ from typing import Iterable, List, Optional, Sequence, Union
 
 from ..constants import DEFAULT_LLM_MODEL
 from ..document_loader import DOC_SUFFIXES
-from ..summarizer import PatientSummary, load_reports, summarize_with_llm
+from ..summarizer import (
+    PatientSummary,
+    load_reports,
+    save_summary_artifacts,
+    summarize_with_llm,
+)
 
 
 def summarize_reports(
@@ -47,12 +52,18 @@ def summarize_reports(
     base_url: Optional[str] = None,
     api_key: Optional[str] = None,
     temperature: float = 0.2,
+    artifacts: Optional[Sequence[str]] = None,
+    json_path: Optional[Path] = None,
+    pdf_path: Optional[Path] = None,
 ) -> PatientSummary:
     """Summarize one or many reports into a :class:`PatientSummary`.
 
     ``paths`` accepts a single ``Path``/``str`` or any sequence of them. Directories
     are scanned recursively for supported formats before summarisation. ``Path`` and
     string inputs are both accepted for convenience.
+
+    Optional ``artifacts`` allows writing JSON and/or PDF outputs. Pass values from
+    ``{"json", "pdf"}``. When omitted, no files are written.
     """
 
     collected_paths: List[Path] = []
@@ -86,7 +97,7 @@ def summarize_reports(
             f"No textual content found in the provided inputs (supported: {', '.join(sorted(allowed_suffixes))})."
         )
 
-    return summarize_with_llm(
+    summary = summarize_with_llm(
         docs,
         patient_id=patient_id,
         model=model,
@@ -94,6 +105,18 @@ def summarize_reports(
         api_key=api_key,
         temperature=temperature,
     )
+
+    if artifacts:
+        save_summary_artifacts(
+            summary,
+            artifacts=artifacts,
+            json_path=json_path,
+            pdf_path=pdf_path,
+            patient_id=patient_id,
+            emit_messages=False,
+        )
+
+    return summary
 
 
 __all__ = ["summarize_reports"]

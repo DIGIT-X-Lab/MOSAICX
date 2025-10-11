@@ -28,9 +28,11 @@ from .constants import (
     DEFAULT_FORCE_OCR,
 )
 from .document_loader import (
+    DOC_SUFFIXES,
     DocumentLoadingError,
     LoadedDocument,
     PageAnalysis,
+    PLAIN_TEXT_SUFFIXES,
     load_document,
 )
 
@@ -158,6 +160,30 @@ def extract_text_with_fallback(
     Extract markdown from ``path`` using native, OCR, and VLM fallbacks.
     """
     doc_path = Path(path)
+    suffix = doc_path.suffix.lower()
+
+    if suffix in PLAIN_TEXT_SUFFIXES:
+        try:
+            text = doc_path.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            text = doc_path.read_text(encoding="latin-1")
+        text = text.strip()
+        if not text:
+            raise TextExtractionError(f"No text content found in {doc_path}")
+        return LayeredTextResult(
+            markdown=text,
+            mode="plain",
+            page_analysis=[],
+            attempts=["plain"],
+            vlm_pages=[],
+        )
+
+    if suffix not in DOC_SUFFIXES:
+        raise TextExtractionError(
+            f"Unsupported file extension: {doc_path.suffix or '<none>'}. "
+            f"Supported extensions: {', '.join(sorted(DOC_SUFFIXES))}."
+        )
+
     attempts: List[str] = []
     languages = ocr_languages or DEFAULT_OCR_LANGS
     if not languages:

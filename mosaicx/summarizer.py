@@ -42,7 +42,8 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from time import sleep
-from typing import Any, List, Optional
+from typing import Any, Dict, Iterable, List, Optional
+from xml.sax.saxutils import escape
 
 from pydantic import BaseModel, Field, ValidationError
 
@@ -53,7 +54,7 @@ from rich.table import Table
 
 # Package theming & UI helpers
 from .display import console, styled_message
-from .constants import MOSAICX_COLORS
+from .constants import MOSAICX_COLORS, PROJECT_ROOT
 from .utils import resolve_openai_config
 from .document_loader import DOC_SUFFIXES
 from .text_extraction import TextExtractionError, extract_text_with_fallback
@@ -76,11 +77,13 @@ try:
     from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet  # type: ignore[import-not-found]
     from reportlab.lib.units import cm  # type: ignore[import-not-found]
     from reportlab.platypus import (  # type: ignore[import-not-found]
+        Image,
         Paragraph,
         SimpleDocTemplate,
         Spacer,
         Table as RLTable,
         TableStyle,
+        Indenter,
     )
 except ModuleNotFoundError:  # pragma: no cover - optional dependency
     rl_colors = None  # type: ignore[assignment]
@@ -88,11 +91,13 @@ except ModuleNotFoundError:  # pragma: no cover - optional dependency
     ParagraphStyle = None  # type: ignore[assignment]
     getSampleStyleSheet = None  # type: ignore[assignment]
     cm = None  # type: ignore[assignment]
+    Image = None  # type: ignore[assignment]
     Paragraph = None  # type: ignore[assignment]
     SimpleDocTemplate = None  # type: ignore[assignment]
     Spacer = None  # type: ignore[assignment]
     RLTable = None  # type: ignore[assignment]
     TableStyle = None  # type: ignore[assignment]
+    Indenter = None  # type: ignore[assignment]
 
 
 # =============================================================================
@@ -540,6 +545,541 @@ def write_summary_json(ps: PatientSummary, json_path: Path) -> None:
     json_path.write_text(text + "\n", encoding="utf-8")
 
 
+def write_summary_pdf(
+    ps: PatientSummary,
+    pdf_path: Path,
+    *,
+    title: str = "MOSAICX Clinical Summary",
+    logo_path: Optional[Path] = None,
+) -> None:
+    """Render a stylised PDF artifact for the provided :class:`PatientSummary`."""
+
+    required = (
+        SimpleDocTemplate,
+        Paragraph,
+        RLTable,
+        TableStyle,
+        getSampleStyleSheet,
+        A4,
+        cm,
+        rl_colors,
+        Image,
+        Indenter,
+    )
+    if any(dep is None for dep in required):
+        raise RuntimeError("PDF export unavailable – install ReportLab (`pip install reportlab`).")
+
+    pdf_path = Path(pdf_path)
+    pdf_path.parent.mkdir(parents=True, exist_ok=True)
+
+    doc = SimpleDocTemplate(
+        str(pdf_path),
+        pagesize=A4,
+        leftMargin=2 * cm,
+        rightMargin=2 * cm,
+        topMargin=2.2 * cm,
+        bottomMargin=2 * cm,
+    )
+
+    def _sanitize(text: Optional[str]) -> str:
+        """Normalize narrative text for PDF rendering (convert uncommon separators)."""
+        if not text:
+            return ""
+        replacements = {
+            "\u2010": "-",
+            "\u2011": "-",
+            "\u2012": "-",
+            "\u2013": "-",
+            "\u2014": "-",
+            "\u2212": "-",
+            "\u00a0": " ",
+        }
+        normalised = text
+        for src, dest in replacements.items():
+            normalised = normalised.replace(src, dest)
+        return normalised
+
+    accent_hex = "#1b1b1d"
+    muted_hex = "#6a6a6d"
+    text_hex = "#1a1a1c"
+
+    primary = rl_colors.HexColor("#0f0f10")  # type: ignore[call-arg]
+    accent = rl_colors.HexColor(accent_hex)  # type: ignore[call-arg]
+    muted = rl_colors.HexColor(muted_hex)  # type: ignore[call-arg]
+    surface_header = rl_colors.HexColor("#ffffff")  # type: ignore[call-arg]
+    surface = rl_colors.HexColor("#f6f6f7")  # type: ignore[call-arg]
+    surface_alt = rl_colors.HexColor("#fbfbfc")  # type: ignore[call-arg]
+    grid_color = rl_colors.HexColor("#d7d7da")  # type: ignore[call-arg]
+    text_dark = rl_colors.HexColor(text_hex)  # type: ignore[call-arg]
+
+    stylesheet = getSampleStyleSheet()  # type: ignore[operator]
+    stylesheet.add(
+        ParagraphStyle(
+            name="SummaryBody",
+            parent=stylesheet["BodyText"],
+            fontName="Helvetica",
+            fontSize=10,
+            leading=14,
+            textColor=text_dark,
+        )
+    )
+    stylesheet.add(
+        ParagraphStyle(
+            name="SummarySection",
+            parent=stylesheet["Heading3"],
+            fontName="Helvetica-Bold",
+            fontSize=12,
+            leading=18,
+            textColor=primary,
+            spaceBefore=12,
+            spaceAfter=6,
+        )
+    )
+    stylesheet.add(
+        ParagraphStyle(
+            name="SummaryHeaderTitle",
+            parent=stylesheet["Heading1"],
+            fontName="Helvetica-Bold",
+            fontSize=18,
+            leading=22,
+            textColor=primary,
+            alignment=2,  # right
+        )
+    )
+    stylesheet.add(
+        ParagraphStyle(
+            name="SummaryHeaderSubtitle",
+            parent=stylesheet["BodyText"],
+            fontName="Helvetica",
+            fontSize=10,
+            leading=12,
+            textColor=muted,
+            alignment=2,
+        )
+    )
+    stylesheet.add(
+        ParagraphStyle(
+            name="SummarySectionTitle",
+            parent=stylesheet["BodyText"],
+            fontName="Helvetica-Bold",
+            fontSize=11,
+            leading=16,
+            textColor=text_dark,
+            spaceBefore=10,
+            spaceAfter=4,
+        )
+    )
+    stylesheet.add(
+        ParagraphStyle(
+            name="SummaryLabel",
+            parent=stylesheet["Normal"],
+            fontName="Helvetica-Bold",
+            fontSize=9,
+            textColor=accent,
+        )
+    )
+    stylesheet.add(
+        ParagraphStyle(
+            name="SummaryValue",
+            parent=stylesheet["Normal"],
+            fontName="Helvetica",
+            fontSize=10,
+            textColor=text_dark,
+        )
+    )
+    stylesheet.add(
+        ParagraphStyle(
+            name="SummaryOverall",
+            parent=stylesheet["BodyText"],
+            fontName="Helvetica",
+            fontSize=10,
+            leading=14,
+            textColor=text_dark,
+        )
+    )
+    stylesheet.add(
+        ParagraphStyle(
+            name="SummaryFooter",
+            parent=stylesheet["BodyText"],
+            fontName="Helvetica",
+            fontSize=8,
+            leading=10,
+            textColor=muted,
+            alignment=1,
+        )
+    )
+    stylesheet.add(
+        ParagraphStyle(
+            name="SummaryTableHeader",
+            parent=stylesheet["Normal"],
+            fontName="Helvetica-Bold",
+            fontSize=10,
+            textColor=rl_colors.HexColor("#ffffff"),  # type: ignore[call-arg]
+            alignment=1,
+        )
+    )
+    stylesheet.add(
+        ParagraphStyle(
+            name="SummaryTableCell",
+            parent=stylesheet["BodyText"],
+            fontName="Helvetica",
+            fontSize=9,
+            leading=12,
+            textColor=text_dark,
+        )
+    )
+    stylesheet.add(
+        ParagraphStyle(
+            name="TimelineDot",
+            parent=stylesheet["BodyText"],
+            fontName="Helvetica-Bold",
+            fontSize=12,
+            textColor=accent,
+            alignment=1,
+        )
+    )
+    stylesheet.add(
+        ParagraphStyle(
+            name="TimelineDate",
+            parent=stylesheet["BodyText"],
+            fontName="Helvetica-Bold",
+            fontSize=10,
+            leading=12,
+            textColor=text_dark,
+        )
+    )
+    stylesheet.add(
+        ParagraphStyle(
+            name="TimelineNote",
+            parent=stylesheet["BodyText"],
+            fontName="Helvetica",
+            fontSize=10,
+            leading=14,
+            textColor=text_dark,
+        )
+    )
+    body_style = stylesheet["SummaryBody"]
+    section_style = stylesheet["SummarySection"]
+    header_title_style = stylesheet["SummaryHeaderTitle"]
+    header_sub_style = stylesheet["SummaryHeaderSubtitle"]
+    label_style = stylesheet["SummaryLabel"]
+    value_style = stylesheet["SummaryValue"]
+    overall_style = stylesheet["SummaryOverall"]
+    footer_style = stylesheet["SummaryFooter"]
+    table_header_style = stylesheet["SummaryTableHeader"]
+    table_cell_style = stylesheet["SummaryTableCell"]
+    section_title_style = stylesheet["SummarySectionTitle"]
+    timeline_dot_style = stylesheet["TimelineDot"]
+    timeline_date_style = stylesheet["TimelineDate"]
+    timeline_note_style = stylesheet["TimelineNote"]
+
+    section_indent = 0.55 * cm
+    content_width = doc.width - section_indent
+
+    def _section_heading(label: str) -> Paragraph:
+        """Consistent uppercase section titles with a subtle divider."""
+        html = (
+            f"<font color='{muted_hex}' size='14'>▌</font> "
+            f"<font color='{text_hex}'>{escape(label.upper())}</font>"
+        )
+        return Paragraph(html, section_title_style)
+
+    story: List[Any] = []
+
+    logo_candidates: List[Path] = []
+    if logo_path is not None:
+        logo_candidates.append(Path(logo_path))
+
+    package_logo = PROJECT_ROOT / "assets" / "digitx_logo.png"
+    relative_logo = Path("assets") / "digitx_logo.png"
+    package_alt = Path(__file__).resolve().parent / "assets" / "digitx_logo.png"
+
+    for candidate in (package_logo, relative_logo, package_alt):
+        if candidate not in logo_candidates:
+            logo_candidates.append(candidate)
+
+    discovered_logo: Optional[Path] = None
+    for candidate in logo_candidates:
+        if candidate.exists():
+            discovered_logo = candidate
+            break
+
+    if discovered_logo is not None:
+        logo_flowable = Image(str(discovered_logo))  # type: ignore[call-arg]
+        max_width = 4.2 * cm
+        if getattr(logo_flowable, "imageWidth", max_width) > max_width:
+            scale = max_width / float(logo_flowable.imageWidth)
+            logo_flowable.drawWidth = max_width
+            logo_flowable.drawHeight = float(logo_flowable.imageHeight) * scale
+        logo_flowable.hAlign = "LEFT"
+    else:
+        missing_paths = ", ".join(str(p) for p in logo_candidates)
+        _flash_once(
+            "pdf_logo_missing",
+            f"PDF header logo not found (checked: {missing_paths}). Using text fallback.",
+            color_key="muted",
+            duration=0.6,
+        )
+        logo_flowable = Paragraph("DIGIT-X Lab", section_style)
+
+    header_title = Paragraph(escape(title), header_title_style)
+    subtitle_parts: List[str] = []
+    if ps.patient.last_updated:
+        subtitle_parts.append(f"Generated: {escape(ps.patient.last_updated)}")
+    else:
+        subtitle_parts.append("Generated: —")
+    subtitle_parts.append("DIGIT-X Lab • MOSAICX")
+    header_subtitle = Paragraph("<br/>".join(subtitle_parts), header_sub_style)
+
+    header_table = RLTable(
+        [
+            [logo_flowable, header_title],
+            ["", header_subtitle],
+        ],
+        colWidths=[doc.width * 0.32, doc.width * 0.68],
+    )
+    header_table.setStyle(
+        TableStyle(
+            [
+                ("SPAN", (0, 0), (0, 1)),
+                ("VALIGN", (0, 0), (0, 1), "MIDDLE"),
+                ("VALIGN", (1, 0), (1, 1), "BOTTOM"),
+                ("ALIGN", (1, 0), (1, 0), "RIGHT"),
+                ("ALIGN", (1, 1), (1, 1), "RIGHT"),
+                ("BACKGROUND", (0, 0), (-1, -1), surface_header),
+                ("BOX", (0, 0), (-1, -1), 0.8, accent),
+                ("TOPPADDING", (0, 0), (-1, -1), 12),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 12),
+                ("LEFTPADDING", (0, 0), (-1, -1), 12),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 12),
+            ]
+        )
+    )
+    story.append(header_table)
+
+    accent_bar = RLTable([[""]], colWidths=[doc.width])
+    accent_bar.setStyle(
+        TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (-1, -1), grid_color),
+                ("LEFTPADDING", (0, 0), (-1, -1), 0),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+                ("TOPPADDING", (0, 0), (-1, -1), 0),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
+            ]
+        )
+    )
+    accent_bar._argH = [0.08 * cm]  # type: ignore[attr-defined]
+    story.append(accent_bar)
+    story.append(Spacer(1, 0.35 * cm))
+
+    overall_text = _sanitize(ps.overall.strip()) if ps.overall else "Narrative summary unavailable."
+
+    story.append(Indenter(section_indent, 0))
+
+    snapshot_html = []
+    snapshot_html.append(
+        "<font color='{muted}' size='8'>PATIENT ID</font><br/><font size='11'>{value}</font>".format(
+            muted=muted_hex,
+            value=escape(_sanitize(ps.patient.patient_id) or "Not provided"),
+        )
+    )
+    snapshot_html.append(
+        "<font color='{muted}' size='8'>DATE OF BIRTH</font><br/><font size='11'>{value}</font>".format(
+            muted=muted_hex,
+            value=escape(_sanitize(ps.patient.dob) or "Not provided"),
+        )
+    )
+    snapshot_html.append(
+        "<font color='{muted}' size='8'>SEX</font><br/><font size='11'>{value}</font>".format(
+            muted=muted_hex,
+            value=escape(_sanitize(ps.patient.sex) or "Not provided"),
+        )
+    )
+    snapshot_html.append(
+        "<font color='{muted}' size='8'>CRITICAL EVENTS</font><br/><font size='11'>{value}</font>".format(
+            muted=muted_hex,
+            value=str(len(ps.timeline)),
+        )
+    )
+
+    snapshot_cols = [Paragraph(item, value_style) for item in snapshot_html]
+    col_width = content_width / max(len(snapshot_cols), 1)
+    snapshot_table = RLTable([snapshot_cols], colWidths=[col_width] * len(snapshot_cols))
+    snapshot_table.setStyle(
+        TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (-1, -1), surface_header),
+                ("LINEBELOW", (0, 0), (-1, 0), 0.4, grid_color),
+                ("LEFTPADDING", (0, 0), (-1, -1), 0),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 12),
+                ("TOPPADDING", (0, 0), (-1, -1), 4),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+            ]
+        )
+    )
+    story.append(snapshot_table)
+    story.append(Indenter(-section_indent, 0))
+
+    story.append(Spacer(1, 0.4 * cm))
+    story.append(_section_heading("Timeline"))
+    story.append(Indenter(section_indent, 0))
+
+    events = sorted(ps.timeline, key=lambda e: (e.date or "", e.source or ""))
+
+    timeline_rows: List[List[Paragraph]] = []
+    if events:
+        for ev in events:
+            date_text = _sanitize(ev.date) or "—"
+            source_text = _sanitize(ev.source)
+            note_text = _sanitize(ev.note)
+
+            date_html = escape(date_text)
+            if source_text:
+                date_html += f"<br/><font color='{muted_hex}' size='8'>{escape(source_text)}</font>"
+            note_html = escape(note_text).replace("\n", "<br/>")
+
+            timeline_rows.append(
+                [
+                    Paragraph("●", timeline_dot_style),
+                    Paragraph(date_html, timeline_date_style),
+                    Paragraph(note_html, timeline_note_style),
+                ]
+            )
+    else:
+        timeline_rows.append(
+            [
+                Paragraph("●", timeline_dot_style),
+                Paragraph("—", timeline_date_style),
+                Paragraph("No critical events detected.", timeline_note_style),
+            ]
+        )
+
+    timeline_table = RLTable(
+        timeline_rows,
+        colWidths=[0.45 * cm, 2.6 * cm, content_width - (0.45 * cm + 2.6 * cm)],
+    )
+
+    timeline_style: List[tuple[Any, ...]] = [
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("ALIGN", (0, 0), (0, -1), "CENTER"),
+        ("LEFTPADDING", (0, 0), (0, -1), 0),
+        ("RIGHTPADDING", (0, 0), (0, -1), 6),
+        ("TOPPADDING", (0, 0), (-1, -1), 4),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 8),
+        ("LEFTPADDING", (1, 0), (1, -1), 4),
+        ("RIGHTPADDING", (1, 0), (2, -1), 10),
+    ]
+    timeline_table.setStyle(TableStyle(timeline_style))
+    story.append(timeline_table)
+    story.append(Indenter(-section_indent, 0))
+
+    story.append(Spacer(1, 0.4 * cm))
+    story.append(_section_heading("Overall Summary"))
+    story.append(Indenter(section_indent, 0))
+
+    overall_para = Paragraph(escape(overall_text).replace("\n", "<br/><br/>"), overall_style)
+    overall_wrapper = RLTable(
+        [[overall_para]],
+        colWidths=[content_width],
+        style=TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (-1, -1), surface_header),
+                ("LEFTPADDING", (0, 0), (-1, -1), 4),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 4),
+                ("TOPPADDING", (0, 0), (-1, -1), 6),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+            ]
+        ),
+    )
+    story.append(overall_wrapper)
+    story.append(Indenter(-section_indent, 0))
+
+    story.append(Spacer(1, 0.5 * cm))
+
+    summary_ts = ps.patient.last_updated or "—"
+    footer_text = (
+        "Generated with MOSAICX • DIGIT-X Lab, LMU Radiology | LMU University Hospital"
+        f" • Summary timestamp: {_sanitize(summary_ts)}"
+    )
+
+    def _draw_footer(canvas, doc_obj) -> None:
+        canvas.saveState()
+        footer_margin = 1.2 * cm
+        canvas.setFont("Helvetica", 8)
+        canvas.setFillColor(muted)
+        canvas.drawString(doc_obj.leftMargin, footer_margin, footer_text)
+        canvas.restoreState()
+
+    doc.build(story, onFirstPage=_draw_footer, onLaterPages=_draw_footer)
+
+
+def save_summary_artifacts(
+    ps: PatientSummary,
+    *,
+    artifacts: Iterable[str],
+    json_path: Optional[Path],
+    pdf_path: Optional[Path],
+    patient_id: Optional[str],
+    emit_messages: bool = True,
+) -> Dict[str, Path]:
+    """Persist selected summary artifacts and return their filesystem paths."""
+
+    selected = tuple(dict.fromkeys(a.lower() for a in artifacts if a))
+    if not selected:
+        return {}
+
+    allowed = {"json", "pdf"}
+    invalid = set(selected) - allowed
+    if invalid:
+        raise ValueError(f"Unsupported artifact type(s): {', '.join(sorted(invalid))}.")
+
+    saved: Dict[str, Path] = {}
+    default_stem: Optional[Path] = None
+
+    def _default_stem() -> Path:
+        nonlocal default_stem
+        if default_stem is None:
+            ts = datetime.now(tz=timezone.utc).strftime("%Y%m%d_%H%M%S")
+            base = (patient_id or ps.patient.patient_id or "patient").lower()
+            default_stem = Path("output") / f"summary_{base}_{ts}"
+        return default_stem
+
+    derived_pdf: Optional[Path] = None
+
+    if "json" in selected:
+        target = Path(json_path) if json_path is not None else _default_stem().with_suffix(".json")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        write_summary_json(ps, target)
+        saved["json"] = target
+        if emit_messages:
+            styled_message(f"Saved JSON: {target}", "accent")
+        if "pdf" in selected and pdf_path is None:
+            derived_pdf = target.with_suffix(".pdf")
+
+    if "pdf" in selected:
+        if pdf_path is not None:
+            pdf_target = Path(pdf_path)
+        elif derived_pdf is not None:
+            pdf_target = derived_pdf
+        else:
+            pdf_target = _default_stem().with_suffix(".pdf")
+        try:
+            write_summary_pdf(ps, pdf_target)
+        except RuntimeError as exc:
+            if emit_messages:
+                styled_message(str(exc), "muted")
+        except Exception as exc:  # pragma: no cover - runtime safeguard
+            if emit_messages:
+                styled_message(f"PDF export failed: {exc}", "warning")
+        else:
+            saved["pdf"] = pdf_target
+            if emit_messages:
+                styled_message(f"Saved PDF: {pdf_target}", "accent")
+
+    return saved
+
+
 # =============================================================================
 # Public API
 # =============================================================================
@@ -553,10 +1093,13 @@ def summarize_reports_to_terminal_and_json(
     api_key: Optional[str],
     temperature: float = 0.2,
     json_out: Optional[Path] = None,
+    artifacts: Optional[Iterable[str]] = None,
+    pdf_out: Optional[Path] = None,
 ) -> PatientSummary:
     """
-    Top-level: load, summarize, render (terminal) + write JSON.
-    - If json_out is None, auto-names into ./output/summary_<patient>_<ts>.json
+    Top-level: load, summarize, render (terminal) + optionally write artifacts.
+    - If json_out is None and JSON requested, auto-names into ./output/summary_<patient>_<ts>.json
+    - If PDF requested without explicit path, mirrors the JSON stem or falls back to the same naming scheme.
     - Returns the PatientSummary object.
     """
     docs = load_reports(paths)
@@ -576,12 +1119,14 @@ def summarize_reports_to_terminal_and_json(
     # Terminal view
     render_summary_rich(ps)
 
-    # JSON artifact
-    if json_out is None:
-        ts = datetime.now(tz=timezone.utc).strftime("%Y%m%d_%H%M%S")
-        base = (patient_id or "patient").lower()
-        json_out = Path("output") / f"summary_{base}_{ts}.json"
-    write_summary_json(ps, json_out)
-    styled_message(f"Saved JSON: {json_out}", "accent")
+    requested = artifacts if artifacts is not None else ("json",)
+    save_summary_artifacts(
+        ps,
+        artifacts=requested,
+        json_path=json_out,
+        pdf_path=pdf_out,
+        patient_id=patient_id,
+        emit_messages=True,
+    )
 
     return ps

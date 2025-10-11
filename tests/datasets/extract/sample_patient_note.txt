@@ -1,0 +1,13 @@
+Patient Name: Jane Doe
+Patient ID: JD-2045
+Date of Birth: 1988-03-22
+Address: 123 Wellness Street, Radiant City
+Email: jane.doe@example.com
+Phone: +1-555-0188
+
+Primary Physician: Dr. Riley Sparks
+Clinic ID: CLIN-8842
+
+Notes:
+- Follow-up scheduled in 6 weeks.
+- Vital signs stable; continue current medication plan.
