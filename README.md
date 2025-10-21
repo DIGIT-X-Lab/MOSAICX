@@ -5,7 +5,7 @@
 <p align="center">
   <a href="https://pypi.org/project/mosaicx/"><img alt="PyPI" src="https://img.shields.io/pypi/v/mosaicx.svg?label=PyPI&style=flat-square&logo=python&logoColor=white&color=bd93f9"></a>
   <a href="https://www.python.org/downloads/"><img alt="Python" src="https://img.shields.io/badge/Python-3.11%2B-50fa7b?style=flat-square&logo=python&logoColor=white"></a>
-  <a href="https://www.gnu.org/licenses/agpl-3.0"><img alt="License" src="https://img.shields.io/badge/License-AGPL--3.0-ff79c6?style=flat-square&logo=gnu&logoColor=white"></a>
+  <a href="https://www.apache.org/licenses/LICENSE-2.0"><img alt="License" src="https://img.shields.io/badge/License-Apache--2.0-ff79c6?style=flat-square&logo=apache&logoColor=white"></a>
   <a href="https://pepy.tech/project/mosaicx"><img alt="Downloads" src="https://img.shields.io/pepy/dt/mosaicx?style=flat-square&color=8be9fd&label=Downloads"></a>
   <a href="https://pydantic.dev"><img alt="Pydantic v2" src="https://img.shields.io/badge/Pydantic-v2-ffb86c?style=flat-square&logo=pydantic&logoColor=white"></a>
   <a href="https://ollama.ai"><img alt="Ollama Compatible" src="https://img.shields.io/badge/Ollama-Compatible-6272a4?style=flat-square&logo=ghost&logoColor=white"></a>
