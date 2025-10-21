@@ -91,8 +91,18 @@ def test_save_json_and_pdf_custom_paths(tmp_output_dir: Path, sample_summary: Pa
 def test_summarize_reports_to_terminal_and_json_invokes_artifact_helper(tmp_output_dir: Path, monkeypatch: pytest.MonkeyPatch, sample_summary: PatientSummary) -> None:
     calls: dict[str, Iterable[str]] = {}
 
-    def fake_save(ps: PatientSummary, *, artifacts: Iterable[str], json_path, pdf_path, patient_id, emit_messages):
+    def fake_save(
+        ps: PatientSummary,
+        *,
+        artifacts: Iterable[str],
+        json_path,
+        pdf_path,
+        patient_id,
+        model_name,
+        emit_messages,
+    ):
         calls["artifacts"] = tuple(artifacts)
+        calls["model"] = model_name
         return {asset: Path("dummy" + asset) for asset in artifacts}
 
     monkeypatch.setattr("mosaicx.summarizer.save_summary_artifacts", fake_save)
@@ -114,3 +124,4 @@ def test_summarize_reports_to_terminal_and_json_invokes_artifact_helper(tmp_outp
 
     assert result == sample_summary
     assert calls["artifacts"] == ("json", "pdf")
+    assert calls["model"] == "demo-model"

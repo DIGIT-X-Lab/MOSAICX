@@ -54,7 +54,7 @@ from rich.table import Table
 
 # Package theming & UI helpers
 from .display import console, styled_message
-from .constants import MOSAICX_COLORS, PROJECT_ROOT
+from .constants import APPLICATION_VERSION, MOSAICX_COLORS, PROJECT_ROOT
 from .utils import resolve_openai_config
 from .document_loader import DOC_SUFFIXES
 from .text_extraction import TextExtractionError, extract_text_with_fallback
@@ -549,8 +549,9 @@ def write_summary_pdf(
     ps: PatientSummary,
     pdf_path: Path,
     *,
-    title: str = "MOSAICX Clinical Summary",
+    title: str = "MOSAICX: Longitudinal Report",
     logo_path: Optional[Path] = None,
+    model_name: Optional[str] = None,
 ) -> None:
     """Render a stylised PDF artifact for the provided :class:`PatientSummary`."""
 
@@ -608,9 +609,44 @@ def write_summary_pdf(
     muted = rl_colors.HexColor(muted_hex)  # type: ignore[call-arg]
     surface_header = rl_colors.HexColor("#ffffff")  # type: ignore[call-arg]
     surface = rl_colors.HexColor("#f6f6f7")  # type: ignore[call-arg]
-    surface_alt = rl_colors.HexColor("#fbfbfc")  # type: ignore[call-arg]
+    surface_alt = rl_colors.HexColor("#ffffff")  # type: ignore[call-arg]
     grid_color = rl_colors.HexColor("#d7d7da")  # type: ignore[call-arg]
     text_dark = rl_colors.HexColor(text_hex)  # type: ignore[call-arg]
+
+    class RoundedTable(RLTable):  # type: ignore[misc]
+        """Table with a rounded rectangle silhouette for a softer card aesthetic."""
+
+        def __init__(
+            self,
+            *args,
+            corner_radius: float = 6.0,
+            border_color=accent,
+            border_width: float = 0.8,
+            fill_color=surface_header,
+            **kwargs,
+        ) -> None:
+            super().__init__(*args, **kwargs)
+            self._corner_radius = corner_radius
+            self._border_color = border_color
+            self._border_width = border_width
+            self._fill_color = fill_color
+
+        def draw(self) -> None:  # pragma: no cover - visual rendering
+            canvas = self.canv
+            canvas.saveState()
+            stroke = 0
+            if self._border_color is not None and self._border_width > 0:
+                canvas.setStrokeColor(self._border_color)
+                canvas.setLineWidth(self._border_width)
+                stroke = 1
+            if self._fill_color is not None:
+                canvas.setFillColor(self._fill_color)
+                fill = 1
+            else:
+                fill = 0
+            canvas.roundRect(0, 0, self._width, self._height, self._corner_radius, stroke=stroke, fill=fill)
+            canvas.restoreState()
+            super().draw()
 
     stylesheet = getSampleStyleSheet()  # type: ignore[operator]
     stylesheet.add(
@@ -659,13 +695,35 @@ def write_summary_pdf(
     )
     stylesheet.add(
         ParagraphStyle(
-            name="SummarySectionTitle",
+            name="SummaryHeaderMeta",
             parent=stylesheet["BodyText"],
+            fontName="Helvetica",
+            fontSize=9,
+            leading=12,
+            textColor=muted,
+            alignment=2,
+        )
+    )
+    stylesheet.add(
+        ParagraphStyle(
+            name="SummaryHeaderNote",
+            parent=stylesheet["BodyText"],
+            fontName="Helvetica-Oblique",
+            fontSize=8,
+            leading=10,
+            textColor=muted,
+            alignment=2,
+        )
+    )
+    stylesheet.add(
+        ParagraphStyle(
+            name="SummaryCardHeading",
+            parent=stylesheet["Heading3"],
             fontName="Helvetica-Bold",
-            fontSize=11,
+            fontSize=12,
             leading=16,
             textColor=text_dark,
-            spaceBefore=10,
+            spaceBefore=0,
             spaceAfter=4,
         )
     )
@@ -730,16 +788,6 @@ def write_summary_pdf(
     )
     stylesheet.add(
         ParagraphStyle(
-            name="TimelineDot",
-            parent=stylesheet["BodyText"],
-            fontName="Helvetica-Bold",
-            fontSize=12,
-            textColor=accent,
-            alignment=1,
-        )
-    )
-    stylesheet.add(
-        ParagraphStyle(
             name="TimelineDate",
             parent=stylesheet["BodyText"],
             fontName="Helvetica-Bold",
@@ -761,28 +809,43 @@ def write_summary_pdf(
     body_style = stylesheet["SummaryBody"]
     section_style = stylesheet["SummarySection"]
     header_title_style = stylesheet["SummaryHeaderTitle"]
-    header_sub_style = stylesheet["SummaryHeaderSubtitle"]
+    header_meta_style = stylesheet["SummaryHeaderMeta"]
+    header_note_style = stylesheet["SummaryHeaderNote"]
     label_style = stylesheet["SummaryLabel"]
     value_style = stylesheet["SummaryValue"]
     overall_style = stylesheet["SummaryOverall"]
+    card_heading_style = stylesheet["SummaryCardHeading"]
     footer_style = stylesheet["SummaryFooter"]
     table_header_style = stylesheet["SummaryTableHeader"]
     table_cell_style = stylesheet["SummaryTableCell"]
-    section_title_style = stylesheet["SummarySectionTitle"]
-    timeline_dot_style = stylesheet["TimelineDot"]
     timeline_date_style = stylesheet["TimelineDate"]
     timeline_note_style = stylesheet["TimelineNote"]
 
     section_indent = 0.55 * cm
     content_width = doc.width - section_indent
 
-    def _section_heading(label: str) -> Paragraph:
-        """Consistent uppercase section titles with a subtle divider."""
-        html = (
-            f"<font color='{muted_hex}' size='14'>▌</font> "
-            f"<font color='{text_hex}'>{escape(label.upper())}</font>"
+    def _rounded_heading(label: str) -> RoundedTable:
+        """Rounded rectangle heading that introduces a subsection."""
+        heading_para = Paragraph(escape(label.upper()), card_heading_style)
+        heading_table = RoundedTable(
+            [[heading_para]],
+            colWidths=[content_width],
+            corner_radius=0.3 * cm,
+            border_color=grid_color,
+            border_width=0.8,
+            fill_color=surface_header,
         )
-        return Paragraph(html, section_title_style)
+        heading_table.setStyle(
+            TableStyle(
+                [
+                    ("LEFTPADDING", (0, 0), (-1, -1), 12),
+                    ("RIGHTPADDING", (0, 0), (-1, -1), 12),
+                    ("TOPPADDING", (0, 0), (-1, -1), 8),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 10),
+                ]
+            )
+        )
+        return heading_table
 
     story: List[Any] = []
 
@@ -822,36 +885,50 @@ def write_summary_pdf(
         )
         logo_flowable = Paragraph("DIGIT-X Lab", section_style)
 
-    header_title = Paragraph(escape(title), header_title_style)
-    subtitle_parts: List[str] = []
-    if ps.patient.last_updated:
-        subtitle_parts.append(f"Generated: {escape(ps.patient.last_updated)}")
-    else:
-        subtitle_parts.append("Generated: —")
-    subtitle_parts.append("DIGIT-X Lab • MOSAICX")
-    header_subtitle = Paragraph("<br/>".join(subtitle_parts), header_sub_style)
+    generated_on_display = _sanitize(ps.patient.last_updated) if ps.patient.last_updated else "—"
+    model_display = _sanitize(model_name) if model_name else "—"
 
-    header_table = RLTable(
+    header_title = Paragraph(escape(title), header_title_style)
+    meta_html = "<br/>".join(
         [
-            [logo_flowable, header_title],
-            ["", header_subtitle],
-        ],
-        colWidths=[doc.width * 0.32, doc.width * 0.68],
+            escape(f"Generated by: MOSAICX v{APPLICATION_VERSION}"),
+            escape(f"Created on: {generated_on_display}"),
+            escape(f"Model: {model_display}"),
+            escape("DIGIT-X Lab, LMU Radiology, LMU University Munich"),
+        ]
     )
+    header_meta = Paragraph(meta_html, header_meta_style)
+    header_note = Paragraph(escape("Note: AI generated"), header_note_style)
+
+    header_rows: List[List[Any]] = [
+        [logo_flowable, header_title],
+        ["", header_meta],
+        ["", header_note],
+    ]
+
+    header_table = RoundedTable(
+        header_rows,
+        colWidths=[doc.width * 0.32, doc.width * 0.68],
+        corner_radius=0.35 * cm,
+        border_color=accent,
+        border_width=0.8,
+        fill_color=surface_header,
+    )
+    header_last_row = len(header_rows) - 1
     header_table.setStyle(
         TableStyle(
             [
-                ("SPAN", (0, 0), (0, 1)),
-                ("VALIGN", (0, 0), (0, 1), "MIDDLE"),
-                ("VALIGN", (1, 0), (1, 1), "BOTTOM"),
-                ("ALIGN", (1, 0), (1, 0), "RIGHT"),
-                ("ALIGN", (1, 1), (1, 1), "RIGHT"),
-                ("BACKGROUND", (0, 0), (-1, -1), surface_header),
-                ("BOX", (0, 0), (-1, -1), 0.8, accent),
+                ("SPAN", (0, 0), (0, header_last_row)),
+                ("VALIGN", (0, 0), (0, header_last_row), "MIDDLE"),
+                ("ALIGN", (1, 0), (1, header_last_row), "RIGHT"),
                 ("TOPPADDING", (0, 0), (-1, -1), 12),
                 ("BOTTOMPADDING", (0, 0), (-1, -1), 12),
                 ("LEFTPADDING", (0, 0), (-1, -1), 12),
                 ("RIGHTPADDING", (0, 0), (-1, -1), 12),
+                ("TOPPADDING", (1, 1), (1, 1), 6),
+                ("BOTTOMPADDING", (1, 1), (1, 1), 4),
+                ("TOPPADDING", (1, 2), (1, 2), 2),
+                ("BOTTOMPADDING", (1, 2), (1, 2), 2),
             ]
         )
     )
@@ -861,7 +938,7 @@ def write_summary_pdf(
     accent_bar.setStyle(
         TableStyle(
             [
-                ("BACKGROUND", (0, 0), (-1, -1), grid_color),
+                ("BACKGROUND", (0, 0), (-1, -1), surface_alt),
                 ("LEFTPADDING", (0, 0), (-1, -1), 0),
                 ("RIGHTPADDING", (0, 0), (-1, -1), 0),
                 ("TOPPADDING", (0, 0), (-1, -1), 0),
@@ -869,8 +946,9 @@ def write_summary_pdf(
             ]
         )
     )
-    accent_bar._argH = [0.08 * cm]  # type: ignore[attr-defined]
+    accent_bar._argH = [0.1 * cm]  # type: ignore[attr-defined]
     story.append(accent_bar)
+
     story.append(Spacer(1, 0.35 * cm))
 
     overall_text = _sanitize(ps.overall.strip()) if ps.overall else "Narrative summary unavailable."
@@ -909,8 +987,7 @@ def write_summary_pdf(
     snapshot_table.setStyle(
         TableStyle(
             [
-                ("BACKGROUND", (0, 0), (-1, -1), surface_header),
-                ("LINEBELOW", (0, 0), (-1, 0), 0.4, grid_color),
+                ("BACKGROUND", (0, 0), (-1, -1), surface_alt),
                 ("LEFTPADDING", (0, 0), (-1, -1), 0),
                 ("RIGHTPADDING", (0, 0), (-1, -1), 12),
                 ("TOPPADDING", (0, 0), (-1, -1), 4),
@@ -922,7 +999,8 @@ def write_summary_pdf(
     story.append(Indenter(-section_indent, 0))
 
     story.append(Spacer(1, 0.4 * cm))
-    story.append(_section_heading("Timeline"))
+    story.append(_rounded_heading("Timeline"))
+    story.append(Spacer(1, 0.18 * cm))
     story.append(Indenter(section_indent, 0))
 
     events = sorted(ps.timeline, key=lambda e: (e.date or "", e.source or ""))
@@ -941,7 +1019,6 @@ def write_summary_pdf(
 
             timeline_rows.append(
                 [
-                    Paragraph("●", timeline_dot_style),
                     Paragraph(date_html, timeline_date_style),
                     Paragraph(note_html, timeline_note_style),
                 ]
@@ -949,7 +1026,6 @@ def write_summary_pdf(
     else:
         timeline_rows.append(
             [
-                Paragraph("●", timeline_dot_style),
                 Paragraph("—", timeline_date_style),
                 Paragraph("No critical events detected.", timeline_note_style),
             ]
@@ -957,25 +1033,28 @@ def write_summary_pdf(
 
     timeline_table = RLTable(
         timeline_rows,
-        colWidths=[0.45 * cm, 2.6 * cm, content_width - (0.45 * cm + 2.6 * cm)],
+        colWidths=[2.9 * cm, content_width - 2.9 * cm],
     )
 
     timeline_style: List[tuple[Any, ...]] = [
         ("VALIGN", (0, 0), (-1, -1), "TOP"),
-        ("ALIGN", (0, 0), (0, -1), "CENTER"),
-        ("LEFTPADDING", (0, 0), (0, -1), 0),
-        ("RIGHTPADDING", (0, 0), (0, -1), 6),
+        ("LEFTPADDING", (0, 0), (-1, -1), 0),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 0),
         ("TOPPADDING", (0, 0), (-1, -1), 4),
         ("BOTTOMPADDING", (0, 0), (-1, -1), 8),
-        ("LEFTPADDING", (1, 0), (1, -1), 4),
-        ("RIGHTPADDING", (1, 0), (2, -1), 10),
+        ("RIGHTPADDING", (0, 0), (0, -1), 10),
+        ("LEFTPADDING", (1, 0), (1, -1), 6),
+        ("RIGHTPADDING", (1, 0), (1, -1), 6),
     ]
+    if len(timeline_rows) > 1:
+        timeline_style.append(("LINEBELOW", (0, 0), (-1, -2), 0.25, grid_color))
     timeline_table.setStyle(TableStyle(timeline_style))
     story.append(timeline_table)
     story.append(Indenter(-section_indent, 0))
 
     story.append(Spacer(1, 0.4 * cm))
-    story.append(_section_heading("Overall Summary"))
+    story.append(_rounded_heading("Overall Summary"))
+    story.append(Spacer(1, 0.18 * cm))
     story.append(Indenter(section_indent, 0))
 
     overall_para = Paragraph(escape(overall_text).replace("\n", "<br/><br/>"), overall_style)
@@ -997,10 +1076,9 @@ def write_summary_pdf(
 
     story.append(Spacer(1, 0.5 * cm))
 
-    summary_ts = ps.patient.last_updated or "—"
     footer_text = (
         "Generated with MOSAICX • DIGIT-X Lab, LMU Radiology | LMU University Hospital"
-        f" • Summary timestamp: {_sanitize(summary_ts)}"
+        f" • Summary timestamp: {generated_on_display}"
     )
 
     def _draw_footer(canvas, doc_obj) -> None:
@@ -1021,6 +1099,7 @@ def save_summary_artifacts(
     json_path: Optional[Path],
     pdf_path: Optional[Path],
     patient_id: Optional[str],
+    model_name: Optional[str] = None,
     emit_messages: bool = True,
 ) -> Dict[str, Path]:
     """Persist selected summary artifacts and return their filesystem paths."""
@@ -1065,7 +1144,7 @@ def save_summary_artifacts(
         else:
             pdf_target = _default_stem().with_suffix(".pdf")
         try:
-            write_summary_pdf(ps, pdf_target)
+            write_summary_pdf(ps, pdf_target, model_name=model_name)
         except RuntimeError as exc:
             if emit_messages:
                 styled_message(str(exc), "muted")
@@ -1126,6 +1205,7 @@ def summarize_reports_to_terminal_and_json(
         json_path=json_out,
         pdf_path=pdf_out,
         patient_id=patient_id,
+        model_name=model,
         emit_messages=True,
     )
 
