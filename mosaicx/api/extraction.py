@@ -39,11 +39,13 @@ from pydantic import BaseModel
 
 from ..constants import DEFAULT_LLM_MODEL
 from ..extractor import (
+    ExtractionStrategy,
     extract_structured_data,
     extract_text_from_document,
     extract_text_from_pdf,
     load_schema_model,
 )
+from ..prompting import PromptPreference
 
 
 @dataclass(slots=True)
@@ -78,6 +80,14 @@ def extract_document(
     api_key: Optional[str] = None,
     temperature: float = 0.0,
     status_callback: Optional[Callable[[str], None]] = None,
+    strategy: ExtractionStrategy | str = ExtractionStrategy.CLASSIC,
+    prompt_preference: PromptPreference | str = PromptPreference.AUTO.value,
+    prompt_path: Optional[Union[Path, str]] = None,
+    prompt_text: Optional[str] = None,
+    dspy_examples_path: Optional[Union[Path, str]] = None,
+    dspy_optimizer_trials: int = 0,
+    dspy_max_demos: int = 4,
+    dspy_store_optimized_prompt: bool = False,
 ) -> ExtractionResult:
     """Extract structured data from a clinical document."""
 
@@ -98,6 +108,14 @@ def extract_document(
         base_url=base_url,
         api_key=api_key,
         temperature=temperature,
+        strategy=strategy,
+        prompt_preference=prompt_preference,
+        prompt_path=prompt_path,
+        prompt_text=prompt_text,
+        dspy_examples_path=dspy_examples_path,
+        dspy_optimizer_trials=dspy_optimizer_trials,
+        dspy_max_demos=dspy_max_demos,
+        dspy_store_optimized_prompt=dspy_store_optimized_prompt,
     )
     return ExtractionResult(record=record, schema_path=schema_path, document_path=doc_path)
 
@@ -111,6 +129,14 @@ def extract_pdf(
     api_key: Optional[str] = None,
     temperature: float = 0.0,
     status_callback: Optional[Callable[[str], None]] = None,
+    strategy: ExtractionStrategy | str = ExtractionStrategy.CLASSIC,
+    prompt_preference: PromptPreference | str = PromptPreference.AUTO.value,
+    prompt_path: Optional[Union[Path, str]] = None,
+    prompt_text: Optional[str] = None,
+    dspy_examples_path: Optional[Union[Path, str]] = None,
+    dspy_optimizer_trials: int = 0,
+    dspy_max_demos: int = 4,
+    dspy_store_optimized_prompt: bool = False,
 ) -> ExtractionResult:
     """Backward-compatible wrapper for :func:`extract_document`."""
 
@@ -122,6 +148,14 @@ def extract_pdf(
         api_key=api_key,
         temperature=temperature,
         status_callback=status_callback,
+        strategy=strategy,
+        prompt_preference=prompt_preference,
+        prompt_path=prompt_path,
+        prompt_text=prompt_text,
+        dspy_examples_path=dspy_examples_path,
+        dspy_optimizer_trials=dspy_optimizer_trials,
+        dspy_max_demos=dspy_max_demos,
+        dspy_store_optimized_prompt=dspy_store_optimized_prompt,
     )
 
 

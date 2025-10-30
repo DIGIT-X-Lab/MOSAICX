@@ -1,0 +1,14 @@
+{
+  "base_prompt": {
+    "path": "/Users/nutellabear/Documents/00-Code/MOSAICX/mosaicx/schema/templates/prompts/mimiccxr__mimiccxr_44caf5f6/base_prompt.txt",
+    "updated_at": "2025-10-30T15:49:26Z",
+    "last_used": "2025-10-30T16:09:41Z"
+  },
+  "schema_module": "schema_module",
+  "schema_class": "MimicCXR",
+  "schema_hash": "44caf5f6fb031e30d4612589b1e56309",
+  "prompt_dir": "/Users/nutellabear/Documents/00-Code/MOSAICX/mosaicx/schema/templates/prompts/mimiccxr__mimiccxr_44caf5f6",
+  "last_resolved": "2025-10-30T16:09:41Z",
+  "preferred_variant": "base",
+  "resolved_variant": "base"
+}

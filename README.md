@@ -253,6 +253,39 @@ mosaicx extract \
   --save results/structured_data.json
 ```
 
+#### Prompt strategy controls
+
+Select the extraction backend with `--strategy` (DSPy runs with Chain-of-Thought reasoning and GEPA prompt optimisation support by default):
+
+```bash
+# Default Instructor/Ollama flow (prompt overrides ignored)
+mosaicx extract --document report.pdf --schema CBCReport_20250925_143022 --strategy classic
+
+# DSPy pipeline with the optimised prompt artefact
+mosaicx extract --document report.pdf --schema CBCReport_20250925_143022 --strategy dspy --prompt-variant optimized
+
+# DSPy pipeline with a bespoke prompt file
+mosaicx extract --document report.pdf --schema CBCReport_20250925_143022 --strategy dspy --prompt-path prompts/custom_cbc.txt
+
+# DSPy optimisation using a labelled dataset (writes optimised prompt)
+mosaicx extract --document report.pdf --schema CBCReport_20250925_143022 \
+  --strategy dspy \
+  --dspy-trainset data/mimic_examples.jsonl \
+  --dspy-trials 5 \
+  --dspy-store-optimized
+```
+
+Prompt variants and custom prompt files are honoured only by the DSPy strategy. Generated prompts live in `mosaicx/schema/templates/prompts/<schema>_<hash>/` alongside a `notes.json` audit trail; drop a tuned prompt into `optimized_prompt.txt` to make it the default when `--prompt-variant auto` is used.
+
+DSPy training datasets should be JSON or JSONL files containing objects with `text` (alias `report`) and `json_output` keys. During optimisation MOSAICX validates that the model reproduces the reference JSON exactly and uses the GEPA optimizer for `--dspy-trials > 0`; the best demonstrations are cached under `optimized_prompt.txt` when `--dspy-store-optimized` is supplied.
+
+Need a scaffold? Generate one directly from the schema:
+
+```bash
+mosaicx example-template --schema CBCReport_20250925_143022 --text-placeholder "<synthetic report text>"
+# Add --output example.json to write the file instead of printing.
+```
+
 Supported formats include PDF, DOC/DOCX, PPT/PPTX, TXT/MD, and RTF—mix them freely in a single run.
 
 Behind the scenes MOSAICX layers extraction: native Docling text, then forced OCR, and finally Gemma3:27b via Ollama for vision-language transcription when required.

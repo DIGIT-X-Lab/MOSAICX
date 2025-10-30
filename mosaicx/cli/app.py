@@ -59,8 +59,9 @@ from ..constants import (
     MOSAICX_COLORS,
 )
 from ..display import console, show_main_banner, styled_message
-from ..extractor import ExtractionError
+from ..extractor import ExtractionError, ExtractionStrategy
 from ..document_loader import DOC_SUFFIXES
+from ..prompting import PromptPreference, build_example_template
 from ..schema.registry import (
     cleanup_missing_files,
     get_schema_by_id,
@@ -370,6 +371,49 @@ def list_schemas_cmd(
 @click.option("--base-url", help="OpenAI-compatible API base URL")
 @click.option("--api-key", help="API key for the endpoint")
 @click.option("--temperature", type=float, default=0.0, show_default=True, help="Sampling temperature (0.0–2.0)")
+@click.option(
+    "--strategy",
+    type=click.Choice([strategy.value for strategy in ExtractionStrategy]),
+    default=ExtractionStrategy.CLASSIC.value,
+    show_default=True,
+    help="Extraction backend to use (classic or dspy).",
+)
+@click.option(
+    "--prompt-variant",
+    type=click.Choice([pref.value for pref in PromptPreference]),
+    default=PromptPreference.AUTO.value,
+    show_default=True,
+    help="DSPy only: choose stored prompt variant (auto/base/optimized).",
+)
+@click.option(
+    "--prompt-path",
+    type=click.Path(path_type=Path),
+    help="DSPy only: path to a custom prompt file (overrides stored prompts).",
+)
+@click.option(
+    "--dspy-trainset",
+    type=click.Path(path_type=Path),
+    help="DSPy only: JSON/JSONL file with training examples for GEPA optimisation.",
+)
+@click.option(
+    "--dspy-trials",
+    type=int,
+    default=0,
+    show_default=True,
+    help="DSPy only: number of GEPA optimisation trials to run.",
+)
+@click.option(
+    "--dspy-max-demos",
+    type=int,
+    default=4,
+    show_default=True,
+    help="DSPy only: maximum number of demonstrations to keep after GEPA.",
+)
+@click.option(
+    "--dspy-store-optimized",
+    is_flag=True,
+    help="DSPy only: persist the optimised prompt to optimized_prompt.txt when GEPA runs.",
+)
 @click.option("--output", "--save", "output_path", type=click.Path(path_type=Path), help="Save extracted JSON result to this path")
 @click.option("--debug", is_flag=True, help="Verbose debug logs")
 @click.pass_context
@@ -381,6 +425,13 @@ def extract(
     base_url: Optional[str],
     api_key: Optional[str],
     temperature: float,
+    strategy: str,
+    prompt_variant: str,
+    prompt_path: Optional[Path],
+    dspy_trainset: Optional[Path],
+    dspy_trials: int,
+    dspy_max_demos: int,
+    dspy_store_optimized: bool,
     output_path: Optional[Path],
     debug: bool,
 ) -> None:
@@ -394,8 +445,35 @@ def extract(
         styled_message(f"Using model: {model}", "info")
         if base_url:
             styled_message(f"Base URL: {base_url}", "info")
+        styled_message(f"Strategy: {strategy}", "info")
+        styled_message(f"Prompt variant: {prompt_variant}", "info")
+        if prompt_path:
+            styled_message(f"Prompt override: {prompt_path}", "info")
+        if dspy_trainset:
+            styled_message(f"DSPy trainset: {dspy_trainset}", "info")
+        if dspy_trials:
+            styled_message(f"DSPy optimisation trials: {dspy_trials}", "info")
 
     try:
+        chosen_strategy = ExtractionStrategy(strategy)
+        if chosen_strategy is not ExtractionStrategy.DSPY:
+            if (
+                prompt_path is not None
+                or prompt_variant != PromptPreference.AUTO.value
+                or dspy_trainset is not None
+                or dspy_trials
+                or dspy_store_optimized
+            ):
+                raise click.BadParameter(
+                    "DSPy-specific flags (--prompt-variant, --prompt-path, --dspy-*) require --strategy dspy.",
+                    param_hint="--strategy",
+                )
+        else:
+            if dspy_trials < 0:
+                raise click.BadParameter("--dspy-trials must be >= 0")
+            if dspy_max_demos <= 0:
+                raise click.BadParameter("--dspy-max-demos must be > 0")
+
         with console.status(
             f"[{MOSAICX_COLORS['primary']}]Preparing extraction...", spinner="dots"
         ) as status:
@@ -446,6 +524,13 @@ def extract(
                 api_key=api_key,
                 temperature=temperature,
                 status_callback=_report_fallback,
+                strategy=chosen_strategy,
+                prompt_preference=prompt_variant,
+                prompt_path=prompt_path,
+                dspy_examples_path=dspy_trainset,
+                dspy_optimizer_trials=dspy_trials,
+                dspy_max_demos=dspy_max_demos,
+                dspy_store_optimized_prompt=dspy_store_optimized,
             )
             if fallback_used["flag"]:
                 status.update(running_message)
@@ -507,6 +592,44 @@ def extract(
         if debug:
             console.print_exception()
         raise click.ClickException(str(exc))
+
+
+@cli.command("example-template")
+@click.option("--schema", required=True, help="Schema identifier (ID, filename, or file path).")
+@click.option(
+    "--output",
+    type=click.Path(path_type=Path),
+    help="Write example JSON to this path (prints to console if omitted).",
+)
+@click.option(
+    "--text-placeholder",
+    default="<replace with source text>",
+    show_default=True,
+    help="Placeholder text to emit in the 'text' field.",
+)
+def example_template(schema: str, output: Optional[Path], text_placeholder: str) -> None:
+    """Generate a schema-aligned DSPy training example template."""
+
+    resolved_schema_path = resolve_schema_reference(schema)
+    if not resolved_schema_path:
+        raise click.ClickException(f"Could not find schema: {schema}")
+
+    from ..extractor import load_schema_model
+
+    schema_class = load_schema_model(str(resolved_schema_path))
+    template = build_example_template(schema_class, text_placeholder=text_placeholder)
+    rendered = json.dumps(template, indent=2, ensure_ascii=False)
+
+    if output:
+        output.write_text(rendered + "\n", encoding="utf-8")
+        styled_message(f"Example template saved to {output}", "success")
+    else:
+        try:
+            from rich.json import JSON
+
+            console.print(JSON(rendered))
+        except Exception:
+            console.print(rendered)
 
 
 @cli.command()

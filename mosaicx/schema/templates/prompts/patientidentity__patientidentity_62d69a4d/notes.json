@@ -1,0 +1,14 @@
+{
+  "base_prompt": {
+    "path": "/Users/nutellabear/Documents/00-Code/MOSAICX/mosaicx/schema/templates/prompts/patientidentity__patientidentity_62d69a4d/base_prompt.txt",
+    "updated_at": "2025-10-30T15:51:22Z",
+    "last_used": "2025-10-30T16:11:49Z"
+  },
+  "schema_module": "schema_module",
+  "schema_class": "PatientIdentity",
+  "schema_hash": "62d69a4dc3c99f8decad1bd82412d61b",
+  "prompt_dir": "/Users/nutellabear/Documents/00-Code/MOSAICX/mosaicx/schema/templates/prompts/patientidentity__patientidentity_62d69a4d",
+  "last_resolved": "2025-10-30T16:11:49Z",
+  "preferred_variant": "auto",
+  "resolved_variant": "base"
+}

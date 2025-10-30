@@ -9,6 +9,7 @@ import pytest
 from pydantic import BaseModel
 
 from mosaicx.api import extract_document, generate_schema, summarize_reports
+from mosaicx.constants import DEFAULT_LLM_MODEL
 
 
 class DummyModel(BaseModel):
@@ -100,10 +101,11 @@ def test_summarize_reports_artifacts(monkeypatch: pytest.MonkeyPatch, tmp_path: 
 
     saved = {}
 
-    def fake_artifacts(ps, *, artifacts, json_path, pdf_path, patient_id, emit_messages):
+    def fake_artifacts(ps, *, artifacts, json_path, pdf_path, patient_id, emit_messages, model_name=None):
         saved["artifacts"] = tuple(artifacts)
         saved["json_path"] = json_path
         saved["pdf_path"] = pdf_path
+        saved["model_name"] = model_name
         return {fmt: Path("dummy" + fmt) for fmt in artifacts}
 
     monkeypatch.setattr("mosaicx.api.summary.load_reports", fake_load_reports)
@@ -115,5 +117,6 @@ def test_summarize_reports_artifacts(monkeypatch: pytest.MonkeyPatch, tmp_path: 
     ], patient_id="demo", artifacts=["json", "pdf"], json_path=tmp_path / "custom.json", pdf_path=tmp_path / "custom.pdf")
 
     assert saved["artifacts"] == ("json", "pdf")
+    assert saved["model_name"] == DEFAULT_LLM_MODEL
     assert saved["json_path"].name == "custom.json"
     assert saved["pdf_path"].name == "custom.pdf"

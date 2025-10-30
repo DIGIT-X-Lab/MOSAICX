@@ -27,7 +27,7 @@ automation and interactive sessions.
 """
 
 from .schema import GeneratedSchema, generate_schema
-from .extraction import ExtractionResult, extract_document, extract_pdf
+from .extraction import ExtractionResult, ExtractionStrategy, extract_document, extract_pdf
 from .summary import summarize_reports
 from ..standardizer import StandardizeResult, save_standardize_artifacts, standardize_document
 
@@ -35,6 +35,7 @@ __all__ = [
     "GeneratedSchema",
     "generate_schema",
     "ExtractionResult",
+    "ExtractionStrategy",
     "extract_document",
     "extract_pdf",
     "summarize_reports",
