@@ -607,17 +607,43 @@ def _summarize_schema_for_prompt(schema_json: Dict[str, Any]) -> str:
 def _build_extraction_prompt(text_content: str, schema_json: Dict[str, Any]) -> str:
     summary = _summarize_schema_for_prompt(schema_json)
     schema_str = json.dumps(schema_json, indent=2)
+
+    clinical_instructions = """
+You are a careful specialist physician extracting structured data from clinical text.
+Read the entire text, understand the clinical meaning, and then fill the JSON schema.
+
+Use your medical knowledge to map clinically equivalent phrases to the same concept.
+Do NOT rely only on exact word matches.
+
+Examples of semantic mappings (not exhaustive):
+- "Chest tightness", "pressure in the chest", "chest discomfort", "stiffness in the chest",
+  especially when related to exertion, stress or effort, COUNT as chest pain.
+- "Shortness of breath", "dyspnoea", "breathlessness", "difficulty breathing" are the same concept.
+- "Fainting", "passed out", "loss of consciousness" may count as syncope if clinically appropriate.
+- "No history of X", "denies X", "X is not present" means that X is absent (set the boolean to false).
+- "Unclear", "cannot be assessed", "unknown" means the status is unknown (use null if the schema allows).
+
+If symptoms clearly describe the same clinical entity in different words, treat them as present.
+Only use null when the information is truly not mentioned or cannot be inferred clinically.
+
+Be consistent in your clinical interpretation.
+If the same description appears in different patients, interpret it the same way and produce the same kind of JSON.
+Do not randomly choose between plausible options; prefer the most clinically plausible and conservative interpretation.
+"""
+
     return (
-        "Extract the data as a single JSON object that **strictly** matches the JSON Schema.\n"
+        "Extract the data as a single JSON object that strictly matches the JSON Schema.\n"
         "- Output ONLY valid JSON: no code fences, no commentary, no <think> blocks.\n"
         "- Include all required keys.\n"
-        "- Use null for optional keys not present in the text.\n"
+        "- Use null for optional keys not present in the text OR when the status is genuinely unknown.\n"
         "- Use only the allowed keys; do not invent keys.\n"
-        "- Booleans must be true/false; numbers must be numbers; enums must match canonical values (case-insensitive acceptable for input).\n\n"
+        "- Booleans must be true/false; numbers must be numbers; enums must match canonical values.\n\n"
+        + clinical_instructions
+        + "\nSchema description:\n"
         + summary
-        + "JSON Schema (exact structure):\n"
+        + "\nJSON Schema (exact structure):\n"
         + f"{schema_str}\n\n"
-        + "Text to extract from:\n"
+        + "Clinical text to extract from:\n"
         + f"{text_content}\n"
     )
 
