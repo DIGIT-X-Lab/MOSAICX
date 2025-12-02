@@ -70,6 +70,10 @@ from ..schema.registry import (
 )
 from ..summarizer import render_summary_rich, save_summary_artifacts
 from ..utils import resolve_schema_reference
+from ..utils.logging import setup_logging, get_current_log_file, get_logger
+
+# Module-level logger
+_logger = get_logger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -119,17 +123,27 @@ def _deprecated_schema_output_alias(
 @click.group(invoke_without_command=True)
 @click.version_option(version=__version__, prog_name=APPLICATION_NAME)
 @click.option("--verbose", "-v", is_flag=True, help="Enable verbose output")
+@click.option("--log-level", type=click.Choice(["DEBUG", "INFO", "WARNING", "ERROR"]), default="DEBUG", help="Logging level for log file")
 @click.pass_context
-def cli(ctx: click.Context, verbose: bool) -> None:
+def cli(ctx: click.Context, verbose: bool, log_level: str) -> None:
     """Primary MOSAICX CLI group."""
+    
+    # Initialize logging first
+    log_file = setup_logging(level=log_level, console_output=verbose)
+    _logger.info(f"MOSAICX CLI started (version {__version__})")
+    
+    if verbose:
+        styled_message(f"📋 Log file: {log_file}", "info")
 
     show_main_banner()
 
     ctx.ensure_object(dict)
     ctx.obj["verbose"] = verbose
+    ctx.obj["log_file"] = log_file
     try:
         scan_and_register_existing_schemas()
     except Exception as exc:  # pragma: no cover - defensive guard
+        _logger.warning(f"Schema auto-discovery skipped: {exc}")
         if verbose:
             styled_message(f"Schema auto-discovery skipped: {exc}", "warning")
 
@@ -387,6 +401,9 @@ def extract(
     """Extract structured data from a clinical document using a Pydantic schema."""
 
     verbose = ctx.obj.get("verbose", False)
+    log_file = ctx.obj.get("log_file")
+    
+    _logger.info(f"Extract command invoked: document={document}, schema={schema}, model={model}")
 
     if verbose:
         styled_message(f"Extracting from: {document}", "info")
@@ -394,6 +411,8 @@ def extract(
         styled_message(f"Using model: {model}", "info")
         if base_url:
             styled_message(f"Base URL: {base_url}", "info")
+        if log_file:
+            styled_message(f"📋 Full logs: {log_file}", "info")
 
     try:
         with console.status(
@@ -402,8 +421,10 @@ def extract(
             status.update(f"[{MOSAICX_COLORS['accent']}]Resolving schema reference…")
             resolved_schema_path = resolve_schema_reference(schema)
             if not resolved_schema_path:
+                _logger.error(f"Schema not found: {schema}")
                 raise click.ClickException(f"Could not find schema: {schema}")
 
+            _logger.info(f"Resolved schema path: {resolved_schema_path}")
             if verbose:
                 styled_message(f"Resolved schema to: {resolved_schema_path}", "info")
 
@@ -425,6 +446,7 @@ def extract(
                 except Exception:
                     schema_class_name = resolved_schema_path.stem
 
+            _logger.info(f"Using schema class: {schema_class_name}")
             if verbose:
                 styled_message(f"Using schema class: {schema_class_name}", "info")
 
@@ -436,6 +458,7 @@ def extract(
 
             def _report_fallback(message: str) -> None:
                 fallback_used["flag"] = True
+                _logger.info(f"Fallback triggered: {message}")
                 status.update(f"[{MOSAICX_COLORS['accent']}]Using {message}…")
 
             extraction = extract_pdf(
@@ -452,6 +475,7 @@ def extract(
 
         console.print()
         result_dict = extraction.record.model_dump()
+        _logger.info(f"Extraction completed successfully for {document}")
 
         console.print()
         styled_message(f"📋 Extraction results based on schema: {schema}", "primary", center=True)
@@ -498,15 +522,34 @@ def extract(
             console.print(JSON(extraction.record.model_dump_json(indent=2)))
 
     except ExtractionError as exc:
+        _logger.error(f"Extraction failed: {exc}", exc_info=True)
         styled_message(f"Extraction failed: {exc}", "error")
+        if log_file:
+            styled_message(f"📋 See full log: {log_file}", "info")
         if debug:
             console.print_exception()
         raise click.ClickException(str(exc))
     except Exception as exc:
+        _logger.error(f"Unexpected error: {exc}", exc_info=True)
         styled_message(f"Unexpected error: {exc}", "error")
+        if log_file:
+            styled_message(f"📋 See full log: {log_file}", "info")
         if debug:
             console.print_exception()
         raise click.ClickException(str(exc))
+
+
+@cli.command("log-path")
+def show_log_path() -> None:
+    """Show the path to the MOSAICX log file."""
+    log_file = get_current_log_file()
+    if log_file:
+        styled_message(f"📋 Log file: {log_file}", "info")
+        if log_file.exists():
+            size_kb = log_file.stat().st_size / 1024
+            styled_message(f"   Size: {size_kb:.1f} KB", "secondary")
+    else:
+        styled_message("Logging not initialized", "warning")
 
 
 @cli.command()

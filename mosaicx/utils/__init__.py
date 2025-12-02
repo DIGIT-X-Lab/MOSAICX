@@ -29,9 +29,36 @@ Focus Areas:
 
 from .pathing import resolve_schema_reference
 from .config import resolve_openai_config, derive_ollama_generate_url
+from .logging import (
+    setup_logging,
+    get_logger,
+    get_current_log_file,
+    log_extraction_start,
+    log_extraction_method_attempt,
+    log_extraction_method_success,
+    log_extraction_method_failure,
+    log_prompt,
+    log_llm_response,
+    log_extraction_complete,
+    log_schema_info,
+    log_text_content,
+)
 
 __all__ = [
     "resolve_schema_reference",
     "resolve_openai_config",
     "derive_ollama_generate_url",
+    # Logging utilities
+    "setup_logging",
+    "get_logger",
+    "get_current_log_file",
+    "log_extraction_start",
+    "log_extraction_method_attempt",
+    "log_extraction_method_success",
+    "log_extraction_method_failure",
+    "log_prompt",
+    "log_llm_response",
+    "log_extraction_complete",
+    "log_schema_info",
+    "log_text_content",
 ]

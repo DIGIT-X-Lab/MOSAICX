@@ -42,6 +42,7 @@ import importlib.util
 import sys
 import logging
 import re
+import time
 
 # Optional: native Ollama JSON route; handled gracefully if missing
 try:
@@ -94,6 +95,21 @@ from .text_extraction import TextExtractionError, extract_text_with_fallback
 from .schema.registry import get_schema_by_id, get_schema_by_path
 from .display import styled_message, console
 from .utils import derive_ollama_generate_url, resolve_openai_config
+from .utils.logging import (
+    get_logger,
+    log_extraction_start,
+    log_extraction_method_attempt,
+    log_extraction_method_success,
+    log_extraction_method_failure,
+    log_prompt,
+    log_llm_response,
+    log_extraction_complete,
+    log_schema_info,
+    log_text_content,
+)
+
+# Module-level logger
+_logger = get_logger(__name__)
 
 
 class ExtractionError(Exception):
@@ -774,7 +790,11 @@ def _extract_with_outlines(
         Instance of schema_class if successful, None on failure
     """
     if not OUTLINES_AVAILABLE or outlines is None or ollama_client is None:
+        _logger.debug("Outlines not available, skipping")
         return None
+    
+    start_time = time.time()
+    _logger.info("[Step 0] Attempting: Outlines grammar-constrained generation")
     
     try:
         # Parse the Ollama host from the base URL
@@ -788,41 +808,59 @@ def _extract_with_outlines(
             else:
                 host = parsed
         
+        _logger.debug(f"Outlines config: model={model}, host={host or 'default'}")
+        
         # Create Ollama client and outlines model
         client = ollama_client.Client(host=host) if host else ollama_client.Client()
         llm = outlines.from_ollama(client, model)  # type: ignore[attr-defined]
         
-        # Build the extraction prompt
+        # Build the extraction prompt - use the same rich prompt as other methods
         schema_json = schema_class.model_json_schema()
-        prompt = (
-            "You are a medical information extraction system. "
-            "Extract structured data from the clinical text below according to the JSON schema provided.\n\n"
-            f"JSON Schema:\n{json.dumps(schema_json, indent=2)}\n\n"
-            f"Clinical text:\n{text_content}\n\n"
-            "Extract the information and produce the JSON output:"
-        )
+        prompt = _build_extraction_prompt(text_content, schema_json)
+        
+        # Log the prompt being sent
+        log_prompt(_logger, "Outlines Extraction", prompt)
+        log_schema_info(_logger, schema_class.__name__, json.dumps(schema_json, indent=2))
         
         # Create generator with Pydantic schema as output_type (new Outlines API)
         generator = outlines.Generator(llm, output_type=schema_class)  # type: ignore[attr-defined]
         
+        _logger.debug("Calling Outlines generator...")
+        
         # Generate - Outlines guarantees valid JSON matching the schema
         result = generator(prompt)  # type: ignore[no-any-return]
         
+        duration = time.time() - start_time
+        
         # Handle both cases: Outlines may return Pydantic model or JSON string
         if isinstance(result, schema_class):
+            _logger.info(f"✓ SUCCESS: Outlines returned Pydantic model directly ({duration:.2f}s)")
+            log_llm_response(_logger, "Outlines Result", json.dumps(result.model_dump(), indent=2, default=str))
             return result
         elif isinstance(result, str):
+            _logger.debug(f"Outlines returned string, parsing to Pydantic model")
+            log_llm_response(_logger, "Outlines Raw String", result)
             # Parse JSON string into Pydantic model
             parsed = json.loads(result)
-            return schema_class(**parsed)
+            model_instance = schema_class(**parsed)
+            _logger.info(f"✓ SUCCESS: Outlines string parsed to model ({duration:.2f}s)")
+            return model_instance
         elif isinstance(result, dict):
-            return schema_class(**result)
+            _logger.debug(f"Outlines returned dict, converting to Pydantic model")
+            log_llm_response(_logger, "Outlines Dict", json.dumps(result, indent=2, default=str))
+            model_instance = schema_class(**result)
+            _logger.info(f"✓ SUCCESS: Outlines dict converted to model ({duration:.2f}s)")
+            return model_instance
         else:
             # Unknown type, let fallbacks handle it
+            _logger.warning(f"✗ Outlines returned unexpected type: {type(result)}, falling back...")
             console.print(f"[dim]Outlines returned unexpected type: {type(result)}, falling back...[/dim]")
             return None
             
     except Exception as e:
+        duration = time.time() - start_time
+        _logger.warning(f"✗ FAILED [Step 0] Outlines: {e} ({duration:.2f}s)")
+        _logger.debug(f"Outlines exception details:", exc_info=True)
         # Log for debugging but don't fail - let fallbacks handle it
         console.print(f"[dim]Outlines extraction failed: {e}, falling back...[/dim]")
         return None
@@ -851,7 +889,19 @@ def extract_structured_data(
       4) Sanitize output, extract JSON, coerce to schema, validate via Pydantic
       5) One-shot auto‑repair if validation fails
     """
+    extraction_start_time = time.time()
+    method_used = None
+    
+    _logger.info("=" * 70)
+    _logger.info("EXTRACTION START")
+    _logger.info(f"  Schema: {schema_class.__name__}")
+    _logger.info(f"  Model: {model}")
+    _logger.info(f"  Temperature: {temperature}")
+    _logger.info(f"  Text length: {len(text_content)} chars")
+    _logger.info("=" * 70)
+    
     if instructor is None or OpenAI is None:
+        _logger.error("Missing required dependencies: instructor and/or openai")
         raise ExtractionError(
             "Instructor and openai packages are required for schema-driven extraction. "
             "Install optional dependencies to use this feature."
@@ -861,12 +911,20 @@ def extract_structured_data(
     prompt = _build_extraction_prompt(text_content, schema_json)
     resolved_base_url, resolved_api_key = resolve_openai_config(base_url, api_key)
     effective_temperature = max(0.0, temperature)
+    
+    # Log schema and prompt for debugging
+    log_schema_info(_logger, schema_class.__name__, json.dumps(schema_json, indent=2))
+    log_text_content(_logger, "input document", text_content)
+    log_prompt(_logger, "Extraction Prompt", prompt)
+    
+    _logger.debug(f"Resolved base URL: {resolved_base_url}")
 
     # Detect DeepSeek / GPT‑OSS "reasoning" models by name
     model_lower = model.lower()
     is_reasoning_model = any(
         kw in model_lower for kw in ("deepseek", "gpt-oss", "reasoner", "r1")
     )
+    _logger.info(f"Model type: {'reasoning model' if is_reasoning_model else 'standard model'}")
 
     # 0) **PRIMARY**: Try Outlines for grammar-constrained JSON generation
     # This is the most reliable method - guarantees valid JSON matching the schema
@@ -878,10 +936,21 @@ def extract_structured_data(
             base_url=resolved_base_url,
         )
         if outlines_result is not None:
+            total_duration = time.time() - extraction_start_time
+            _logger.info("-" * 70)
+            _logger.info("EXTRACTION COMPLETE")
+            _logger.info(f"  Method: Outlines (grammar-constrained)")
+            _logger.info(f"  Total duration: {total_duration:.2f}s")
+            _logger.info(f"  Result fields: {len(outlines_result.model_fields)}")
+            _logger.info("-" * 70)
             return outlines_result
+    else:
+        _logger.debug("Outlines not available, skipping Step 0")
 
     # 1) Instructor JSON‑Schema (only for non‑reasoning models)
     if not is_reasoning_model:
+        step1_start = time.time()
+        _logger.info("[Step 1] Attempting: Instructor JSON-Schema mode")
         try:
             client = instructor.from_openai(
                 OpenAI(base_url=resolved_base_url, api_key=resolved_api_key),
@@ -898,19 +967,35 @@ def extract_structured_data(
                 max_retries=1,
                 response_format={"type": "json_object"},  # honored on many models
             )
+            step1_duration = time.time() - step1_start
+            total_duration = time.time() - extraction_start_time
+            _logger.info(f"✓ SUCCESS: Instructor ({step1_duration:.2f}s)")
+            log_llm_response(_logger, "Instructor Result", json.dumps(result.model_dump(), indent=2, default=str))
+            _logger.info("-" * 70)
+            _logger.info("EXTRACTION COMPLETE")
+            _logger.info(f"  Method: Instructor JSON-Schema")
+            _logger.info(f"  Total duration: {total_duration:.2f}s")
+            _logger.info("-" * 70)
             return result
-        except Exception:
-            pass  # Silently skip to fallback
+        except Exception as e:
+            step1_duration = time.time() - step1_start
+            _logger.warning(f"✗ FAILED [Step 1] Instructor: {e} ({step1_duration:.2f}s)")
+            pass  # Continue to fallback
+    else:
+        _logger.debug("Skipping Instructor (reasoning model detected)")
 
     # 2) Try Ollama native /api/generate
     raw: Optional[str] = None
     generate_url = derive_ollama_generate_url(resolved_base_url)
     if requests is not None and generate_url:
+        step2_start = time.time()
+        _logger.info(f"[Step 2] Attempting: Ollama /api/generate ({generate_url})")
         try:
             # For reasoning models, omit unsupported options like top_p; temperature is ignored for DeepSeek【975898227377524†screenshot】
             options = {"temperature": effective_temperature}
             if not is_reasoning_model:
                 options["top_p"] = 0.1
+            _logger.debug(f"Ollama request options: {options}")
             resp = requests.post(
                 generate_url,
                 json={
@@ -925,11 +1010,20 @@ def extract_structured_data(
             resp.raise_for_status()
             data = resp.json()
             raw = data.get("response", "")
-        except Exception:
+            step2_duration = time.time() - step2_start
+            _logger.info(f"✓ Ollama /api/generate returned response ({step2_duration:.2f}s, {len(raw or '')} chars)")
+            log_llm_response(_logger, "Ollama Raw Response", raw or "")
+        except Exception as e:
+            step2_duration = time.time() - step2_start
+            _logger.warning(f"✗ FAILED [Step 2] Ollama /api/generate: {e} ({step2_duration:.2f}s)")
             raw = None
+    else:
+        _logger.debug("Skipping Ollama /api/generate (requests not available or no generate URL)")
 
     # 3) Fallback to chat.completions via OpenAI API
     if not raw:
+        step3_start = time.time()
+        _logger.info("[Step 3] Attempting: OpenAI chat.completions API")
         try:
             client2 = OpenAI(base_url=resolved_base_url, api_key=resolved_api_key)
             messages = [
@@ -938,6 +1032,7 @@ def extract_structured_data(
             ]
             if is_reasoning_model:
                 # Reasoning models do not support response_format
+                _logger.debug("Using reasoning model mode (no response_format)")
                 comp = client2.chat.completions.create(
                     model=model,
                     temperature=effective_temperature,
@@ -960,14 +1055,25 @@ def extract_structured_data(
                     val = getattr(msg, attr)
                     if isinstance(val, str):
                         raw += "\n" + val
+                        _logger.debug(f"Merged {attr} content into raw response")
+            step3_duration = time.time() - step3_start
+            _logger.info(f"✓ OpenAI chat.completions returned response ({step3_duration:.2f}s, {len(raw)} chars)")
+            log_llm_response(_logger, "chat.completions Raw Response", raw)
         except Exception as e:
+            step3_duration = time.time() - step3_start
+            _logger.error(f"✗ FAILED [Step 3] chat.completions: {e} ({step3_duration:.2f}s)")
             raise ExtractionError(f"Model calls failed: {e}") from e
 
     # 4) Post-process with robust JSON parsing (multiple fallback strategies)
+    _logger.info("[Step 4] Attempting: Robust JSON parsing")
     try:
         payload = _robust_json_parse(raw)
+        _logger.info(f"✓ JSON parsing succeeded")
+        log_llm_response(_logger, "Parsed JSON", json.dumps(payload, indent=2, default=str))
     except (json.JSONDecodeError, ValueError) as e:
+        _logger.warning(f"✗ Initial JSON parsing failed: {e}")
         # Retry with a stricter prompt if all parsing strategies fail
+        _logger.info("[Step 4b] Attempting: LLM retry with stricter prompt")
         try:
             client_retry = OpenAI(base_url=resolved_base_url, api_key=resolved_api_key)
             retry_prompt = (
@@ -977,6 +1083,7 @@ def extract_structured_data(
                 f"Text to extract from:\n{text_content[:3000]}\n\n"
                 "CRITICAL: Start your response with {{ and end with }}. Nothing else."
             )
+            log_prompt(_logger, "Retry Prompt", retry_prompt)
             retry_resp = client_retry.chat.completions.create(
                 model=model,
                 temperature=0.0,
@@ -986,32 +1093,55 @@ def extract_structured_data(
                 ],
             )
             retry_raw = retry_resp.choices[0].message.content or ""
+            log_llm_response(_logger, "Retry Raw Response", retry_raw)
             payload = _robust_json_parse(retry_raw)
-        except Exception:
+            _logger.info("✓ Retry JSON parsing succeeded")
+        except Exception as retry_err:
+            _logger.error(f"✗ FAILED [Step 4b] LLM retry: {retry_err}")
+            total_duration = time.time() - extraction_start_time
+            _logger.info("-" * 70)
+            _logger.info("EXTRACTION FAILED")
+            _logger.info(f"  Error: Invalid JSON after retry")
+            _logger.info(f"  Total duration: {total_duration:.2f}s")
+            _logger.info("-" * 70)
             raise ExtractionError(f"Model returned invalid JSON after retry: {e}\nContent: {raw}") from e
 
+    # Coerce to schema
+    _logger.debug("Coercing payload to match schema...")
     coerced = _coerce_to_schema(payload, schema_json, schema_json)
+    
+    # Validate with Pydantic
+    _logger.info("[Step 5] Attempting: Pydantic validation")
     try:
-        return schema_class(**coerced)
+        result = schema_class(**coerced)
+        total_duration = time.time() - extraction_start_time
+        _logger.info(f"✓ SUCCESS: Pydantic validation passed")
+        _logger.info("-" * 70)
+        _logger.info("EXTRACTION COMPLETE")
+        _logger.info(f"  Method: Fallback chain (Ollama/OpenAI → JSON parse → Pydantic)")
+        _logger.info(f"  Total duration: {total_duration:.2f}s")
+        _logger.info("-" * 70)
+        return result
     except ValidationError as ve:
         # 5) One-shot auto-repair
+        _logger.warning(f"✗ Pydantic validation failed: {ve}")
+        _logger.info("[Step 5b] Attempting: LLM auto-repair")
         try:
             client3 = OpenAI(base_url=resolved_base_url, api_key=resolved_api_key)
+            repair_prompt = (
+                "The JSON below does not validate against the schema.\n\n"
+                f"JSON Schema:\n{json.dumps(schema_json, indent=2)}\n\n"
+                f"Pydantic validation error:\n{ve}\n\n"
+                f"Original JSON:\n{json.dumps(coerced, indent=2)}\n\n"
+                "Fix it and return only the corrected JSON object."
+            )
+            log_prompt(_logger, "Repair Prompt", repair_prompt)
             repair = client3.chat.completions.create(
                 model=model,
                 temperature=effective_temperature,
                 messages=[
                     {"role": "system", "content": "Return ONLY a valid JSON object that matches the schema exactly."},
-                    {
-                        "role": "user",
-                        "content": (
-                            "The JSON below does not validate against the schema.\n\n"
-                            f"JSON Schema:\n{json.dumps(schema_json, indent=2)}\n\n"
-                            f"Pydantic validation error:\n{ve}\n\n"
-                            f"Original JSON:\n{json.dumps(coerced, indent=2)}\n\n"
-                            "Fix it and return only the corrected JSON object."
-                        ),
-                    },
+                    {"role": "user", "content": repair_prompt},
                 ],
                 **({} if is_reasoning_model else {"response_format": {"type": "json_object"}}),
             )
@@ -1021,11 +1151,27 @@ def extract_structured_data(
                     val = getattr(repair.choices[0].message, attr)
                     if isinstance(val, str):
                         repaired_text += "\n" + val
+            log_llm_response(_logger, "Repair Raw Response", repaired_text)
             repaired_text = _extract_outer_json(_strip_reasoning_and_fences(repaired_text))
             repaired_payload = json.loads(repaired_text)
             repaired_payload = _coerce_to_schema(repaired_payload, schema_json, schema_json)
-            return schema_class(**repaired_payload)
-        except Exception:
+            result = schema_class(**repaired_payload)
+            total_duration = time.time() - extraction_start_time
+            _logger.info(f"✓ SUCCESS: Auto-repair validated")
+            _logger.info("-" * 70)
+            _logger.info("EXTRACTION COMPLETE")
+            _logger.info(f"  Method: LLM auto-repair")
+            _logger.info(f"  Total duration: {total_duration:.2f}s")
+            _logger.info("-" * 70)
+            return result
+        except Exception as repair_err:
+            total_duration = time.time() - extraction_start_time
+            _logger.error(f"✗ FAILED [Step 5b] Auto-repair: {repair_err}")
+            _logger.info("-" * 70)
+            _logger.info("EXTRACTION FAILED")
+            _logger.info(f"  Error: Validation failed after auto-repair")
+            _logger.info(f"  Total duration: {total_duration:.2f}s")
+            _logger.info("-" * 70)
             raise ExtractionError(
                 f"Failed to validate data: {ve}\nPayload: {json.dumps(coerced, indent=2)}"
             ) from ve
