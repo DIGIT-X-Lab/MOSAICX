@@ -64,6 +64,20 @@ except ModuleNotFoundError:  # pragma: no cover - optional dependency
     instructor = None  # type: ignore[assignment]
 
 try:
+    from json_repair import repair_json  # type: ignore[import-not-found]
+except ModuleNotFoundError:  # pragma: no cover - optional dependency
+    repair_json = None  # type: ignore[assignment]
+
+try:
+    import outlines  # type: ignore[import-not-found]
+    import ollama as ollama_client  # type: ignore[import-not-found]
+    OUTLINES_AVAILABLE = True
+except ModuleNotFoundError:  # pragma: no cover - optional dependency
+    outlines = None  # type: ignore[assignment]
+    ollama_client = None  # type: ignore[assignment]
+    OUTLINES_AVAILABLE = False
+
+try:
     from openai import OpenAI
 except ModuleNotFoundError:  # pragma: no cover - optional dependency
     OpenAI = None  # type: ignore[assignment]
@@ -285,15 +299,23 @@ def extract_text_from_pdf(
 
 _THINK_RE = re.compile(r"<think>.*?</think>", re.IGNORECASE | re.DOTALL)
 _FENCE_RE = re.compile(r"```(?:json)?\s*([\s\S]*?)\s*```", re.IGNORECASE)
+# Pattern to match common LLM reasoning prefixes before JSON
+_REASONING_PREFIX_RE = re.compile(
+    r"^(?:(?:We need to|Let me|I need to|Let's|Here is|Here's|The JSON|Below is|I will|I'll|"
+    r"First,|Now,|Looking at|Based on|According to|To extract|Parsing|Analyzing).*?(?=\{|\[))",
+    re.IGNORECASE | re.DOTALL
+)
 
 def _strip_reasoning_and_fences(text: str) -> str:
-    """Remove <think> blocks and fenced code; return raw text."""
+    """Remove <think> blocks, reasoning prefixes, and fenced code; return raw text."""
     if not text:
         return ""
     text = _THINK_RE.sub("", text)
     m = _FENCE_RE.search(text)
     if m:
         return m.group(1).strip()
+    # Strip common reasoning prefixes that precede JSON
+    text = _REASONING_PREFIX_RE.sub("", text)
     return text.strip()
 
 
@@ -321,6 +343,87 @@ def _extract_outer_json(text: str) -> str:
             if not stack:
                 return text[start : j + 1]
     return text[start:]
+
+
+def _robust_json_parse(raw: str) -> Dict[str, Any]:
+    """
+    Attempt to parse JSON using multiple strategies, from strict to lenient.
+    
+    Strategy order:
+    1. Standard json.loads (fastest, strictest)
+    2. json-repair library (fixes common issues)
+    3. Extract balanced JSON substring and retry
+    4. Regex-based extraction for common patterns
+    """
+    if not raw or not raw.strip():
+        raise ValueError("Empty input")
+    
+    # Clean the input first
+    cleaned = _extract_outer_json(_strip_reasoning_and_fences(raw))
+    
+    # Strategy 1: Standard JSON parsing
+    try:
+        return json.loads(cleaned)
+    except json.JSONDecodeError:
+        pass
+    
+    # Strategy 2: Use json-repair if available
+    if repair_json is not None:
+        try:
+            repaired = repair_json(cleaned, return_objects=True)
+            if isinstance(repaired, dict):
+                return repaired
+            elif isinstance(repaired, str):
+                return json.loads(repaired)
+        except Exception:
+            pass
+    
+    # Strategy 3: Try to find JSON in the original raw text
+    # (in case our cleaning was too aggressive)
+    try:
+        extracted = _extract_outer_json(raw)
+        return json.loads(extracted)
+    except json.JSONDecodeError:
+        pass
+    
+    # Strategy 4: Look for JSON between common delimiters
+    json_patterns = [
+        r'```json\s*([\s\S]*?)\s*```',  # Markdown code block
+        r'```\s*([\s\S]*?)\s*```',       # Generic code block
+        r'<json>\s*([\s\S]*?)\s*</json>', # XML-style tags
+        r'JSON:\s*(\{[\s\S]*\})',         # "JSON:" prefix
+        r'Output:\s*(\{[\s\S]*\})',       # "Output:" prefix
+        r'Result:\s*(\{[\s\S]*\})',       # "Result:" prefix
+    ]
+    for pattern in json_patterns:
+        m = re.search(pattern, raw, re.IGNORECASE)
+        if m:
+            try:
+                candidate = m.group(1).strip()
+                if repair_json is not None:
+                    repaired = repair_json(candidate, return_objects=True)
+                    if isinstance(repaired, dict):
+                        return repaired
+                return json.loads(candidate)
+            except Exception:
+                continue
+    
+    # Strategy 5: Last resort - try to repair the raw text directly
+    if repair_json is not None:
+        try:
+            # Find anything that looks like it could be JSON
+            for match in re.finditer(r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}', raw):
+                candidate = match.group(0)
+                try:
+                    repaired = repair_json(candidate, return_objects=True)
+                    if isinstance(repaired, dict) and repaired:
+                        return repaired
+                except Exception:
+                    continue
+        except Exception:
+            pass
+    
+    raise ValueError(f"Could not parse JSON from response")
 
 
 # ---------------------------------------------------------------------------
@@ -648,6 +751,83 @@ Do not randomly choose between plausible options; prefer the most clinically pla
     )
 
 
+def _extract_with_outlines(
+    text_content: str,
+    schema_class: Type[BaseModel],
+    model: str,
+    base_url: Optional[str] = None,
+) -> Optional[BaseModel]:
+    """
+    Use Outlines with Ollama for guaranteed structured JSON output.
+    
+    Outlines uses grammar-constrained generation to ensure the LLM
+    produces valid JSON matching the Pydantic schema on the first try.
+    This eliminates the need for JSON repair or retry logic.
+    
+    Args:
+        text_content: The text to extract from
+        schema_class: The Pydantic model class for the output schema
+        model: The model name (e.g., "gpt-oss:20b")
+        base_url: Optional base URL for Ollama (defaults to localhost:11434)
+        
+    Returns:
+        Instance of schema_class if successful, None on failure
+    """
+    if not OUTLINES_AVAILABLE or outlines is None or ollama_client is None:
+        return None
+    
+    try:
+        # Parse the Ollama host from the base URL
+        host = None
+        if base_url:
+            # Convert from OpenAI-style URL to Ollama host
+            # e.g., "http://localhost:11434/v1" -> "http://localhost:11434"
+            parsed = base_url.rstrip("/")
+            if parsed.endswith("/v1"):
+                host = parsed[:-3]
+            else:
+                host = parsed
+        
+        # Create Ollama client and outlines model
+        client = ollama_client.Client(host=host) if host else ollama_client.Client()
+        llm = outlines.from_ollama(client, model)  # type: ignore[attr-defined]
+        
+        # Build the extraction prompt
+        schema_json = schema_class.model_json_schema()
+        prompt = (
+            "You are a medical information extraction system. "
+            "Extract structured data from the clinical text below according to the JSON schema provided.\n\n"
+            f"JSON Schema:\n{json.dumps(schema_json, indent=2)}\n\n"
+            f"Clinical text:\n{text_content}\n\n"
+            "Extract the information and produce the JSON output:"
+        )
+        
+        # Create generator with Pydantic schema as output_type (new Outlines API)
+        generator = outlines.Generator(llm, output_type=schema_class)  # type: ignore[attr-defined]
+        
+        # Generate - Outlines guarantees valid JSON matching the schema
+        result = generator(prompt)  # type: ignore[no-any-return]
+        
+        # Handle both cases: Outlines may return Pydantic model or JSON string
+        if isinstance(result, schema_class):
+            return result
+        elif isinstance(result, str):
+            # Parse JSON string into Pydantic model
+            parsed = json.loads(result)
+            return schema_class(**parsed)
+        elif isinstance(result, dict):
+            return schema_class(**result)
+        else:
+            # Unknown type, let fallbacks handle it
+            console.print(f"[dim]Outlines returned unexpected type: {type(result)}, falling back...[/dim]")
+            return None
+            
+    except Exception as e:
+        # Log for debugging but don't fail - let fallbacks handle it
+        console.print(f"[dim]Outlines extraction failed: {e}, falling back...[/dim]")
+        return None
+
+
 # ---------------------------------------------------------------------------
 # Text → Structured Data (schema‑agnostic, hardened)
 # ---------------------------------------------------------------------------
@@ -661,11 +841,11 @@ def extract_structured_data(
     temperature: float = 0.0,
 ) -> BaseModel:
     """
-    Schema‑agnostic extraction using Instructor (JSON‑Schema mode) with special handling
-    for reasoning models like DeepSeek and GPT‑OSS, plus Ollama fallback.
+    Schema‑agnostic extraction using multiple strategies with Outlines as the primary method.
 
-    Steps:
-      1) Try Instructor JSON‑Schema mode (for non‑reasoning models)
+    Extraction Strategy (in order):
+      0) **Outlines** (PRIMARY) - Grammar-constrained generation for guaranteed valid JSON
+      1) Instructor JSON‑Schema mode (for non‑reasoning models)
       2) Reasoning models skip Instructor and go directly to Ollama /api/generate
       3) Fallback to chat.completions (no response_format for reasoning models)
       4) Sanitize output, extract JSON, coerce to schema, validate via Pydantic
@@ -687,6 +867,18 @@ def extract_structured_data(
     is_reasoning_model = any(
         kw in model_lower for kw in ("deepseek", "gpt-oss", "reasoner", "r1")
     )
+
+    # 0) **PRIMARY**: Try Outlines for grammar-constrained JSON generation
+    # This is the most reliable method - guarantees valid JSON matching the schema
+    if OUTLINES_AVAILABLE:
+        outlines_result = _extract_with_outlines(
+            text_content=text_content,
+            schema_class=schema_class,
+            model=model,
+            base_url=resolved_base_url,
+        )
+        if outlines_result is not None:
+            return outlines_result
 
     # 1) Instructor JSON‑Schema (only for non‑reasoning models)
     if not is_reasoning_model:
@@ -771,12 +963,32 @@ def extract_structured_data(
         except Exception as e:
             raise ExtractionError(f"Model calls failed: {e}") from e
 
-    # 4) Post-process, coerce, validate
-    cleaned = _extract_outer_json(_strip_reasoning_and_fences(raw))
+    # 4) Post-process with robust JSON parsing (multiple fallback strategies)
     try:
-        payload = json.loads(cleaned)
-    except json.JSONDecodeError as e:
-        raise ExtractionError(f"Model returned invalid JSON: {e}\nContent: {raw}") from e
+        payload = _robust_json_parse(raw)
+    except (json.JSONDecodeError, ValueError) as e:
+        # Retry with a stricter prompt if all parsing strategies fail
+        try:
+            client_retry = OpenAI(base_url=resolved_base_url, api_key=resolved_api_key)
+            retry_prompt = (
+                "Your previous response was not valid JSON. "
+                "You MUST output ONLY a valid JSON object. No explanation, no reasoning, no markdown, no code fences.\n\n"
+                f"Required JSON Schema:\n{json.dumps(schema_json, indent=2)}\n\n"
+                f"Text to extract from:\n{text_content[:3000]}\n\n"
+                "CRITICAL: Start your response with {{ and end with }}. Nothing else."
+            )
+            retry_resp = client_retry.chat.completions.create(
+                model=model,
+                temperature=0.0,
+                messages=[
+                    {"role": "system", "content": "You output ONLY raw JSON. No markdown. No explanation. Just the JSON object."},
+                    {"role": "user", "content": retry_prompt},
+                ],
+            )
+            retry_raw = retry_resp.choices[0].message.content or ""
+            payload = _robust_json_parse(retry_raw)
+        except Exception:
+            raise ExtractionError(f"Model returned invalid JSON after retry: {e}\nContent: {raw}") from e
 
     coerced = _coerce_to_schema(payload, schema_json, schema_json)
     try:
