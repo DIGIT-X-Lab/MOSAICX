@@ -15,14 +15,21 @@ University: LMU University Hospital | LMU Munich
 Overview:
 ---------
 Centralised logging configuration for MOSAICX extraction pipelines.  Provides
-file-based logging with rotation, configurable verbosity, and structured output
-for debugging extraction attempts, prompt construction, and LLM responses.
+session-based file logging with unique identifiers, configurable verbosity, 
+and structured output for debugging extraction attempts, prompt construction, 
+and LLM responses.
 
 Log Location:
 -------------
-- Default: ~/.mosaicx/logs/mosaicx.log
+- Default: ~/.mosaicx/logs/
+- Each CLI run creates a timestamped log file with session ID
+- A symlink 'mosaicx.log' always points to the latest session
 - Can be overridden via MOSAICX_LOG_DIR environment variable
-- Logs are rotated at 10MB with 5 backup files retained
+
+Log File Format:
+----------------
+- mosaicx_YYYYMMDD_HHMMSS_<session_id>.log  (per-session files)
+- mosaicx.log (symlink to latest)
 
 Log Levels:
 -----------
@@ -33,14 +40,17 @@ Log Levels:
 
 Usage:
 ------
-    from mosaicx.utils.logging import get_logger, setup_logging
+    from mosaicx.utils.logging import get_logger, setup_logging, get_session_id
     
     # Call once at startup (CLI or API entry point)
-    setup_logging(level="DEBUG")
+    log_file = setup_logging(level="DEBUG")
     
     # Get logger in any module
     logger = get_logger(__name__)
     logger.info("Starting extraction...")
+    
+    # Get current session ID for correlation
+    session_id = get_session_id()
 """
 
 from __future__ import annotations
@@ -48,8 +58,8 @@ from __future__ import annotations
 import logging
 import os
 import sys
+import uuid
 from datetime import datetime
-from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Optional
 
@@ -58,26 +68,60 @@ from typing import Optional
 # ============================================================================
 
 DEFAULT_LOG_DIR = Path.home() / ".mosaicx" / "logs"
-DEFAULT_LOG_FILE = "mosaicx.log"
 DEFAULT_LOG_LEVEL = "INFO"
-MAX_LOG_SIZE = 10 * 1024 * 1024  # 10 MB
-BACKUP_COUNT = 5
+SYMLINK_NAME = "mosaicx.log"
 
-# Custom log format with timestamp, level, module, and message
-LOG_FORMAT = "%(asctime)s | %(levelname)-8s | %(name)s | %(message)s"
+# Custom log format with timestamp, level, session ID, module, and message
+LOG_FORMAT = "%(asctime)s | %(levelname)-8s | %(session_id)s | %(name)s | %(message)s"
 LOG_DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
 
 # Detailed format for file logging (includes line numbers)
-FILE_LOG_FORMAT = "%(asctime)s | %(levelname)-8s | %(name)s:%(lineno)d | %(message)s"
+FILE_LOG_FORMAT = "%(asctime)s | %(levelname)-8s | %(session_id)s | %(name)s:%(lineno)d | %(message)s"
 
-# Track if logging has been initialised
+# Track logging state
 _logging_initialised = False
 _log_file_path: Optional[Path] = None
+_session_id: Optional[str] = None
+
+
+# ============================================================================
+# Session ID Filter - Adds session_id to all log records
+# ============================================================================
+
+class SessionIdFilter(logging.Filter):
+    """Add session_id to all log records."""
+    
+    def __init__(self, session_id: str):
+        super().__init__()
+        self.session_id = session_id
+    
+    def filter(self, record: logging.LogRecord) -> bool:
+        record.session_id = self.session_id  # type: ignore[attr-defined]
+        return True
+
+
+# ============================================================================
+# Session-Aware Formatter - Gracefully handles missing session_id
+# ============================================================================
+
+class SessionFormatter(logging.Formatter):
+    """Formatter that adds session_id, defaulting to 'N/A' if not present."""
+    
+    def format(self, record: logging.LogRecord) -> str:
+        # Ensure session_id is present (filter should add it, but be safe)
+        if not hasattr(record, 'session_id'):
+            record.session_id = _session_id or 'N/A'  # type: ignore[attr-defined]
+        return super().format(record)
 
 
 # ============================================================================
 # Setup Functions
 # ============================================================================
+
+def generate_session_id() -> str:
+    """Generate a short unique session ID (6 characters)."""
+    return uuid.uuid4().hex[:6]
+
 
 def get_log_directory() -> Path:
     """Get the log directory, respecting MOSAICX_LOG_DIR environment variable."""
@@ -87,9 +131,10 @@ def get_log_directory() -> Path:
     return DEFAULT_LOG_DIR
 
 
-def get_log_file_path() -> Path:
-    """Get the full path to the log file."""
-    return get_log_directory() / DEFAULT_LOG_FILE
+def generate_log_filename(session_id: str) -> str:
+    """Generate a timestamped log filename with session ID."""
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    return f"mosaicx_{timestamp}_{session_id}.log"
 
 
 def setup_logging(
@@ -99,7 +144,10 @@ def setup_logging(
     quiet: bool = False,
 ) -> Path:
     """
-    Initialise MOSAICX logging with file and optional console output.
+    Initialise MOSAICX logging with session-based file and optional console output.
+    
+    Each call creates a new timestamped log file with a unique session ID.
+    A symlink 'mosaicx.log' is updated to point to the latest log file.
     
     Parameters
     ----------
@@ -118,7 +166,10 @@ def setup_logging(
     Path
         Path to the log file being written to.
     """
-    global _logging_initialised, _log_file_path
+    global _logging_initialised, _log_file_path, _session_id
+    
+    # Generate new session ID for this run
+    _session_id = generate_session_id()
     
     # Determine log level
     if level is None:
@@ -132,53 +183,59 @@ def setup_logging(
     # Create log directory if needed
     log_dir.mkdir(parents=True, exist_ok=True)
     
-    # Full path to log file
-    log_file = log_dir / DEFAULT_LOG_FILE
+    # Generate timestamped log filename
+    log_filename = generate_log_filename(_session_id)
+    log_file = log_dir / log_filename
     _log_file_path = log_file
     
     # Get the root mosaicx logger
     mosaicx_logger = logging.getLogger("mosaicx")
     
-    # If already configured, update the log level if a new one was specified
-    if _logging_initialised:
-        if level is not None:
-            # Update log level on existing handlers
-            for handler in mosaicx_logger.handlers:
-                handler.setLevel(log_level)
-            mosaicx_logger.setLevel(log_level)
-        return log_file
+    # Clear any existing handlers and filters
+    mosaicx_logger.handlers.clear()
+    for f in mosaicx_logger.filters[:]:
+        mosaicx_logger.removeFilter(f)
     
     mosaicx_logger.setLevel(log_level)
     
-    # Clear any existing handlers
-    mosaicx_logger.handlers.clear()
+    # Add session ID filter to all log records
+    session_filter = SessionIdFilter(_session_id)
+    mosaicx_logger.addFilter(session_filter)
     
-    # File handler with rotation
-    file_handler = RotatingFileHandler(
-        log_file,
-        maxBytes=MAX_LOG_SIZE,
-        backupCount=BACKUP_COUNT,
-        encoding="utf-8",
-    )
+    # File handler (no rotation - each session gets its own file)
+    file_handler = logging.FileHandler(log_file, encoding="utf-8")
     file_handler.setLevel(log_level)
-    file_handler.setFormatter(logging.Formatter(FILE_LOG_FORMAT, LOG_DATE_FORMAT))
+    file_handler.setFormatter(SessionFormatter(FILE_LOG_FORMAT, LOG_DATE_FORMAT))
     mosaicx_logger.addHandler(file_handler)
     
     # Console handler (optional)
     if console_output and not quiet:
         console_handler = logging.StreamHandler(sys.stderr)
         console_handler.setLevel(log_level)
-        console_handler.setFormatter(logging.Formatter(LOG_FORMAT, LOG_DATE_FORMAT))
+        console_handler.setFormatter(SessionFormatter(LOG_FORMAT, LOG_DATE_FORMAT))
         mosaicx_logger.addHandler(console_handler)
     
     # Prevent propagation to root logger (avoid duplicate logs)
     mosaicx_logger.propagate = False
     
+    # Create/update symlink to latest log file
+    symlink_path = log_dir / SYMLINK_NAME
+    try:
+        # Remove existing symlink if it exists
+        if symlink_path.is_symlink() or symlink_path.exists():
+            symlink_path.unlink()
+        # Create new symlink pointing to current log file
+        symlink_path.symlink_to(log_file.name)
+    except OSError:
+        # Symlink creation may fail on some systems (e.g., Windows without admin)
+        pass
+    
     _logging_initialised = True
     
     # Log startup message
     mosaicx_logger.info("=" * 80)
-    mosaicx_logger.info("MOSAICX Logging Initialised")
+    mosaicx_logger.info("MOSAICX Logging Session Started")
+    mosaicx_logger.info(f"  Session ID: {_session_id}")
     mosaicx_logger.info(f"  Log file: {log_file}")
     mosaicx_logger.info(f"  Log level: {level.upper()}")
     mosaicx_logger.info(f"  Timestamp: {datetime.now().isoformat()}")
@@ -220,6 +277,11 @@ def get_logger(name: str) -> logging.Logger:
 def get_current_log_file() -> Optional[Path]:
     """Return the path to the current log file, if logging is initialised."""
     return _log_file_path
+
+
+def get_session_id() -> Optional[str]:
+    """Return the current session ID, if logging is initialised."""
+    return _session_id
 
 
 # ============================================================================

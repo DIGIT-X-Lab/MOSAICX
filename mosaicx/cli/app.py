@@ -70,7 +70,7 @@ from ..schema.registry import (
 )
 from ..summarizer import render_summary_rich, save_summary_artifacts
 from ..utils import resolve_schema_reference
-from ..utils.logging import setup_logging, get_current_log_file, get_logger
+from ..utils.logging import setup_logging, get_current_log_file, get_logger, get_session_id
 
 # Module-level logger
 _logger = get_logger(__name__)
@@ -130,10 +130,11 @@ def cli(ctx: click.Context, verbose: bool, log_level: str) -> None:
     
     # Initialize logging first
     log_file = setup_logging(level=log_level, console_output=verbose)
+    session_id = get_session_id()
     _logger.info(f"MOSAICX CLI started (version {__version__})")
     
     if verbose:
-        styled_message(f"📋 Log file: {log_file}", "info")
+        styled_message(f"📋 Session: {session_id} | Log: {log_file}", "info")
 
     show_main_banner()
 
@@ -541,10 +542,12 @@ def extract(
 
 @cli.command("log-path")
 def show_log_path() -> None:
-    """Show the path to the MOSAICX log file."""
+    """Show the path to the MOSAICX log file and session info."""
+    session_id = get_session_id()
     log_file = get_current_log_file()
     if log_file:
-        styled_message(f"📋 Log file: {log_file}", "info")
+        styled_message(f"📋 Session: {session_id}", "info")
+        styled_message(f"   Log file: {log_file}", "info")
         if log_file.exists():
             size_kb = log_file.stat().st_size / 1024
             styled_message(f"   Size: {size_kb:.1f} KB", "secondary")
