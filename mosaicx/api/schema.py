@@ -41,6 +41,10 @@ from ..constants import (
 )
 from ..schema.builder import synthesize_pydantic_model
 from ..schema.registry import get_suggested_filename
+from ..utils.logging import get_logger
+
+# Module-level logger
+_logger = get_logger(__name__)
 
 
 def _ensure_root_schema_constant(code: str, class_name: str) -> str:
@@ -118,11 +122,14 @@ def generate_schema(
     temperature: float = 0.2,
 ) -> GeneratedSchema:
     """Generate a Pydantic schema module from a natural-language prompt."""
+    _logger.info(f"API generate_schema: class_name={class_name}, model={model}")
 
     if isinstance(description, Sequence) and not isinstance(description, (str, bytes)):
         prompt = "\n".join(str(seg) for seg in description)
     else:
         prompt = str(description)
+    
+    _logger.debug(f"Schema description: {prompt[:200]}{'...' if len(prompt) > 200 else ''}")
 
     code = synthesize_pydantic_model(
         description=prompt,
@@ -137,6 +144,9 @@ def generate_schema(
     code = re.sub(r"\bregex(?=\s*=)", "pattern", code)
     code = _ensure_root_schema_constant(code, class_name)
     suggested = get_suggested_filename(class_name, prompt)
+    
+    _logger.info(f"Schema generated: {suggested} ({len(code)} chars)")
+    
     return GeneratedSchema(
         class_name=class_name,
         description=description,

@@ -11,6 +11,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Union
 
+from .utils.logging import get_logger
+
+# Module-level logger
+_logger = get_logger(__name__)
+
 try:
     from docling.document_converter import (
         DocumentConverter,
@@ -188,9 +193,13 @@ def _gather_page_stats(result) -> List[PageAnalysis]:
 
 def _read_plain_text(path: Path) -> str:
     """Fallback reader for simple text-based formats when Docling is unavailable."""
+    _logger.debug(f"Reading plain text from {path}")
     try:
-        return path.read_text(encoding="utf-8", errors="ignore")
+        content = path.read_text(encoding="utf-8", errors="ignore")
+        _logger.debug(f"Plain text read: {len(content)} chars")
+        return content
     except Exception as exc:  # pragma: no cover - defensive
+        _logger.error(f"Failed to read text from {path}: {exc}")
         raise DocumentLoadingError(f"Failed to read text from {path}: {exc}") from exc
 
 
@@ -204,13 +213,19 @@ def load_document(
 ) -> LoadedDocument:
     """Convert ``path`` into a :class:`LoadedDocument` using Docling when possible."""
     doc_path = Path(path).expanduser().resolve()
+    _logger.info(f"Loading document: {doc_path}")
+    _logger.debug(f"Load options: force_ocr={force_ocr}, languages={languages}, generate_images={generate_images}")
+    
     if not doc_path.exists():
+        _logger.error(f"Document not found: {doc_path}")
         raise DocumentLoadingError(f"Document not found: {doc_path}")
 
     suffix = doc_path.suffix.lower()
     input_format = DOC_SUFFIXES.get(suffix)
+    _logger.debug(f"Detected format: {suffix} -> {input_format}")
 
     if input_format is None:
+        _logger.error(f"Unsupported document format: {suffix}")
         raise DocumentLoadingError(
             f"Unsupported document format '{suffix}'. "
             f"Supported extensions: {', '.join(sorted(DOC_SUFFIXES))}"
@@ -218,10 +233,12 @@ def load_document(
 
     # Plain-text flow without Docling if possible.
     if suffix in PLAIN_TEXT_SUFFIXES and not (force_ocr or generate_images):
+        _logger.debug("Using plain text reader (no Docling needed)")
         text = _read_plain_text(doc_path)
         return LoadedDocument(path=doc_path, markdown=text, page_analysis=[], conversion_result=None)
 
     if DocumentConverter is None:
+        _logger.error("Docling not installed for document conversion")
         raise DocumentLoadingError(
             "Docling is required for document conversion but is not installed."
         )
@@ -255,21 +272,30 @@ def load_document(
         if pipeline_options is not None:
             format_options[InputFormat.PDF] = PdfFormatOption(pipeline_options=pipeline_options)
     converter = DocumentConverter(format_options=format_options)
+    _logger.debug("Docling DocumentConverter initialized")
 
     try:
+        _logger.info(f"Converting document with Docling: {doc_path.name}")
         result = converter.convert(doc_path)
+        _logger.debug("Docling conversion completed successfully")
     except Exception as exc:  # pragma: no cover - conversion errors are rare
+        _logger.error(f"Docling conversion failed for {doc_path}: {exc}")
         raise DocumentLoadingError(f"Failed to convert {doc_path}: {exc}") from exc
 
     markdown: str
     if getattr(result, "document", None) and hasattr(result.document, "export_to_markdown"):
         markdown = result.document.export_to_markdown()
+        _logger.debug(f"Exported markdown from Docling document: {len(markdown)} chars")
     elif isinstance(getattr(result, "text", None), str):
         markdown = result.text  # type: ignore[assignment]
+        _logger.debug(f"Used raw text from result: {len(markdown)} chars")
     else:
         markdown = _read_plain_text(doc_path) if input_format == InputFormat.MD else ""
+        _logger.debug(f"Fallback to plain text: {len(markdown)} chars")
 
     page_analysis = _gather_page_stats(result)
+    _logger.info(f"Document loaded: {len(markdown)} chars, {len(page_analysis)} pages analyzed")
+    
     return LoadedDocument(
         path=doc_path,
         markdown=markdown,

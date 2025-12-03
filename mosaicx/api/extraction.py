@@ -44,6 +44,10 @@ from ..extractor import (
     extract_text_from_pdf,
     load_schema_model,
 )
+from ..utils.logging import get_logger
+
+# Module-level logger
+_logger = get_logger(__name__)
 
 
 @dataclass(slots=True)
@@ -80,17 +84,25 @@ def extract_document(
     status_callback: Optional[Callable[[str], None]] = None,
 ) -> ExtractionResult:
     """Extract structured data from a clinical document."""
-
     doc_path = Path(document_path)
     schema_path = Path(schema_path)
+    
+    _logger.info(f"API extraction: document={doc_path.name}, schema={schema_path.name}")
+    _logger.debug(f"Extraction config: model={model}, temperature={temperature}")
 
+    _logger.debug("Loading schema model")
     schema_class = load_schema_model(str(schema_path))
+    
+    _logger.debug("Extracting text from document")
     extraction = extract_text_from_document(
         doc_path,
         return_details=True,
         status_callback=status_callback,
     )
     text_content = extraction.markdown
+    _logger.debug(f"Extracted {len(text_content)} chars from document")
+    
+    _logger.info("Extracting structured data with LLM")
     record = extract_structured_data(
         text_content,
         schema_class,
@@ -99,6 +111,8 @@ def extract_document(
         api_key=api_key,
         temperature=temperature,
     )
+    _logger.info(f"Extraction complete: {type(record).__name__}")
+    
     return ExtractionResult(record=record, schema_path=schema_path, document_path=doc_path)
 
 
@@ -113,6 +127,7 @@ def extract_pdf(
     status_callback: Optional[Callable[[str], None]] = None,
 ) -> ExtractionResult:
     """Backward-compatible wrapper for :func:`extract_document`."""
+    _logger.debug("extract_pdf called (delegating to extract_document)")
 
     return extract_document(
         document_path=pdf_path,

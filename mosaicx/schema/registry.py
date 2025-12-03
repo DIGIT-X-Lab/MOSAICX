@@ -40,6 +40,10 @@ from ..constants import (
     SCHEMA_REGISTRY_PATH,
     USER_SCHEMA_DIR,
 )
+from ..utils.logging import get_logger
+
+# Module-level logger
+_logger = get_logger(__name__)
 
 
 class SchemaRegistry:
@@ -61,17 +65,23 @@ class SchemaRegistry:
         
         # Load existing registry or create new one
         self._registry = self._load_registry()
+        _logger.debug(f"Schema registry initialized: {self.registry_path}")
+        _logger.debug(f"Registry contains {len(self._registry.get('schemas', {}))} schema(s)")
     
     def _load_registry(self) -> Dict[str, Any]:
         """Load the registry from file or create an empty one."""
         if self.registry_path.exists():
             try:
                 with open(self.registry_path, 'r') as f:
-                    return json.load(f)
-            except (json.JSONDecodeError, IOError):
+                    data = json.load(f)
+                    _logger.debug(f"Loaded registry from {self.registry_path}")
+                    return data
+            except (json.JSONDecodeError, IOError) as exc:
                 # If registry is corrupted, start fresh
+                _logger.warning(f"Registry corrupted, starting fresh: {exc}")
                 return {"schemas": {}, "version": "1.0.0"}
         else:
+            _logger.debug("No existing registry found, creating new one")
             return {"schemas": {}, "version": "1.0.0"}
     
     def _save_registry(self) -> None:
@@ -79,7 +89,9 @@ class SchemaRegistry:
         try:
             with open(self.registry_path, 'w') as f:
                 json.dump(self._registry, f, indent=2, default=str)
+            _logger.debug(f"Registry saved to {self.registry_path}")
         except IOError as e:
+            _logger.error(f"Could not save schema registry: {e}")
             print(f"Warning: Could not save schema registry: {e}")
 
     def _normalise_path(self, candidate: Path) -> Path:
@@ -147,6 +159,9 @@ class SchemaRegistry:
         Returns:
             Schema ID for referencing this schema
         """
+        _logger.info(f"Registering schema: class_name={class_name}")
+        _logger.debug(f"Schema file: {file_path}, model={model_used}")
+        
         resolved_path = self._normalise_path(file_path)
         timestamp = datetime.now().isoformat()
         description_hash = self._generate_description_hash(description)
@@ -156,6 +171,11 @@ class SchemaRegistry:
             if existing_id
             else f"{class_name.lower()}_{description_hash}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
         )
+        
+        if existing_id:
+            _logger.debug(f"Updating existing schema: {existing_id}")
+        else:
+            _logger.debug(f"Creating new schema: {schema_id}")
         
         schema_entry = {
             "id": schema_id,
@@ -183,6 +203,7 @@ class SchemaRegistry:
         self._registry["schemas"][schema_id] = schema_entry
         self._save_registry()
         
+        _logger.info(f"Schema registered: {schema_id}")
         return schema_id
 
     def get_schema_by_path(self, file_path: Path) -> Optional[Dict[str, Any]]:

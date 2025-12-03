@@ -44,6 +44,10 @@ import sys
 from typing import Optional
 
 from ..utils import resolve_openai_config
+from ..utils.logging import get_logger
+
+# Module-level logger
+_logger = get_logger(__name__)
 
 try:
     # The OpenAI class is available via the openai package.  We avoid
@@ -102,7 +106,12 @@ def synthesize_pydantic_model(
         RuntimeError: If the openai package is not installed or no API key
             can be determined.
     """
+    _logger.info(f"Synthesizing Pydantic model: class_name={class_name}")
+    _logger.debug(f"Schema config: model={model}, temperature={temperature}")
+    _logger.debug(f"Description: {description[:200]}{'...' if len(description) > 200 else ''}")
+    
     if OpenAI is None:
+        _logger.error("OpenAI package not installed")
         raise RuntimeError(
             "The 'openai' package is required for simple schema generation. "
             "Install it via 'pip install openai'."
@@ -110,6 +119,7 @@ def synthesize_pydantic_model(
 
     # Resolve endpoint and key. Default to Ollama settings.
     resolved_base_url, resolved_api_key = resolve_openai_config(base_url, api_key)
+    _logger.debug(f"Using endpoint: {resolved_base_url}")
 
     client = OpenAI(base_url=resolved_base_url, api_key=resolved_api_key)
 
@@ -136,6 +146,7 @@ def synthesize_pydantic_model(
         "Description:\n" + description.strip() + "\n\n" + "Return only the Python class."
     )
 
+    _logger.info("Sending schema generation request to LLM")
     response = client.chat.completions.create(
         model=model,
         temperature=temperature,
@@ -146,7 +157,10 @@ def synthesize_pydantic_model(
     )
 
     content = response.choices[0].message.content or ""
-    return _extract_code_block(content)
+    code = _extract_code_block(content)
+    _logger.info(f"Schema generated successfully: {len(code)} chars")
+    _logger.debug(f"Generated code preview: {code[:200]}{'...' if len(code) > 200 else ''}")
+    return code
 
 
 def main() -> None:

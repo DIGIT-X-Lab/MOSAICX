@@ -16,6 +16,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, List, Optional, Tuple, Union
 
+from .utils.logging import get_logger
+
+# Module-level logger
+_logger = get_logger(__name__)
+
 try:
     import requests  # type: ignore[import-not-found]
 except ModuleNotFoundError:  # pragma: no cover - optional dependency
@@ -161,15 +166,21 @@ def extract_text_with_fallback(
     """
     doc_path = Path(path)
     suffix = doc_path.suffix.lower()
+    _logger.info(f"Starting layered text extraction: {doc_path.name}")
+    _logger.debug(f"Extraction config: vlm_model={vlm_model}, ocr_languages={ocr_languages}")
 
     if suffix in PLAIN_TEXT_SUFFIXES:
+        _logger.debug(f"Plain text file detected: {suffix}")
         try:
             text = doc_path.read_text(encoding="utf-8")
         except UnicodeDecodeError:
+            _logger.debug("UTF-8 decode failed, trying latin-1")
             text = doc_path.read_text(encoding="latin-1")
         text = text.strip()
         if not text:
+            _logger.error(f"No text content found in {doc_path}")
             raise TextExtractionError(f"No text content found in {doc_path}")
+        _logger.info(f"Plain text extraction successful: {len(text)} chars")
         return LayeredTextResult(
             markdown=text,
             mode="plain",
@@ -179,6 +190,7 @@ def extract_text_with_fallback(
         )
 
     if suffix not in DOC_SUFFIXES:
+        _logger.error(f"Unsupported file extension: {suffix}")
         raise TextExtractionError(
             f"Unsupported file extension: {doc_path.suffix or '<none>'}. "
             f"Supported extensions: {', '.join(sorted(DOC_SUFFIXES))}."
@@ -189,8 +201,10 @@ def extract_text_with_fallback(
     if not languages:
         languages = ["en"]
 
+    # Stage 1: Primary extraction (native or OCR)
     try:
         if DEFAULT_FORCE_OCR:
+            _logger.info("Stage 1: Forced OCR extraction")
             primary = load_document(
                 doc_path,
                 force_ocr=True,
@@ -200,12 +214,15 @@ def extract_text_with_fallback(
             )
             attempts.append("ocr")
         else:
+            _logger.info("Stage 1: Native text extraction")
             primary = load_document(doc_path)
             attempts.append("native")
     except DocumentLoadingError as exc:
+        _logger.error(f"Primary extraction failed: {exc}")
         raise TextExtractionError(str(exc)) from exc
 
     if _has_sufficient_text(primary):
+        _logger.info(f"Stage 1 successful ({attempts[-1]}): {len(primary.markdown)} chars extracted")
         return LayeredTextResult(
             markdown=primary.markdown,
             mode=attempts[-1],
@@ -213,11 +230,15 @@ def extract_text_with_fallback(
             attempts=attempts,
             vlm_pages=[],
         )
+    
+    _logger.warning(f"Stage 1 ({attempts[-1]}) insufficient text: {len(primary.markdown)} chars")
 
     native = primary
 
+    # Stage 2: OCR fallback for PDFs
     ocr_loaded: Optional[LoadedDocument] = None
     if not DEFAULT_FORCE_OCR and doc_path.suffix.lower() == ".pdf":
+        _logger.info("Stage 2: OCR fallback extraction")
         try:
             ocr_loaded = load_document(
                 doc_path,
@@ -228,6 +249,7 @@ def extract_text_with_fallback(
             )
             attempts.append("ocr")
             if _has_sufficient_text(ocr_loaded):
+                _logger.info(f"Stage 2 (OCR) successful: {len(ocr_loaded.markdown)} chars extracted")
                 return LayeredTextResult(
                     markdown=ocr_loaded.markdown,
                     mode="ocr",
@@ -235,15 +257,19 @@ def extract_text_with_fallback(
                     attempts=attempts,
                     vlm_pages=[],
                 )
-        except DocumentLoadingError:
+            _logger.warning(f"Stage 2 (OCR) insufficient text: {len(ocr_loaded.markdown)} chars")
+        except DocumentLoadingError as exc:
+            _logger.warning(f"Stage 2 (OCR) failed: {exc}")
             ocr_loaded = None
 
+    # Stage 3: VLM transcription for low-text pages
     doc_for_vlm = ocr_loaded or native
 
     vlm_model = vlm_model or DEFAULT_VLM_MODEL
     vlm_base_url = vlm_base_url or DEFAULT_VLM_BASE_URL
 
     if not vlm_model:
+        _logger.error("No VLM model configured for fallback")
         raise TextExtractionError("No VLM model configured for fallback.")
 
     pages_to_process = [
@@ -251,6 +277,12 @@ def extract_text_with_fallback(
         for page in doc_for_vlm.page_analysis
         if page.text_chars < MIN_PAGE_CHARS
     ]
+    
+    if pages_to_process:
+        _logger.info(f"Stage 3: VLM transcription for {len(pages_to_process)} low-text pages")
+        _logger.debug(f"VLM config: model={vlm_model}, base_url={vlm_base_url}")
+    else:
+        _logger.debug("No low-text pages require VLM transcription")
 
     vlm_text, processed_pages = _vlm_transcribe_pages(
         doc_for_vlm,
@@ -260,6 +292,7 @@ def extract_text_with_fallback(
     )
 
     if not vlm_text:
+        _logger.info(f"VLM transcription returned no text, using {attempts[-1]} result")
         fallback_doc = doc_for_vlm if doc_for_vlm.markdown.strip() else native
         return LayeredTextResult(
             markdown=fallback_doc.markdown,
@@ -271,6 +304,9 @@ def extract_text_with_fallback(
 
     attempts.append("vlm")
     combined = f"{(doc_for_vlm.markdown or '').strip()}\n\n{vlm_text}".strip()
+    _logger.info(f"Stage 3 (VLM) successful: {len(vlm_text)} chars from {len(processed_pages)} pages")
+    _logger.info(f"Final extraction: {len(combined)} chars total, attempts={attempts}")
+    
     return LayeredTextResult(
         markdown=combined,
         mode="vlm",

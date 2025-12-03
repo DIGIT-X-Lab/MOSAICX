@@ -35,12 +35,16 @@ from pydantic import BaseModel
 from .constants import APPLICATION_VERSION, DEFAULT_LLM_MODEL, PROJECT_ROOT
 from .display import styled_message
 from .utils import resolve_openai_config
+from .utils.logging import get_logger
 from .extractor import (
     ExtractionError,
     extract_structured_data,
     extract_text_from_document,
     load_schema_model,
 )
+
+# Module-level logger
+_logger = get_logger(__name__)
 
 try:  # Optional LLM dependency (currently unused but kept for future extensions)
     from openai import OpenAI  # type: ignore[import-not-found]
@@ -756,14 +760,20 @@ def standardize_document(
     narrative_temperature: Optional[float] = None,
     status_callback: Optional[Callable[[str], None]] = None,
 ) -> StandardizeResult:
+    _logger.info(f"Standardizing document: schema={Path(schema_path).name}")
+    _logger.debug(f"Standardize config: model={model}, temperature={temperature}, narrative={generate_narrative}")
+    
     schema_path = Path(schema_path)
     schema_class = load_schema_model(str(schema_path))
     doc_path = Path(document_path) if document_path is not None else None
+    
+    _logger.debug(f"Loaded schema class: {schema_class.__name__}")
 
     record: BaseModel
     extracted_text: Optional[str] = None
 
     if record_data is not None:
+        _logger.debug("Using pre-supplied record data")
         if status_callback:
             status_callback("Validating supplied structured data…")
         if isinstance(record_data, BaseModel):
@@ -775,9 +785,14 @@ def standardize_document(
             record = schema_class.model_validate(record_data)
     else:
         if doc_path is None:
+            _logger.error("No document path or record_data provided")
             raise ExtractionError("Provide either a document path or pre-extracted record_data.")
+        _logger.info(f"Extracting text from document: {doc_path.name}")
         extraction = extract_text_from_document(doc_path, return_details=True, status_callback=status_callback)
         extracted_text = extraction.markdown
+        _logger.debug(f"Extracted {len(extracted_text)} chars from document")
+        
+        _logger.info("Extracting structured data with LLM")
         record = extract_structured_data(
             extracted_text,
             schema_class,
@@ -789,10 +804,13 @@ def standardize_document(
 
     record_dict = record.model_dump(by_alias=True)
     snapshot_data, structured_sections = _collect_sections_from_payload(record_dict)
+    _logger.debug(f"Collected {len(structured_sections)} structured sections")
+    
     narrative_text: Optional[str] = None
     narrative_error: Optional[str] = None
     narrative_sections: Optional[List[ReportSection]] = None
     if generate_narrative:
+        _logger.info("Generating narrative summary")
         if status_callback:
             status_callback("Generating narrative summary…")
         narrative_temp = (
@@ -811,7 +829,9 @@ def standardize_document(
                 temperature=narrative_temp,
             )
             narrative_text = "\n\n".join(section.data for section in narrative_sections)
+            _logger.debug(f"Narrative generated: {len(narrative_text)} chars")
         except Exception as exc:  # pragma: no cover - best-effort
+            _logger.warning(f"Narrative generation failed: {exc}")
             narrative_error = str(exc)
         finally:
             if status_callback:
@@ -819,6 +839,8 @@ def standardize_document(
 
     generated_at = datetime.now(tz=timezone.utc)
     schema_name = schema_class.__name__
+    _logger.info(f"Standardization complete: schema={schema_name}")
+    
     return StandardizeResult(
         record=record,
         schema_path=schema_path,

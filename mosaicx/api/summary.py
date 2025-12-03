@@ -42,6 +42,10 @@ from ..summarizer import (
     save_summary_artifacts,
     summarize_with_llm,
 )
+from ..utils.logging import get_logger
+
+# Module-level logger
+_logger = get_logger(__name__)
 
 
 def summarize_reports(
@@ -65,6 +69,7 @@ def summarize_reports(
     Optional ``artifacts`` allows writing JSON and/or PDF outputs. Pass values from
     ``{"json", "pdf"}``. When omitted, no files are written.
     """
+    _logger.info(f"API summarize_reports: patient_id={patient_id}, model={model}")
 
     collected_paths: List[Path] = []
     raw_sources: Iterable[Union[Path, str]]
@@ -78,6 +83,7 @@ def summarize_reports(
     for src in raw_sources:
         path_obj = Path(src)
         if not path_obj.exists():
+            _logger.error(f"Report source not found: {path_obj}")
             raise FileNotFoundError(f"Report source not found: {path_obj}")
         if path_obj.is_dir():
             for candidate in path_obj.rglob("*"):
@@ -85,18 +91,24 @@ def summarize_reports(
                     collected_paths.append(candidate)
         else:
             if path_obj.suffix.lower() not in allowed_suffixes:
+                _logger.error(f"Unsupported report format: {path_obj.suffix}")
                 raise ValueError(
                     f"Unsupported report format: {path_obj.suffix or '<none>'}. "
                     f"Supported extensions: {', '.join(sorted(allowed_suffixes))}."
                 )
             collected_paths.append(path_obj)
 
+    _logger.info(f"Collected {len(collected_paths)} report file(s) for summarization")
+    
     docs = load_reports(collected_paths)
     if not docs:
+        _logger.error("No textual content found in provided inputs")
         raise ValueError(
             f"No textual content found in the provided inputs (supported: {', '.join(sorted(allowed_suffixes))})."
         )
 
+    _logger.debug(f"Loaded {len(docs)} document(s) with content")
+    
     summary = summarize_with_llm(
         docs,
         patient_id=patient_id,
@@ -105,8 +117,11 @@ def summarize_reports(
         api_key=api_key,
         temperature=temperature,
     )
+    
+    _logger.info(f"Summarization complete: {len(summary.timeline)} timeline events")
 
     if artifacts:
+        _logger.debug(f"Saving artifacts: {artifacts}")
         save_summary_artifacts(
             summary,
             artifacts=artifacts,

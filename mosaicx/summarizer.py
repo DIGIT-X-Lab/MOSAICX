@@ -56,8 +56,12 @@ from rich.table import Table
 from .display import console, styled_message
 from .constants import APPLICATION_VERSION, MOSAICX_COLORS, PROJECT_ROOT
 from .utils import resolve_openai_config
+from .utils.logging import get_logger
 from .document_loader import DOC_SUFFIXES
 from .text_extraction import TextExtractionError, extract_text_with_fallback
+
+# Module-level logger
+_logger = get_logger(__name__)
 
 try:
     import instructor  # type: ignore[import-not-found]
@@ -204,20 +208,28 @@ def _read_text(path: Path) -> str:
 
 
 def load_reports(paths: List[Path]) -> List[ReportDoc]:
+    """Load and parse report documents from the given paths."""
+    _logger.info(f"Loading {len(paths)} report(s) for summarization")
     docs: List[ReportDoc] = []
     for p in paths:
+        _logger.debug(f"Reading report: {p}")
         txt = _read_text(p)
         if not txt or not txt.strip():
+            _logger.warning(f"No text content extracted from {p}, skipping")
             continue
         head = txt[:2000]
+        date_hint = _first_date(head) or _first_date(p.name)
+        modality_hint = _guess_modality(head) or _guess_modality(txt)
+        _logger.debug(f"Report {p.name}: date_hint={date_hint}, modality_hint={modality_hint}, chars={len(txt)}")
         docs.append(
             ReportDoc(
                 path=p,
                 text=txt,
-                date_hint=_first_date(head) or _first_date(p.name),
-                modality_hint=_guess_modality(head) or _guess_modality(txt),
+                date_hint=date_hint,
+                modality_hint=modality_hint,
             )
         )
+    _logger.info(f"Successfully loaded {len(docs)} report(s) with content")
     return docs
 
 
@@ -384,7 +396,11 @@ def summarize_with_llm(
 
     Fallback notices are shown at most once per process, and are transient (disappear).
     """
+    _logger.info(f"Starting LLM summarization for {len(docs)} document(s)")
+    _logger.debug(f"Summarization config: model={model}, patient_id={patient_id}, temperature={temperature}")
+    
     if OpenAI is None or instructor is None or Mode is None:
+        _logger.warning("LLM dependencies not installed, falling back to heuristic summary")
         _flash_once(
             "missing_llm_deps",
             "Optional dependencies for LLM summarization not installed. Using heuristic summary.",
@@ -412,8 +428,11 @@ def summarize_with_llm(
         {"role": "system", "content": SUMM_SYSTEM},
         {"role": "user", "content": user},
     ]
+    
+    _logger.debug(f"Summarization prompt length: {len(user)} chars")
 
     # 1) Instructor JSON
+    _logger.info("Attempting Instructor JSON summarization")
     try:
         client = _instructor_client(base_url, api_key)
         ps: PatientSummary = client.chat.completions.create(  # type: ignore[assignment]
@@ -427,8 +446,11 @@ def summarize_with_llm(
         ps.patient.last_updated = datetime.now(tz=timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
         if patient_id and not ps.patient.patient_id:
             ps.patient.patient_id = patient_id
+        _logger.info(f"Instructor JSON summarization successful: {len(ps.timeline)} timeline events")
+        _logger.debug(f"Summary overall length: {len(ps.overall)} chars")
         return ps
-    except Exception:
+    except Exception as exc:
+        _logger.warning(f"Instructor JSON failed: {exc}, falling back to raw JSON")
         _flash_once(
             "fallback_instructor",
             "Model returned invalid/empty structured output. Falling back to raw‑JSON parsing…",
@@ -436,6 +458,7 @@ def summarize_with_llm(
         )
 
     # 2) Raw JSON fallback
+    _logger.info("Attempting raw JSON fallback summarization")
     try:
         json_guard = (
             "Return ONLY a JSON object with keys: patient, timeline, overall. "
@@ -462,6 +485,7 @@ def summarize_with_llm(
             messages=raw_messages,
         )
         content = (resp.choices[0].message.content or "").strip()
+        _logger.debug(f"Raw LLM response length: {len(content)} chars")
         js_text = _extract_json_block(content)
         if not js_text:
             raise ValueError("Empty content or no JSON found in model output.")
@@ -470,8 +494,10 @@ def summarize_with_llm(
         ps.patient.last_updated = datetime.now(tz=timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
         if patient_id and not ps.patient.patient_id:
             ps.patient.patient_id = patient_id
+        _logger.info(f"Raw JSON summarization successful: {len(ps.timeline)} timeline events")
         return ps
-    except (ValidationError, ValueError, json.JSONDecodeError):
+    except (ValidationError, ValueError, json.JSONDecodeError) as exc:
+        _logger.warning(f"Raw JSON parsing failed: {exc}, falling back to heuristic")
         _flash_once(
             "fallback_rawjson",
             "Raw‑JSON parsing failed (empty/malformed). Switching to heuristic summary…",
@@ -485,6 +511,7 @@ def summarize_with_llm(
         )
 
     # 3) Heuristic summary
+    _logger.info("Using heuristic summary (deterministic fallback)")
     return _heuristic_summary(docs, patient_id)
 
 
