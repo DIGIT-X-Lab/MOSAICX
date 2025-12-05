@@ -1,0 +1,61 @@
+# ==============================================================================
+# MOSAICX Docker Compose
+# Self-contained medical document extraction with Ollama LLM
+# ==============================================================================
+#
+# Usage:
+#   docker-compose up -d              # Start MOSAICX container
+#   docker-compose exec mosaicx bash  # Interactive shell
+#   docker-compose down               # Stop container
+#
+# ==============================================================================
+
+services:
+  mosaicx:
+    image: digitxlab/mosaicx:latest
+    container_name: mosaicx
+    
+    # GPU support (requires nvidia-docker)
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    
+    # Environment variables
+    environment:
+      - OLLAMA_HOST=0.0.0.0:11434
+      - MOSAICX_DEFAULT_MODEL=gpt-oss:120b
+    
+    # Mount volumes for data persistence
+    volumes:
+      # Your data directory (documents, schemas, outputs)
+      - ./data:/data
+      # Persist Ollama models (avoid re-downloading)
+      - mosaicx-ollama:/root/.ollama
+      # Persist MOSAICX logs
+      - mosaicx-logs:/root/.mosaicx
+    
+    # Expose Ollama API (optional, for external access)
+    ports:
+      - "11434:11434"
+    
+    # Keep container running for interactive use
+    stdin_open: true
+    tty: true
+    
+    # Health check
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:11434/api/tags"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+volumes:
+  mosaicx-ollama:
+    name: mosaicx-ollama
+  mosaicx-logs:
+    name: mosaicx-logs

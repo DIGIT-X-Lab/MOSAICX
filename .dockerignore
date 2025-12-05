@@ -1,0 +1,45 @@
+# Ignore development files
+.git
+.github
+.gitignore
+.venv
+.pytest_cache
+.mypy_cache
+__pycache__
+*.pyc
+*.pyo
+*.egg-info
+*.egg
+
+# Ignore test files
+tests/
+pytest.ini
+
+# Ignore documentation
+docs/
+*.md
+!README.md
+
+# Ignore build artifacts
+build/
+dist/
+*.whl
+
+# Ignore scripts not needed in container
+scripts/
+publish.sh
+pypi-publish.sh
+Makefile
+
+# Ignore webapp (separate container)
+webapp/
+
+# Ignore local output
+output/
+*.log
+
+# Ignore IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
