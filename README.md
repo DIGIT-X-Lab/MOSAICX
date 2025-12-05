@@ -468,6 +468,63 @@ mosaicx summarize \
   --model hospital-radiology-model
 ```
 
+### Inference Backends for Structured Generation
+
+MOSAICX uses [Outlines](https://github.com/dottxt-ai/outlines) for **grammar-constrained generation**, ensuring the LLM always produces valid JSON matching your Pydantic schema. Multiple backends are supported:
+
+| Backend | Use Case | Flag |
+|---------|----------|------|
+| `ollama` | Local Ollama server (default) | `--backend ollama` |
+| `vllm` | vLLM server with native structured generation | `--backend vllm` |
+| `openai` | OpenAI API or any OpenAI-compatible endpoint | `--backend openai` |
+| `llamacpp` | Local GGUF models via llama-cpp-python | `--backend llamacpp` |
+| `anthropic` | Anthropic Claude API | `--backend anthropic` |
+| `sglang` | SGLang runtime server | `--backend sglang` |
+| `tgi` | HuggingFace Text Generation Inference | `--backend tgi` |
+
+**Examples:**
+
+```bash
+# vLLM server (uses vLLM's native guided decoding)
+mosaicx extract \
+  --document report.pdf \
+  --schema PatientRecord \
+  --backend vllm \
+  --base-url http://localhost:8000/v1 \
+  --model openai/gpt-oss-20b
+
+# llama.cpp server (OpenAI-compatible API)
+mosaicx extract \
+  --document report.pdf \
+  --schema PatientRecord \
+  --backend openai \
+  --base-url http://localhost:8080/v1 \
+  --model ggml-org/gpt-oss-120b-GGUF
+
+# Local GGUF model (direct loading via llama-cpp-python)
+mosaicx extract \
+  --document report.pdf \
+  --schema PatientRecord \
+  --backend llamacpp \
+  --model gpt-oss:20b
+
+# Together AI / Groq / Fireworks (OpenAI-compatible providers)
+mosaicx extract \
+  --document report.pdf \
+  --schema PatientRecord \
+  --backend openai \
+  --base-url https://api.together.xyz/v1 \
+  --api-key $TOGETHER_API_KEY \
+  --model mistralai/Mixtral-8x7B-Instruct-v0.1
+```
+
+**Backend Auto-Detection:** If `--backend` is not specified, MOSAICX automatically detects the backend from URL patterns and model names:
+- Port `:11434` or model in Ollama → `ollama`
+- Port `:8000` or `/v1` endpoint → `vllm`
+- `gpt-oss:20b` or `gpt-oss:120b` → `llamacpp`
+- `api.openai.com` → `openai`
+- `api.anthropic.com` → `anthropic`
+
 ### Environment Variables
 Set default values to avoid repetitive command-line options:
 

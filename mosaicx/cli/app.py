@@ -384,6 +384,12 @@ def list_schemas_cmd(
 @click.option("--model", default=DEFAULT_LLM_MODEL, help="Model name for extraction")
 @click.option("--base-url", help="OpenAI-compatible API base URL")
 @click.option("--api-key", help="API key for the endpoint")
+@click.option(
+    "--backend",
+    type=click.Choice(["auto", "ollama", "vllm", "openai", "anthropic", "sglang", "tgi", "llamacpp"], case_sensitive=False),
+    default="auto",
+    help="LLM backend for Outlines structured generation (auto-detected from URL if not specified)",
+)
 @click.option("--temperature", type=float, default=0.0, show_default=True, help="Sampling temperature (0.0–2.0)")
 @click.option("--output", "--save", "output_path", type=click.Path(path_type=Path), help="Save extracted JSON result to this path")
 @click.option("--debug", is_flag=True, help="Verbose debug logs")
@@ -395,6 +401,7 @@ def extract(
     model: str,
     base_url: Optional[str],
     api_key: Optional[str],
+    backend: str,
     temperature: float,
     output_path: Optional[Path],
     debug: bool,
@@ -450,6 +457,8 @@ def extract(
             _logger.info(f"Using schema class: {schema_class_name}")
             if verbose:
                 styled_message(f"Using schema class: {schema_class_name}", "info")
+                if backend != "auto":
+                    styled_message(f"Using backend: {backend}", "info")
 
             running_message = (
                 f"[{MOSAICX_COLORS['accent']}]Running extraction with {model}…"
@@ -469,6 +478,7 @@ def extract(
                 base_url=base_url,
                 api_key=api_key,
                 temperature=temperature,
+                backend=backend,
                 status_callback=_report_fallback,
             )
             if fallback_used["flag"]:

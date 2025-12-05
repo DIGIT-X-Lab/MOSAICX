@@ -81,6 +81,7 @@ def extract_document(
     base_url: Optional[str] = None,
     api_key: Optional[str] = None,
     temperature: float = 0.0,
+    backend: Optional[str] = None,
     status_callback: Optional[Callable[[str], None]] = None,
 ) -> ExtractionResult:
     """Extract structured data from a clinical document."""
@@ -88,7 +89,7 @@ def extract_document(
     schema_path = Path(schema_path)
     
     _logger.info(f"API extraction: document={doc_path.name}, schema={schema_path.name}")
-    _logger.debug(f"Extraction config: model={model}, temperature={temperature}")
+    _logger.debug(f"Extraction config: model={model}, temperature={temperature}, backend={backend or 'auto'}")
 
     _logger.debug("Loading schema model")
     schema_class = load_schema_model(str(schema_path))
@@ -110,6 +111,7 @@ def extract_document(
         base_url=base_url,
         api_key=api_key,
         temperature=temperature,
+        backend=backend,
     )
     _logger.info(f"Extraction complete: {type(record).__name__}")
     
@@ -124,6 +126,7 @@ def extract_pdf(
     base_url: Optional[str] = None,
     api_key: Optional[str] = None,
     temperature: float = 0.0,
+    backend: Optional[str] = None,
     status_callback: Optional[Callable[[str], None]] = None,
 ) -> ExtractionResult:
     """Backward-compatible wrapper for :func:`extract_document`."""
@@ -136,6 +139,7 @@ def extract_pdf(
         base_url=base_url,
         api_key=api_key,
         temperature=temperature,
+        backend=backend,
         status_callback=status_callback,
     )
 

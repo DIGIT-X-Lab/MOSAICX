@@ -83,6 +83,102 @@ try:
 except ModuleNotFoundError:  # pragma: no cover - optional dependency
     OpenAI = None  # type: ignore[assignment]
 from pydantic import BaseModel, ValidationError
+from enum import Enum
+
+
+# ---------------------------------------------------------------------------
+# Backend Detection for Outlines
+# ---------------------------------------------------------------------------
+
+class OutlinesBackend(Enum):
+    """Supported Outlines backends for structured generation."""
+    AUTO = "auto"
+    OLLAMA = "ollama"
+    VLLM = "vllm"
+    OPENAI = "openai"
+    ANTHROPIC = "anthropic"
+    SGLANG = "sglang"
+    TGI = "tgi"
+    LLAMACPP = "llamacpp"
+
+
+def detect_backend(
+    base_url: Optional[str] = None,
+    model: Optional[str] = None,
+    explicit_backend: Optional[str] = None,
+) -> OutlinesBackend:
+    """
+    Auto-detect the LLM backend from URL patterns and model names.
+    
+    Args:
+        base_url: The API base URL (e.g., http://localhost:8000/v1)
+        model: The model name (e.g., gpt-4, claude-3, llama-3.1)
+        explicit_backend: Explicit backend override (auto, ollama, vllm, etc.)
+        
+    Returns:
+        The detected or specified OutlinesBackend
+    """
+    # If explicitly specified, use that
+    if explicit_backend and explicit_backend.lower() != "auto":
+        try:
+            return OutlinesBackend(explicit_backend.lower())
+        except ValueError:
+            _logger.warning(f"Unknown backend '{explicit_backend}', falling back to auto-detect")
+    
+    # Auto-detect from URL patterns
+    if base_url:
+        url_lower = base_url.lower()
+        
+        # Ollama patterns
+        if ":11434" in url_lower or "ollama" in url_lower:
+            return OutlinesBackend.OLLAMA
+        
+        # OpenAI API
+        if "api.openai.com" in url_lower:
+            return OutlinesBackend.OPENAI
+        
+        # Anthropic API
+        if "api.anthropic.com" in url_lower or "anthropic" in url_lower:
+            return OutlinesBackend.ANTHROPIC
+        
+        # SGLang patterns (commonly uses port 30000)
+        if ":30000" in url_lower or "sglang" in url_lower:
+            return OutlinesBackend.SGLANG
+        
+        # TGI patterns (commonly uses port 8080 or has /generate endpoint)
+        if ":8080" in url_lower or "tgi" in url_lower or "huggingface" in url_lower:
+            return OutlinesBackend.TGI
+        
+        # vLLM patterns (commonly uses port 8000, or any other OpenAI-compatible)
+        if ":8000" in url_lower or "vllm" in url_lower:
+            return OutlinesBackend.VLLM
+        
+        # Generic OpenAI-compatible endpoint (has /v1 in path) - assume vLLM
+        if "/v1" in url_lower:
+            return OutlinesBackend.VLLM
+    
+    # Auto-detect from model name patterns
+    if model:
+        model_lower = model.lower()
+        
+        # Local GGUF models for llama.cpp (gpt-oss series)
+        if any(m in model_lower for m in ["gpt-oss:120b", "gpt-oss:20b", "gpt-oss-120b", "gpt-oss-20b"]):
+            return OutlinesBackend.LLAMACPP
+        
+        # vLLM-hosted models (OpenAI-compatible but self-hosted)
+        if any(m in model_lower for m in ["openai/gpt-oss"]):
+            return OutlinesBackend.VLLM
+        
+        # OpenAI models
+        if any(m in model_lower for m in ["gpt-4", "gpt-3.5", "o1-", "o3-"]):
+            return OutlinesBackend.OPENAI
+        
+        # Anthropic models
+        if any(m in model_lower for m in ["claude", "anthropic"]):
+            return OutlinesBackend.ANTHROPIC
+    
+    # Default to Ollama (backward compatible)
+    return OutlinesBackend.OLLAMA
 
 from .constants import (
     DEFAULT_LLM_MODEL,
@@ -767,65 +863,220 @@ Do not randomly choose between plausible options; prefer the most clinically pla
     )
 
 
-def _extract_with_outlines(
-    text_content: str,
-    schema_class: Type[BaseModel],
+def _create_outlines_model(
+    backend: OutlinesBackend,
     model: str,
     base_url: Optional[str] = None,
-) -> Optional[BaseModel]:
+    api_key: Optional[str] = None,
+):
     """
-    Use Outlines with Ollama for guaranteed structured JSON output.
-    
-    Outlines uses grammar-constrained generation to ensure the LLM
-    produces valid JSON matching the Pydantic schema on the first try.
-    This eliminates the need for JSON repair or retry logic.
+    Create an Outlines model for the specified backend.
     
     Args:
-        text_content: The text to extract from
-        schema_class: The Pydantic model class for the output schema
-        model: The model name (e.g., "gpt-oss:20b")
-        base_url: Optional base URL for Ollama (defaults to localhost:11434)
+        backend: The backend to use (Ollama, vLLM, OpenAI, etc.)
+        model: The model name
+        base_url: API base URL
+        api_key: API key for authenticated services
         
     Returns:
-        Instance of schema_class if successful, None on failure
+        Outlines model instance
+        
+    Raises:
+        ImportError: If required backend dependencies are missing
+        ValueError: If backend is not supported
     """
-    if not OUTLINES_AVAILABLE or outlines is None or ollama_client is None:
-        _logger.debug("Outlines not available, skipping")
-        return None
+    if outlines is None:
+        raise ImportError("Outlines is not installed")
     
-    start_time = time.time()
-    _logger.info("[Step 0] Attempting: Outlines grammar-constrained generation")
-    
-    try:
-        # Parse the Ollama host from the base URL
+    if backend == OutlinesBackend.OLLAMA:
+        if ollama_client is None:
+            raise ImportError("ollama package is required for Ollama backend")
+        # Parse Ollama host from base_url
         host = None
         if base_url:
-            # Convert from OpenAI-style URL to Ollama host
-            # e.g., "http://localhost:11434/v1" -> "http://localhost:11434"
             parsed = base_url.rstrip("/")
             if parsed.endswith("/v1"):
                 host = parsed[:-3]
             else:
                 host = parsed
-        
-        _logger.debug(f"Outlines config: model={model}, host={host or 'default'}")
-        
-        # Create Ollama client and outlines model
         client = ollama_client.Client(host=host) if host else ollama_client.Client()
-        llm = outlines.from_ollama(client, model)  # type: ignore[attr-defined]
+        return outlines.from_ollama(client, model)  # type: ignore[attr-defined]
+    
+    elif backend == OutlinesBackend.VLLM:
+        # vLLM Online - uses OpenAI-compatible API
+        if OpenAI is None:
+            raise ImportError("openai package is required for vLLM backend")
+        resolved_base_url, resolved_api_key = resolve_openai_config(base_url, api_key)
+        client = OpenAI(base_url=resolved_base_url, api_key=resolved_api_key or "dummy")
+        return outlines.from_vllm(client, model)  # type: ignore[attr-defined]
+    
+    elif backend == OutlinesBackend.OPENAI:
+        if OpenAI is None:
+            raise ImportError("openai package is required for OpenAI backend")
+        resolved_base_url, resolved_api_key = resolve_openai_config(base_url, api_key)
+        client = OpenAI(base_url=resolved_base_url, api_key=resolved_api_key)
+        return outlines.from_openai(client, model)  # type: ignore[attr-defined]
+    
+    elif backend == OutlinesBackend.ANTHROPIC:
+        try:
+            import anthropic  # type: ignore[import-not-found]
+        except ImportError:
+            raise ImportError("anthropic package is required for Anthropic backend")
+        resolved_api_key = api_key or __import__('os').environ.get("ANTHROPIC_API_KEY")
+        client = anthropic.Anthropic(api_key=resolved_api_key)
+        return outlines.from_anthropic(client, model)  # type: ignore[attr-defined]
+    
+    elif backend == OutlinesBackend.SGLANG:
+        try:
+            from sglang import RuntimeEndpoint  # type: ignore[import-not-found]
+        except ImportError:
+            raise ImportError("sglang package is required for SGLang backend")
+        sglang_url = base_url or "http://localhost:30000"
+        client = RuntimeEndpoint(sglang_url)
+        return outlines.from_sglang(client, model)  # type: ignore[attr-defined]
+    
+    elif backend == OutlinesBackend.TGI:
+        try:
+            from huggingface_hub import InferenceClient  # type: ignore[import-not-found]
+        except ImportError:
+            raise ImportError("huggingface_hub package is required for TGI backend")
+        tgi_url = base_url or "http://localhost:8080"
+        client = InferenceClient(tgi_url)
+        return outlines.from_tgi(client)  # type: ignore[attr-defined]
+    
+    elif backend == OutlinesBackend.LLAMACPP:
+        try:
+            # Suppress llama.cpp verbose C-level logging before import
+            import os
+            os.environ["LLAMA_CPP_LOG_LEVEL"] = "0"  # Disable logging
+            from llama_cpp import Llama  # type: ignore[import-not-found]
+        except ImportError:
+            raise ImportError("llama-cpp-python package is required for llama.cpp backend. Install with: pip install llama-cpp-python")
+        
+        # Model name mappings for known models (gpt-oss series from ggml-org)
+        GPT_OSS_GGUF_MODELS = {
+            "gpt-oss:20b": ("ggml-org/gpt-oss-20b-GGUF", "gpt-oss-20b-mxfp4.gguf"),
+            "gpt-oss-20b": ("ggml-org/gpt-oss-20b-GGUF", "gpt-oss-20b-mxfp4.gguf"),
+            "gpt-oss:120b": ("ggml-org/gpt-oss-120b-GGUF", "gpt-oss-120b-mxfp4-00001-of-00003.gguf"),
+            "gpt-oss-120b": ("ggml-org/gpt-oss-120b-GGUF", "gpt-oss-120b-mxfp4-00001-of-00003.gguf"),
+        }
+        
+        # Default context window for extraction tasks (prompts can be 2-4k tokens)
+        DEFAULT_N_CTX = 8192
+        
+        # Check if it's a known model alias
+        model_lower = model.lower()
+        if model_lower in GPT_OSS_GGUF_MODELS:
+            repo_id, filename = GPT_OSS_GGUF_MODELS[model_lower]
+            _logger.info(f"Loading gpt-oss model from HuggingFace: {repo_id}/{filename}")
+            llama_model = Llama.from_pretrained(
+                repo_id=repo_id, 
+                filename=filename,
+                n_ctx=DEFAULT_N_CTX,
+                verbose=False,  # Suppress chat template spam
+            )
+        # model can be either:
+        # 1. A local path to a GGUF file: /path/to/model.gguf
+        # 2. A HuggingFace repo_id with filename: TheBloke/Mistral-7B-Instruct-v0.2-GGUF:mistral-7b-instruct-v0.2.Q5_K_M.gguf
+        elif ":" in model and not model.startswith("/"):
+            # HuggingFace format: repo_id:filename
+            repo_id, filename = model.rsplit(":", 1)
+            llama_model = Llama.from_pretrained(
+                repo_id=repo_id, 
+                filename=filename,
+                n_ctx=DEFAULT_N_CTX,
+                verbose=False,
+            )
+        elif model.endswith(".gguf") or "/" in model:
+            # Local file path
+            llama_model = Llama(model_path=model, n_ctx=DEFAULT_N_CTX, verbose=False)
+        else:
+            # Assume HuggingFace repo with default Q4_K_M quantization
+            # User should specify exact filename for best results
+            _logger.warning(f"llama.cpp model '{model}' - assuming HuggingFace repo. Use 'repo_id:filename.gguf' format for explicit control.")
+            llama_model = Llama.from_pretrained(
+                repo_id=model, 
+                filename="*.Q4_K_M.gguf",
+                n_ctx=DEFAULT_N_CTX,
+                verbose=False,
+            )
+        
+        return outlines.from_llamacpp(llama_model)  # type: ignore[attr-defined]
+    
+    else:
+        raise ValueError(f"Unsupported backend: {backend}")
+
+
+def _extract_with_outlines(
+    text_content: str,
+    schema_class: Type[BaseModel],
+    model: str,
+    base_url: Optional[str] = None,
+    api_key: Optional[str] = None,
+    backend: Optional[str] = None,
+) -> Optional[BaseModel]:
+    """
+    Use Outlines for guaranteed structured JSON output with multiple backend support.
+    
+    Outlines uses grammar-constrained generation to ensure the LLM
+    produces valid JSON matching the Pydantic schema on the first try.
+    This eliminates the need for JSON repair or retry logic.
+    
+    Supported backends:
+        - ollama: Local Ollama server (default)
+        - vllm: vLLM OpenAI-compatible server
+        - openai: OpenAI API
+        - anthropic: Anthropic Claude API
+        - sglang: SGLang runtime
+        - tgi: HuggingFace Text Generation Inference
+        - llamacpp: Local llama.cpp with GGUF models
+    
+    Args:
+        text_content: The text to extract from
+        schema_class: The Pydantic model class for the output schema
+        model: The model name. For llamacpp, use one of:
+            - Local path: /path/to/model.gguf
+            - HuggingFace: TheBloke/Mistral-7B-Instruct-v0.2-GGUF:mistral-7b-instruct-v0.2.Q5_K_M.gguf
+        base_url: Optional base URL for the API endpoint
+        api_key: Optional API key for authenticated services
+        backend: Backend to use (auto, ollama, vllm, openai, anthropic, sglang, tgi, llamacpp)
+        
+    Returns:
+        Instance of schema_class if successful, None on failure
+    """
+    if not OUTLINES_AVAILABLE or outlines is None:
+        _logger.debug("Outlines not available, skipping")
+        return None
+    
+    # Detect backend
+    detected_backend = detect_backend(base_url, model, backend)
+    
+    # For Ollama backend, we need the ollama client
+    if detected_backend == OutlinesBackend.OLLAMA and ollama_client is None:
+        _logger.debug("Ollama client not available, skipping Outlines")
+        return None
+    
+    start_time = time.time()
+    _logger.info(f"[Step 0] Attempting: Outlines grammar-constrained generation (backend={detected_backend.value})")
+    
+    try:
+        _logger.debug(f"Outlines config: model={model}, base_url={base_url or 'default'}, backend={detected_backend.value}")
+        
+        # Create the Outlines model for the detected backend
+        llm = _create_outlines_model(detected_backend, model, base_url, api_key)
         
         # Build the extraction prompt - use the same rich prompt as other methods
         schema_json = schema_class.model_json_schema()
         prompt = _build_extraction_prompt(text_content, schema_json)
         
         # Log the prompt being sent
-        log_prompt(_logger, "Outlines Extraction", prompt)
+        log_prompt(_logger, f"Outlines Extraction ({detected_backend.value})", prompt)
         log_schema_info(_logger, schema_class.__name__, json.dumps(schema_json, indent=2))
         
         # Create generator with Pydantic schema as output_type (new Outlines API)
         generator = outlines.Generator(llm, output_type=schema_class)  # type: ignore[attr-defined]
         
-        _logger.debug("Calling Outlines generator...")
+        _logger.debug(f"Calling Outlines generator with {detected_backend.value} backend...")
         
         # Generate - Outlines guarantees valid JSON matching the schema
         result = generator(prompt)  # type: ignore[no-any-return]
@@ -834,7 +1085,7 @@ def _extract_with_outlines(
         
         # Handle both cases: Outlines may return Pydantic model or JSON string
         if isinstance(result, schema_class):
-            _logger.info(f"✓ SUCCESS: Outlines returned Pydantic model directly ({duration:.2f}s)")
+            _logger.info(f"✓ SUCCESS: Outlines ({detected_backend.value}) returned Pydantic model directly ({duration:.2f}s)")
             log_llm_response(_logger, "Outlines Result", json.dumps(result.model_dump(), indent=2, default=str))
             return result
         elif isinstance(result, str):
@@ -843,13 +1094,13 @@ def _extract_with_outlines(
             # Parse JSON string into Pydantic model
             parsed = json.loads(result)
             model_instance = schema_class(**parsed)
-            _logger.info(f"✓ SUCCESS: Outlines string parsed to model ({duration:.2f}s)")
+            _logger.info(f"✓ SUCCESS: Outlines ({detected_backend.value}) string parsed to model ({duration:.2f}s)")
             return model_instance
         elif isinstance(result, dict):
             _logger.debug(f"Outlines returned dict, converting to Pydantic model")
             log_llm_response(_logger, "Outlines Dict", json.dumps(result, indent=2, default=str))
             model_instance = schema_class(**result)
-            _logger.info(f"✓ SUCCESS: Outlines dict converted to model ({duration:.2f}s)")
+            _logger.info(f"✓ SUCCESS: Outlines ({detected_backend.value}) dict converted to model ({duration:.2f}s)")
             return model_instance
         else:
             # Unknown type, let fallbacks handle it
@@ -857,9 +1108,13 @@ def _extract_with_outlines(
             console.print(f"[dim]Outlines returned unexpected type: {type(result)}, falling back...[/dim]")
             return None
             
+    except ImportError as e:
+        _logger.warning(f"✗ FAILED [Step 0] Outlines ({detected_backend.value}): Missing dependency - {e}")
+        console.print(f"[dim]Outlines backend {detected_backend.value} missing dependency: {e}[/dim]")
+        return None
     except Exception as e:
         duration = time.time() - start_time
-        _logger.warning(f"✗ FAILED [Step 0] Outlines: {e} ({duration:.2f}s)")
+        _logger.warning(f"✗ FAILED [Step 0] Outlines ({detected_backend.value}): {e} ({duration:.2f}s)")
         _logger.debug(f"Outlines exception details:", exc_info=True)
         # Log for debugging but don't fail - let fallbacks handle it
         console.print(f"[dim]Outlines extraction failed: {e}, falling back...[/dim]")
@@ -877,6 +1132,7 @@ def extract_structured_data(
     base_url: Optional[str] = None,
     api_key: Optional[str] = None,
     temperature: float = 0.0,
+    backend: Optional[str] = None,
 ) -> BaseModel:
     """
     Schema‑agnostic extraction using multiple strategies with Outlines as the primary method.
@@ -934,6 +1190,8 @@ def extract_structured_data(
             schema_class=schema_class,
             model=model,
             base_url=resolved_base_url,
+            api_key=resolved_api_key,
+            backend=backend,
         )
         if outlines_result is not None:
             total_duration = time.time() - extraction_start_time
