@@ -17,13 +17,16 @@ Provides the ``mosaicx`` console entry-point declared in pyproject.toml as
 
 from __future__ import annotations
 
+import io
 import json
+import re
 from pathlib import Path
 from typing import Optional
 
 import click
 from rich import box
 from rich.console import Console
+from rich.markup import escape as _esc
 from rich.padding import Padding
 from rich.panel import Panel
 
@@ -98,11 +101,103 @@ def _load_doc_with_config(path: Path) -> "LoadedDocument":
 
 
 # ---------------------------------------------------------------------------
+# DIGITX-styled Click help
+# ---------------------------------------------------------------------------
+
+
+def _render_styled_help(plain: str, width: int = 80) -> str:
+    """Re-render Click help with DIGITX coral/greige colors + 2-space indent."""
+    buf = io.StringIO()
+    # Extra width avoids Rich re-wrapping lines after we add 2-space indent
+    rc = Console(file=buf, force_terminal=True, width=width + 4, highlight=False)
+    section: str | None = None
+
+    for line in plain.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            rc.print()
+            continue
+
+        # Section headers (no leading whitespace in Click output)
+        if line == stripped:
+            if stripped.startswith("Usage:"):
+                rest = stripped[6:].strip()
+                rc.print(
+                    f"  [bold {theme.CORAL}]Usage:[/bold {theme.CORAL}]"
+                    f" [{theme.GREIGE}]{_esc(rest)}[/{theme.GREIGE}]"
+                )
+                section = None
+                continue
+
+            bare = stripped.rstrip(":")
+            if bare in ("Options", "Commands", "Arguments"):
+                rc.print(f"  [bold {theme.CORAL}]{stripped}[/bold {theme.CORAL}]")
+                section = bare.lower()
+                continue
+
+        # Command entries (e.g. "  generate  Description here")
+        if section == "commands":
+            m = re.match(r"^(\s+)(\S+)(\s{2,})(.+)$", line)
+            if m:
+                ind, name, gap, desc = m.groups()
+                rc.print(
+                    f"  {ind}[bold {theme.CORAL}]{_esc(name)}[/bold {theme.CORAL}]"
+                    f"{gap}[{theme.MUTED}]{_esc(desc)}[/{theme.MUTED}]"
+                )
+                continue
+
+        # Option entries (e.g. "  --flag TEXT  Description here")
+        if section == "options":
+            m = re.match(r"^(\s+)(-.+?)(\s{2,})(.+)$", line)
+            if m:
+                ind, flags, gap, desc = m.groups()
+                rc.print(
+                    f"  {ind}[{theme.GREIGE}]{_esc(flags)}[/{theme.GREIGE}]"
+                    f"{gap}[{theme.MUTED}]{_esc(desc)}[/{theme.MUTED}]"
+                )
+                continue
+
+        # Continuation lines (inside a section) or docstring
+        if section:
+            rc.print(f"  [{theme.MUTED}]{_esc(line)}[/{theme.MUTED}]")
+        else:
+            rc.print(f"  [{theme.MUTED}]{_esc(stripped)}[/{theme.MUTED}]")
+
+    return buf.getvalue()
+
+
+class MosaicxGroup(click.Group):
+    """Click group with DIGITX-styled help output."""
+
+    def format_help(self, ctx: click.Context, formatter: click.HelpFormatter) -> None:
+        tmp = click.HelpFormatter(width=formatter.width)
+        super().format_help(ctx, tmp)
+        formatter.write(_render_styled_help(tmp.getvalue(), formatter.width or 80))
+
+    def group(self, *args, **kwargs):
+        kwargs.setdefault("cls", MosaicxGroup)
+        return super().group(*args, **kwargs)
+
+    def command(self, *args, **kwargs):
+        kwargs.setdefault("cls", MosaicxCommand)
+        return super().command(*args, **kwargs)
+
+
+class MosaicxCommand(click.Command):
+    """Click command with DIGITX-styled help output."""
+
+    def format_help(self, ctx: click.Context, formatter: click.HelpFormatter) -> None:
+        tmp = click.HelpFormatter(width=formatter.width)
+        super().format_help(ctx, tmp)
+        formatter.write(_render_styled_help(tmp.getvalue(), formatter.width or 80))
+
+
+# ---------------------------------------------------------------------------
 # Main CLI group
 # ---------------------------------------------------------------------------
 
 
-@click.group(invoke_without_command=True)
+@click.group(invoke_without_command=True, cls=MosaicxGroup)
 @click.option(
     "--version",
     is_flag=True,
