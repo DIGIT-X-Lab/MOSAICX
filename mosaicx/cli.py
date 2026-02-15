@@ -1,6 +1,6 @@
 # mosaicx/cli.py
 """
-MOSAICX CLI v2 -- Click commands wired to real pipelines.
+MOSAICX CLI v2 -- Click commands with DigiTx-inspired terminal UI.
 
 Provides the ``mosaicx`` console entry-point declared in pyproject.toml as
 ``mosaicx.cli:cli``.  Commands call into the actual pipeline modules:
@@ -18,23 +18,25 @@ Provides the ``mosaicx`` console entry-point declared in pyproject.toml as
 from __future__ import annotations
 
 import json
-import sys
 from pathlib import Path
 from typing import Optional
 
 import click
+from rich import box
 from rich.console import Console
-from rich.table import Table
+from rich.padding import Padding
+from rich.panel import Panel
 
+from . import cli_theme as theme
 from .config import get_config
 
 console = Console()
 
 # ---------------------------------------------------------------------------
-# Version callback
+# Version
 # ---------------------------------------------------------------------------
 
-_VERSION = "mosaicx 2.0.0a1"
+_VERSION_NUMBER = "2.0.0a1"
 
 
 def _print_version(
@@ -44,7 +46,7 @@ def _print_version(
 ) -> None:
     if not value or ctx.resilient_parsing:
         return
-    click.echo(_VERSION)
+    theme.print_version(_VERSION_NUMBER, console)
     ctx.exit()
 
 
@@ -100,7 +102,7 @@ def _load_doc_with_config(path: Path) -> "LoadedDocument":
 # ---------------------------------------------------------------------------
 
 
-@click.group()
+@click.group(invoke_without_command=True)
 @click.option(
     "--version",
     is_flag=True,
@@ -109,8 +111,14 @@ def _load_doc_with_config(path: Path) -> "LoadedDocument":
     is_eager=True,
     help="Show version and exit.",
 )
-def cli() -> None:
+@click.pass_context
+def cli(ctx: click.Context) -> None:
     """MOSAICX -- Medical cOmputational Suite for Advanced Intelligent eXtraction."""
+    cfg = get_config()
+    theme.print_banner(_VERSION_NUMBER, console, lm=cfg.lm, lm_cheap=cfg.lm_cheap)
+    if ctx.invoked_subcommand is None:
+        console.print()
+        click.echo(ctx.get_help())
 
 
 # ---------------------------------------------------------------------------
@@ -140,12 +148,18 @@ def extract(
         raise click.ClickException(str(exc))
 
     if doc.quality_warning:
-        console.print("[yellow]Warning: Low OCR quality detected. Results may be unreliable.[/yellow]")
+        console.print(theme.warn("Low OCR quality detected \u2014 results may be unreliable"))
 
     if doc.is_empty:
         raise click.ClickException(f"Document is empty: {document}")
 
-    console.print(f"[dim]Loaded {doc.format} document ({doc.char_count} chars)[/dim]")
+    # Build a descriptive load line
+    parts = [f"{doc.format} document", f"{doc.char_count:,} chars"]
+    if doc.ocr_engine_used:
+        parts.append(f"OCR: {doc.ocr_engine_used}")
+    if doc.ocr_confidence:
+        parts.append(f"confidence: {doc.ocr_confidence:.0%}")
+    console.print(theme.info(" \u00b7 ".join(parts)))
 
     # Resolve template to an output schema if not "auto"
     output_schema = None
@@ -156,7 +170,7 @@ def extract(
 
             try:
                 output_schema = compile_template_file(template_path)
-                console.print(f"[dim]Using template: {template_path.name}[/dim]")
+                console.print(theme.info(f"Using template: {template_path.name}"))
             except Exception as exc:
                 raise click.ClickException(f"Failed to compile template: {exc}")
         else:
@@ -165,7 +179,9 @@ def extract(
 
             tpl_info = get_template(template)
             if tpl_info is not None:
-                console.print(f"[dim]Using built-in template: {tpl_info.name} ({tpl_info.description})[/dim]")
+                console.print(theme.info(
+                    f"Using built-in template: {tpl_info.name} ({tpl_info.description})"
+                ))
             else:
                 raise click.ClickException(
                     f"Template not found: {template!r}. "
@@ -184,7 +200,10 @@ def extract(
 
         extractor = load_optimized(type(extractor), optimized)
 
-    result = extractor(document_text=doc.text)
+    with theme.spinner("Extracting... patience you must have", console):
+        result = extractor(document_text=doc.text)
+
+    console.print(theme.ok("Extracted \u2014 this is the way"))
 
     # Format output as JSON
     output: dict = {}
@@ -198,7 +217,10 @@ def extract(
         if hasattr(result, "diagnoses"):
             output["diagnoses"] = [d.model_dump() for d in result.diagnoses]
 
-    console.print_json(json.dumps(output, indent=2, default=str))
+    theme.section("Extracted Data", console)
+    from rich.json import JSON
+
+    console.print(Padding(JSON(json.dumps(output, default=str)), (0, 0, 0, 2)))
 
 
 # ---------------------------------------------------------------------------
@@ -243,27 +265,27 @@ def batch(
         checkpoint_every=cfg.checkpoint_every,
     )
 
-    table = Table(title="Batch Configuration")
-    table.add_column("Setting", style="bold")
-    table.add_column("Value")
-    table.add_row("Input directory", str(input_dir))
-    table.add_row("Output directory", str(output_dir))
-    table.add_row("Template", template)
-    table.add_row("Export formats", ", ".join(effective_formats))
-    table.add_row("Workers", str(effective_workers))
-    table.add_row("Completeness threshold", str(effective_threshold))
-    table.add_row("Resume", str(resume))
-    console.print(table)
+    theme.section("Batch Processing", console, "01")
+    t = theme.make_kv_table()
+    t.add_row("Input directory", str(input_dir))
+    t.add_row("Output directory", str(output_dir))
+    t.add_row("Template", template)
+    t.add_row("Export formats", ", ".join(effective_formats))
+    t.add_row("Workers", str(effective_workers))
+    t.add_row("Completeness", str(effective_threshold))
+    t.add_row("Resume", theme.badge("Yes", "stable") if resume else "No")
+    console.print(t)
 
     resume_id = "resume" if resume else None
-    result = processor.process_directory(
-        input_dir=input_dir,
-        output_dir=output_dir,
-        process_fn=lambda doc: doc,  # placeholder until full wiring
-        template=template,
-        resume_id=resume_id,
-    )
-    console.print(f"[dim]Batch result: {result}[/dim]")
+    with theme.spinner("Deploying the minions...", console):
+        result = processor.process_directory(
+            input_dir=input_dir,
+            output_dir=output_dir,
+            process_fn=lambda doc: doc,  # placeholder until full wiring
+            template=template,
+            resume_id=resume_id,
+        )
+    console.print(theme.ok("Batch complete \u2014 it ain't much but it's honest work"))
 
 
 # ---------------------------------------------------------------------------
@@ -279,7 +301,7 @@ def template() -> None:
 @template.command("create")
 def template_create() -> None:
     """Create a new extraction template."""
-    console.print("[bold]template create[/bold] -- not yet implemented")
+    console.print(theme.info("template create \u2014 not yet implemented"))
 
 
 @template.command("list")
@@ -289,21 +311,24 @@ def template_list() -> None:
 
     templates = list_templates()
 
-    table = Table(title="Available Templates")
-    table.add_column("Name", style="bold cyan")
-    table.add_column("Exam Type")
-    table.add_column("RadReport ID")
-    table.add_column("Description")
+    theme.section("Templates", console)
+
+    t = theme.make_table()
+    t.add_column("Name", style="bold cyan", no_wrap=True)
+    t.add_column("Exam Type", style="magenta")
+    t.add_column("RadReport ID", style="dim")
+    t.add_column("Description")
 
     for tpl in templates:
-        table.add_row(
+        t.add_row(
             tpl.name,
             tpl.exam_type,
-            tpl.radreport_id or "-",
+            tpl.radreport_id or "\u2014",
             tpl.description,
         )
 
-    console.print(table)
+    console.print(t)
+    console.print(theme.info(f"{len(templates)} template(s) registered"))
 
 
 @template.command("validate")
@@ -317,9 +342,9 @@ def template_validate(file_path: Path) -> None:
 
     try:
         model = compile_template_file(file_path)
-        console.print(f"[bold green]Template is valid.[/bold green]")
-        console.print(f"  Model name: {model.__name__}")
-        console.print(f"  Fields: {list(model.model_fields.keys())}")
+        console.print(theme.ok("Template is valid \u2014 you shall pass"))
+        console.print(theme.info(f"Model: {model.__name__}"))
+        console.print(theme.info(f"Fields: {', '.join(model.model_fields.keys())}"))
     except Exception as exc:
         raise click.ClickException(f"Template validation failed: {exc}")
 
@@ -344,25 +369,31 @@ def schema_generate(description: str, example_text: str) -> None:
     from .pipelines.schema_gen import SchemaGenerator
 
     generator = SchemaGenerator()
-    result = generator(description=description, example_text=example_text)
+    with theme.spinner("Generating schema... hold my beer", console):
+        result = generator(description=description, example_text=example_text)
 
-    console.print("[bold green]Schema generated successfully.[/bold green]")
-    console.print(f"  Model name: {result.compiled_model.__name__}")
-    console.print(f"  Fields: {list(result.compiled_model.model_fields.keys())}")
-    console.print("\n[bold]Schema spec:[/bold]")
-    console.print_json(result.schema_spec.model_dump_json(indent=2))
+    console.print(theme.ok("Schema generated \u2014 it's alive!"))
+    console.print(theme.info(f"Model: {result.compiled_model.__name__}"))
+    console.print(theme.info(
+        f"Fields: {', '.join(result.compiled_model.model_fields.keys())}"
+    ))
+
+    theme.section("Schema Spec", console)
+    from rich.json import JSON
+
+    console.print(Padding(JSON(result.schema_spec.model_dump_json()), (0, 0, 0, 2)))
 
 
 @schema.command("list")
 def schema_list() -> None:
     """List registered schemas."""
-    console.print("[bold]schema list[/bold] -- not yet implemented")
+    console.print(theme.info("schema list \u2014 not yet implemented"))
 
 
 @schema.command("refine")
 def schema_refine() -> None:
     """Refine an existing schema."""
-    console.print("[bold]schema refine[/bold] -- not yet implemented")
+    console.print(theme.info("schema refine \u2014 not yet implemented"))
 
 
 # ---------------------------------------------------------------------------
@@ -393,7 +424,7 @@ def summarize(
         except (FileNotFoundError, ValueError, DocumentLoadError) as exc:
             raise click.ClickException(str(exc))
         if doc.quality_warning:
-            console.print("[yellow]Warning: Low OCR quality detected. Results may be unreliable.[/yellow]")
+            console.print(theme.warn("Low OCR quality detected \u2014 results may be unreliable"))
         report_texts.append(doc.text)
     elif directory is not None:
         if not directory.is_dir():
@@ -403,17 +434,19 @@ def summarize(
                 try:
                     doc = _load_doc_with_config(p)
                     if doc.quality_warning:
-                        console.print("[yellow]Warning: Low OCR quality detected. Results may be unreliable.[/yellow]")
+                        console.print(theme.warn(
+                            f"Low OCR quality: {p.name}"
+                        ))
                     report_texts.append(doc.text)
                 except Exception:
-                    console.print(f"[yellow]Skipping {p.name}: unsupported or unreadable[/yellow]")
+                    console.print(theme.warn(f"Skipping {p.name}: unsupported or unreadable"))
     else:
         raise click.ClickException("Provide --document or --dir.")
 
     if not report_texts:
         raise click.ClickException("No reports found to summarize.")
 
-    console.print(f"[dim]Loaded {len(report_texts)} report(s)[/dim]")
+    console.print(theme.info(f"Loaded {len(report_texts)} report(s)"))
 
     # Configure DSPy and run summarizer
     _configure_dspy()
@@ -421,13 +454,23 @@ def summarize(
     from .pipelines.summarizer import ReportSummarizer
 
     summarizer = ReportSummarizer()
-    result = summarizer(reports=report_texts, patient_id=patient or "")
+    with theme.spinner("Summarizing... TL;DR incoming", console):
+        result = summarizer(reports=report_texts, patient_id=patient or "")
 
-    console.print("\n[bold]Narrative Summary:[/bold]")
-    console.print(result.narrative)
+    console.print(theme.ok("TL;DR ready \u2014 I see this as an absolute win"))
+
+    theme.section("Narrative Summary", console)
+    console.print(
+        Panel(
+            result.narrative,
+            box=box.ROUNDED,
+            border_style=theme.GREIGE,
+            padding=(1, 2),
+        )
+    )
 
     if result.events:
-        console.print(f"\n[dim]{len(result.events)} timeline event(s) extracted[/dim]")
+        console.print(theme.info(f"{len(result.events)} timeline event(s) extracted"))
 
 
 # ---------------------------------------------------------------------------
@@ -476,13 +519,25 @@ def deidentify(
     if not paths:
         raise click.ClickException("No documents found to de-identify.")
 
+    console.print(theme.info(
+        f"De-identifying {len(paths)} document(s) \u00b7 mode: {mode}"
+        f"{' \u00b7 regex-only' if regex_only else ''}"
+    ))
+
     if regex_only:
         # Regex-only mode: no LLM needed
         for p in paths:
             text = p.read_text(encoding="utf-8")
             scrubbed = regex_scrub_phi(text)
-            console.print(f"\n[bold]--- {p.name} ---[/bold]")
-            console.print(scrubbed)
+            theme.section(p.name, console, uppercase=False)
+            console.print(
+                Panel(
+                    scrubbed,
+                    box=box.ROUNDED,
+                    border_style=theme.GREIGE,
+                    padding=(1, 2),
+                )
+            )
     else:
         # Full LLM + regex pipeline
         _configure_dspy()
@@ -495,13 +550,22 @@ def deidentify(
             try:
                 doc = _load_doc_with_config(p)
             except (FileNotFoundError, ValueError, DocumentLoadError) as exc:
-                console.print(f"[yellow]Skipping {p.name}: {exc}[/yellow]")
+                console.print(theme.warn(f"Skipping {p.name}: {exc}"))
                 continue
             if doc.quality_warning:
-                console.print("[yellow]Warning: Low OCR quality detected. Results may be unreliable.[/yellow]")
-            result = deid(document_text=doc.text, mode=mode)
-            console.print(f"\n[bold]--- {p.name} ---[/bold]")
-            console.print(result.redacted_text)
+                console.print(theme.warn("Low OCR quality detected \u2014 results may be unreliable"))
+            with theme.spinner(f"Scrubbing {p.name}... nothing to see here", console):
+                result = deid(document_text=doc.text, mode=mode)
+            console.print(theme.ok("Scrubbed \u2014 PHI has left the chat"))
+            theme.section(p.name, console, uppercase=False)
+            console.print(
+                Panel(
+                    result.redacted_text,
+                    box=box.ROUNDED,
+                    border_style=theme.GREIGE,
+                    padding=(1, 2),
+                )
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -536,32 +600,41 @@ def optimize(
     except ValueError as exc:
         raise click.ClickException(str(exc))
 
-    table = Table(title="Optimization Configuration")
-    table.add_column("Setting", style="bold")
-    table.add_column("Value")
-    table.add_row("Pipeline", pipeline or "(not specified)")
-    table.add_row("Budget preset", budget)
-    table.add_row("Strategy", opt_config.get("strategy", "N/A"))
-    table.add_row("Max iterations", str(opt_config.get("max_iterations", "N/A")))
-    table.add_row("Num candidates", str(opt_config.get("num_candidates", "N/A")))
-    table.add_row("Training set", str(trainset) if trainset else "(not specified)")
-    table.add_row("Validation set", str(valset) if valset else "(not specified)")
-    table.add_row("Save path", str(save) if save else "(not specified)")
-    console.print(table)
+    theme.section("Optimization", console, "01")
+    t = theme.make_kv_table()
+    t.add_row("Pipeline", pipeline or "[dim]not specified[/dim]")
+    t.add_row("Budget", theme.badge(budget.upper()))
+    t.add_row("Strategy", opt_config.get("strategy", "N/A"))
+    t.add_row("Max iterations", str(opt_config.get("max_iterations", "N/A")))
+    t.add_row("Num candidates", str(opt_config.get("num_candidates", "N/A")))
+    t.add_row("Training set", str(trainset) if trainset else "[dim]not specified[/dim]")
+    t.add_row("Validation set", str(valset) if valset else "[dim]not specified[/dim]")
+    t.add_row("Save path", str(save) if save else "[dim]not specified[/dim]")
+    console.print(t)
 
-    # Display the progressive strategy info
-    console.print("\n[bold]Progressive optimization strategy:[/bold]")
+    # Progressive strategy
+    theme.section("Progressive Strategy", console, "02")
+    strat_table = theme.make_table()
+    strat_table.add_column("Stage", style="bold cyan", no_wrap=True)
+    strat_table.add_column("Cost", style="magenta")
+    strat_table.add_column("Time")
+    strat_table.add_column("Min Examples", style="dim")
+
     for step in OPTIMIZATION_STRATEGY:
-        console.print(
-            f"  {step['name']}: cost {step['cost']}, "
-            f"time {step['time']}, min examples {step['min_examples']}"
+        strat_table.add_row(
+            step["name"],
+            step["cost"],
+            step["time"],
+            str(step["min_examples"]),
         )
+    console.print(strat_table)
 
     if trainset is None or valset is None:
-        console.print(
-            "\n[yellow]Note:[/yellow] Provide --trainset and --valset to run actual optimization. "
-            "Optimization also requires a configured LLM (MOSAICX_API_KEY)."
-        )
+        console.print()
+        console.print(theme.warn(
+            "Provide --trainset and --valset to run optimization. "
+            "Requires MOSAICX_API_KEY."
+        ))
 
 
 # ---------------------------------------------------------------------------
@@ -578,26 +651,62 @@ def config() -> None:
 def config_show() -> None:
     """Show current configuration."""
     cfg = get_config()
+    dump = cfg.model_dump()
 
-    table = Table(title="MOSAICX Configuration")
-    table.add_column("Setting", style="bold cyan")
-    table.add_column("Value")
+    theme.print_banner(_VERSION_NUMBER, console, lm=cfg.lm, lm_cheap=cfg.lm_cheap)
 
-    for field_name, field_value in cfg.model_dump().items():
-        # Mask the API key for security
-        if field_name == "api_key" and field_value:
-            display_value = field_value[:4] + "..." + field_value[-4:] if len(field_value) > 8 else "***"
-        else:
-            display_value = str(field_value)
-        table.add_row(field_name, display_value)
+    # 01 · Language Models
+    theme.section("Language Models", console, "01")
+    t = theme.make_kv_table()
+    t.add_row("lm", dump["lm"])
+    t.add_row("lm_cheap", dump["lm_cheap"])
+    api_key = dump["api_key"]
+    if api_key:
+        masked = api_key[:4] + "\u00b7\u00b7\u00b7" + api_key[-4:] if len(api_key) > 8 else "***"
+    else:
+        masked = "[dim]not set[/dim]"
+    t.add_row("api_key", masked)
+    console.print(t)
 
-    # Also show derived paths
-    table.add_row("schema_dir", str(cfg.schema_dir))
-    table.add_row("optimized_dir", str(cfg.optimized_dir))
-    table.add_row("checkpoint_dir", str(cfg.checkpoint_dir))
-    table.add_row("log_dir", str(cfg.log_dir))
+    # 02 · Processing
+    theme.section("Processing", console, "02")
+    t = theme.make_kv_table()
+    t.add_row("default_template", dump["default_template"])
+    t.add_row("completeness_threshold", str(dump["completeness_threshold"]))
+    t.add_row("batch_workers", str(dump["batch_workers"]))
+    t.add_row("checkpoint_every", str(dump["checkpoint_every"]))
+    console.print(t)
 
-    console.print(table)
+    # 03 · Document OCR
+    theme.section("Document OCR", console, "03")
+    t = theme.make_kv_table()
+    t.add_row("ocr_engine", theme.badge(dump["ocr_engine"].upper()))
+    t.add_row("chandra_backend", dump["chandra_backend"])
+    if dump.get("chandra_server_url"):
+        t.add_row("chandra_server_url", dump["chandra_server_url"])
+    t.add_row("quality_threshold", str(dump["quality_threshold"]))
+    t.add_row("ocr_page_timeout", f"{dump['ocr_page_timeout']}s")
+    t.add_row("force_ocr", str(dump["force_ocr"]))
+    t.add_row("ocr_langs", ", ".join(dump["ocr_langs"]))
+    console.print(t)
+
+    # 04 · Export & Privacy
+    theme.section("Export & Privacy", console, "04")
+    t = theme.make_kv_table()
+    t.add_row("export_formats", ", ".join(dump["default_export_formats"]))
+    t.add_row("deidentify_mode", dump["deidentify_mode"])
+    console.print(t)
+
+    # 05 · Paths
+    theme.section("Paths", console, "05")
+    t = theme.make_kv_table()
+    t.add_row("home_dir", str(dump["home_dir"]))
+    t.add_row("schema_dir", str(cfg.schema_dir))
+    t.add_row("optimized_dir", str(cfg.optimized_dir))
+    t.add_row("checkpoint_dir", str(cfg.checkpoint_dir))
+    t.add_row("log_dir", str(cfg.log_dir))
+    console.print(t)
+    console.print()
 
 
 @config.command("set")
@@ -605,6 +714,8 @@ def config_show() -> None:
 @click.argument("value")
 def config_set(key: str, value: str) -> None:
     """Set a configuration value."""
-    console.print(f"[bold]config set[/bold] {key}={value}")
-    console.print("[yellow]Note:[/yellow] Runtime config changes are not persisted yet. "
-                  "Use environment variables (MOSAICX_*) or a .env file.")
+    console.print(theme.info(f"config set {key}={value}"))
+    console.print(theme.warn(
+        "Runtime config changes are not persisted yet. "
+        "Use environment variables (MOSAICX_*) or a .env file."
+    ))

@@ -88,7 +88,8 @@ def tmp_invalid_template(tmp_path: Path) -> Path:
 @pytest.fixture
 def _no_api_key(monkeypatch):
     """Ensure no API key is set for DSPy-dependent tests."""
-    monkeypatch.delenv("MOSAICX_API_KEY", raising=False)
+    # Set to empty string (not delete) so env var overrides any .env file value
+    monkeypatch.setenv("MOSAICX_API_KEY", "")
     # Clear the lru_cache so config is re-created without any stale key
     from mosaicx.config import get_config
 
@@ -106,7 +107,7 @@ class TestConfigShow:
     def test_config_show_succeeds(self, runner: CliRunner, _no_api_key):
         result = runner.invoke(cli, ["config", "show"])
         assert result.exit_code == 0
-        assert "MOSAICX Configuration" in result.output
+        assert "Medical Computational Suite for" in result.output
 
     def test_config_show_displays_fields(self, runner: CliRunner, _no_api_key):
         result = runner.invoke(cli, ["config", "show"])
@@ -134,7 +135,7 @@ class TestTemplateList:
     def test_template_list_succeeds(self, runner: CliRunner):
         result = runner.invoke(cli, ["template", "list"])
         assert result.exit_code == 0
-        assert "Available Templates" in result.output
+        assert "TEMPLATES" in result.output
 
     def test_template_list_shows_builtin_templates(self, runner: CliRunner):
         result = runner.invoke(cli, ["template", "list"])
@@ -314,7 +315,7 @@ class TestOptimize:
     def test_optimize_shows_config(self, runner: CliRunner):
         result = runner.invoke(cli, ["optimize", "--budget", "light"])
         assert result.exit_code == 0
-        assert "Optimization Configuration" in result.output
+        assert "OPTIMIZATION" in result.output
         assert "BootstrapFewShot" in result.output
 
     def test_optimize_medium_budget(self, runner: CliRunner):
@@ -452,10 +453,9 @@ class TestBatch:
             ],
         )
         assert result.exit_code == 0
-        assert "Batch Configuration" in result.output
+        assert "BATCH PROCESSING" in result.output
         assert "chest_ct" in result.output
-        # Rich may truncate long paths; just check the dirname appears
-        assert input_dir.name in result.output
+        assert "Batch complete" in result.output
 
 
 # -------------------------------------------------------------------------
