@@ -499,7 +499,7 @@ def batch(
     if result["failed"]:
         console.print(theme.warn(f"{result['failed']} failed"))
         for err in result.get("errors", []):
-            console.print(theme.info(f"  {err['file']}: {err['error']}"))
+            console.print(theme.info(f"{err['file']}: {err['error']}"))
 
 
 
