@@ -17,7 +17,7 @@ class TestMosaicxConfig:
         assert cfg.lm == "openai/gpt-oss:120b"
         assert cfg.lm_cheap == "openai/gpt-oss:20b"
         assert cfg.completeness_threshold == 0.7
-        assert cfg.batch_workers == 4
+        assert cfg.batch_workers == 1
         assert cfg.checkpoint_every == 50
         assert cfg.default_template == "auto"
         assert cfg.deidentify_mode == "remove"

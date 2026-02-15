@@ -411,7 +411,7 @@ def extract(
 @click.option("--schema", "schema_name", type=str, default=None, help="Name of a saved schema from ~/.mosaicx/schemas/.")
 @click.option("--mode", type=str, default=None, help="Extraction mode name (e.g., radiology, pathology).")
 @click.option("--format", "formats", type=str, multiple=True, help="Output format(s).")
-@click.option("--workers", type=int, default=4, show_default=True, help="Number of parallel workers.")
+@click.option("--workers", type=int, default=1, show_default=True, help="Number of parallel workers.")
 @click.option("--resume", is_flag=True, help="Resume from last checkpoint.")
 def batch(
     input_dir: Optional[Path],
@@ -1038,7 +1038,7 @@ def summarize(
     help="De-identification strategy.",
 )
 @click.option("--regex-only", is_flag=True, default=False, help="Use regex-only PHI scrubbing (no LLM needed).")
-@click.option("--workers", type=int, default=4, show_default=True, help="Number of parallel workers.")
+@click.option("--workers", type=int, default=1, show_default=True, help="Number of parallel workers.")
 def deidentify(
     document: Optional[Path],
     directory: Optional[Path],

@@ -34,7 +34,7 @@ class MosaicxConfig(BaseSettings):
     # --- Processing ---
     default_template: str = "auto"
     completeness_threshold: float = 0.7
-    batch_workers: int = 4
+    batch_workers: int = 1
     checkpoint_every: int = 50
 
     # --- Paths ---
