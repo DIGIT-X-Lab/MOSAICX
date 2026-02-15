@@ -20,6 +20,7 @@ from __future__ import annotations
 import io
 import json
 import re
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
@@ -569,12 +570,16 @@ def schema_show(schema_name: str) -> None:
 @click.option("--schema", "schema_name", type=str, required=True, help="Name of the schema to refine.")
 @click.option("--instruction", type=str, default=None, help="Natural-language refinement instruction (uses LLM).")
 @click.option("--add", "add_field_str", type=str, default=None, help="Add a field: 'field_name: type'.")
+@click.option("--optional", "is_optional", is_flag=True, default=False, help="Mark the added field as optional (used with --add).")
+@click.option("--description", "field_desc", type=str, default="", help="Description for the added field (used with --add).")
 @click.option("--remove", "remove_field_name", type=str, default=None, help="Remove a field by name.")
 @click.option("--rename", "rename_str", type=str, default=None, help="Rename a field: 'old_name=new_name'.")
 def schema_refine(
     schema_name: str,
     instruction: Optional[str],
     add_field_str: Optional[str],
+    is_optional: bool,
+    field_desc: str,
     remove_field_name: Optional[str],
     rename_str: Optional[str],
 ) -> None:
@@ -612,7 +617,7 @@ def schema_refine(
         if len(parts) != 2:
             raise click.ClickException("--add format: 'field_name: type'")
         fname, ftype = parts[0].strip(), parts[1].strip()
-        spec = add_field(spec, fname, ftype)
+        spec = add_field(spec, fname, ftype, description=field_desc, required=not is_optional)
 
     elif remove_field_name:
         try:
@@ -668,6 +673,163 @@ def schema_refine(
     console.print(theme.info(
         f"Fields: {', '.join(compiled.model_fields.keys())}"
     ))
+
+
+@schema.command("history")
+@click.argument("schema_name")
+def schema_history(schema_name: str) -> None:
+    """Show version history of a schema."""
+    from .pipelines.schema_gen import list_versions, load_schema
+
+    cfg = get_config()
+
+    # Verify schema exists
+    try:
+        current = load_schema(schema_name, cfg.schema_dir)
+    except FileNotFoundError:
+        raise click.ClickException(f"Schema {schema_name!r} not found in {cfg.schema_dir}")
+
+    versions = list_versions(schema_name, cfg.schema_dir)
+
+    theme.section(f"{schema_name} History", console)
+
+    if not versions:
+        console.print(theme.info("No version history yet (only current version exists)"))
+        console.print(theme.info(f"Current: {len(current.fields)} fields"))
+        return
+
+    t = theme.make_clean_table(width=len(theme.TAGLINE))
+    t.add_column("Version", style=f"bold {theme.CORAL}", no_wrap=True)
+    t.add_column("Fields", style=f"{theme.GREIGE}", justify="right")
+    t.add_column("Date", style=theme.MUTED, ratio=1)
+
+    for v in versions:
+        t.add_row(
+            f"v{v.version}",
+            str(v.field_count),
+            v.modified.strftime("%Y-%m-%d %H:%M"),
+        )
+
+    # Add current as the last row
+    current_path = cfg.schema_dir / f"{schema_name}.json"
+    current_mtime = datetime.fromtimestamp(current_path.stat().st_mtime)
+    t.add_row(
+        "current",
+        str(len(current.fields)),
+        current_mtime.strftime("%Y-%m-%d %H:%M"),
+    )
+
+    console.print(Padding(t, (0, 0, 0, 2)))
+    console.print()
+    console.print(theme.info(f"{len(versions)} archived version(s) + current"))
+
+
+@schema.command("revert")
+@click.argument("schema_name")
+@click.option("--version", "version_num", type=int, required=True, help="Version number to revert to.")
+def schema_revert(schema_name: str, version_num: int) -> None:
+    """Revert a schema to a previous version."""
+    from .pipelines.schema_gen import diff_schemas, load_schema, load_version, revert_schema
+
+    cfg = get_config()
+
+    try:
+        current = load_schema(schema_name, cfg.schema_dir)
+    except FileNotFoundError:
+        raise click.ClickException(f"Schema {schema_name!r} not found in {cfg.schema_dir}")
+
+    try:
+        target = load_version(schema_name, version_num, cfg.schema_dir)
+    except FileNotFoundError:
+        raise click.ClickException(f"Version {version_num} not found for schema {schema_name!r}")
+
+    # Figure out what the archived version number will be
+    from .pipelines.schema_gen import list_versions
+    versions = list_versions(schema_name, cfg.schema_dir)
+    archive_version = len(versions) + 1
+
+    revert_schema(schema_name, version_num, cfg.schema_dir)
+
+    console.print(theme.ok(
+        f"Reverted {schema_name} to v{version_num} (archived current as v{archive_version})"
+    ))
+
+    # Show diff
+    added, removed, modified = diff_schemas(current, target)
+    if added:
+        for name in added:
+            f = next(f for f in target.fields if f.name == name)
+            console.print(theme.info(f"+ {name} ({f.type})"))
+    if removed:
+        for name in removed:
+            console.print(theme.info(f"- {name}"))
+    if modified:
+        for name in modified:
+            console.print(theme.info(f"~ {name} (changed)"))
+    if not added and not removed and not modified:
+        console.print(theme.info("No field differences"))
+
+
+@schema.command("diff")
+@click.argument("schema_name")
+@click.option("--version", "version_num", type=int, required=True, help="Version number to compare against current.")
+def schema_diff(schema_name: str, version_num: int) -> None:
+    """Show differences between current schema and a previous version."""
+    from .pipelines.schema_gen import diff_schemas, load_schema, load_version
+
+    cfg = get_config()
+
+    try:
+        current = load_schema(schema_name, cfg.schema_dir)
+    except FileNotFoundError:
+        raise click.ClickException(f"Schema {schema_name!r} not found in {cfg.schema_dir}")
+
+    try:
+        old = load_version(schema_name, version_num, cfg.schema_dir)
+    except FileNotFoundError:
+        raise click.ClickException(f"Version {version_num} not found for schema {schema_name!r}")
+
+    added, removed, modified = diff_schemas(old, current)
+
+    theme.section(f"{schema_name}: v{version_num} vs current", console)
+
+    if not added and not removed and not modified:
+        console.print(theme.info("No differences"))
+        return
+
+    t = theme.make_clean_table()
+    t.add_column("", no_wrap=True)
+    t.add_column("Field", style=f"bold {theme.CORAL}", no_wrap=True)
+    t.add_column("Detail", style=theme.MUTED)
+
+    for name in added:
+        f = next(f for f in current.fields if f.name == name)
+        t.add_row("[green]+[/green]", name, f"({f.type})")
+    for name in removed:
+        f = next(f for f in old.fields if f.name == name)
+        t.add_row("[red]-[/red]", name, f"({f.type})")
+    for name in modified:
+        of = next(f for f in old.fields if f.name == name)
+        nf = next(f for f in current.fields if f.name == name)
+        changes = []
+        if of.type != nf.type:
+            changes.append(f"type: {of.type} -> {nf.type}")
+        if of.required != nf.required:
+            changes.append(f"required: {of.required} -> {nf.required}")
+        if of.description != nf.description:
+            changes.append("description changed")
+        t.add_row("[yellow]~[/yellow]", name, "; ".join(changes))
+
+    console.print(Padding(t, (0, 0, 0, 2)))
+    console.print()
+    summary_parts = []
+    if added:
+        summary_parts.append(f"{len(added)} added")
+    if removed:
+        summary_parts.append(f"{len(removed)} removed")
+    if modified:
+        summary_parts.append(f"{len(modified)} modified")
+    console.print(theme.info(", ".join(summary_parts)))
 
 
 # ---------------------------------------------------------------------------

@@ -15,9 +15,11 @@ Key components:
 from __future__ import annotations
 
 import re
+import shutil
+from datetime import datetime
 from enum import Enum
 from pathlib import Path
-from typing import TYPE_CHECKING, List, Optional
+from typing import TYPE_CHECKING, List, NamedTuple, Optional
 
 from pydantic import BaseModel, Field, create_model
 
@@ -188,6 +190,7 @@ def save_schema(
         dest = output_path
     elif schema_dir is not None:
         schema_dir.mkdir(parents=True, exist_ok=True)
+        _archive_before_save(spec, schema_dir)
         dest = schema_dir / f"{spec.class_name}.json"
     else:
         raise ValueError("Provide schema_dir or output_path")
@@ -230,6 +233,113 @@ def list_schemas(schema_dir: Path) -> list[SchemaSpec]:
         except Exception:
             continue  # skip malformed files
     return specs
+
+
+# ---------------------------------------------------------------------------
+# Schema versioning
+# ---------------------------------------------------------------------------
+
+
+class VersionInfo(NamedTuple):
+    """Metadata for a single archived schema version."""
+    version: int
+    path: Path
+    modified: datetime
+    field_count: int
+
+
+def _history_dir(schema_dir: Path) -> Path:
+    """Return (and create) the .history/ subdirectory inside *schema_dir*."""
+    d = schema_dir / ".history"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def _archive_before_save(spec: SchemaSpec, schema_dir: Path) -> None:
+    """Copy the current schema file into .history/ before overwriting it."""
+    current = schema_dir / f"{spec.class_name}.json"
+    if not current.exists():
+        return
+    hdir = _history_dir(schema_dir)
+    existing = sorted(hdir.glob(f"{spec.class_name}_v*.json"))
+    next_version = len(existing) + 1
+    dest = hdir / f"{spec.class_name}_v{next_version}.json"
+    shutil.copy2(current, dest)
+
+
+def list_versions(name: str, schema_dir: Path) -> list[VersionInfo]:
+    """List all archived versions of a schema, sorted by version number."""
+    hdir = schema_dir / ".history"
+    if not hdir.exists():
+        return []
+    results: list[VersionInfo] = []
+    for p in sorted(hdir.glob(f"{name}_v*.json")):
+        m = re.match(rf"^{re.escape(name)}_v(\d+)\.json$", p.name)
+        if not m:
+            continue
+        version = int(m.group(1))
+        try:
+            spec = SchemaSpec.model_validate_json(p.read_text(encoding="utf-8"))
+            field_count = len(spec.fields)
+        except Exception:
+            field_count = 0
+        results.append(VersionInfo(
+            version=version,
+            path=p,
+            modified=datetime.fromtimestamp(p.stat().st_mtime),
+            field_count=field_count,
+        ))
+    return results
+
+
+def load_version(name: str, version: int, schema_dir: Path) -> SchemaSpec:
+    """Load a specific archived version of a schema."""
+    path = schema_dir / ".history" / f"{name}_v{version}.json"
+    if not path.exists():
+        raise FileNotFoundError(f"Version {version} not found for schema {name!r}")
+    return SchemaSpec.model_validate_json(path.read_text(encoding="utf-8"))
+
+
+def revert_schema(name: str, version: int, schema_dir: Path) -> Path:
+    """Revert a schema to a previous version.
+
+    Archives the current version first, then copies the target version
+    to become the current schema file.
+    """
+    current = schema_dir / f"{name}.json"
+    if not current.exists():
+        raise FileNotFoundError(f"Schema {name!r} not found in {schema_dir}")
+    target = schema_dir / ".history" / f"{name}_v{version}.json"
+    if not target.exists():
+        raise FileNotFoundError(f"Version {version} not found for schema {name!r}")
+
+    # Archive current before overwriting
+    current_spec = SchemaSpec.model_validate_json(current.read_text(encoding="utf-8"))
+    _archive_before_save(current_spec, schema_dir)
+
+    # Copy target version to current
+    shutil.copy2(target, current)
+    return current
+
+
+def diff_schemas(
+    old: SchemaSpec, new: SchemaSpec
+) -> tuple[list[str], list[str], list[str]]:
+    """Compare two SchemaSpecs and return (added, removed, modified) field names."""
+    old_fields = {f.name: f for f in old.fields}
+    new_fields = {f.name: f for f in new.fields}
+
+    added = [n for n in new_fields if n not in old_fields]
+    removed = [n for n in old_fields if n not in new_fields]
+
+    modified: list[str] = []
+    for n in old_fields:
+        if n in new_fields:
+            of, nf = old_fields[n], new_fields[n]
+            if of.type != nf.type or of.required != nf.required or of.description != nf.description:
+                modified.append(n)
+
+    return added, removed, modified
 
 
 # ---------------------------------------------------------------------------

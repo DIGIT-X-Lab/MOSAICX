@@ -49,6 +49,9 @@ Defaults point to Ollama on localhost — no `.env` needed for local use. See [C
 | `mosaicx schema list` | List saved schemas |
 | `mosaicx schema show <name>` | Inspect a schema's fields and types |
 | `mosaicx schema refine` | Edit a schema (LLM-driven or manual field ops) |
+| `mosaicx schema history <name>` | Show version history of a schema |
+| `mosaicx schema diff <name>` | Compare current schema against a previous version |
+| `mosaicx schema revert <name>` | Restore a previous version of a schema |
 | `mosaicx summarize` | Synthesize a patient timeline from multiple reports |
 | `mosaicx deidentify` | Remove PHI (LLM + regex belt-and-suspenders) |
 | `mosaicx template list` | List built-in radiology templates |
@@ -85,16 +88,56 @@ mosaicx schema list
 **Refine** — add, remove, or rename fields, or let the LLM restructure:
 
 ```bash
+# Add a required field (default)
 mosaicx schema refine --schema EchoReport --add "rvsp: float"
+
+# Add an optional field with a description
+mosaicx schema refine --schema EchoReport \
+  --add "hospital_name: str" \
+  --optional \
+  --description "Name of the treating hospital"
+
+# Remove or rename fields
 mosaicx schema refine --schema EchoReport --remove clinical_impression
 mosaicx schema refine --schema EchoReport --rename "lvef=lvef_percent"
 
-# LLM-driven refinement:
+# LLM-driven refinement
 mosaicx schema refine --schema EchoReport \
   --instruction "add a field for pericardial effusion severity as an enum"
 ```
 
-Generating with the same `--name` (or LLM-chosen name) overwrites the existing file.
+Every generate and refine auto-archives the previous version. See [Version history](#version-history) for how to inspect and revert.
+
+### Version history
+
+Every time a schema is saved (via `generate` or `refine`), the previous version is archived to `~/.mosaicx/schemas/.history/`. Nothing is ever silently lost.
+
+**List versions:**
+
+```bash
+mosaicx schema history EchoReport
+# Version  Fields  Date
+# v1       5       2026-02-15 10:30
+# v2       6       2026-02-15 10:35
+# current  6       2026-02-15 10:35
+```
+
+**Compare against a previous version:**
+
+```bash
+mosaicx schema diff EchoReport --version 1
+# + rvsp           (float)
+# ~ lvef_percent   type: int -> float
+```
+
+**Revert to a previous version:**
+
+```bash
+mosaicx schema revert EchoReport --version 1
+# ✓ Reverted EchoReport to v1 (archived current as v3)
+```
+
+Reverting archives the current schema first, so you can always get back to it.
 
 ### Extract structured data
 
