@@ -29,6 +29,7 @@ class MosaicxConfig(BaseSettings):
     lm: str = "openai/gpt-oss:120b"
     lm_cheap: str = "openai/gpt-oss:20b"
     api_key: str = ""
+    api_base: str = "http://localhost:11434/v1"
 
     # --- Processing ---
     default_template: str = "auto"

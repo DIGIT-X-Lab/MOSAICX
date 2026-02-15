@@ -75,7 +75,7 @@ def _configure_dspy() -> None:
         raise click.ClickException(
             "DSPy is required for this command. Install with: pip install dspy"
         )
-    dspy.configure(lm=dspy.LM(cfg.lm, api_key=cfg.api_key))
+    dspy.configure(lm=dspy.LM(cfg.lm, api_key=cfg.api_key, api_base=cfg.api_base))
 
 
 # ---------------------------------------------------------------------------
@@ -890,6 +890,7 @@ def config_show() -> None:
     t = theme.make_kv_table()
     t.add_row("lm", dump["lm"])
     t.add_row("lm_cheap", dump["lm_cheap"])
+    t.add_row("api_base", dump["api_base"])
     api_key = dump["api_key"]
     if api_key:
         masked = api_key[:4] + "\u00b7\u00b7\u00b7" + api_key[-4:] if len(api_key) > 8 else "***"
