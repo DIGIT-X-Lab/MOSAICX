@@ -14,8 +14,8 @@ class TestMosaicxConfig:
         from mosaicx.config import MosaicxConfig
 
         cfg = MosaicxConfig()
-        assert cfg.lm == "ollama_chat/llama3.1:70b"
-        assert cfg.lm_cheap == "ollama_chat/llama3.2:3b"
+        assert cfg.lm == "openai/gpt-oss:120b"
+        assert cfg.lm_cheap == "openai/gpt-oss:20b"
         assert cfg.completeness_threshold == 0.7
         assert cfg.batch_workers == 4
         assert cfg.checkpoint_every == 50

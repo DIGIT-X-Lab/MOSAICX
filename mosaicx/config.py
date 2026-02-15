@@ -26,9 +26,9 @@ class MosaicxConfig(BaseSettings):
     )
 
     # --- LLM ---
-    lm: str = "ollama_chat/llama3.1:70b"
-    lm_cheap: str = "ollama_chat/llama3.2:3b"
-    api_key: str = "ollama"
+    lm: str = "openai/gpt-oss:120b"
+    lm_cheap: str = "openai/gpt-oss:20b"
+    api_key: str = ""
 
     # --- Processing ---
     default_template: str = "auto"
