@@ -134,6 +134,18 @@ def make_kv_table() -> Table:
     return t
 
 
+def make_clean_table(**kwargs: object) -> Table:
+    """Create a borderless table with dim headers and clean spacing."""
+    return Table(
+        box=None,
+        show_edge=False,
+        pad_edge=False,
+        header_style=MUTED,
+        padding=(0, 2),
+        **kwargs,
+    )
+
+
 # ── Inline badges & tags ────────────────────────────────────────
 
 
