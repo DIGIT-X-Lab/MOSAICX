@@ -33,16 +33,11 @@ ollama pull gpt-oss:120b        # best  — 64 GB RAM
 # 3. Install MOSAICX
 pip install mosaicx              # or: uv add mosaicx / pipx install mosaicx
 
-# 4. Configure (one-time)
-cat > .env << 'EOF'
-MOSAICX_LM=openai/gpt-oss:20b
-MOSAICX_API_KEY=ollama
-MOSAICX_API_BASE=http://localhost:11434/v1
-EOF
-
-# 5. Verify
+# 4. Verify
 mosaicx --version
 ```
+
+Defaults point to Ollama on localhost — no `.env` needed for local use. See [Configuration](#configuration) to customize.
 
 ## What it does
 
@@ -64,23 +59,41 @@ Run any command with `--help` for full options.
 
 ## Usage examples
 
-### Generate a schema
+### Schema management
+
+Schemas live in `~/.mosaicx/schemas/` as JSON files named after their class (e.g., `EchoReport.json`). Generate, inspect, and refine them entirely from the CLI.
+
+**Generate** — describe what you need in plain English:
 
 ```bash
 mosaicx schema generate \
   --description "echocardiography report with LVEF, valve grades, impression"
+
+# optionally set the schema name (default: LLM-chosen):
+mosaicx schema generate \
+  --description "patient name, dob, age, sex, blood pressure" \
+  --name PatientVitals
 ```
 
-Produces a `SchemaSpec` JSON saved to `~/.mosaicx/schemas/`. Refine it afterward:
+**List** saved schemas:
+
+```bash
+mosaicx schema list
+```
+
+**Refine** — add, remove, or rename fields, or let the LLM restructure:
 
 ```bash
 mosaicx schema refine --schema EchoReport --add "rvsp: float"
 mosaicx schema refine --schema EchoReport --remove clinical_impression
 mosaicx schema refine --schema EchoReport --rename "lvef=lvef_percent"
-# or let the LLM do it:
+
+# LLM-driven refinement:
 mosaicx schema refine --schema EchoReport \
   --instruction "add a field for pericardial effusion severity as an enum"
 ```
+
+Generating with the same `--name` (or LLM-chosen name) overwrites the existing file.
 
 ### Extract structured data
 
@@ -124,7 +137,7 @@ All settings live under the `MOSAICX_` prefix. Set them as environment variables
 |----------|---------|-------------|
 | `MOSAICX_LM` | `openai/gpt-oss:120b` | Primary LLM (litellm format) |
 | `MOSAICX_LM_CHEAP` | `openai/gpt-oss:20b` | Fallback / cheap model |
-| `MOSAICX_API_KEY` | *(empty)* | API key (`ollama` for local Ollama) |
+| `MOSAICX_API_KEY` | `ollama` | API key (`ollama` for local Ollama) |
 | `MOSAICX_API_BASE` | `http://localhost:11434/v1` | LLM endpoint URL |
 | `MOSAICX_OCR_ENGINE` | `both` | `surya`, `chandra`, or `both` |
 | `MOSAICX_FORCE_OCR` | `false` | Force OCR even on native PDFs |
@@ -140,20 +153,37 @@ View the active config:
 mosaicx config show
 ```
 
-## Using other LLM providers
+## LLM backends
 
-MOSAICX uses DSPy + litellm, so any OpenAI-compatible endpoint works:
+MOSAICX talks to any OpenAI-compatible endpoint via DSPy + litellm. Defaults point to Ollama on localhost — override with env vars for other backends.
+
+| Backend | Port | Example |
+|---------|------|---------|
+| **Ollama** | 11434 | Works out-of-the-box, no config needed |
+| **llama.cpp** | 8080 | `llama-server -m model.gguf --port 8080` |
+| **vLLM** | 8000 | `vllm serve meta-llama/Llama-3.1-70B-Instruct` |
 
 ```bash
-# OpenAI
-MOSAICX_LM=openai/gpt-4o MOSAICX_API_KEY=sk-... MOSAICX_API_BASE=https://api.openai.com/v1
+# Ollama (default — no env vars needed)
+mosaicx schema generate --description "..."
 
-# vLLM server
-MOSAICX_LM=openai/your-model MOSAICX_API_BASE=http://localhost:8000/v1
+# llama.cpp / vLLM on a remote GPU server (e.g., DGX Spark)
+# 1. SSH tunnel the server port to localhost:
+ssh -L 8080:localhost:8080 user@dgx-spark      # llama.cpp (port 8080)
+ssh -L 8000:localhost:8000 user@dgx-spark      # vLLM      (port 8000)
 
-# Together AI / Groq / Fireworks
-MOSAICX_LM=openai/meta-llama/... MOSAICX_API_BASE=https://api.together.xyz/v1 MOSAICX_API_KEY=...
+# 2. Point MOSAICX at the forwarded port:
+export MOSAICX_LM=openai/your-model
+export MOSAICX_API_BASE=http://localhost:8080/v1   # llama.cpp
+export MOSAICX_API_BASE=http://localhost:8000/v1   # vLLM
+
+# OpenAI / Together AI / Groq
+export MOSAICX_LM=openai/gpt-4o
+export MOSAICX_API_KEY=sk-...
+export MOSAICX_API_BASE=https://api.openai.com/v1
 ```
+
+For vLLM the model name must match what the server loaded. For llama.cpp any name works (only one model loaded at a time). The default `api_key` (`ollama`) is ignored by servers that don't check auth.
 
 ## OCR engines
 

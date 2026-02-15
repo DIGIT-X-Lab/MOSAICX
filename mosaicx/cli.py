@@ -456,9 +456,10 @@ def schema() -> None:
 
 @schema.command("generate")
 @click.option("--description", type=str, required=True, help="Natural-language description of the schema.")
+@click.option("--name", type=str, default=None, help="Schema class name (default: LLM-chosen).")
 @click.option("--example-text", type=str, default="", help="Optional example document text for grounding.")
 @click.option("--output", type=click.Path(path_type=Path), default=None, help="Save schema to this path (default: ~/.mosaicx/schemas/).")
-def schema_generate(description: str, example_text: str, output: Optional[Path]) -> None:
+def schema_generate(description: str, name: Optional[str], example_text: str, output: Optional[Path]) -> None:
     """Generate a Pydantic schema from a description."""
     _configure_dspy()
 
@@ -467,6 +468,10 @@ def schema_generate(description: str, example_text: str, output: Optional[Path])
     generator = SchemaGenerator()
     with theme.spinner("Generating schema... hold my beer", console):
         result = generator(description=description, example_text=example_text)
+
+    # Override class_name if user specified --name
+    if name:
+        result.schema_spec.class_name = name
 
     # Save schema
     cfg = get_config()
