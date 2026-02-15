@@ -3,7 +3,7 @@
 MOSAICX — Medical Document Structuring Platform.
 
 Public API:
-    - mosaicx.extract(document_path, template="auto")
+    - mosaicx.extract(document_path, schema=None, mode=None, template=None)
     - mosaicx.summarize(document_paths)
     - mosaicx.generate_schema(description, example_text=None)
     - mosaicx.deidentify(text, mode="remove")
@@ -81,7 +81,9 @@ def _load_doc_with_config(path: Path) -> "LoadedDocument":
 
 def extract(
     document_path: Union[str, Path],
-    template: str = "auto",
+    schema: str | None = None,
+    mode: str | None = None,
+    template: str | None = None,
 ) -> dict[str, Any]:
     """Extract structured data from a clinical document.
 
@@ -89,47 +91,77 @@ def extract(
     ----------
     document_path:
         Path to the document file (PDF, DOCX, TXT, etc.).
+    schema:
+        Name of a saved schema from ~/.mosaicx/schemas/.
+        Extracts into the specified schema shape.
+    mode:
+        Extraction mode name (e.g., "radiology", "pathology").
+        Runs a specialized multi-step pipeline.
     template:
-        Template name, YAML file path, or ``"auto"`` for auto-infer
-        extraction (LLM infers schema from document).
+        Path to a YAML template file. Compiles to a Pydantic model
+        and extracts into that shape.
 
     Returns
     -------
     dict
-        Extraction results.  The key ``extracted`` contains the
-        structured data.  In auto mode, ``inferred_schema`` is also
-        included.
+        Extraction results. Key is typically ``extracted`` containing
+        the structured data matching the schema/template.
+
+    Notes
+    -----
+    If none of schema/mode/template are provided, the LLM auto-infers
+    a schema from the document content.
+    schema, mode, and template are mutually exclusive.
     """
-    from .pipelines.extraction import DocumentExtractor  # lazy (triggers dspy)
+    # Validate mutual exclusivity
+    provided = sum(x is not None for x in (schema, mode, template))
+    if provided > 1:
+        raise ValueError(
+            "schema, mode, and template are mutually exclusive. "
+            "Provide at most one."
+        )
 
+    from .config import get_config
+
+    cfg = get_config()
     doc = _load_doc_with_config(Path(document_path))
-
-    # Resolve template to an output schema
-    output_schema = None
-    if template != "auto":
-        tpl_path = Path(template)
-        if tpl_path.exists() and tpl_path.suffix in (".yaml", ".yml"):
-            from .schemas.template_compiler import compile_template_file
-
-            output_schema = compile_template_file(tpl_path)
-        else:
-            # Registry lookup is informational only; extraction still uses
-            # the default pipeline (registry templates don't produce a
-            # Pydantic model directly).
-            from .schemas.radreport.registry import get_template
-
-            tpl_info = get_template(template)
-            if tpl_info is None:
-                raise ValueError(
-                    f"Template not found: {template!r}. "
-                    "Provide a .yaml file path or a registered template name."
-                )
-
     _configure_dspy()
-    extractor = DocumentExtractor(output_schema=output_schema)
-    result = extractor(document_text=doc.text)
 
-    # Convert DSPy Prediction to a plain dict
+    if schema is not None:
+        # Schema mode: load saved schema and extract into it
+        from .pipelines.extraction import extract_with_schema
+
+        extracted = extract_with_schema(doc.text, schema, cfg.schema_dir)
+        return {"extracted": extracted}
+
+    if mode is not None:
+        # Mode: run a specialized multi-step pipeline
+        from .pipelines.extraction import extract_with_mode
+
+        return extract_with_mode(doc.text, mode)
+
+    if template is not None:
+        # YAML template: compile and extract
+        from .schemas.template_compiler import compile_template_file
+        from .pipelines.extraction import DocumentExtractor
+
+        tpl_path = Path(template)
+        output_schema = compile_template_file(tpl_path)
+        extractor = DocumentExtractor(output_schema=output_schema)
+        result = extractor(document_text=doc.text)
+        output: dict[str, Any] = {}
+        if hasattr(result, "extracted"):
+            val = result.extracted
+            output["extracted"] = (
+                val.model_dump() if hasattr(val, "model_dump") else val
+            )
+        return output
+
+    # Auto mode: LLM infers schema from document content
+    from .pipelines.extraction import DocumentExtractor
+
+    extractor = DocumentExtractor()
+    result = extractor(document_text=doc.text)
     output: dict[str, Any] = {}
     if hasattr(result, "extracted"):
         val = result.extracted

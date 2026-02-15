@@ -43,8 +43,8 @@ Defaults point to Ollama on localhost — no `.env` needed for local use. See [C
 
 | Command | Purpose |
 |---------|---------|
-| `mosaicx extract` | Extract structured data from a clinical document |
-| `mosaicx batch` | Process a directory of documents in parallel |
+| `mosaicx extract` | Extract structured data (auto, schema, or mode) |
+| `mosaicx batch` | Batch-process documents with schema or mode |
 | `mosaicx schema generate` | Create a Pydantic schema from a plain-English description |
 | `mosaicx schema list` | List saved schemas |
 | `mosaicx schema show <name>` | Inspect a schema's fields and types |
@@ -139,23 +139,59 @@ mosaicx schema revert EchoReport --version 1
 
 Reverting archives the current schema first, so you can always get back to it.
 
-### Extract structured data
+### Extraction
+
+Extract structured data from clinical documents. Three modes:
+
+**Auto mode** — LLM reads the document and figures out what to extract:
 
 ```bash
-mosaicx extract --document report.pdf --template auto
-mosaicx extract --document report.pdf --template chest_ct
-mosaicx extract --document report.pdf --template ./my_template.yaml
+mosaicx extract --document report.pdf
+```
+
+**Schema mode** — extract into a user-defined schema:
+
+```bash
+# First, generate a schema
+mosaicx schema generate --description "echo report with LVEF, valve grades, impression"
+
+# Then extract into it
+mosaicx extract --document report.pdf --schema EchoReport
+```
+
+**Specialized modes** — domain-specific multi-step pipelines:
+
+```bash
+# Radiology: 5-step chain with measurements, scoring (BI-RADS, Lung-RADS), anatomy codes
+mosaicx extract --document ct_report.pdf --mode radiology
+
+# Pathology: 5-step chain with histology, TNM staging, biomarkers
+mosaicx extract --document pathology_report.pdf --mode pathology
+
+# List available modes
+mosaicx extract --list-modes
+```
+
+**YAML templates** — extract into a compiled YAML template:
+
+```bash
+mosaicx extract --document report.pdf --template ./custom_template.yaml
 ```
 
 ### Batch processing
 
 ```bash
-mosaicx batch \
-  --input-dir ./reports \
-  --output-dir ./structured \
-  --template auto \
-  --workers 4 \
-  --resume                      # crash-safe checkpointing
+# Auto mode (LLM infers schema for each document)
+mosaicx batch --input-dir ./reports --output-dir ./structured
+
+# With a schema
+mosaicx batch --input-dir ./reports --output-dir ./structured --schema EchoReport
+
+# With a mode
+mosaicx batch --input-dir ./reports --output-dir ./structured --mode radiology
+
+# Resume after interruption
+mosaicx batch --input-dir ./reports --output-dir ./structured --mode radiology --resume
 ```
 
 ### Summarize reports

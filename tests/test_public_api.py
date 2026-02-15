@@ -52,9 +52,13 @@ class TestFunctionSignatures:
         sig = inspect.signature(extract)
         params = list(sig.parameters.keys())
         assert "document_path" in params
+        assert "schema" in params
+        assert "mode" in params
         assert "template" in params
-        # template should default to "auto"
-        assert sig.parameters["template"].default == "auto"
+        # All three should default to None
+        assert sig.parameters["schema"].default is None
+        assert sig.parameters["mode"].default is None
+        assert sig.parameters["template"].default is None
 
     def test_summarize_signature(self):
         from mosaicx import summarize
