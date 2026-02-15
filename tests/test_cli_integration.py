@@ -498,6 +498,101 @@ class TestSchemaManagement:
         finally:
             get_config.cache_clear()
 
+    def test_schema_refine_add_field(self, runner: CliRunner, tmp_path: Path, monkeypatch):
+        """schema refine --add adds a field."""
+        monkeypatch.setenv("MOSAICX_HOME_DIR", str(tmp_path))
+        from mosaicx.config import get_config
+
+        get_config.cache_clear()
+        try:
+            schema_dir = tmp_path / "schemas"
+            schema_dir.mkdir()
+            (schema_dir / "TestModel.json").write_text(
+                '{"class_name":"TestModel","description":"Test","fields":[{"name":"x","type":"str","description":"x","required":true,"enum_values":null}]}'
+            )
+            result = runner.invoke(
+                cli, ["schema", "refine", "--schema", "TestModel", "--add", "y: int"]
+            )
+            assert result.exit_code == 0
+            assert "y" in result.output
+        finally:
+            get_config.cache_clear()
+
+    def test_schema_refine_remove_field(self, runner: CliRunner, tmp_path: Path, monkeypatch):
+        """schema refine --remove removes a field."""
+        monkeypatch.setenv("MOSAICX_HOME_DIR", str(tmp_path))
+        from mosaicx.config import get_config
+
+        get_config.cache_clear()
+        try:
+            schema_dir = tmp_path / "schemas"
+            schema_dir.mkdir()
+            (schema_dir / "TestModel.json").write_text(
+                '{"class_name":"TestModel","description":"Test","fields":[{"name":"x","type":"str","description":"x","required":true,"enum_values":null},{"name":"y","type":"int","description":"y","required":true,"enum_values":null}]}'
+            )
+            result = runner.invoke(
+                cli, ["schema", "refine", "--schema", "TestModel", "--remove", "y"]
+            )
+            assert result.exit_code == 0
+            assert "removed" in result.output or "Removed" in result.output
+        finally:
+            get_config.cache_clear()
+
+    def test_schema_refine_rename_field(self, runner: CliRunner, tmp_path: Path, monkeypatch):
+        """schema refine --rename renames a field."""
+        monkeypatch.setenv("MOSAICX_HOME_DIR", str(tmp_path))
+        from mosaicx.config import get_config
+
+        get_config.cache_clear()
+        try:
+            schema_dir = tmp_path / "schemas"
+            schema_dir.mkdir()
+            (schema_dir / "TestModel.json").write_text(
+                '{"class_name":"TestModel","description":"Test","fields":[{"name":"x","type":"str","description":"x","required":true,"enum_values":null}]}'
+            )
+            result = runner.invoke(
+                cli, ["schema", "refine", "--schema", "TestModel", "--rename", "x=name"]
+            )
+            assert result.exit_code == 0
+            assert "name" in result.output
+        finally:
+            get_config.cache_clear()
+
+    def test_schema_refine_not_found(self, runner: CliRunner, tmp_path: Path, monkeypatch):
+        """schema refine with nonexistent schema shows error."""
+        monkeypatch.setenv("MOSAICX_HOME_DIR", str(tmp_path))
+        from mosaicx.config import get_config
+
+        get_config.cache_clear()
+        try:
+            result = runner.invoke(
+                cli, ["schema", "refine", "--schema", "Missing", "--add", "x: str"]
+            )
+            assert result.exit_code != 0
+            assert "not found" in result.output.lower()
+        finally:
+            get_config.cache_clear()
+
+    def test_schema_refine_no_operation(self, runner: CliRunner, tmp_path: Path, monkeypatch):
+        """schema refine without any operation flag shows error."""
+        monkeypatch.setenv("MOSAICX_HOME_DIR", str(tmp_path))
+        from mosaicx.config import get_config
+
+        get_config.cache_clear()
+        try:
+            schema_dir = tmp_path / "schemas"
+            schema_dir.mkdir()
+            (schema_dir / "TestModel.json").write_text(
+                '{"class_name":"TestModel","description":"Test","fields":[{"name":"x","type":"str","description":"x","required":true,"enum_values":null}]}'
+            )
+            result = runner.invoke(
+                cli, ["schema", "refine", "--schema", "TestModel"]
+            )
+            assert result.exit_code != 0
+            assert "Provide" in result.output
+        finally:
+            get_config.cache_clear()
+
 
 # -------------------------------------------------------------------------
 # Version and help

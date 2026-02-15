@@ -427,9 +427,108 @@ def schema_list() -> None:
 
 
 @schema.command("refine")
-def schema_refine() -> None:
+@click.option("--schema", "schema_name", type=str, required=True, help="Name of the schema to refine.")
+@click.option("--instruction", type=str, default=None, help="Natural-language refinement instruction (uses LLM).")
+@click.option("--add", "add_field_str", type=str, default=None, help="Add a field: 'field_name: type'.")
+@click.option("--remove", "remove_field_name", type=str, default=None, help="Remove a field by name.")
+@click.option("--rename", "rename_str", type=str, default=None, help="Rename a field: 'old_name=new_name'.")
+def schema_refine(
+    schema_name: str,
+    instruction: Optional[str],
+    add_field_str: Optional[str],
+    remove_field_name: Optional[str],
+    rename_str: Optional[str],
+) -> None:
     """Refine an existing schema."""
-    console.print(theme.info("schema refine \u2014 not yet implemented"))
+    from .pipelines.schema_gen import (
+        load_schema, save_schema, compile_schema,
+        add_field, remove_field, rename_field,
+    )
+
+    cfg = get_config()
+
+    try:
+        spec = load_schema(schema_name, cfg.schema_dir)
+    except FileNotFoundError:
+        raise click.ClickException(f"Schema not found: {schema_name}")
+
+    old_field_names = {f.name for f in spec.fields}
+
+    if instruction:
+        # LLM-driven refinement
+        _configure_dspy()
+        from .pipelines.schema_gen import SchemaRefiner
+
+        refiner = SchemaRefiner()
+        with theme.spinner("Refining schema... one does not simply edit a schema", console):
+            result = refiner(
+                current_schema=spec.model_dump_json(indent=2),
+                instruction=instruction,
+            )
+        spec = result.schema_spec
+
+    elif add_field_str:
+        # --add "field_name: type"
+        parts = add_field_str.split(":", 1)
+        if len(parts) != 2:
+            raise click.ClickException("--add format: 'field_name: type'")
+        fname, ftype = parts[0].strip(), parts[1].strip()
+        spec = add_field(spec, fname, ftype)
+
+    elif remove_field_name:
+        try:
+            spec = remove_field(spec, remove_field_name)
+        except ValueError as exc:
+            raise click.ClickException(str(exc))
+
+    elif rename_str:
+        parts = rename_str.split("=", 1)
+        if len(parts) != 2:
+            raise click.ClickException("--rename format: 'old_name=new_name'")
+        old, new = parts[0].strip(), parts[1].strip()
+        try:
+            spec = rename_field(spec, old, new)
+        except ValueError as exc:
+            raise click.ClickException(str(exc))
+
+    else:
+        raise click.ClickException(
+            "Provide --instruction, --add, --remove, or --rename"
+        )
+
+    # Verify the schema compiles
+    try:
+        compiled = compile_schema(spec)
+    except Exception as exc:
+        raise click.ClickException(f"Refined schema failed to compile: {exc}")
+
+    # Save back
+    save_schema(spec, schema_dir=cfg.schema_dir)
+
+    # Show changes
+    new_field_names = {f.name for f in spec.fields}
+    added = new_field_names - old_field_names
+    removed = old_field_names - new_field_names
+
+    console.print(theme.ok("Schema refined \u2014 evolution, not revolution"))
+
+    if added:
+        for name in sorted(added):
+            f = next(f for f in spec.fields if f.name == name)
+            console.print(theme.info(f"+ {name} ({f.type})"))
+    if removed:
+        for name in sorted(removed):
+            console.print(theme.info(f"- {name} (removed)"))
+
+    # Show renamed (detected by same position, different name)
+    if rename_str and "=" in rename_str:
+        old_n, new_n = rename_str.split("=", 1)
+        console.print(theme.info(f"~ {old_n.strip()} \u2192 {new_n.strip()}"))
+
+    console.print(theme.info(f"Model: {compiled.__name__}"))
+    console.print(theme.info(
+        f"Fields: {', '.join(compiled.model_fields.keys())}"
+    ))
 
 
 # ---------------------------------------------------------------------------
