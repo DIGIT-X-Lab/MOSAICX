@@ -265,6 +265,50 @@ export MOSAICX_API_BASE=https://api.openai.com/v1
 
 For vLLM the model name must match what the server loaded. For llama.cpp any name works (only one model loaded at a time). The default `api_key` (`ollama`) is ignored by servers that don't check auth.
 
+### Batch processing on a GPU server (vLLM)
+
+For batch-processing many documents, **vLLM** is recommended over Ollama. It uses continuous batching and PagedAttention to handle concurrent requests efficiently without duplicating VRAM per slot.
+
+**On the GPU server** (e.g., DGX Spark with 128 GB VRAM):
+
+```bash
+# Large model (120B) — constrain concurrency to avoid OOM
+vllm serve gpt-oss:120b \
+  --gpu-memory-utilization 0.90 \
+  --max-num-seqs 4 \
+  --port 8000
+
+# Smaller model (20B) — higher concurrency, faster throughput
+vllm serve gpt-oss:20b \
+  --gpu-memory-utilization 0.90 \
+  --max-num-seqs 16 \
+  --port 8000
+```
+
+**On your local machine:**
+
+```bash
+# 1. SSH tunnel
+ssh -L 8000:localhost:8000 user@dgx-spark
+
+# 2. Point MOSAICX at vLLM
+export MOSAICX_LM=openai/gpt-oss:120b
+export MOSAICX_API_BASE=http://localhost:8000/v1
+export MOSAICX_API_KEY=dummy
+
+# 3. Match --workers to --max-num-seqs on the server
+mosaicx batch --input-dir ./reports --output-dir ./structured \
+  --mode radiology --format jsonl --workers 4
+```
+
+| Setup | `--max-num-seqs` | `--workers` | Notes |
+|-------|-----------------|-------------|-------|
+| 120B, 128 GB VRAM | 4 | 4 | Best quality, moderate speed |
+| 20B, 128 GB VRAM | 16 | 16 | Faster throughput, good quality |
+| 120B quantized (AWQ) | 8 | 8 | Balance of quality and speed |
+
+> **Tip:** Setting `--workers` higher than `--max-num-seqs` wastes overhead — requests queue on the server side. Keep them matched.
+
 ## OCR engines
 
 MOSAICX ships with two OCR engines that run in parallel by default:
