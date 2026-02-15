@@ -362,21 +362,31 @@ def schema() -> None:
 @schema.command("generate")
 @click.option("--description", type=str, required=True, help="Natural-language description of the schema.")
 @click.option("--example-text", type=str, default="", help="Optional example document text for grounding.")
-def schema_generate(description: str, example_text: str) -> None:
+@click.option("--output", type=click.Path(path_type=Path), default=None, help="Save schema to this path (default: ~/.mosaicx/schemas/).")
+def schema_generate(description: str, example_text: str, output: Optional[Path]) -> None:
     """Generate a Pydantic schema from a description."""
     _configure_dspy()
 
-    from .pipelines.schema_gen import SchemaGenerator
+    from .pipelines.schema_gen import SchemaGenerator, save_schema
 
     generator = SchemaGenerator()
     with theme.spinner("Generating schema... hold my beer", console):
         result = generator(description=description, example_text=example_text)
+
+    # Save schema
+    cfg = get_config()
+    saved_path = save_schema(
+        result.schema_spec,
+        schema_dir=None if output else cfg.schema_dir,
+        output_path=output,
+    )
 
     console.print(theme.ok("Schema generated \u2014 it's alive!"))
     console.print(theme.info(f"Model: {result.compiled_model.__name__}"))
     console.print(theme.info(
         f"Fields: {', '.join(result.compiled_model.model_fields.keys())}"
     ))
+    console.print(theme.info(f"Saved: {saved_path}"))
 
     theme.section("Schema Spec", console)
     from rich.json import JSON

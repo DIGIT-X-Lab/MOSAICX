@@ -491,6 +491,11 @@ class TestVersionAndHelp:
         assert result.exit_code == 0
         assert "--description" in result.output
 
+    def test_schema_generate_help_shows_output(self, runner: CliRunner):
+        result = runner.invoke(cli, ["schema", "generate", "--help"])
+        assert result.exit_code == 0
+        assert "--output" in result.output
+
     def test_template_validate_help_shows_file(self, runner: CliRunner):
         result = runner.invoke(cli, ["template", "validate", "--help"])
         assert result.exit_code == 0
