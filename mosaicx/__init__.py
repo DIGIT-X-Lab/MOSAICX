@@ -27,22 +27,38 @@ Key Modules:
 - ``mosaicx.constants``: Centralised configuration, metadata, and styling.
 """
 
-from .mosaicx import main
-from .display import show_main_banner, console
-from .api import (
-    generate_schema,
-    extract_pdf,
-    summarize_reports,
-    GeneratedSchema,
-    ExtractionResult,
-)
+# v2-rewrite: gracefully degrade v1 imports that may not yet work in v2 env
+try:
+    from .mosaicx import main
+    from .display import show_main_banner, console
+    from .api import (
+        generate_schema,
+        extract_pdf,
+        summarize_reports,
+        GeneratedSchema,
+        ExtractionResult,
+    )
+except Exception:  # noqa: BLE001
+    main = None  # type: ignore[assignment]
+    show_main_banner = None  # type: ignore[assignment]
+    console = None  # type: ignore[assignment]
+    generate_schema = None  # type: ignore[assignment]
+    extract_pdf = None  # type: ignore[assignment]
+    summarize_reports = None  # type: ignore[assignment]
+    GeneratedSchema = None  # type: ignore[assignment]
+    ExtractionResult = None  # type: ignore[assignment]
 
 # Import metadata from constants
-from .constants import (
-    APPLICATION_VERSION as __version__,
-    AUTHOR_NAME as __author__,
-    AUTHOR_EMAIL as __email__
-)
+try:
+    from .constants import (
+        APPLICATION_VERSION as __version__,
+        AUTHOR_NAME as __author__,
+        AUTHOR_EMAIL as __email__
+    )
+except Exception:  # noqa: BLE001
+    __version__ = "2.0.0a1"
+    __author__ = "Lalith Kumar Shiyam Sundar"
+    __email__ = "lalith.shiyam@med.uni-muenchen.de"
 
 __all__ = [
     "main",
