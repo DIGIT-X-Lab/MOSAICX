@@ -241,6 +241,40 @@ def list_schemas(schema_dir: Path) -> list[SchemaSpec]:
 # of this module (FieldSpec, SchemaSpec, compile_schema) remain importable
 # even when dspy is not installed or broken at import time.
 
+# ---------------------------------------------------------------------------
+# Field manipulation helpers (for CLI-flag refinement)
+# ---------------------------------------------------------------------------
+
+
+def add_field(spec: SchemaSpec, name: str, type_str: str, description: str = "", required: bool = True) -> SchemaSpec:
+    """Return a new SchemaSpec with an additional field."""
+    new_field = FieldSpec(name=name, type=type_str, description=description, required=required)
+    return spec.model_copy(update={"fields": [*spec.fields, new_field]})
+
+
+def remove_field(spec: SchemaSpec, name: str) -> SchemaSpec:
+    """Return a new SchemaSpec with the named field removed."""
+    new_fields = [f for f in spec.fields if f.name != name]
+    if len(new_fields) == len(spec.fields):
+        raise ValueError(f"Field {name!r} not found in schema")
+    return spec.model_copy(update={"fields": new_fields})
+
+
+def rename_field(spec: SchemaSpec, old_name: str, new_name: str) -> SchemaSpec:
+    """Return a new SchemaSpec with a field renamed."""
+    found = False
+    new_fields = []
+    for f in spec.fields:
+        if f.name == old_name:
+            new_fields.append(f.model_copy(update={"name": new_name}))
+            found = True
+        else:
+            new_fields.append(f)
+    if not found:
+        raise ValueError(f"Field {old_name!r} not found in schema")
+    return spec.model_copy(update={"fields": new_fields})
+
+
 def _build_dspy_classes():
     """Lazily define and return DSPy signature/module classes.
 

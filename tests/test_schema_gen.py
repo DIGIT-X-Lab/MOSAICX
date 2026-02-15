@@ -148,6 +148,60 @@ class TestSchemaStorage:
         assert custom.exists()
 
 
+class TestSchemaFieldOps:
+    """Test direct field manipulation for CLI-flag refinement."""
+
+    def _base_spec(self):
+        from mosaicx.pipelines.schema_gen import SchemaSpec, FieldSpec
+
+        return SchemaSpec(
+            class_name="Test",
+            description="Test",
+            fields=[
+                FieldSpec(name="name", type="str", description="Name", required=True),
+                FieldSpec(name="age", type="int", description="Age", required=True),
+            ],
+        )
+
+    def test_add_field(self):
+        from mosaicx.pipelines.schema_gen import add_field
+
+        spec = self._base_spec()
+        updated = add_field(spec, "email", "str")
+        assert len(updated.fields) == 3
+        assert updated.fields[-1].name == "email"
+        assert updated.fields[-1].type == "str"
+
+    def test_remove_field(self):
+        from mosaicx.pipelines.schema_gen import remove_field
+
+        spec = self._base_spec()
+        updated = remove_field(spec, "age")
+        assert len(updated.fields) == 1
+        assert updated.fields[0].name == "name"
+
+    def test_remove_nonexistent_raises(self):
+        from mosaicx.pipelines.schema_gen import remove_field
+
+        spec = self._base_spec()
+        with pytest.raises(ValueError, match="not found"):
+            remove_field(spec, "nonexistent")
+
+    def test_rename_field(self):
+        from mosaicx.pipelines.schema_gen import rename_field
+
+        spec = self._base_spec()
+        updated = rename_field(spec, "name", "full_name")
+        assert updated.fields[0].name == "full_name"
+
+    def test_rename_nonexistent_raises(self):
+        from mosaicx.pipelines.schema_gen import rename_field
+
+        spec = self._base_spec()
+        with pytest.raises(ValueError, match="not found"):
+            rename_field(spec, "nonexistent", "new_name")
+
+
 class TestSchemaGeneratorSignature:
     """Test the DSPy signature exists and has correct fields."""
 
