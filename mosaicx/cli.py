@@ -505,19 +505,18 @@ def schema_list() -> None:
 
     t = theme.make_clean_table()
     t.add_column("Name", style=f"bold {theme.CORAL}", no_wrap=True)
-    t.add_column("Fields", style="magenta", justify="right")
-    t.add_column("Description")
-    t.add_column("Path", style=theme.MUTED)
+    t.add_column("Fields", style=f"{theme.GREIGE}", justify="right")
+    t.add_column("Description", style=theme.MUTED, max_width=48)
 
     for spec in specs:
         t.add_row(
             spec.class_name,
             str(len(spec.fields)),
-            spec.description[:60] if spec.description else "\u2014",
-            str(cfg.schema_dir / f"{spec.class_name}.json"),
+            spec.description if spec.description else "\u2014",
         )
 
-    console.print(t)
+    console.print(Padding(t, (0, 0, 0, 2)))
+    console.print()
     console.print(theme.info(f"{len(specs)} schema(s) saved in {cfg.schema_dir}"))
 
 
