@@ -392,12 +392,12 @@ def extract(
         console.print(theme.ok(f"Saved to {output}"))
 
     theme.section("Extracted Data", console)
-    from rich.syntax import Syntax
+    from .cli_display import render_extracted_data
 
-    console.print(Padding(
-        Syntax(json.dumps(output_data, indent=2, default=str, ensure_ascii=False), "json", word_wrap=True, theme="monokai"),
-        (0, 0, 0, 2),
-    ))
+    render_extracted_data(output_data, console)
+    if output is None:
+        console.print()
+        console.print(theme.info("Use -o/--output file.json to save full structured data"))
 
 
 # ---------------------------------------------------------------------------
