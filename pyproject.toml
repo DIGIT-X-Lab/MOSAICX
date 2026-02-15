@@ -32,6 +32,7 @@ dependencies = [
     "dspy>=2.6.0",
     "surya-ocr>=0.17.0",
     "chandra-ocr>=0.1.8",
+    "python-cfonts>=1.5.0",
     "pypdfium2>=4.0.0",
     "Pillow>=10.0.0",
     "pyyaml>=6.0",
