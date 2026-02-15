@@ -304,14 +304,10 @@ def extract(
     # Format output as JSON
     output: dict = {}
     if hasattr(result, "extracted"):
-        output["extracted"] = result.extracted.model_dump() if hasattr(result.extracted, "model_dump") else str(result.extracted)
-    else:
-        if hasattr(result, "demographics"):
-            output["demographics"] = result.demographics.model_dump()
-        if hasattr(result, "findings"):
-            output["findings"] = [f.model_dump() for f in result.findings]
-        if hasattr(result, "diagnoses"):
-            output["diagnoses"] = [d.model_dump() for d in result.diagnoses]
+        val = result.extracted
+        output["extracted"] = val.model_dump() if hasattr(val, "model_dump") else val
+    if hasattr(result, "inferred_schema"):
+        output["inferred_schema"] = result.inferred_schema.model_dump()
 
     theme.section("Extracted Data", console)
     from rich.json import JSON

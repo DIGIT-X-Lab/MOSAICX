@@ -90,15 +90,15 @@ def extract(
     document_path:
         Path to the document file (PDF, DOCX, TXT, etc.).
     template:
-        Template name, YAML file path, or ``"auto"`` for the default
-        3-step demographics/findings/diagnoses extraction.
+        Template name, YAML file path, or ``"auto"`` for auto-infer
+        extraction (LLM infers schema from document).
 
     Returns
     -------
     dict
-        Extraction results.  In default (auto) mode the keys are
-        ``demographics``, ``findings``, and ``diagnoses``.  In custom
-        template mode the key is ``extracted``.
+        Extraction results.  The key ``extracted`` contains the
+        structured data.  In auto mode, ``inferred_schema`` is also
+        included.
     """
     from .pipelines.extraction import DocumentExtractor  # lazy (triggers dspy)
 
@@ -136,13 +136,8 @@ def extract(
         output["extracted"] = (
             val.model_dump() if hasattr(val, "model_dump") else val
         )
-    else:
-        if hasattr(result, "demographics"):
-            output["demographics"] = result.demographics.model_dump()
-        if hasattr(result, "findings"):
-            output["findings"] = [f.model_dump() for f in result.findings]
-        if hasattr(result, "diagnoses"):
-            output["diagnoses"] = [d.model_dump() for d in result.diagnoses]
+    if hasattr(result, "inferred_schema"):
+        output["inferred_schema"] = result.inferred_schema.model_dump()
     return output
 
 

@@ -1,148 +1,115 @@
 # mosaicx/pipelines/extraction.py
-"""Generic document extraction pipeline.
+"""Document extraction pipeline.
 
-Provides a 3-step DSPy chain for extracting structured data from medical
-documents: demographics, findings, and diagnoses.  Also supports a custom
-schema mode where an arbitrary Pydantic model is used as the output type.
+Provides schema-first extraction from medical documents. Two modes:
 
-Key components:
-    - Demographics, Finding, Diagnosis: Pydantic output models (no dspy dep).
-    - ExtractDemographics / ExtractFindings / ExtractDiagnoses: DSPy Signatures.
-    - DocumentExtractor: DSPy Module orchestrating the full pipeline.
+**Auto mode** (no output_schema):
+    1. LLM infers a SchemaSpec from the document text.
+    2. SchemaSpec is compiled into a Pydantic model.
+    3. Single-step extraction into the inferred model.
 
-The DSPy-dependent classes are lazily imported so that the Pydantic models
-remain importable even when dspy is not installed.  This follows the same
-pattern established in ``mosaicx.pipelines.schema_gen``.
+**Schema mode** (output_schema provided):
+    Single-step ChainOfThought extraction into the provided Pydantic model.
+
+Convenience functions:
+    - extract_with_schema(): Load a saved schema by name and extract.
+    - extract_with_mode(): Run a registered extraction mode pipeline.
 """
+from pathlib import Path
+from typing import Any
 
-from __future__ import annotations
-
-from typing import TYPE_CHECKING, List, Optional
-
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 
 # ---------------------------------------------------------------------------
-# Pydantic output models (no dspy dependency)
+# Convenience functions (no DSPy dependency at import time)
 # ---------------------------------------------------------------------------
 
-class Demographics(BaseModel):
-    """Patient demographic information extracted from a document."""
 
-    patient_id: Optional[str] = Field(None, description="Patient identifier")
-    name: Optional[str] = Field(None, description="Patient name")
-    age: Optional[int] = Field(None, description="Patient age in years")
-    gender: Optional[str] = Field(None, description="Patient gender")
-    date_of_birth: Optional[str] = Field(
-        None, description="Patient date of birth"
-    )
+def extract_with_schema(document_text: str, schema_name: str, schema_dir: Path) -> dict[str, Any]:
+    """Load a saved schema by name and extract into it.
 
+    Args:
+        document_text: Full text of the document.
+        schema_name: Name of the schema (without .json extension).
+        schema_dir: Directory where schemas are stored.
 
-class Finding(BaseModel):
-    """A single clinical finding extracted from a document."""
+    Returns:
+        Dict with the extracted data matching the schema fields.
+    """
+    from .schema_gen import load_schema, compile_schema
 
-    description: str = Field(..., description="Description of the finding")
-    location: Optional[str] = Field(
-        None, description="Anatomical location of the finding"
-    )
-    severity: Optional[str] = Field(
-        None, description="Severity level (e.g., mild, moderate, severe)"
-    )
-    status: Optional[str] = Field(
-        None,
-        description="Status of the finding (e.g., new, stable, resolved)",
-    )
+    spec = load_schema(schema_name, schema_dir)
+    model = compile_schema(spec)
+    extractor = DocumentExtractor(output_schema=model)
+    result = extractor(document_text=document_text)
+    val = result.extracted
+    return val.model_dump() if hasattr(val, "model_dump") else val
 
 
-class Diagnosis(BaseModel):
-    """A clinical diagnosis extracted from a document."""
+def extract_with_mode(document_text: str, mode_name: str) -> dict[str, Any]:
+    """Run a registered extraction mode pipeline.
 
-    name: str = Field(..., description="Name of the diagnosis")
-    icd10_code: Optional[str] = Field(
-        None, description="ICD-10 code for the diagnosis"
-    )
-    confidence: Optional[float] = Field(
-        None, description="Confidence score (0-1) for the diagnosis"
-    )
+    Args:
+        document_text: Full text of the document.
+        mode_name: Name of the registered mode (e.g., "radiology", "pathology").
+
+    Returns:
+        Dict with the extracted data from the mode's pipeline.
+    """
+    from .modes import get_mode
+
+    mode_cls = get_mode(mode_name)
+    pipeline = mode_cls()
+    result = pipeline(report_text=document_text)
+    # Convert dspy.Prediction to dict
+    output: dict[str, Any] = {}
+    for key in result.keys():
+        val = getattr(result, key)
+        if hasattr(val, "model_dump"):
+            output[key] = val.model_dump()
+        elif isinstance(val, list):
+            output[key] = [v.model_dump() if hasattr(v, "model_dump") else v for v in val]
+        else:
+            output[key] = val
+    return output
 
 
 # ---------------------------------------------------------------------------
 # DSPy Signatures & Module (lazy)
 # ---------------------------------------------------------------------------
-# We defer all dspy imports so the Pydantic models above stay importable
-# even when dspy is not installed or has import issues.
 
 
 def _build_dspy_classes():
-    """Lazily define and return DSPy signatures and the DocumentExtractor module.
+    """Lazily define and return DSPy signatures and the DocumentExtractor module."""
+    import dspy
 
-    Called on first access via module-level ``__getattr__``.
-    """
-    import dspy  # noqa: F811  -- intentional lazy import
+    from .schema_gen import SchemaSpec, compile_schema
 
-    # -- Signatures --------------------------------------------------------
-
-    class ExtractDemographics(dspy.Signature):
-        """Extract patient demographic information from a medical document."""
+    class InferSchemaFromDocument(dspy.Signature):
+        """Infer a structured schema from a document's content.
+        Analyze the document and determine what fields should be extracted."""
 
         document_text: str = dspy.InputField(
-            desc="Full text of the medical document"
+            desc="First portion of the document text to analyze"
         )
-        demographics: Demographics = dspy.OutputField(
-            desc="Extracted patient demographics"
+        schema_spec: SchemaSpec = dspy.OutputField(
+            desc="Inferred schema specification describing what to extract"
         )
-
-    class ExtractFindings(dspy.Signature):
-        """Extract clinical findings from a medical document."""
-
-        document_text: str = dspy.InputField(
-            desc="Full text of the medical document"
-        )
-        demographics_context: str = dspy.InputField(
-            desc="Previously extracted demographics context for grounding",
-            default="",
-        )
-        findings: List[Finding] = dspy.OutputField(
-            desc="List of clinical findings extracted from the document"
-        )
-
-    class ExtractDiagnoses(dspy.Signature):
-        """Extract clinical diagnoses from a medical document."""
-
-        document_text: str = dspy.InputField(
-            desc="Full text of the medical document"
-        )
-        findings_context: str = dspy.InputField(
-            desc="Previously extracted findings context for grounding",
-            default="",
-        )
-        diagnoses: List[Diagnosis] = dspy.OutputField(
-            desc="List of clinical diagnoses extracted from the document"
-        )
-
-    # -- Module ------------------------------------------------------------
 
     class DocumentExtractor(dspy.Module):
-        """DSPy Module for generic medical document extraction.
+        """DSPy Module for document extraction.
 
-        Operates in one of two modes:
-
-        **Default mode** (no ``output_schema``):
-            3-step chain:
-            1. Extract demographics from the document text.
-            2. Extract findings, using demographics as context.
-            3. Extract diagnoses, using findings as context.
-
-        **Custom schema mode** (``output_schema`` provided):
-            A single ChainOfThought step that outputs the provided
-            Pydantic model type, exposed as ``extract_custom``.
+        Two modes:
+        - **Auto mode** (no output_schema): infers schema from doc, then extracts.
+        - **Schema mode** (output_schema provided): extracts directly into schema.
         """
 
         def __init__(self, output_schema: type[BaseModel] | None = None) -> None:
             super().__init__()
 
             if output_schema is not None:
-                # Custom schema mode: single extraction step
+                # Schema mode: single extraction step
                 custom_sig = dspy.Signature(
                     "document_text -> extracted",
                     instructions=(
@@ -160,58 +127,50 @@ def _build_dspy_classes():
                 )
                 self.extract_custom = dspy.ChainOfThought(custom_sig)
             else:
-                # Default 3-step chain mode
-                self.extract_demographics = dspy.ChainOfThought(
-                    ExtractDemographics
-                )
-                self.extract_findings = dspy.ChainOfThought(ExtractFindings)
-                self.extract_diagnoses = dspy.ChainOfThought(ExtractDiagnoses)
+                # Auto mode: infer schema then extract
+                self.infer_schema = dspy.ChainOfThought(InferSchemaFromDocument)
+                # extract_custom is created dynamically in forward()
 
         def forward(self, document_text: str) -> dspy.Prediction:
-            """Run the extraction pipeline.
-
-            Returns a ``dspy.Prediction`` with the following keys:
-
-            - Default mode: ``demographics``, ``findings``, ``diagnoses``
-            - Custom mode: ``extracted``
-            """
-            if hasattr(self, "extract_custom"):
+            """Run the extraction pipeline."""
+            if hasattr(self, "extract_custom") and not hasattr(self, "infer_schema"):
+                # Schema mode
                 result = self.extract_custom(document_text=document_text)
                 return dspy.Prediction(extracted=result.extracted)
 
-            # Step 1: demographics
-            demo_result = self.extract_demographics(
-                document_text=document_text
+            # Auto mode: infer schema, compile, extract
+            infer_result = self.infer_schema(
+                document_text=document_text[:2000]
             )
-            demographics: Demographics = demo_result.demographics
+            spec: SchemaSpec = infer_result.schema_spec
+            model = compile_schema(spec)
 
-            # Step 2: findings (demographics as context)
-            findings_result = self.extract_findings(
-                document_text=document_text,
-                demographics_context=demographics.model_dump_json(),
+            # Build dynamic extraction signature
+            extract_sig = dspy.Signature(
+                "document_text -> extracted",
+                instructions=(
+                    f"Extract structured data matching the "
+                    f"{model.__name__} schema from the document."
+                ),
+            ).with_updated_fields(
+                "document_text",
+                desc="Full text of the document",
+                type_=str,
+            ).with_updated_fields(
+                "extracted",
+                desc=f"Extracted {model.__name__} data",
+                type_=model,
             )
-            findings: List[Finding] = findings_result.findings
-
-            # Step 3: diagnoses (findings as context)
-            findings_json = "[" + ", ".join(
-                f.model_dump_json() for f in findings
-            ) + "]"
-            diagnoses_result = self.extract_diagnoses(
-                document_text=document_text,
-                findings_context=findings_json,
-            )
-            diagnoses: List[Diagnosis] = diagnoses_result.diagnoses
+            extract_step = dspy.ChainOfThought(extract_sig)
+            result = extract_step(document_text=document_text)
 
             return dspy.Prediction(
-                demographics=demographics,
-                findings=findings,
-                diagnoses=diagnoses,
+                extracted=result.extracted,
+                inferred_schema=spec,
             )
 
     return {
-        "ExtractDemographics": ExtractDemographics,
-        "ExtractFindings": ExtractFindings,
-        "ExtractDiagnoses": ExtractDiagnoses,
+        "InferSchemaFromDocument": InferSchemaFromDocument,
         "DocumentExtractor": DocumentExtractor,
     }
 
@@ -220,9 +179,7 @@ def _build_dspy_classes():
 _dspy_classes: dict[str, type] | None = None
 
 _DSPY_CLASS_NAMES = frozenset({
-    "ExtractDemographics",
-    "ExtractFindings",
-    "ExtractDiagnoses",
+    "InferSchemaFromDocument",
     "DocumentExtractor",
 })
 
