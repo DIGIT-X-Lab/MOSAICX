@@ -53,6 +53,28 @@ def _configure_dspy() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Document loading helper (OCR config wiring)
+# ---------------------------------------------------------------------------
+
+
+def _load_doc_with_config(path: Path) -> "LoadedDocument":
+    """Load a document using OCR settings from config."""
+    from .documents.loader import load_document
+    from .config import get_config
+
+    cfg = get_config()
+    return load_document(
+        path,
+        ocr_engine=cfg.ocr_engine,
+        force_ocr=cfg.force_ocr,
+        ocr_langs=cfg.ocr_langs,
+        chandra_backend=cfg.chandra_backend if cfg.chandra_backend != "auto" else None,
+        quality_threshold=cfg.quality_threshold,
+        page_timeout=cfg.ocr_page_timeout,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Public API wrappers
 # ---------------------------------------------------------------------------
 
@@ -78,10 +100,9 @@ def extract(
         ``demographics``, ``findings``, and ``diagnoses``.  In custom
         template mode the key is ``extracted``.
     """
-    from .documents.loader import load_document  # lazy
     from .pipelines.extraction import DocumentExtractor  # lazy (triggers dspy)
 
-    doc = load_document(Path(document_path))
+    doc = _load_doc_with_config(Path(document_path))
 
     # Resolve template to an output schema
     output_schema = None
@@ -141,12 +162,11 @@ def summarize(
         Keys: ``events`` (list of timeline event dicts) and
         ``narrative`` (str).
     """
-    from .documents.loader import load_document  # lazy
     from .pipelines.summarizer import ReportSummarizer  # lazy (triggers dspy)
 
     report_texts: list[str] = []
     for p in document_paths:
-        doc = load_document(Path(p))
+        doc = _load_doc_with_config(Path(p))
         report_texts.append(doc.text)
 
     if not report_texts:

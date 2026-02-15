@@ -74,6 +74,28 @@ def _configure_dspy() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Document loading helper (OCR config wiring)
+# ---------------------------------------------------------------------------
+
+
+def _load_doc_with_config(path: Path) -> "LoadedDocument":
+    """Load a document using OCR settings from config."""
+    from .documents.loader import load_document
+    from .documents.models import LoadedDocument  # noqa: F811 — for type only
+
+    cfg = get_config()
+    return load_document(
+        path,
+        ocr_engine=cfg.ocr_engine,
+        force_ocr=cfg.force_ocr,
+        ocr_langs=cfg.ocr_langs,
+        chandra_backend=cfg.chandra_backend if cfg.chandra_backend != "auto" else None,
+        quality_threshold=cfg.quality_threshold,
+        page_timeout=cfg.ocr_page_timeout,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Main CLI group
 # ---------------------------------------------------------------------------
 
@@ -110,12 +132,15 @@ def extract(
         raise click.ClickException("--document is required.")
 
     # Load the document
-    from .documents.loader import load_document
+    from .documents.models import DocumentLoadError
 
     try:
-        doc = load_document(document)
-    except (FileNotFoundError, ValueError) as exc:
+        doc = _load_doc_with_config(document)
+    except (FileNotFoundError, ValueError, DocumentLoadError) as exc:
         raise click.ClickException(str(exc))
+
+    if doc.quality_warning:
+        console.print("[yellow]Warning: Low OCR quality detected. Results may be unreliable.[/yellow]")
 
     if doc.is_empty:
         raise click.ClickException(f"Document is empty: {document}")
@@ -357,16 +382,18 @@ def summarize(
     formats: tuple[str, ...],
 ) -> None:
     """Summarize clinical reports for a patient."""
-    from .documents.loader import load_document
+    from .documents.models import DocumentLoadError
 
     # Collect report texts
     report_texts: list[str] = []
 
     if document is not None:
         try:
-            doc = load_document(document)
-        except (FileNotFoundError, ValueError) as exc:
+            doc = _load_doc_with_config(document)
+        except (FileNotFoundError, ValueError, DocumentLoadError) as exc:
             raise click.ClickException(str(exc))
+        if doc.quality_warning:
+            console.print("[yellow]Warning: Low OCR quality detected. Results may be unreliable.[/yellow]")
         report_texts.append(doc.text)
     elif directory is not None:
         if not directory.is_dir():
@@ -374,7 +401,9 @@ def summarize(
         for p in sorted(directory.iterdir()):
             if p.suffix.lower() in (".txt", ".md", ".markdown"):
                 try:
-                    doc = load_document(p)
+                    doc = _load_doc_with_config(p)
+                    if doc.quality_warning:
+                        console.print("[yellow]Warning: Low OCR quality detected. Results may be unreliable.[/yellow]")
                     report_texts.append(doc.text)
                 except Exception:
                     console.print(f"[yellow]Skipping {p.name}: unsupported or unreadable[/yellow]")
@@ -458,16 +487,18 @@ def deidentify(
         # Full LLM + regex pipeline
         _configure_dspy()
 
-        from .documents.loader import load_document
+        from .documents.models import DocumentLoadError
         from .pipelines.deidentifier import Deidentifier
 
         deid = Deidentifier()
         for p in paths:
             try:
-                doc = load_document(p)
-            except (FileNotFoundError, ValueError) as exc:
+                doc = _load_doc_with_config(p)
+            except (FileNotFoundError, ValueError, DocumentLoadError) as exc:
                 console.print(f"[yellow]Skipping {p.name}: {exc}[/yellow]")
                 continue
+            if doc.quality_warning:
+                console.print("[yellow]Warning: Low OCR quality detected. Results may be unreliable.[/yellow]")
             result = deid(document_text=doc.text, mode=mode)
             console.print(f"\n[bold]--- {p.name} ---[/bold]")
             console.print(result.redacted_text)
