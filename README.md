@@ -47,6 +47,7 @@ Defaults point to Ollama on localhost — no `.env` needed for local use. See [C
 | `mosaicx batch` | Process a directory of documents in parallel |
 | `mosaicx schema generate` | Create a Pydantic schema from a plain-English description |
 | `mosaicx schema list` | List saved schemas |
+| `mosaicx schema show <name>` | Inspect a schema's fields and types |
 | `mosaicx schema refine` | Edit a schema (LLM-driven or manual field ops) |
 | `mosaicx summarize` | Synthesize a patient timeline from multiple reports |
 | `mosaicx deidentify` | Remove PHI (LLM + regex belt-and-suspenders) |

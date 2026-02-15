@@ -525,6 +525,46 @@ def schema_list() -> None:
     console.print(theme.info(f"{len(specs)} schema(s) saved in {cfg.schema_dir}"))
 
 
+@schema.command("show")
+@click.argument("schema_name")
+def schema_show(schema_name: str) -> None:
+    """Show details of a saved schema."""
+    from .pipelines.schema_gen import load_schema
+
+    cfg = get_config()
+    try:
+        spec = load_schema(schema_name, cfg.schema_dir)
+    except FileNotFoundError:
+        raise click.ClickException(f"Schema {schema_name!r} not found in {cfg.schema_dir}")
+
+    theme.section(spec.class_name, console)
+
+    if spec.description:
+        console.print(Padding(f"[{theme.MUTED}]{spec.description}[/{theme.MUTED}]", (0, 0, 0, 2)))
+        console.print()
+
+    t = theme.make_clean_table()
+    t.add_column("Field", style=f"bold {theme.CORAL}", no_wrap=True)
+    t.add_column("Type", style=theme.GREIGE)
+    t.add_column("Req", justify="center", no_wrap=True)
+    t.add_column("Description", style=theme.MUTED)
+
+    for f in spec.fields:
+        type_label = f.type
+        if f.enum_values:
+            type_label = f"enum({', '.join(f.enum_values)})"
+        t.add_row(
+            f.name,
+            type_label,
+            "[green]\u2713[/green]" if f.required else "[dim]\u2014[/dim]",
+            f.description or "\u2014",
+        )
+
+    console.print(Padding(t, (0, 0, 0, 2)))
+    console.print()
+    console.print(theme.info(f"{len(spec.fields)} fields"))
+
+
 @schema.command("refine")
 @click.option("--schema", "schema_name", type=str, required=True, help="Name of the schema to refine.")
 @click.option("--instruction", type=str, default=None, help="Natural-language refinement instruction (uses LLM).")
