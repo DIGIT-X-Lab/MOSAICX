@@ -65,8 +65,12 @@ def load_document(
     if suffix in TEXT_FORMATS:
         return _load_text(path, suffix.lstrip("."))
 
-    # PDF and image files: OCR pipeline
+    # PDF: try native text extraction first, fall back to OCR
     if suffix in PDF_FORMATS:
+        if not force_ocr:
+            native = _try_native_pdf_text(path)
+            if native is not None:
+                return native
         images = pdf_to_images(path)
     elif suffix in IMAGE_FORMATS:
         images = image_to_pages(path)
@@ -103,6 +107,44 @@ def _load_text(path: Path, fmt: str) -> LoadedDocument:
     """Load a plain text file."""
     text = path.read_text(encoding="utf-8")
     return LoadedDocument(text=text, source_path=path, format=fmt)
+
+
+def _try_native_pdf_text(path: Path) -> Optional[LoadedDocument]:
+    """Try to extract text from a PDF's native text layer.
+
+    Returns a LoadedDocument if the PDF has a usable text layer (>50 chars),
+    or None if OCR is needed.
+    """
+    try:
+        import pypdfium2
+    except ImportError:
+        return None
+
+    try:
+        pdf = pypdfium2.PdfDocument(str(path))
+        pages_text: list[str] = []
+        for page in pdf:
+            tp = page.get_textpage()
+            text = tp.get_text_bounded()
+            pages_text.append(text)
+            tp.close()
+            page.close()
+        pdf.close()
+
+        full_text = "\n\n".join(pages_text)
+        # If native text is too sparse, fall back to OCR
+        if len(full_text.strip()) < 50:
+            return None
+
+        return LoadedDocument(
+            text=full_text,
+            source_path=path,
+            format="pdf",
+            page_count=len(pages_text),
+        )
+    except Exception:
+        logger.debug("Native PDF text extraction failed for %s", path)
+        return None
 
 
 def _run_engines(
