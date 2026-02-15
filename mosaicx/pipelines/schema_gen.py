@@ -242,7 +242,7 @@ def list_schemas(schema_dir: Path) -> list[SchemaSpec]:
 # even when dspy is not installed or broken at import time.
 
 def _build_dspy_classes():
-    """Lazily define and return (GenerateSchemaSpec, SchemaGenerator).
+    """Lazily define and return DSPy signature/module classes.
 
     Called on first access via module-level __getattr__.
     """
@@ -292,23 +292,63 @@ def _build_dspy_classes():
                 compiled_model=compiled,
             )
 
-    return GenerateSchemaSpec, SchemaGenerator
+    class RefineSchemaSpec(dspy.Signature):
+        """Refine an existing schema based on user instructions.
+        Preserve existing fields unless the instruction says to change them."""
+
+        current_schema: str = dspy.InputField(
+            desc="Current SchemaSpec as JSON"
+        )
+        instruction: str = dspy.InputField(
+            desc="User instruction describing how to refine the schema"
+        )
+        refined_schema: SchemaSpec = dspy.OutputField(
+            desc="The updated SchemaSpec incorporating the requested changes"
+        )
+
+    class SchemaRefiner(dspy.Module):
+        """DSPy Module that refines an existing schema based on instructions."""
+
+        def __init__(self) -> None:
+            super().__init__()
+            self.refine = dspy.ChainOfThought(RefineSchemaSpec)
+
+        def forward(self, current_schema: str, instruction: str) -> dspy.Prediction:
+            result = self.refine(
+                current_schema=current_schema,
+                instruction=instruction,
+            )
+            spec: SchemaSpec = result.refined_schema
+            compiled = compile_schema(spec)
+            return dspy.Prediction(
+                schema_spec=spec,
+                compiled_model=compiled,
+            )
+
+    return GenerateSchemaSpec, SchemaGenerator, RefineSchemaSpec, SchemaRefiner
 
 
 # Cache for lazily-built DSPy classes
 _dspy_classes: dict[str, type] | None = None
+
+_DSPY_CLASS_NAMES = frozenset({
+    "GenerateSchemaSpec", "SchemaGenerator",
+    "RefineSchemaSpec", "SchemaRefiner",
+})
 
 
 def __getattr__(name: str):
     """Module-level __getattr__ for lazy loading of DSPy classes."""
     global _dspy_classes
 
-    if name in ("GenerateSchemaSpec", "SchemaGenerator"):
+    if name in _DSPY_CLASS_NAMES:
         if _dspy_classes is None:
-            gen_sig, gen_mod = _build_dspy_classes()
+            gen_sig, gen_mod, ref_sig, ref_mod = _build_dspy_classes()
             _dspy_classes = {
                 "GenerateSchemaSpec": gen_sig,
                 "SchemaGenerator": gen_mod,
+                "RefineSchemaSpec": ref_sig,
+                "SchemaRefiner": ref_mod,
             }
         return _dspy_classes[name]
 

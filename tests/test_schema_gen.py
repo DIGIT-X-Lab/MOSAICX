@@ -157,3 +157,15 @@ class TestSchemaGeneratorSignature:
         sig = GenerateSchemaSpec
         assert "description" in sig.input_fields
         assert "schema_spec" in sig.output_fields
+
+
+class TestSchemaRefinerSignature:
+    """Test the DSPy refinement signature exists and has correct fields."""
+
+    def test_refine_signature_has_fields(self):
+        from mosaicx.pipelines.schema_gen import RefineSchemaSpec
+
+        sig = RefineSchemaSpec
+        assert "current_schema" in sig.input_fields
+        assert "instruction" in sig.input_fields
+        assert "refined_schema" in sig.output_fields
