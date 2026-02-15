@@ -383,18 +383,18 @@ def extract(
 @cli.command()
 @click.option("--input-dir", type=click.Path(exists=False, path_type=Path), help="Directory of input documents.")
 @click.option("--output-dir", type=click.Path(path_type=Path), help="Directory for output files.")
-@click.option("--template", type=str, default="auto", help="Template name or path.")
+@click.option("--schema", "schema_name", type=str, default=None, help="Name of a saved schema from ~/.mosaicx/schemas/.")
+@click.option("--mode", type=str, default=None, help="Extraction mode name (e.g., radiology, pathology).")
 @click.option("--format", "formats", type=str, multiple=True, help="Output format(s).")
 @click.option("--workers", type=int, default=4, show_default=True, help="Number of parallel workers.")
-@click.option("--completeness-threshold", type=float, default=0.7, show_default=True, help="Minimum completeness score.")
 @click.option("--resume", is_flag=True, help="Resume from last checkpoint.")
 def batch(
     input_dir: Optional[Path],
     output_dir: Optional[Path],
-    template: str,
+    schema_name: Optional[str],
+    mode: Optional[str],
     formats: tuple[str, ...],
     workers: int,
-    completeness_threshold: float,
     resume: bool,
 ) -> None:
     """Batch-process a directory of documents."""
@@ -410,7 +410,6 @@ def batch(
     cfg = get_config()
     effective_formats = formats if formats else tuple(cfg.default_export_formats)
     effective_workers = workers
-    effective_threshold = completeness_threshold
 
     processor = BatchProcessor(
         workers=effective_workers,
@@ -421,23 +420,59 @@ def batch(
     t = theme.make_kv_table()
     t.add_row("Input directory", str(input_dir))
     t.add_row("Output directory", str(output_dir))
-    t.add_row("Template", template)
+    if schema_name:
+        t.add_row("Schema", schema_name)
+    if mode:
+        t.add_row("Mode", mode)
     t.add_row("Export formats", ", ".join(effective_formats))
     t.add_row("Workers", str(effective_workers))
-    t.add_row("Completeness", str(effective_threshold))
     t.add_row("Resume", theme.badge("Yes", "stable") if resume else "No")
     console.print(t)
 
+    # Build process function based on extraction path
+    if schema_name:
+        from mosaicx.pipelines.extraction import extract_with_schema
+        _configure_dspy()
+        def process_fn(text: str) -> dict:
+            return {"extracted": extract_with_schema(text, schema_name, cfg.schema_dir)}
+    elif mode:
+        import mosaicx.pipelines.radiology  # noqa: F401
+        import mosaicx.pipelines.pathology  # noqa: F401
+        from mosaicx.pipelines.extraction import extract_with_mode
+        _configure_dspy()
+        def process_fn(text: str) -> dict:
+            return extract_with_mode(text, mode)
+    else:
+        from mosaicx.pipelines.extraction import DocumentExtractor
+        _configure_dspy()
+        extractor = DocumentExtractor()
+        def process_fn(text: str) -> dict:
+            result = extractor(document_text=text)
+            output = {}
+            if hasattr(result, "extracted"):
+                val = result.extracted
+                output["extracted"] = val.model_dump() if hasattr(val, "model_dump") else val
+            return output
+
     resume_id = "resume" if resume else None
+    checkpoint_dir = output_dir / ".checkpoints" if resume else None
     with theme.spinner("Deploying the minions...", console):
         result = processor.process_directory(
             input_dir=input_dir,
             output_dir=output_dir,
-            process_fn=lambda doc: doc,  # placeholder until full wiring
-            template=template,
+            process_fn=process_fn,
             resume_id=resume_id,
+            checkpoint_dir=checkpoint_dir,
         )
-    console.print(theme.ok("Batch complete \u2014 it ain't much but it's honest work"))
+
+    console.print(theme.ok(f"Batch complete \u2014 {result['succeeded']}/{result['total']} succeeded"))
+    if result["skipped"]:
+        console.print(theme.info(f"{result['skipped']} skipped (already processed)"))
+    if result["failed"]:
+        console.print(theme.warn(f"{result['failed']} failed"))
+        for err in result.get("errors", []):
+            console.print(theme.info(f"  {err['file']}: {err['error']}"))
+
 
 
 # ---------------------------------------------------------------------------

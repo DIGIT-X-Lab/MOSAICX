@@ -442,23 +442,36 @@ class TestBatch:
         assert result.exit_code != 0
         assert "does not exist" in result.output
 
-    def test_batch_shows_config_table(self, runner: CliRunner, tmp_path: Path):
+    def test_batch_shows_config_table(self, runner: CliRunner, tmp_path: Path, monkeypatch):
         input_dir = tmp_path / "input"
         input_dir.mkdir()
         output_dir = tmp_path / "output"
+
+        # Mock _configure_dspy and DocumentExtractor so batch runs without API key
+        monkeypatch.setattr("mosaicx.cli._configure_dspy", lambda: None)
+
+        class _FakeResult:
+            extracted = {"mock": "data"}
+
+        class _FakeExtractor:
+            def __call__(self, document_text: str):
+                return _FakeResult()
+
+        monkeypatch.setattr(
+            "mosaicx.pipelines.extraction.DocumentExtractor", _FakeExtractor
+        )
+
         result = runner.invoke(
             cli,
             [
                 "batch",
                 "--input-dir", str(input_dir),
                 "--output-dir", str(output_dir),
-                "--template", "chest_ct",
                 "--workers", "2",
             ],
         )
         assert result.exit_code == 0
         assert "BATCH PROCESSING" in result.output
-        assert "chest_ct" in result.output
         assert "Batch complete" in result.output
 
 

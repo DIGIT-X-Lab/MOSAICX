@@ -44,3 +44,95 @@ class TestBatchProcessor:
         from mosaicx.batch import BatchProcessor
         proc = BatchProcessor(workers=1)
         assert hasattr(proc, "process_directory")
+
+
+class TestBatchProcessorReal:
+    def test_process_empty_directory(self, tmp_path):
+        from mosaicx.batch import BatchProcessor
+        input_dir = tmp_path / "input"
+        input_dir.mkdir()
+        output_dir = tmp_path / "output"
+
+        proc = BatchProcessor(workers=1)
+        result = proc.process_directory(
+            input_dir=input_dir,
+            output_dir=output_dir,
+            process_fn=lambda text: {"extracted": "test"},
+        )
+        assert result["total"] == 0
+        assert result["succeeded"] == 0
+
+    def test_process_txt_files(self, tmp_path):
+        from mosaicx.batch import BatchProcessor
+        input_dir = tmp_path / "input"
+        input_dir.mkdir()
+        output_dir = tmp_path / "output"
+
+        (input_dir / "doc1.txt").write_text("Patient report 1")
+        (input_dir / "doc2.txt").write_text("Patient report 2")
+        (input_dir / "not_a_doc.xyz").write_text("skip this")
+
+        proc = BatchProcessor(workers=1)
+        result = proc.process_directory(
+            input_dir=input_dir,
+            output_dir=output_dir,
+            process_fn=lambda text: {"summary": "extracted"},
+        )
+        assert result["total"] == 2
+        assert result["succeeded"] == 2
+        assert output_dir.exists()
+
+    def test_process_with_error_isolation(self, tmp_path):
+        from mosaicx.batch import BatchProcessor
+        input_dir = tmp_path / "input"
+        input_dir.mkdir()
+        output_dir = tmp_path / "output"
+
+        (input_dir / "good.txt").write_text("Good report")
+        (input_dir / "bad.txt").write_text("Bad report")
+
+        def flaky_fn(text):
+            if "Bad" in text:
+                raise ValueError("Simulated extraction failure")
+            return {"result": "ok"}
+
+        proc = BatchProcessor(workers=1)
+        result = proc.process_directory(
+            input_dir=input_dir,
+            output_dir=output_dir,
+            process_fn=flaky_fn,
+        )
+        assert result["succeeded"] == 1
+        assert result["failed"] == 1
+
+    def test_process_with_resume(self, tmp_path):
+        from mosaicx.batch import BatchProcessor, BatchCheckpoint
+        input_dir = tmp_path / "input"
+        input_dir.mkdir()
+        output_dir = tmp_path / "output"
+        output_dir.mkdir()
+        checkpoint_dir = tmp_path / "checkpoints"
+
+        (input_dir / "doc1.txt").write_text("Report 1")
+        (input_dir / "doc2.txt").write_text("Report 2")
+
+        cp = BatchCheckpoint(batch_id="resume", checkpoint_dir=checkpoint_dir)
+        cp.mark_completed("doc1.txt", {"status": "ok"})
+        cp.save()
+
+        call_count = 0
+        def counting_fn(text):
+            nonlocal call_count
+            call_count += 1
+            return {"result": "ok"}
+
+        proc = BatchProcessor(workers=1)
+        result = proc.process_directory(
+            input_dir=input_dir,
+            output_dir=output_dir,
+            process_fn=counting_fn,
+            resume_id="resume",
+            checkpoint_dir=checkpoint_dir,
+        )
+        assert call_count == 1
+        assert result["skipped"] == 1
