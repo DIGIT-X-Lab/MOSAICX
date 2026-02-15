@@ -459,6 +459,47 @@ class TestBatch:
 
 
 # -------------------------------------------------------------------------
+# schema list / refine
+# -------------------------------------------------------------------------
+
+
+class TestSchemaManagement:
+    """Tests for schema save/load/list/refine CLI commands."""
+
+    def test_schema_list_empty(self, runner: CliRunner, tmp_path: Path, monkeypatch):
+        """schema list shows count when no schemas saved."""
+        monkeypatch.setenv("MOSAICX_HOME_DIR", str(tmp_path))
+        from mosaicx.config import get_config
+
+        get_config.cache_clear()
+        try:
+            result = runner.invoke(cli, ["schema", "list"])
+            assert result.exit_code == 0
+            assert "0 schema(s)" in result.output
+        finally:
+            get_config.cache_clear()
+
+    def test_schema_list_shows_saved(self, runner: CliRunner, tmp_path: Path, monkeypatch):
+        """schema list shows saved schemas in a table."""
+        monkeypatch.setenv("MOSAICX_HOME_DIR", str(tmp_path))
+        from mosaicx.config import get_config
+
+        get_config.cache_clear()
+        try:
+            schema_dir = tmp_path / "schemas"
+            schema_dir.mkdir()
+            (schema_dir / "TestModel.json").write_text(
+                '{"class_name":"TestModel","description":"A test","fields":[{"name":"x","type":"str","description":"x","required":true,"enum_values":null}]}'
+            )
+            result = runner.invoke(cli, ["schema", "list"])
+            assert result.exit_code == 0
+            assert "TestModel" in result.output
+            assert "1 schema(s)" in result.output
+        finally:
+            get_config.cache_clear()
+
+
+# -------------------------------------------------------------------------
 # Version and help
 # -------------------------------------------------------------------------
 

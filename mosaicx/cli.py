@@ -396,8 +396,34 @@ def schema_generate(description: str, example_text: str, output: Optional[Path])
 
 @schema.command("list")
 def schema_list() -> None:
-    """List registered schemas."""
-    console.print(theme.info("schema list \u2014 not yet implemented"))
+    """List saved schemas."""
+    from .pipelines.schema_gen import list_schemas
+
+    cfg = get_config()
+    specs = list_schemas(cfg.schema_dir)
+
+    theme.section("Saved Schemas", console)
+
+    if not specs:
+        console.print(theme.info("0 schema(s) saved"))
+        return
+
+    t = theme.make_clean_table()
+    t.add_column("Name", style=f"bold {theme.CORAL}", no_wrap=True)
+    t.add_column("Fields", style="magenta", justify="right")
+    t.add_column("Description")
+    t.add_column("Path", style=theme.MUTED)
+
+    for spec in specs:
+        t.add_row(
+            spec.class_name,
+            str(len(spec.fields)),
+            spec.description[:60] if spec.description else "\u2014",
+            str(cfg.schema_dir / f"{spec.class_name}.json"),
+        )
+
+    console.print(t)
+    console.print(theme.info(f"{len(specs)} schema(s) saved in {cfg.schema_dir}"))
 
 
 @schema.command("refine")
