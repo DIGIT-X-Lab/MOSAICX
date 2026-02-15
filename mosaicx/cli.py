@@ -392,9 +392,12 @@ def extract(
         console.print(theme.ok(f"Saved to {output}"))
 
     theme.section("Extracted Data", console)
-    from rich.json import JSON
+    from rich.syntax import Syntax
 
-    console.print(Padding(JSON(json.dumps(output_data, default=str)), (0, 0, 0, 2)), soft_wrap=True)
+    console.print(Padding(
+        Syntax(json.dumps(output_data, indent=2, default=str, ensure_ascii=False), "json", word_wrap=True, theme="monokai"),
+        (0, 0, 0, 2),
+    ))
 
 
 # ---------------------------------------------------------------------------
