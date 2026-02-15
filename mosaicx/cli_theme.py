@@ -106,7 +106,7 @@ def section(
     display = title.upper() if uppercase else title
     t.append(display, style="bold")
     console.print(t)
-    rule = "\u2500" * 48
+    rule = "\u2500" * len(TAGLINE)
     console.print(f"  {rule}", style=GREIGE)
 
 
