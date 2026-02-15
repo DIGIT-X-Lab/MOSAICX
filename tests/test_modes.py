@@ -26,3 +26,23 @@ class TestModeRegistry:
         for name, desc in modes:
             assert isinstance(name, str)
             assert isinstance(desc, str)
+
+
+class TestBuiltInModes:
+    def test_radiology_mode_registered(self):
+        from mosaicx.pipelines.radiology import RadiologyReportStructurer  # noqa: F401
+        from mosaicx.pipelines.modes import MODES
+        assert "radiology" in MODES
+
+    def test_pathology_mode_registered(self):
+        from mosaicx.pipelines.pathology import PathologyReportStructurer  # noqa: F401
+        from mosaicx.pipelines.modes import MODES
+        assert "pathology" in MODES
+
+    def test_list_modes_includes_both(self):
+        from mosaicx.pipelines.radiology import RadiologyReportStructurer  # noqa: F401
+        from mosaicx.pipelines.pathology import PathologyReportStructurer  # noqa: F401
+        from mosaicx.pipelines.modes import list_modes
+        names = [name for name, _ in list_modes()]
+        assert "radiology" in names
+        assert "pathology" in names

@@ -56,3 +56,41 @@ class TestPathReportBaseModels:
         )
         assert len(d.biomarkers) == 4
         assert d.biomarkers[0].name == "ER"
+
+
+class TestPathologyPipelineSignatures:
+    def test_classify_specimen_type_signature(self):
+        from mosaicx.pipelines.pathology import ClassifySpecimenType
+        assert "report_header" in ClassifySpecimenType.input_fields
+        assert "specimen_type" in ClassifySpecimenType.output_fields
+
+    def test_parse_path_sections_signature(self):
+        from mosaicx.pipelines.pathology import ParsePathSections
+        assert "report_text" in ParsePathSections.input_fields
+        assert "sections" in ParsePathSections.output_fields
+
+    def test_extract_specimen_details_signature(self):
+        from mosaicx.pipelines.pathology import ExtractSpecimenDetails
+        assert "gross_text" in ExtractSpecimenDetails.input_fields
+        assert "site" in ExtractSpecimenDetails.output_fields
+
+    def test_extract_microscopic_findings_signature(self):
+        from mosaicx.pipelines.pathology import ExtractMicroscopicFindings
+        assert "microscopic_text" in ExtractMicroscopicFindings.input_fields
+        assert "findings" in ExtractMicroscopicFindings.output_fields
+
+    def test_extract_path_diagnosis_signature(self):
+        from mosaicx.pipelines.pathology import ExtractPathDiagnosis
+        assert "diagnosis_text" in ExtractPathDiagnosis.input_fields
+        assert "diagnoses" in ExtractPathDiagnosis.output_fields
+
+
+class TestPathologyStructurerModule:
+    def test_module_has_submodules(self):
+        from mosaicx.pipelines.pathology import PathologyReportStructurer
+        pipeline = PathologyReportStructurer()
+        assert hasattr(pipeline, "classify_specimen")
+        assert hasattr(pipeline, "parse_sections")
+        assert hasattr(pipeline, "extract_specimen_details")
+        assert hasattr(pipeline, "extract_findings")
+        assert hasattr(pipeline, "extract_diagnosis")

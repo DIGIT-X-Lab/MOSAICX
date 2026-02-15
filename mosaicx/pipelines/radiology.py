@@ -202,6 +202,10 @@ def _build_dspy_classes():
                 impressions=impression_result.impressions,
             )
 
+
+    # Register as extraction mode
+    from mosaicx.pipelines.modes import register_mode
+    register_mode("radiology", "5-step radiology report structurer (findings, measurements, scoring)")(RadiologyReportStructurer)
     return {
         "ClassifyExamType": ClassifyExamType,
         "ParseReportSections": ParseReportSections,
