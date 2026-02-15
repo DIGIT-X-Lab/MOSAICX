@@ -55,6 +55,7 @@ class BatchProcessor:
         resume_id: Optional[str] = None,
         checkpoint_dir: Optional[Path] = None,
         load_fn: Optional[Callable[[Path], str]] = None,
+        on_progress: Optional[Callable[[str, bool], None]] = None,
     ) -> dict[str, Any]:
         """Process all documents in a directory.
 
@@ -66,6 +67,7 @@ class BatchProcessor:
             checkpoint_dir: Directory for checkpoint files.
             load_fn: Function that takes a Path and returns text. Defaults to
                       the document loader (handles PDFs, images, text files).
+            on_progress: Callback(doc_name, success) called after each document.
 
         Returns:
             Summary dict with keys: total, succeeded, failed, skipped, errors.
@@ -93,6 +95,8 @@ class BatchProcessor:
                 for d in docs:
                     if checkpoint.is_completed(d.name):
                         skipped += 1
+                        if on_progress:
+                            on_progress(d.name, True)
                     else:
                         remaining.append(d)
                 docs = remaining
@@ -125,6 +129,8 @@ class BatchProcessor:
             if err_msg is not None:
                 failed += 1
                 errors.append({"file": doc_path.name, "error": err_msg})
+                if on_progress:
+                    on_progress(doc_path.name, False)
 
         def _process_one(doc_path: Path, text: str) -> tuple[str, dict | None, str | None]:
             try:
@@ -152,6 +158,8 @@ class BatchProcessor:
                         checkpoint.mark_completed(name, result or {})
                         if processed % self.checkpoint_every == 0:
                             checkpoint.save()
+                if on_progress:
+                    on_progress(name, error is None)
 
         if checkpoint:
             checkpoint.save()

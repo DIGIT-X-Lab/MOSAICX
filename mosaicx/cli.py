@@ -483,7 +483,12 @@ def batch(
 
     resume_id = "resume" if resume else None
     checkpoint_dir = output_dir / ".checkpoints" if resume else None
-    with theme.spinner("Deploying the minions...", console):
+
+    # Count documents for progress bar
+    supported = {".txt", ".md", ".pdf", ".docx", ".png", ".jpg", ".jpeg", ".tif", ".tiff"}
+    total_docs = sum(1 for p in input_dir.iterdir() if p.is_file() and p.suffix.lower() in supported)
+
+    with theme.progress(total_docs, "documents", console) as advance:
         result = processor.process_directory(
             input_dir=input_dir,
             output_dir=output_dir,
@@ -491,6 +496,7 @@ def batch(
             resume_id=resume_id,
             checkpoint_dir=checkpoint_dir,
             load_fn=lambda p: _load_doc_with_config(p).text,
+            on_progress=lambda name, success: advance(),
         )
 
     console.print(theme.ok(f"Batch complete \u2014 {result['succeeded']}/{result['total']} succeeded"))
@@ -500,6 +506,39 @@ def batch(
         console.print(theme.warn(f"{result['failed']} failed"))
         for err in result.get("errors", []):
             console.print(theme.info(f"{err['file']}: {err['error']}"))
+
+    # ── Export consolidated formats ──────────────────────────────
+    json_files = sorted(
+        p for p in output_dir.glob("*.json")
+        if not p.name.startswith(".")
+    )
+
+    if "jsonl" in effective_formats and json_files:
+        jsonl_path = output_dir / "results.jsonl"
+        with open(jsonl_path, "w", encoding="utf-8") as f:
+            for jf in json_files:
+                data = json.loads(jf.read_text(encoding="utf-8"))
+                data["_source"] = jf.stem
+                f.write(json.dumps(data, default=str, ensure_ascii=False) + "\n")
+        console.print(theme.ok(f"Exported {jsonl_path}"))
+
+    if "parquet" in effective_formats and json_files:
+        try:
+            import pandas as pd
+
+            records = []
+            for jf in json_files:
+                data = json.loads(jf.read_text(encoding="utf-8"))
+                data["_source"] = jf.stem
+                records.append(data)
+            df = pd.json_normalize(records, sep="_")
+            parquet_path = output_dir / "results.parquet"
+            df.to_parquet(parquet_path, index=False)
+            console.print(theme.ok(f"Exported {parquet_path}"))
+        except ImportError:
+            console.print(theme.warn(
+                "pandas + pyarrow required for parquet: pip install pandas pyarrow"
+            ))
 
 
 
