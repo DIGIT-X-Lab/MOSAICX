@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import re
 from enum import Enum
+from pathlib import Path
 from typing import TYPE_CHECKING, List, Optional
 
 from pydantic import BaseModel, Field, create_model
@@ -161,6 +162,74 @@ def compile_schema(spec: SchemaSpec) -> type[BaseModel]:
     )
     model.__doc__ = spec.description
     return model
+
+
+# ---------------------------------------------------------------------------
+# Schema storage
+# ---------------------------------------------------------------------------
+
+
+def save_schema(
+    spec: SchemaSpec,
+    schema_dir: Path | None = None,
+    output_path: Path | None = None,
+) -> Path:
+    """Save a SchemaSpec as a JSON file.
+
+    Args:
+        spec: The schema specification to save.
+        schema_dir: Directory to save into (uses {class_name}.json).
+        output_path: Explicit file path (overrides schema_dir).
+
+    Returns:
+        Path to the saved file.
+    """
+    if output_path is not None:
+        dest = output_path
+    elif schema_dir is not None:
+        schema_dir.mkdir(parents=True, exist_ok=True)
+        dest = schema_dir / f"{spec.class_name}.json"
+    else:
+        raise ValueError("Provide schema_dir or output_path")
+
+    dest.write_text(spec.model_dump_json(indent=2), encoding="utf-8")
+    return dest
+
+
+def load_schema(name: str, schema_dir: Path) -> SchemaSpec:
+    """Load a SchemaSpec by name from a directory.
+
+    Args:
+        name: Schema class name (without .json extension).
+        schema_dir: Directory to search.
+
+    Returns:
+        The loaded SchemaSpec.
+
+    Raises:
+        FileNotFoundError: If the schema file doesn't exist.
+    """
+    path = schema_dir / f"{name}.json"
+    if not path.exists():
+        raise FileNotFoundError(f"Schema not found: {path}")
+    return SchemaSpec.model_validate_json(path.read_text(encoding="utf-8"))
+
+
+def list_schemas(schema_dir: Path) -> list[SchemaSpec]:
+    """List all saved schemas in a directory.
+
+    Returns:
+        List of SchemaSpec objects, sorted by class_name.
+    """
+    if not schema_dir.exists():
+        return []
+    specs = []
+    for f in sorted(schema_dir.glob("*.json")):
+        try:
+            specs.append(SchemaSpec.model_validate_json(f.read_text(encoding="utf-8")))
+        except Exception:
+            continue  # skip malformed files
+    return specs
 
 
 # ---------------------------------------------------------------------------

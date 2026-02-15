@@ -75,6 +75,79 @@ class TestSchemaSpec:
         assert instance.gender == "male"
 
 
+class TestSchemaStorage:
+    """Test schema save/load/list operations."""
+
+    def test_save_and_load_schema(self, tmp_path):
+        from mosaicx.pipelines.schema_gen import SchemaSpec, FieldSpec, save_schema, load_schema
+
+        spec = SchemaSpec(
+            class_name="TestSave",
+            description="Test save",
+            fields=[
+                FieldSpec(name="name", type="str", description="Name", required=True),
+            ],
+        )
+        save_schema(spec, tmp_path)
+        loaded = load_schema("TestSave", tmp_path)
+        assert loaded.class_name == "TestSave"
+        assert len(loaded.fields) == 1
+        assert loaded.fields[0].name == "name"
+
+    def test_save_creates_json_file(self, tmp_path):
+        from mosaicx.pipelines.schema_gen import SchemaSpec, FieldSpec, save_schema
+
+        spec = SchemaSpec(
+            class_name="FileCheck",
+            description="Check file",
+            fields=[FieldSpec(name="x", type="int", required=True)],
+        )
+        path = save_schema(spec, tmp_path)
+        assert path.name == "FileCheck.json"
+        assert path.exists()
+
+    def test_load_nonexistent_raises(self, tmp_path):
+        from mosaicx.pipelines.schema_gen import load_schema
+
+        with pytest.raises(FileNotFoundError):
+            load_schema("DoesNotExist", tmp_path)
+
+    def test_list_schemas_empty(self, tmp_path):
+        from mosaicx.pipelines.schema_gen import list_schemas
+
+        result = list_schemas(tmp_path)
+        assert result == []
+
+    def test_list_schemas_returns_specs(self, tmp_path):
+        from mosaicx.pipelines.schema_gen import SchemaSpec, FieldSpec, save_schema, list_schemas
+
+        for name in ["Alpha", "Beta"]:
+            save_schema(
+                SchemaSpec(
+                    class_name=name,
+                    description=f"{name} schema",
+                    fields=[FieldSpec(name="x", type="str", required=True)],
+                ),
+                tmp_path,
+            )
+        result = list_schemas(tmp_path)
+        assert len(result) == 2
+        names = {s.class_name for s in result}
+        assert names == {"Alpha", "Beta"}
+
+    def test_save_to_custom_path(self, tmp_path):
+        from mosaicx.pipelines.schema_gen import SchemaSpec, FieldSpec, save_schema
+
+        custom = tmp_path / "custom.json"
+        spec = SchemaSpec(
+            class_name="Custom",
+            description="Custom path",
+            fields=[FieldSpec(name="x", type="str", required=True)],
+        )
+        save_schema(spec, output_path=custom)
+        assert custom.exists()
+
+
 class TestSchemaGeneratorSignature:
     """Test the DSPy signature exists and has correct fields."""
 
