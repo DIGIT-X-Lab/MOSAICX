@@ -52,6 +52,24 @@ class TestMosaicxConfig:
         assert cfg.checkpoint_dir == cfg.home_dir / "checkpoints"
         assert cfg.log_dir == cfg.home_dir / "logs"
 
+    def test_ocr_config_defaults(self):
+        from mosaicx.config import MosaicxConfig
+
+        cfg = MosaicxConfig()
+        assert cfg.ocr_engine == "both"
+        assert cfg.chandra_backend == "auto"
+        assert cfg.quality_threshold == 0.6
+        assert cfg.ocr_page_timeout == 60
+        assert cfg.force_ocr is False
+        assert cfg.ocr_langs == ["en", "de"]
+
+    def test_ocr_engine_env_override(self, monkeypatch):
+        from mosaicx.config import MosaicxConfig
+
+        monkeypatch.setenv("MOSAICX_OCR_ENGINE", "surya")
+        cfg = MosaicxConfig()
+        assert cfg.ocr_engine == "surya"
+
     def test_get_config_singleton(self):
         """get_config() returns the same instance."""
         from mosaicx.config import get_config

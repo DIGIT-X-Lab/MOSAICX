@@ -64,9 +64,13 @@ class MosaicxConfig(BaseSettings):
     )
 
     # --- Document loading ---
+    ocr_engine: Literal["both", "surya", "chandra"] = "both"
+    chandra_backend: Literal["vllm", "hf", "auto"] = "auto"
+    chandra_server_url: str = ""
+    quality_threshold: float = 0.6
+    ocr_page_timeout: int = 60
     force_ocr: bool = False
     ocr_langs: list[str] = Field(default_factory=lambda: ["en", "de"])
-    vlm_model: str = "gemma3:27b"
 
 
 @lru_cache(maxsize=1)
