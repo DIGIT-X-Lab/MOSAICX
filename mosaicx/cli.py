@@ -77,6 +77,8 @@ def _configure_dspy() -> None:
             "DSPy is required for this command. Install with: pip install dspy"
         )
     dspy.configure(lm=dspy.LM(cfg.lm, api_key=cfg.api_key, api_base=cfg.api_base))
+    model_name = cfg.lm.split("/", 1)[-1] if "/" in cfg.lm else cfg.lm
+    console.print(theme.info(f"Model: {model_name}"))
 
 
 # ---------------------------------------------------------------------------
