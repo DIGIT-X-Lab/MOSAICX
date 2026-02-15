@@ -442,7 +442,9 @@ def batch(
     )
 
     theme.section("Batch Processing", console, "01")
-    t = theme.make_kv_table()
+    t = theme.make_clean_table(show_header=False)
+    t.add_column("Key", style=f"bold {theme.CORAL}", no_wrap=True)
+    t.add_column("Value")
     t.add_row("Input directory", str(input_dir))
     t.add_row("Output directory", str(output_dir))
     if schema_name:
@@ -452,7 +454,7 @@ def batch(
     t.add_row("Export formats", ", ".join(effective_formats))
     t.add_row("Workers", str(effective_workers))
     t.add_row("Resume", theme.badge("Yes", "stable") if resume else "No")
-    console.print(t)
+    console.print(Padding(t, (0, 0, 0, 2)))
 
     # Build process function based on extraction path
     if schema_name:
@@ -488,6 +490,7 @@ def batch(
             process_fn=process_fn,
             resume_id=resume_id,
             checkpoint_dir=checkpoint_dir,
+            load_fn=lambda p: _load_doc_with_config(p).text,
         )
 
     console.print(theme.ok(f"Batch complete \u2014 {result['succeeded']}/{result['total']} succeeded"))

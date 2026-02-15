@@ -54,6 +54,7 @@ class BatchProcessor:
         process_fn: Callable[[str], dict[str, Any]],
         resume_id: Optional[str] = None,
         checkpoint_dir: Optional[Path] = None,
+        load_fn: Optional[Callable[[Path], str]] = None,
     ) -> dict[str, Any]:
         """Process all documents in a directory.
 
@@ -63,6 +64,8 @@ class BatchProcessor:
             process_fn: Function that takes document text and returns a dict.
             resume_id: If set, resume from checkpoint with this ID.
             checkpoint_dir: Directory for checkpoint files.
+            load_fn: Function that takes a Path and returns text. Defaults to
+                      the document loader (handles PDFs, images, text files).
 
         Returns:
             Summary dict with keys: total, succeeded, failed, skipped, errors.
@@ -100,9 +103,15 @@ class BatchProcessor:
         failed = 0
         errors: list[dict[str, str]] = []
 
+        if load_fn is None:
+            from .documents.loader import load_document
+            def _default_load(path: Path) -> str:
+                return load_document(path).text
+            load_fn = _default_load
+
         def _process_one(doc_path: Path) -> tuple[str, dict | None, str | None]:
             try:
-                text = doc_path.read_text(encoding="utf-8")
+                text = load_fn(doc_path)
                 result = process_fn(text)
                 out_path = output_dir / f"{doc_path.stem}.json"
                 out_path.write_text(
