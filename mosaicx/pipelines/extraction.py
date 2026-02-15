@@ -41,7 +41,10 @@ def extract_with_schema(document_text: str, schema_name: str, schema_dir: Path) 
 
     spec = load_schema(schema_name, schema_dir)
     model = compile_schema(spec)
-    extractor = DocumentExtractor(output_schema=model)
+    # Access DocumentExtractor via module __getattr__ (it's lazily built)
+    import sys
+    mod = sys.modules[__name__]
+    extractor = mod.DocumentExtractor(output_schema=model)
     result = extractor(document_text=document_text)
     val = result.extracted
     return val.model_dump() if hasattr(val, "model_dump") else val
