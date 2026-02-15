@@ -9,7 +9,7 @@ class TestLoadedDocument:
     """Test the LoadedDocument dataclass."""
 
     def test_construction(self):
-        from mosaicx.documents.loader import LoadedDocument
+        from mosaicx.documents import LoadedDocument
 
         doc = LoadedDocument(
             text="Hello world",
@@ -22,13 +22,13 @@ class TestLoadedDocument:
         assert doc.page_count == 3
 
     def test_char_count(self):
-        from mosaicx.documents.loader import LoadedDocument
+        from mosaicx.documents import LoadedDocument
 
         doc = LoadedDocument(text="abc", source_path=Path("/tmp/x.pdf"), format="pdf")
         assert doc.char_count == 3
 
     def test_is_empty(self):
-        from mosaicx.documents.loader import LoadedDocument
+        from mosaicx.documents import LoadedDocument
 
         empty = LoadedDocument(text="", source_path=Path("/tmp/x.pdf"), format="pdf")
         nonempty = LoadedDocument(text="content", source_path=Path("/tmp/x.pdf"), format="pdf")
