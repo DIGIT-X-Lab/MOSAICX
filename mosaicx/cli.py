@@ -228,6 +228,7 @@ def cli(ctx: click.Context) -> None:
 @click.option("--mode", type=str, default=None, help="Extraction mode name (e.g., radiology, pathology).")
 @click.option("--template", type=click.Path(exists=False, path_type=Path), default=None, help="Path to a YAML template file.")
 @click.option("--optimized", type=click.Path(exists=False, path_type=Path), default=None, help="Path to optimized program.")
+@click.option("--output", "-o", type=click.Path(path_type=Path), default=None, help="Save output to file (.json or .yaml/.yml).")
 @click.option("--list-modes", is_flag=True, default=False, help="Print available modes and exit.")
 @click.pass_context
 def extract(
@@ -237,6 +238,7 @@ def extract(
     mode: Optional[str],
     template: Optional[Path],
     optimized: Optional[Path],
+    output: Optional[Path],
     list_modes: bool,
 ) -> None:
     """Extract structured data from a clinical document."""
@@ -293,7 +295,7 @@ def extract(
     console.print(theme.info(" \u00b7 ".join(parts)))
 
     # Determine extraction path
-    output: dict = {}
+    output_data: dict = {}
 
     if schema_name is not None:
         # --schema X: load saved schema, compile, extract
@@ -303,7 +305,7 @@ def extract(
         _configure_dspy()
         with theme.spinner("Extracting... patience you must have", console):
             extracted = extract_with_schema(doc.text, schema_name, cfg.schema_dir)
-        output = {"extracted": extracted}
+        output_data = {"extracted": extracted}
 
     elif mode is not None:
         # --mode X: run registered mode pipeline
@@ -320,7 +322,7 @@ def extract(
 
         _configure_dspy()
         with theme.spinner("Extracting with mode... patience you must have", console):
-            output = extract_with_mode(doc.text, mode)
+            output_data = extract_with_mode(doc.text, mode)
 
     elif template is not None:
         # --template file.yaml: compile YAML template, use as output_schema
@@ -344,10 +346,10 @@ def extract(
             extractor = load_optimized(type(extractor), optimized)
         with theme.spinner("Extracting... patience you must have", console):
             result = extractor(document_text=doc.text)
-        output = {}
+        output_data = {}
         if hasattr(result, "extracted"):
             val = result.extracted
-            output["extracted"] = val.model_dump() if hasattr(val, "model_dump") else val
+            output_data["extracted"] = val.model_dump() if hasattr(val, "model_dump") else val
 
     else:
         # Auto mode: no flags -- LLM infers schema
@@ -360,19 +362,37 @@ def extract(
             extractor = load_optimized(type(extractor), optimized)
         with theme.spinner("Extracting... patience you must have", console):
             result = extractor(document_text=doc.text)
-        output = {}
+        output_data = {}
         if hasattr(result, "extracted"):
             val = result.extracted
-            output["extracted"] = val.model_dump() if hasattr(val, "model_dump") else val
+            output_data["extracted"] = val.model_dump() if hasattr(val, "model_dump") else val
         if hasattr(result, "inferred_schema"):
-            output["inferred_schema"] = result.inferred_schema.model_dump()
+            output_data["inferred_schema"] = result.inferred_schema.model_dump()
 
     console.print(theme.ok("Extracted \u2014 this is the way"))
+
+    # Save to file if --output specified
+    if output is not None:
+        suffix = output.suffix.lower()
+        if suffix in (".yaml", ".yml"):
+            try:
+                import yaml
+            except ImportError:
+                raise click.ClickException("PyYAML required for YAML output: pip install pyyaml")
+            output.parent.mkdir(parents=True, exist_ok=True)
+            output.write_text(yaml.dump(output_data, default_flow_style=False, sort_keys=False, allow_unicode=True), encoding="utf-8")
+        else:
+            # Default to JSON
+            if not suffix:
+                output = output.with_suffix(".json")
+            output.parent.mkdir(parents=True, exist_ok=True)
+            output.write_text(json.dumps(output_data, indent=2, default=str, ensure_ascii=False), encoding="utf-8")
+        console.print(theme.ok(f"Saved to {output}"))
 
     theme.section("Extracted Data", console)
     from rich.json import JSON
 
-    console.print(Padding(JSON(json.dumps(output, default=str)), (0, 0, 0, 2)))
+    console.print(Padding(JSON(json.dumps(output_data, default=str)), (0, 0, 0, 2)), soft_wrap=True)
 
 
 # ---------------------------------------------------------------------------
