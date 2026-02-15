@@ -503,10 +503,10 @@ def schema_list() -> None:
         console.print(theme.info("0 schema(s) saved"))
         return
 
-    t = theme.make_clean_table()
+    t = theme.make_clean_table(width=len(theme.TAGLINE))
     t.add_column("Name", style=f"bold {theme.CORAL}", no_wrap=True)
     t.add_column("Fields", style=f"{theme.GREIGE}", justify="right")
-    t.add_column("Description", style=theme.MUTED, no_wrap=True, overflow="ellipsis", max_width=48)
+    t.add_column("Description", style=theme.MUTED, ratio=1)
 
     for spec in specs:
         t.add_row(
