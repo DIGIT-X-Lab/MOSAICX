@@ -4,9 +4,9 @@ into a LoadedDocument with extracted text.
 Uses Docling for structured formats; falls back to plain read for .txt/.md.
 """
 from __future__ import annotations
-from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
+
+from .models import LoadedDocument
 
 try:
     from docling.document_converter import DocumentConverter
@@ -16,24 +16,6 @@ except ImportError:
 _DOCLING_FORMATS = {".pdf", ".docx", ".pptx"}
 _TEXT_FORMATS = {".txt", ".md", ".markdown"}
 _ALL_SUPPORTED = _DOCLING_FORMATS | _TEXT_FORMATS
-
-
-@dataclass
-class LoadedDocument:
-    """A document converted to plain text."""
-    text: str
-    source_path: Path
-    format: str
-    page_count: Optional[int] = None
-    metadata: dict = field(default_factory=dict)
-
-    @property
-    def char_count(self) -> int:
-        return len(self.text)
-
-    @property
-    def is_empty(self) -> bool:
-        return len(self.text.strip()) == 0
 
 
 def load_document(path: Path) -> LoadedDocument:
