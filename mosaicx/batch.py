@@ -109,9 +109,25 @@ class BatchProcessor:
                 return load_document(path).text
             load_fn = _default_load
 
-        def _process_one(doc_path: Path) -> tuple[str, dict | None, str | None]:
+        # Load documents sequentially — pypdfium2 is not thread-safe.
+        # Only LLM extraction is parallelized.
+        loaded: list[tuple[Path, str | None, str | None]] = []
+        for doc_path in docs:
             try:
                 text = load_fn(doc_path)
+                loaded.append((doc_path, text, None))
+            except Exception as exc:
+                loaded.append((doc_path, None, str(exc)))
+
+        # Skip docs that failed to load
+        to_process = [(p, t) for p, t, e in loaded if e is None and t]
+        for doc_path, _, err_msg in loaded:
+            if err_msg is not None:
+                failed += 1
+                errors.append({"file": doc_path.name, "error": err_msg})
+
+        def _process_one(doc_path: Path, text: str) -> tuple[str, dict | None, str | None]:
+            try:
                 result = process_fn(text)
                 out_path = output_dir / f"{doc_path.stem}.json"
                 out_path.write_text(
@@ -122,7 +138,7 @@ class BatchProcessor:
                 return doc_path.name, None, str(exc)
 
         with ThreadPoolExecutor(max_workers=self.workers) as pool:
-            futures = {pool.submit(_process_one, d): d for d in docs}
+            futures = {pool.submit(_process_one, p, t): p for p, t in to_process}
             processed = 0
             for future in as_completed(futures):
                 name, result, error = future.result()
