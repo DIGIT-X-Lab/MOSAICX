@@ -367,14 +367,18 @@ class TestLLMCommandsGracefulFailure:
         assert result.exit_code != 0
         assert "not found" in result.output.lower()
 
-    def test_extract_bad_template(
-        self, runner: CliRunner, tmp_text_file: Path, _no_api_key
-    ):
+    def test_extract_list_modes(self, runner: CliRunner):
+        result = runner.invoke(cli, ["extract", "--list-modes"])
+        assert result.exit_code == 0
+        assert "radiology" in result.output
+        assert "pathology" in result.output
+
+    def test_extract_unknown_mode(self, runner: CliRunner, tmp_text_file: Path, _no_api_key):
         result = runner.invoke(
-            cli, ["extract", "--document", str(tmp_text_file), "--template", "nonexistent_template"]
+            cli, ["extract", "--document", str(tmp_text_file), "--mode", "nonexistent"]
         )
         assert result.exit_code != 0
-        assert "Template not found" in result.output
+        assert "Unknown mode" in result.output
 
     def test_summarize_no_input(self, runner: CliRunner, _no_api_key):
         result = runner.invoke(cli, ["summarize"])

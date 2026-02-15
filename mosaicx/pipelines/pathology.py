@@ -24,6 +24,10 @@ from mosaicx.schemas.pathreport.base import (
     PathSections,
 )
 
+from mosaicx.pipelines.modes import register_mode_info
+
+register_mode_info("pathology", "5-step pathology report structurer (histology, staging, biomarkers)")
+
 
 def _build_dspy_classes():
     import dspy

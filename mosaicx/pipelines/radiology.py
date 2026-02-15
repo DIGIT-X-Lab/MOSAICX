@@ -31,6 +31,10 @@ from mosaicx.schemas.radreport.base import (
     ReportSections,
 )
 
+from mosaicx.pipelines.modes import register_mode_info
+
+register_mode_info("radiology", "5-step radiology report structurer (findings, measurements, scoring)")
+
 
 # ---------------------------------------------------------------------------
 # DSPy Signatures & Module (lazy)

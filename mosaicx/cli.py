@@ -223,17 +223,52 @@ def cli(ctx: click.Context) -> None:
 
 
 @cli.command()
-@click.option("--document", type=click.Path(exists=False, path_type=Path), help="Path to clinical document.")
-@click.option("--template", type=str, default="auto", help="Template name or path.")
+@click.option("--document", type=click.Path(exists=False, path_type=Path), default=None, help="Path to clinical document.")
+@click.option("--schema", "schema_name", type=str, default=None, help="Name of a saved schema from ~/.mosaicx/schemas/.")
+@click.option("--mode", type=str, default=None, help="Extraction mode name (e.g., radiology, pathology).")
+@click.option("--template", type=click.Path(exists=False, path_type=Path), default=None, help="Path to a YAML template file.")
 @click.option("--optimized", type=click.Path(exists=False, path_type=Path), default=None, help="Path to optimized program.")
+@click.option("--list-modes", is_flag=True, default=False, help="Print available modes and exit.")
+@click.pass_context
 def extract(
+    ctx: click.Context,
     document: Optional[Path],
-    template: str,
+    schema_name: Optional[str],
+    mode: Optional[str],
+    template: Optional[Path],
     optimized: Optional[Path],
+    list_modes: bool,
 ) -> None:
     """Extract structured data from a clinical document."""
+
+    # --list-modes: print available modes and exit (no document needed)
+    if list_modes:
+        import mosaicx.pipelines.radiology  # noqa: F401
+        import mosaicx.pipelines.pathology  # noqa: F401
+        from .pipelines.modes import list_modes as _list_modes
+
+        theme.section("Extraction Modes", console)
+        t = theme.make_clean_table(width=len(theme.TAGLINE))
+        t.add_column("Mode", style=f"bold {theme.CORAL}", no_wrap=True)
+        t.add_column("Description", style=theme.MUTED, ratio=1)
+        for name, desc in _list_modes():
+            t.add_row(name, desc)
+        console.print(Padding(t, (0, 0, 0, 2)))
+        console.print()
+        console.print(theme.info(f"{len(_list_modes())} mode(s) available"))
+        ctx.exit()
+        return
+
+    # Validate: --document is required for extraction
     if document is None:
         raise click.ClickException("--document is required.")
+
+    # Mutual exclusivity: --schema, --mode, --template
+    exclusive_count = sum(x is not None for x in [schema_name, mode, template])
+    if exclusive_count > 1:
+        raise click.ClickException(
+            "--schema, --mode, and --template are mutually exclusive. Provide at most one."
+        )
 
     # Load the document
     from .documents.models import DocumentLoadError
@@ -257,57 +292,82 @@ def extract(
         parts.append(f"confidence: {doc.ocr_confidence:.0%}")
     console.print(theme.info(" \u00b7 ".join(parts)))
 
-    # Resolve template to an output schema if not "auto"
-    output_schema = None
-    if template != "auto":
+    # Determine extraction path
+    output: dict = {}
+
+    if schema_name is not None:
+        # --schema X: load saved schema, compile, extract
+        from .pipelines.extraction import extract_with_schema
+
+        cfg = get_config()
+        _configure_dspy()
+        with theme.spinner("Extracting... patience you must have", console):
+            extracted = extract_with_schema(doc.text, schema_name, cfg.schema_dir)
+        output = {"extracted": extracted}
+
+    elif mode is not None:
+        # --mode X: run registered mode pipeline
+        import mosaicx.pipelines.radiology  # noqa: F401
+        import mosaicx.pipelines.pathology  # noqa: F401
+        from .pipelines.modes import get_mode
+        from .pipelines.extraction import extract_with_mode
+
+        # Validate mode name early (before configuring DSPy)
+        try:
+            get_mode(mode)
+        except ValueError as exc:
+            raise click.ClickException(str(exc))
+
+        _configure_dspy()
+        with theme.spinner("Extracting with mode... patience you must have", console):
+            output = extract_with_mode(doc.text, mode)
+
+    elif template is not None:
+        # --template file.yaml: compile YAML template, use as output_schema
         template_path = Path(template)
-        if template_path.exists() and template_path.suffix in (".yaml", ".yml"):
-            from .schemas.template_compiler import compile_template_file
+        if not template_path.exists():
+            raise click.ClickException(f"Template not found: {template_path}")
+        from .schemas.template_compiler import compile_template_file
 
-            try:
-                output_schema = compile_template_file(template_path)
-                console.print(theme.info(f"Using template: {template_path.name}"))
-            except Exception as exc:
-                raise click.ClickException(f"Failed to compile template: {exc}")
-        else:
-            # Try registry lookup
-            from .schemas.radreport.registry import get_template
+        try:
+            output_schema = compile_template_file(template_path)
+            console.print(theme.info(f"Using template: {template_path.name}"))
+        except Exception as exc:
+            raise click.ClickException(f"Failed to compile template: {exc}")
 
-            tpl_info = get_template(template)
-            if tpl_info is not None:
-                console.print(theme.info(
-                    f"Using built-in template: {tpl_info.name} ({tpl_info.description})"
-                ))
-            else:
-                raise click.ClickException(
-                    f"Template not found: {template!r}. "
-                    "Provide a .yaml file path or a registered template name."
-                )
+        from .pipelines.extraction import DocumentExtractor
 
-    # Configure DSPy and run extraction
-    _configure_dspy()
+        _configure_dspy()
+        extractor = DocumentExtractor(output_schema=output_schema)
+        if optimized is not None:
+            from .evaluation.optimize import load_optimized
+            extractor = load_optimized(type(extractor), optimized)
+        with theme.spinner("Extracting... patience you must have", console):
+            result = extractor(document_text=doc.text)
+        output = {}
+        if hasattr(result, "extracted"):
+            val = result.extracted
+            output["extracted"] = val.model_dump() if hasattr(val, "model_dump") else val
 
-    from .pipelines.extraction import DocumentExtractor
+    else:
+        # Auto mode: no flags -- LLM infers schema
+        from .pipelines.extraction import DocumentExtractor
 
-    extractor = DocumentExtractor(output_schema=output_schema)
-
-    if optimized is not None:
-        from .evaluation.optimize import load_optimized
-
-        extractor = load_optimized(type(extractor), optimized)
-
-    with theme.spinner("Extracting... patience you must have", console):
-        result = extractor(document_text=doc.text)
+        _configure_dspy()
+        extractor = DocumentExtractor()
+        if optimized is not None:
+            from .evaluation.optimize import load_optimized
+            extractor = load_optimized(type(extractor), optimized)
+        with theme.spinner("Extracting... patience you must have", console):
+            result = extractor(document_text=doc.text)
+        output = {}
+        if hasattr(result, "extracted"):
+            val = result.extracted
+            output["extracted"] = val.model_dump() if hasattr(val, "model_dump") else val
+        if hasattr(result, "inferred_schema"):
+            output["inferred_schema"] = result.inferred_schema.model_dump()
 
     console.print(theme.ok("Extracted \u2014 this is the way"))
-
-    # Format output as JSON
-    output: dict = {}
-    if hasattr(result, "extracted"):
-        val = result.extracted
-        output["extracted"] = val.model_dump() if hasattr(val, "model_dump") else val
-    if hasattr(result, "inferred_schema"):
-        output["inferred_schema"] = result.inferred_schema.model_dump()
 
     theme.section("Extracted Data", console)
     from rich.json import JSON
@@ -388,12 +448,6 @@ def batch(
 @cli.group()
 def template() -> None:
     """Manage extraction templates."""
-
-
-@template.command("create")
-def template_create() -> None:
-    """Create a new extraction template."""
-    console.print(theme.info("template create \u2014 not yet implemented"))
 
 
 @template.command("list")
