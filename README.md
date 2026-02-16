@@ -297,6 +297,8 @@ export MOSAICX_API_KEY=dummy
 
 > **Note:** vLLM-MLX uses `default` as the model name. Use `openai/default` for `MOSAICX_LM`.
 
+> **Warning:** The `--reasoning-parser gpt_oss` flag is **required** when serving gpt-oss models. Without it, Harmony channel tokens (`<|channel|>analysis`, `<|channel|>final`, etc.) leak into the LLM output and break DSPy's response parsing. If you see `AdapterParseError` or "Expected to find output fields", you forgot this flag.
+
 ### Batch processing on a GPU server (vLLM / SGLang)
 
 For batch-processing many documents, a dedicated inference server (**vLLM** or **SGLang**) is recommended over Ollama. Both use continuous batching and advanced memory management to handle concurrent requests efficiently without duplicating VRAM per slot.
