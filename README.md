@@ -278,26 +278,19 @@ For vLLM and SGLang the model name must match what the server loaded. For llama.
 uv tool install git+https://github.com/waybarrios/vllm-mlx.git
 
 # 2. Serve gpt-oss (models from mlx-community on Hugging Face)
-#    --reasoning-parser harmony strips Harmony channel tokens from output
-vllm-mlx serve mlx-community/gpt-oss-20b-MXFP4-Q8 \
-  --port 8000 --reasoning-parser harmony                  # 12 GB memory
-
-vllm-mlx serve mlx-community/gpt-oss-120b-4bit \
-  --port 8000 --reasoning-parser harmony                  # ~64 GB memory
+vllm-mlx serve mlx-community/gpt-oss-20b-MXFP4-Q8 --port 8000     # 12 GB memory
+vllm-mlx serve mlx-community/gpt-oss-120b-4bit --port 8000         # ~64 GB memory
 
 # With continuous batching for concurrent requests:
-vllm-mlx serve mlx-community/gpt-oss-20b-MXFP4-Q8 \
-  --port 8000 --reasoning-parser harmony --continuous-batching
+vllm-mlx serve mlx-community/gpt-oss-20b-MXFP4-Q8 --port 8000 --continuous-batching
 
 # 3. Point MOSAICX at it
-export MOSAICX_LM=openai/default
+export MOSAICX_LM=openai/mlx-community/gpt-oss-20b-MXFP4-Q8
 export MOSAICX_API_BASE=http://localhost:8000/v1
 export MOSAICX_API_KEY=dummy
 ```
 
-> **Note:** vLLM-MLX uses `default` as the model name. Use `openai/default` for `MOSAICX_LM`.
-
-> **Warning:** The `--reasoning-parser harmony` flag is **required** when serving gpt-oss models. Without it, Harmony channel tokens (`<|channel|>analysis`, `<|channel|>final`, etc.) leak into the LLM output and break DSPy's response parsing. If you see `AdapterParseError` or "Expected to find output fields", you forgot this flag.
+> **Note:** Set `MOSAICX_LM` to `openai/<model-id>` matching the model you loaded (e.g., `openai/mlx-community/gpt-oss-20b-MXFP4-Q8`). Do **not** use `--reasoning-parser` — MOSAICX strips Harmony channel tokens client-side.
 
 ### Batch processing on a GPU server (vLLM / SGLang)
 
