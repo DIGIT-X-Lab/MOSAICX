@@ -388,18 +388,37 @@ def rename_field(spec: SchemaSpec, old_name: str, new_name: str) -> SchemaSpec:
 _StructuredResult = NamedTuple("_StructuredResult", [("result", BaseModel), ("metrics", object)])
 
 
+def _strip_harmony_tokens(text: str) -> str:
+    """Extract the final-channel content from a Harmony-formatted response.
+
+    gpt-oss models wrap output in channel tokens::
+
+        <|channel|>analysis<|message|>...thinking...
+        <|start|>assistant<|channel|>final<|message|>...answer...
+
+    This function returns only the ``final`` channel content.  If no
+    Harmony tokens are found the text is returned unchanged, so it is
+    safe to call unconditionally.
+    """
+    marker = "<|channel|>final<|message|>"
+    if marker in text:
+        return text.split(marker, 1)[1]
+    # No Harmony tokens — return as-is (Ollama, llama.cpp, etc.)
+    return text
+
+
 def _structured_llm_call(
     system: str,
     user: str,
     response_model: type[BaseModel],
     step_name: str,
 ) -> _StructuredResult:
-    """Call the LLM with ``response_format`` for guaranteed JSON output.
+    """Call the LLM and parse the response into *response_model*.
 
-    Uses litellm (already a DSPy dependency) to call the configured backend
-    with JSON mode.  The backend's guided-decoding engine (Outlines for
-    vLLM-MLX, Ollama's native JSON mode, etc.) constrains token generation
-    so the output always validates against *response_model*.
+    Uses litellm directly (already a DSPy dependency) with the JSON
+    schema embedded in the system prompt.  Harmony channel tokens are
+    stripped client-side so vLLM-MLX does **not** need
+    ``--reasoning-parser`` — run the server plain.
     """
     import json
     import re
@@ -418,7 +437,8 @@ def _structured_llm_call(
         f"{system}\n\n"
         f"Respond with a single JSON object matching this schema:\n{schema_json}\n\n"
         "Field type values: str, int, float, bool, enum, list[str], list[int].\n"
-        "Use snake_case for field names, PascalCase for class_name."
+        "Use snake_case for field names, PascalCase for class_name.\n"
+        "Output ONLY the JSON object — no markdown fences, no commentary."
     )
 
     with track_step(metrics, step_name, tracker):
@@ -430,7 +450,6 @@ def _structured_llm_call(
             ],
             api_base=cfg.api_base,
             api_key=cfg.api_key,
-            response_format={"type": "json_object"},
         )
 
         usage = getattr(response, "usage", None)
@@ -441,7 +460,15 @@ def _structured_llm_call(
                 "total_tokens": getattr(usage, "total_tokens", 0),
             })
 
-    raw = response.choices[0].message.content
+    msg = response.choices[0].message
+    raw = msg.content
+    if not raw:
+        raw = getattr(msg, "reasoning_content", None)
+    if not raw:
+        raise ValueError("LLM returned empty response — check backend logs")
+
+    # Strip Harmony channel tokens (gpt-oss via vLLM-MLX without --reasoning-parser)
+    raw = _strip_harmony_tokens(raw)
 
     try:
         parsed = response_model.model_validate_json(raw)
