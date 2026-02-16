@@ -385,6 +385,80 @@ def rename_field(spec: SchemaSpec, old_name: str, new_name: str) -> SchemaSpec:
     return spec.model_copy(update={"fields": new_fields})
 
 
+_StructuredResult = NamedTuple("_StructuredResult", [("result", BaseModel), ("metrics", object)])
+
+
+def _structured_llm_call(
+    system: str,
+    user: str,
+    response_model: type[BaseModel],
+    step_name: str,
+) -> _StructuredResult:
+    """Call the LLM with ``response_format`` for guaranteed JSON output.
+
+    Uses litellm (already a DSPy dependency) to call the configured backend
+    with JSON mode.  The backend's guided-decoding engine (Outlines for
+    vLLM-MLX, Ollama's native JSON mode, etc.) constrains token generation
+    so the output always validates against *response_model*.
+    """
+    import json
+    import re
+
+    import litellm
+
+    from mosaicx.config import get_config
+    from mosaicx.metrics import PipelineMetrics, get_tracker, track_step
+
+    cfg = get_config()
+    metrics = PipelineMetrics()
+    tracker = get_tracker()
+
+    schema_json = json.dumps(response_model.model_json_schema(), indent=2)
+    full_system = (
+        f"{system}\n\n"
+        f"Respond with a single JSON object matching this schema:\n{schema_json}\n\n"
+        "Field type values: str, int, float, bool, enum, list[str], list[int].\n"
+        "Use snake_case for field names, PascalCase for class_name."
+    )
+
+    with track_step(metrics, step_name, tracker):
+        response = litellm.completion(
+            model=cfg.lm,
+            messages=[
+                {"role": "system", "content": full_system},
+                {"role": "user", "content": user},
+            ],
+            api_base=cfg.api_base,
+            api_key=cfg.api_key,
+            response_format={"type": "json_object"},
+        )
+
+        usage = getattr(response, "usage", None)
+        if usage:
+            tracker.add_usage(cfg.lm, {
+                "prompt_tokens": getattr(usage, "prompt_tokens", 0),
+                "completion_tokens": getattr(usage, "completion_tokens", 0),
+                "total_tokens": getattr(usage, "total_tokens", 0),
+            })
+
+    raw = response.choices[0].message.content
+
+    try:
+        parsed = response_model.model_validate_json(raw)
+    except Exception:
+        # Fallback: extract first JSON object from response
+        match = re.search(r"\{[\s\S]*\}", raw)
+        if match:
+            parsed = response_model.model_validate_json(match.group())
+        else:
+            raise ValueError(
+                f"LLM response is not valid {response_model.__name__} JSON:\n"
+                f"{raw[:500]}"
+            )
+
+    return _StructuredResult(result=parsed, metrics=metrics)
+
+
 def _build_dspy_classes():
     """Lazily define and return DSPy signature/module classes.
 
@@ -408,16 +482,15 @@ def _build_dspy_classes():
         )
 
     class SchemaGenerator(dspy.Module):
-        """DSPy Module that generates a Pydantic model from a text description.
+        """Generate a Pydantic model from a text description.
 
-        Pipeline:
-            1. Use ChainOfThought to produce a SchemaSpec from the description.
-            2. Compile the SchemaSpec into a real Pydantic BaseModel.
+        Uses litellm with ``response_format`` for guaranteed JSON output
+        instead of DSPy's text-based parsing.  The serving backend
+        (vLLM-MLX, Ollama, etc.) handles constrained decoding via Outlines.
         """
 
         def __init__(self) -> None:
             super().__init__()
-            self.generate = dspy.ChainOfThought(GenerateSchemaSpec)
 
         def forward(
             self,
@@ -425,23 +498,20 @@ def _build_dspy_classes():
             example_text: str = "",
         ) -> dspy.Prediction:
             """Run the schema generation pipeline."""
-            from mosaicx.metrics import PipelineMetrics, get_tracker, track_step
-
-            metrics = PipelineMetrics()
-            tracker = get_tracker()
-
-            with track_step(metrics, "Generate schema", tracker):
-                result = self.generate(
-                    description=description,
-                    example_text=example_text,
-                )
-            spec: SchemaSpec = result.schema_spec
-            compiled = compile_schema(spec)
-
-            self._last_metrics = metrics
-
+            spec = _structured_llm_call(
+                system=(
+                    "You generate JSON schema specifications for extracting "
+                    "structured data from medical documents."
+                ),
+                user=f"Create a schema for: {description}"
+                + (f"\n\nExample text:\n{example_text}" if example_text else ""),
+                response_model=SchemaSpec,
+                step_name="Generate schema",
+            )
+            compiled = compile_schema(spec.result)
+            self._last_metrics = spec.metrics
             return dspy.Prediction(
-                schema_spec=spec,
+                schema_spec=spec.result,
                 compiled_model=compiled,
             )
 
@@ -460,30 +530,32 @@ def _build_dspy_classes():
         )
 
     class SchemaRefiner(dspy.Module):
-        """DSPy Module that refines an existing schema based on instructions."""
+        """Refine an existing schema based on user instructions.
+
+        Uses litellm with ``response_format`` for guaranteed JSON output.
+        """
 
         def __init__(self) -> None:
             super().__init__()
-            self.refine = dspy.ChainOfThought(RefineSchemaSpec)
 
         def forward(self, current_schema: str, instruction: str) -> dspy.Prediction:
-            from mosaicx.metrics import PipelineMetrics, get_tracker, track_step
-
-            metrics = PipelineMetrics()
-            tracker = get_tracker()
-
-            with track_step(metrics, "Refine schema", tracker):
-                result = self.refine(
-                    current_schema=current_schema,
-                    instruction=instruction,
-                )
-            spec: SchemaSpec = result.refined_schema
-            compiled = compile_schema(spec)
-
-            self._last_metrics = metrics
-
+            spec = _structured_llm_call(
+                system=(
+                    "You refine JSON schema specifications for medical document "
+                    "data extraction. Preserve existing fields unless the "
+                    "instruction says to change them."
+                ),
+                user=(
+                    f"Current schema:\n{current_schema}\n\n"
+                    f"Instruction: {instruction}"
+                ),
+                response_model=SchemaSpec,
+                step_name="Refine schema",
+            )
+            compiled = compile_schema(spec.result)
+            self._last_metrics = spec.metrics
             return dspy.Prediction(
-                schema_spec=spec,
+                schema_spec=spec.result,
                 compiled_model=compiled,
             )
 
