@@ -381,6 +381,30 @@ mosaicx batch --input-dir ./reports --output-dir ./structured \
 
 > **Tip:** Setting `--workers` higher than the server's max concurrency (`--max-num-seqs` for vLLM, `--max-running-requests` for SGLang) wastes overhead — requests queue on the server side. Keep them matched.
 
+### Benchmarking backends
+
+Compare backend performance on your hardware with the included benchmark script. It auto-detects which backends are running, runs the same extraction task on each, and prints a ranked comparison table.
+
+```bash
+# Basic — benchmark all reachable backends (single run)
+python scripts/benchmark_backends.py --document report.txt
+
+# Multiple runs for more stable averages
+python scripts/benchmark_backends.py --document report.txt --runs 3 --mode radiology
+
+# Add a custom backend
+python scripts/benchmark_backends.py --document report.txt \
+  --backend "dgx=openai/gpt-oss:120b@http://localhost:8000/v1"
+
+# Only test specific backends
+python scripts/benchmark_backends.py --document report.txt --only vllm-mlx,ollama
+
+# Save results as JSON
+python scripts/benchmark_backends.py --document report.txt --runs 3 --output results.json
+```
+
+Default backends probed: **vllm-mlx** (:8000), **ollama** (:11434), **llama-cpp** (:8080), **sglang** (:30000). Offline backends are skipped automatically.
+
 ## OCR engines
 
 MOSAICX ships with two OCR engines that run in parallel by default:
