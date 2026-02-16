@@ -271,20 +271,23 @@ For vLLM and SGLang the model name must match what the server loaded. For llama.
 
 ### Local inference on Apple Silicon (vLLM-MLX)
 
-[vLLM-MLX](https://github.com/waybarrios/vllm-mlx) runs vLLM-compatible inference natively on Apple Silicon Macs using MLX. No remote GPU server needed — uses unified memory for quantized models up to ~70B on a 128 GB Mac.
+[vLLM-MLX](https://github.com/waybarrios/vllm-mlx) runs vLLM-compatible inference natively on Apple Silicon Macs using MLX. No remote GPU server needed — uses unified memory for quantized models up to ~70B on a 128 GB Mac. Has first-class gpt-oss support with dedicated Harmony format parsers.
 
 ```bash
 # 1. Install
 uv tool install git+https://github.com/waybarrios/vllm-mlx.git
 
-# 2. Serve a quantized model (models from mlx-community on Hugging Face)
-vllm-mlx serve mlx-community/gpt-oss-20b-MXFP4-Q8 --port 8000
+# 2. Serve gpt-oss (models from mlx-community on Hugging Face)
+#    --reasoning-parser gpt_oss strips Harmony channel tokens from output
+vllm-mlx serve mlx-community/gpt-oss-20b-MXFP4-Q8 \
+  --port 8000 --reasoning-parser gpt_oss                  # 12 GB memory
 
-# Larger model (needs ~64 GB unified memory):
-vllm-mlx serve mlx-community/gpt-oss-120b-4bit --port 8000
+vllm-mlx serve mlx-community/gpt-oss-120b-4bit \
+  --port 8000 --reasoning-parser gpt_oss                  # ~64 GB memory
 
 # With continuous batching for concurrent requests:
-vllm-mlx serve mlx-community/gpt-oss-20b-MXFP4-Q8 --port 8000 --continuous-batching
+vllm-mlx serve mlx-community/gpt-oss-20b-MXFP4-Q8 \
+  --port 8000 --reasoning-parser gpt_oss --continuous-batching
 
 # 3. Point MOSAICX at it
 export MOSAICX_LM=openai/default
