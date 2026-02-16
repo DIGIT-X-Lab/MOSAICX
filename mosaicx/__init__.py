@@ -49,10 +49,12 @@ def _configure_dspy() -> None:
         raise RuntimeError(
             "DSPy is required for this function. Install with: pip install dspy"
         )
-    dspy.configure(lm=dspy.LM(cfg.lm, api_key=cfg.api_key, api_base=cfg.api_base))
+    from .metrics import TokenTracker, make_harmony_lm, set_tracker
+
+    lm = make_harmony_lm(cfg.lm, api_key=cfg.api_key, api_base=cfg.api_base)
+    dspy.configure(lm=lm)
 
     # Install token usage tracker
-    from .metrics import TokenTracker, set_tracker
 
     tracker = TokenTracker()
     set_tracker(tracker)

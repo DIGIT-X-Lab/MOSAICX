@@ -388,25 +388,6 @@ def rename_field(spec: SchemaSpec, old_name: str, new_name: str) -> SchemaSpec:
 _StructuredResult = NamedTuple("_StructuredResult", [("result", BaseModel), ("metrics", object)])
 
 
-def _strip_harmony_tokens(text: str) -> str:
-    """Extract the final-channel content from a Harmony-formatted response.
-
-    gpt-oss models wrap output in channel tokens::
-
-        <|channel|>analysis<|message|>...thinking...
-        <|start|>assistant<|channel|>final<|message|>...answer...
-
-    This function returns only the ``final`` channel content.  If no
-    Harmony tokens are found the text is returned unchanged, so it is
-    safe to call unconditionally.
-    """
-    marker = "<|channel|>final<|message|>"
-    if marker in text:
-        return text.split(marker, 1)[1]
-    # No Harmony tokens — return as-is (Ollama, llama.cpp, etc.)
-    return text
-
-
 def _structured_llm_call(
     system: str,
     user: str,
@@ -426,7 +407,7 @@ def _structured_llm_call(
     import litellm
 
     from mosaicx.config import get_config
-    from mosaicx.metrics import PipelineMetrics, get_tracker, track_step
+    from mosaicx.metrics import PipelineMetrics, get_tracker, strip_harmony_tokens, track_step
 
     cfg = get_config()
     metrics = PipelineMetrics()
@@ -467,8 +448,8 @@ def _structured_llm_call(
     if not raw:
         raise ValueError("LLM returned empty response — check backend logs")
 
-    # Strip Harmony channel tokens (gpt-oss via vLLM-MLX without --reasoning-parser)
-    raw = _strip_harmony_tokens(raw)
+    # Strip Harmony channel tokens (gpt-oss via vLLM-MLX)
+    raw = strip_harmony_tokens(raw)
 
     try:
         parsed = response_model.model_validate_json(raw)

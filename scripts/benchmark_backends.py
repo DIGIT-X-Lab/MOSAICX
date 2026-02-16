@@ -132,9 +132,9 @@ def _configure_dspy_for_backend(model: str, api_base: str) -> None:
     """Configure DSPy to use a specific backend."""
     import dspy
 
-    from mosaicx.metrics import TokenTracker, set_tracker
+    from mosaicx.metrics import TokenTracker, make_harmony_lm, set_tracker
 
-    lm = dspy.LM(model, api_key="not-needed", api_base=api_base)
+    lm = make_harmony_lm(model, api_key="not-needed", api_base=api_base)
     dspy.configure(lm=lm)
 
     tracker = TokenTracker()
