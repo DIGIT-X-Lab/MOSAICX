@@ -243,6 +243,7 @@ MOSAICX talks to any OpenAI-compatible endpoint via DSPy + litellm. Defaults poi
 | **llama.cpp** | 8080 | `llama-server -m model.gguf --port 8080` |
 | **vLLM** | 8000 | `vllm serve meta-llama/Llama-3.1-70B-Instruct` |
 | **SGLang** | 30000 | `python -m sglang.launch_server --model-path meta-llama/Llama-3.1-70B-Instruct` |
+| **vLLM-MLX** | 8000 | `vllm-mlx serve mlx-community/Llama-3.2-3B-Instruct-4bit` (Apple Silicon) |
 
 ```bash
 # Ollama (default — no env vars needed)
@@ -267,6 +268,28 @@ export MOSAICX_API_BASE=https://api.openai.com/v1
 ```
 
 For vLLM and SGLang the model name must match what the server loaded. For llama.cpp any name works (only one model loaded at a time). The default `api_key` (`ollama`) is ignored by servers that don't check auth.
+
+### Local inference on Apple Silicon (vLLM-MLX)
+
+[vLLM-MLX](https://github.com/waybarrios/vllm-mlx) runs vLLM-compatible inference natively on Apple Silicon Macs using MLX. No remote GPU server needed — uses unified memory for quantized models up to ~70B on a 128 GB Mac.
+
+```bash
+# 1. Install
+uv tool install git+https://github.com/waybarrios/vllm-mlx.git
+
+# 2. Serve a quantized model (models from mlx-community on Hugging Face)
+vllm-mlx serve mlx-community/Llama-3.2-3B-Instruct-4bit --port 8000
+
+# With continuous batching for concurrent requests:
+vllm-mlx serve mlx-community/Llama-3.2-3B-Instruct-4bit --port 8000 --continuous-batching
+
+# 3. Point MOSAICX at it
+export MOSAICX_LM=openai/default
+export MOSAICX_API_BASE=http://localhost:8000/v1
+export MOSAICX_API_KEY=dummy
+```
+
+> **Note:** vLLM-MLX uses `default` as the model name. Use `openai/default` for `MOSAICX_LM`.
 
 ### Batch processing on a GPU server (vLLM / SGLang)
 
