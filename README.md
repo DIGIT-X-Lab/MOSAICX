@@ -242,6 +242,7 @@ MOSAICX talks to any OpenAI-compatible endpoint via DSPy + litellm. Defaults poi
 | **Ollama** | 11434 | Works out-of-the-box, no config needed |
 | **llama.cpp** | 8080 | `llama-server -m model.gguf --port 8080` |
 | **vLLM** | 8000 | `vllm serve meta-llama/Llama-3.1-70B-Instruct` |
+| **SGLang** | 30000 | `python -m sglang.launch_server --model-path meta-llama/Llama-3.1-70B-Instruct` |
 
 ```bash
 # Ollama (default — no env vars needed)
@@ -251,11 +252,13 @@ mosaicx schema generate --description "..."
 # 1. SSH tunnel the server port to localhost:
 ssh -L 8080:localhost:8080 user@dgx-spark      # llama.cpp (port 8080)
 ssh -L 8000:localhost:8000 user@dgx-spark      # vLLM      (port 8000)
+ssh -L 30000:localhost:30000 user@dgx-spark    # SGLang    (port 30000)
 
 # 2. Point MOSAICX at the forwarded port:
 export MOSAICX_LM=openai/your-model
-export MOSAICX_API_BASE=http://localhost:8080/v1   # llama.cpp
-export MOSAICX_API_BASE=http://localhost:8000/v1   # vLLM
+export MOSAICX_API_BASE=http://localhost:8080/v1    # llama.cpp
+export MOSAICX_API_BASE=http://localhost:8000/v1    # vLLM
+export MOSAICX_API_BASE=http://localhost:30000/v1   # SGLang
 
 # OpenAI / Together AI / Groq
 export MOSAICX_LM=openai/gpt-4o
@@ -263,11 +266,13 @@ export MOSAICX_API_KEY=sk-...
 export MOSAICX_API_BASE=https://api.openai.com/v1
 ```
 
-For vLLM the model name must match what the server loaded. For llama.cpp any name works (only one model loaded at a time). The default `api_key` (`ollama`) is ignored by servers that don't check auth.
+For vLLM and SGLang the model name must match what the server loaded. For llama.cpp any name works (only one model loaded at a time). The default `api_key` (`ollama`) is ignored by servers that don't check auth.
 
-### Batch processing on a GPU server (vLLM)
+### Batch processing on a GPU server (vLLM / SGLang)
 
-For batch-processing many documents, **vLLM** is recommended over Ollama. It uses continuous batching and PagedAttention to handle concurrent requests efficiently without duplicating VRAM per slot.
+For batch-processing many documents, a dedicated inference server (**vLLM** or **SGLang**) is recommended over Ollama. Both use continuous batching and advanced memory management to handle concurrent requests efficiently without duplicating VRAM per slot.
+
+#### vLLM
 
 **On the GPU server** (e.g., DGX Spark with 128 GB VRAM):
 
@@ -285,7 +290,7 @@ vllm serve gpt-oss:20b \
   --port 8000
 ```
 
-**On your local machine:**
+**On your Mac:**
 
 ```bash
 # 1. SSH tunnel
@@ -301,13 +306,51 @@ mosaicx batch --input-dir ./reports --output-dir ./structured \
   --mode radiology --format jsonl --workers 4
 ```
 
-| Setup | `--max-num-seqs` | `--workers` | Notes |
-|-------|-----------------|-------------|-------|
+#### SGLang
+
+**On the GPU server** (e.g., DGX Spark with 128 GB VRAM):
+
+```bash
+# Large model (120B) — constrain concurrency to avoid OOM
+python -m sglang.launch_server \
+  --model-path gpt-oss:120b \
+  --mem-fraction-static 0.90 \
+  --max-running-requests 4 \
+  --port 30000
+
+# Smaller model (20B) — higher concurrency, faster throughput
+python -m sglang.launch_server \
+  --model-path gpt-oss:20b \
+  --mem-fraction-static 0.90 \
+  --max-running-requests 16 \
+  --port 30000
+```
+
+**On your Mac:**
+
+```bash
+# 1. SSH tunnel
+ssh -L 30000:localhost:30000 user@dgx-spark
+
+# 2. Point MOSAICX at SGLang
+export MOSAICX_LM=openai/gpt-oss:120b
+export MOSAICX_API_BASE=http://localhost:30000/v1
+export MOSAICX_API_KEY=dummy
+
+# 3. Match --workers to --max-running-requests on the server
+mosaicx batch --input-dir ./reports --output-dir ./structured \
+  --mode radiology --format jsonl --workers 4
+```
+
+#### Tuning workers
+
+| Setup | Server concurrency | `--workers` | Notes |
+|-------|-------------------|-------------|-------|
 | 120B, 128 GB VRAM | 4 | 4 | Best quality, moderate speed |
 | 20B, 128 GB VRAM | 16 | 16 | Faster throughput, good quality |
 | 120B quantized (AWQ) | 8 | 8 | Balance of quality and speed |
 
-> **Tip:** Setting `--workers` higher than `--max-num-seqs` wastes overhead — requests queue on the server side. Keep them matched.
+> **Tip:** Setting `--workers` higher than the server's max concurrency (`--max-num-seqs` for vLLM, `--max-running-requests` for SGLang) wastes overhead — requests queue on the server side. Keep them matched.
 
 ## OCR engines
 
