@@ -49,7 +49,15 @@ def _configure_dspy() -> None:
         raise RuntimeError(
             "DSPy is required for this function. Install with: pip install dspy"
         )
-    dspy.configure(lm=dspy.LM(cfg.lm, api_key=cfg.api_key))
+    dspy.configure(lm=dspy.LM(cfg.lm, api_key=cfg.api_key, api_base=cfg.api_base))
+
+    # Install token usage tracker
+    from .metrics import TokenTracker, set_tracker
+
+    tracker = TokenTracker()
+    set_tracker(tracker)
+    dspy.settings.usage_tracker = tracker
+    dspy.settings.track_usage = True
 
 
 # ---------------------------------------------------------------------------
@@ -138,7 +146,8 @@ def extract(
         # Mode: run a specialized multi-step pipeline
         from .pipelines.extraction import extract_with_mode
 
-        return extract_with_mode(doc.text, mode)
+        output_data, _metrics = extract_with_mode(doc.text, mode)
+        return output_data
 
     if template is not None:
         # YAML template: compile and extract

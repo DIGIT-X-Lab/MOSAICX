@@ -425,12 +425,21 @@ def _build_dspy_classes():
             example_text: str = "",
         ) -> dspy.Prediction:
             """Run the schema generation pipeline."""
-            result = self.generate(
-                description=description,
-                example_text=example_text,
-            )
+            from mosaicx.metrics import PipelineMetrics, get_tracker, track_step
+
+            metrics = PipelineMetrics()
+            tracker = get_tracker()
+
+            with track_step(metrics, "Generate schema", tracker):
+                result = self.generate(
+                    description=description,
+                    example_text=example_text,
+                )
             spec: SchemaSpec = result.schema_spec
             compiled = compile_schema(spec)
+
+            self._last_metrics = metrics
+
             return dspy.Prediction(
                 schema_spec=spec,
                 compiled_model=compiled,
@@ -458,12 +467,21 @@ def _build_dspy_classes():
             self.refine = dspy.ChainOfThought(RefineSchemaSpec)
 
         def forward(self, current_schema: str, instruction: str) -> dspy.Prediction:
-            result = self.refine(
-                current_schema=current_schema,
-                instruction=instruction,
-            )
+            from mosaicx.metrics import PipelineMetrics, get_tracker, track_step
+
+            metrics = PipelineMetrics()
+            tracker = get_tracker()
+
+            with track_step(metrics, "Refine schema", tracker):
+                result = self.refine(
+                    current_schema=current_schema,
+                    instruction=instruction,
+                )
             spec: SchemaSpec = result.refined_schema
             compiled = compile_schema(spec)
+
+            self._last_metrics = metrics
+
             return dspy.Prediction(
                 schema_spec=spec,
                 compiled_model=compiled,

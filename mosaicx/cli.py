@@ -77,6 +77,15 @@ def _configure_dspy() -> None:
             "DSPy is required for this command. Install with: pip install dspy"
         )
     dspy.configure(lm=dspy.LM(cfg.lm, api_key=cfg.api_key, api_base=cfg.api_base))
+
+    # Install token usage tracker
+    from .metrics import TokenTracker, set_tracker
+
+    tracker = TokenTracker()
+    set_tracker(tracker)
+    dspy.settings.usage_tracker = tracker
+    dspy.settings.track_usage = True
+
     model_name = cfg.lm.split("/", 1)[-1] if "/" in cfg.lm else cfg.lm
     console.print(theme.info(f"Model: {model_name}"))
 
@@ -298,6 +307,7 @@ def extract(
 
     # Determine extraction path
     output_data: dict = {}
+    metrics = None  # PipelineMetrics, if available
 
     if schema_name is not None:
         # --schema X: load saved schema, compile, extract
@@ -324,7 +334,7 @@ def extract(
 
         _configure_dspy()
         with theme.spinner("Extracting with mode... patience you must have", console):
-            output_data = extract_with_mode(doc.text, mode)
+            output_data, metrics = extract_with_mode(doc.text, mode)
 
     elif template is not None:
         # --template file.yaml: compile YAML template, use as output_schema
@@ -352,6 +362,7 @@ def extract(
         if hasattr(result, "extracted"):
             val = result.extracted
             output_data["extracted"] = val.model_dump() if hasattr(val, "model_dump") else val
+        metrics = getattr(extractor, "_last_metrics", None)
 
     else:
         # Auto mode: no flags -- LLM infers schema
@@ -370,6 +381,7 @@ def extract(
             output_data["extracted"] = val.model_dump() if hasattr(val, "model_dump") else val
         if hasattr(result, "inferred_schema"):
             output_data["inferred_schema"] = result.inferred_schema.model_dump()
+        metrics = getattr(extractor, "_last_metrics", None)
 
     console.print(theme.ok("Extracted \u2014 this is the way"))
 
@@ -392,9 +404,13 @@ def extract(
         console.print(theme.ok(f"Saved to {output}"))
 
     theme.section("Extracted Data", console)
-    from .cli_display import render_extracted_data
+    from .cli_display import render_extracted_data, render_metrics
 
     render_extracted_data(output_data, console)
+
+    if metrics is not None:
+        render_metrics(metrics, console)
+
     if output is None:
         console.print()
         console.print(theme.info("Use -o/--output file.json to save full structured data"))
@@ -468,7 +484,8 @@ def batch(
         from mosaicx.pipelines.extraction import extract_with_mode
         _configure_dspy()
         def process_fn(text: str) -> dict:
-            return extract_with_mode(text, mode)
+            output_data, _metrics = extract_with_mode(text, mode)
+            return output_data
     else:
         from mosaicx.pipelines.extraction import DocumentExtractor
         _configure_dspy()
@@ -645,6 +662,12 @@ def schema_generate(description: str, name: Optional[str], example_text: str, ou
     from rich.json import JSON
 
     console.print(Padding(JSON(result.schema_spec.model_dump_json()), (0, 0, 0, 2)))
+
+    metrics = getattr(generator, "_last_metrics", None)
+    if metrics is not None:
+        from .cli_display import render_metrics
+
+        render_metrics(metrics, console)
 
 
 @schema.command("list")
@@ -825,6 +848,13 @@ def schema_refine(
     console.print(theme.info(
         f"Fields: {', '.join(compiled.model_fields.keys())}"
     ))
+
+    if instruction:
+        metrics = getattr(refiner, "_last_metrics", None)
+        if metrics is not None:
+            from .cli_display import render_metrics
+
+            render_metrics(metrics, console)
 
 
 @schema.command("history")
