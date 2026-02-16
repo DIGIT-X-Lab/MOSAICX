@@ -1,0 +1,63 @@
+# ==============================================================================
+# MOSAICX PyPI Publish
+# ==============================================================================
+#
+# Builds and publishes the MOSAICX package to PyPI on version tags.
+#
+# Triggers:
+#   - Push of a version tag (v*)
+#   - Manual workflow dispatch
+#
+# Required Secrets:
+#   - PYPI_API_TOKEN: PyPI API token for the mosaicx project
+#
+# ==============================================================================
+
+name: PyPI Publish
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install build dependencies
+        run: pip install --upgrade pip build
+
+      - name: Build package
+        run: python -m build
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          password: ${{ secrets.PYPI_API_TOKEN }}
