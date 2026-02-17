@@ -62,7 +62,8 @@ class TestPublicAPI:
 
         for name in (
             "extract", "summarize", "generate_schema", "deidentify",
-            "list_schemas", "list_modes", "evaluate", "batch_extract",
+            "list_schemas", "list_modes", "list_templates", "evaluate",
+            "batch_extract",
         ):
             assert name in mosaicx.__all__, f"{name!r} missing from __all__"
 
@@ -137,6 +138,16 @@ class TestSDKSignatures:
         assert "texts" in params
         assert "mode" in params
         assert "template" in params
+
+    def test_list_templates_signature(self):
+        from mosaicx import list_templates
+
+        sig = inspect.signature(list_templates)
+        # No required params
+        for param in sig.parameters.values():
+            assert param.default is not inspect.Parameter.empty or param.kind in (
+                inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD
+            )
 
 
 class TestFileBasedSignatures:
@@ -273,3 +284,22 @@ class TestHealth:
 
         result = health()
         assert isinstance(result["available_templates"], list)
+
+
+class TestListTemplates:
+    """Test sdk.list_templates() -- no LLM needed."""
+
+    def test_returns_list(self):
+        from mosaicx.sdk import list_templates
+
+        result = list_templates()
+        assert isinstance(result, list)
+
+    def test_items_are_dicts(self):
+        from mosaicx.sdk import list_templates
+
+        result = list_templates()
+        for item in result:
+            assert isinstance(item, dict)
+            assert "name" in item
+            assert "source" in item

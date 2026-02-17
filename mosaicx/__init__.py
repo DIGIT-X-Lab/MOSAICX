@@ -242,6 +242,7 @@ from mosaicx.sdk import (  # noqa: E402
     generate_schema,
     list_schemas,
     list_modes,
+    list_templates,
     evaluate,
     batch_extract,
 )
@@ -256,6 +257,7 @@ __all__ = [
     "generate_schema",
     "list_schemas",
     "list_modes",
+    "list_templates",
     "evaluate",
     "batch_extract",
     # File-based API (for document loading)

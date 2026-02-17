@@ -624,6 +624,59 @@ def list_modes() -> list[dict[str, str]]:
 
 
 # ---------------------------------------------------------------------------
+# list_templates
+# ---------------------------------------------------------------------------
+
+
+def list_templates() -> list[dict[str, Any]]:
+    """List available extraction templates (built-in and user-created).
+
+    Returns
+    -------
+    list[dict]
+        Each dict has keys ``"name"``, ``"description"``, ``"mode"``,
+        and ``"source"`` (``"built-in"`` or ``"user"``).
+    """
+    from .config import get_config
+    from .schemas.radreport.registry import list_templates as _list_builtin
+
+    cfg = get_config()
+    templates: list[dict[str, Any]] = []
+
+    for tpl in _list_builtin():
+        templates.append({
+            "name": tpl.name,
+            "description": tpl.description,
+            "mode": tpl.mode,
+            "source": "built-in",
+        })
+
+    if cfg.templates_dir.is_dir():
+        from .schemas.template_compiler import parse_template
+
+        for f in sorted(cfg.templates_dir.glob("*.yaml")) + sorted(
+            cfg.templates_dir.glob("*.yml")
+        ):
+            try:
+                meta = parse_template(f.read_text(encoding="utf-8"))
+                templates.append({
+                    "name": f.stem,
+                    "description": meta.description or "",
+                    "mode": meta.mode,
+                    "source": "user",
+                })
+            except Exception:
+                templates.append({
+                    "name": f.stem,
+                    "description": "(invalid YAML)",
+                    "mode": None,
+                    "source": "user",
+                })
+
+    return templates
+
+
+# ---------------------------------------------------------------------------
 # evaluate
 # ---------------------------------------------------------------------------
 
