@@ -713,13 +713,18 @@ pip install mosaicx[all]
 ```python
 from mosaicx.sdk import extract, deidentify, summarize
 
-# Extract structured data from a radiology report
+# Extract structured data from text
 result = extract(
     "CT CHEST WITH CONTRAST\nFindings: 2.3cm RUL nodule...",
     mode="radiology",
 )
 print(result)
 # {"exam_type": "CT Chest", "findings": [...], "impressions": [...], ...}
+
+# Or extract directly from a file (PDF, DOCX, image, etc.)
+result = extract(document="scan.pdf", mode="radiology")
+print(result)
+# {"exam_type": "CT Chest", "findings": [...], "_document": {"format": "pdf", ...}}
 
 # Remove PHI from text
 clean = deidentify("Patient John Doe, DOB 01/15/1980, SSN 123-45-6789")
@@ -737,21 +742,22 @@ print(summary)
 
 ### API Reference
 
-#### `extract(text, *, template, mode, score, optimized) -> dict`
+#### `extract(text=None, *, document=None, template=None, mode="auto", score=False, optimized=None) -> dict`
 
-Extract structured data from document text.
+Extract structured data from document text or a document file.
 
 **Parameters:**
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `text` | `str` | (required) | The document text to extract from. |
+| `text` | `str \| None` | `None` | The document text to extract from. Mutually exclusive with `document`. |
+| `document` | `str \| Path \| None` | `None` | Path to a document file (PDF, DOCX, image, etc.). Loaded and OCR'd automatically. Mutually exclusive with `text`. |
 | `template` | `str \| Path \| None` | `None` | Template name (built-in or saved schema), or path to a YAML template file. Resolved via the unified template system. When provided, `mode` is ignored -- the template determines the extraction pipeline. |
 | `mode` | `str` | `"auto"` | Extraction mode. `"auto"` lets the LLM infer the schema. `"radiology"` and `"pathology"` run specialized multi-step pipelines. Custom pipelines use their registered name. Ignored when `template` is provided. |
 | `score` | `bool` | `False` | If `True`, compute completeness scoring against the template and include it in the output under `"completeness"`. |
 | `optimized` | `str \| Path \| None` | `None` | Path to an optimized DSPy program. Only applicable for `mode="auto"` or template-based extraction. |
 
-**Returns:** `dict` -- Structure depends on mode/template. Mode-based extraction includes `_metrics` with timing data. Auto mode may include `inferred_schema`. When `score=True`, includes a `"completeness"` key with coverage metrics.
+**Returns:** `dict` -- Structure depends on mode/template. Mode-based extraction includes `_metrics` with timing data. Auto mode may include `inferred_schema`. When `score=True`, includes a `"completeness"` key with coverage metrics. When `document` is used, the result includes a `"_document"` key with loading metadata (`format`, `page_count`, `ocr_engine_used`, `quality_warning`).
 
 **Raises:**
 - `ValueError` if conflicting parameters are provided, or if the template/mode is unknown.
@@ -759,11 +765,18 @@ Extract structured data from document text.
 **Example:**
 
 ```python
+from pathlib import Path
 from mosaicx.sdk import extract
 
-# Auto extraction (LLM infers structure)
-result = extract("Patient presents with chest pain and elevated troponin...")
-print(result["extracted"])
+# From text (existing)
+result = extract("Patient presents with chest pain...")
+
+# From a file path (new)
+result = extract(document="scan.pdf")
+result = extract(document=Path("reports/ct_chest.pdf"), template="chest_ct")
+
+# With scoring
+result = extract(document="scan.pdf", template="chest_ct", score=True)
 
 # Mode-based extraction
 result = extract(

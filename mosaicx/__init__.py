@@ -3,7 +3,7 @@
 MOSAICX -- Medical Document Structuring Platform.
 
 Public API (text-based SDK):
-    - mosaicx.extract(text=None, document=None, template=None, mode="auto", score=False)
+    - mosaicx.extract(text=None, document=None, template=None, mode="auto", score=False, optimized=None)
     - mosaicx.deidentify(text, mode="remove")
     - mosaicx.summarize(reports, patient_id="unknown", optimized=None)
     - mosaicx.generate_schema(description, name=None, example_text=None, save=False)
