@@ -855,3 +855,112 @@ def health() -> dict[str, Any]:
         "available_templates": templates,
         "ocr_engine": cfg.ocr_engine,
     }
+
+
+# ---------------------------------------------------------------------------
+# process_file
+# ---------------------------------------------------------------------------
+
+
+def process_file(
+    file: Path | bytes,
+    *,
+    filename: str | None = None,
+    template: str | None = None,
+    mode: str = "auto",
+    score: bool = False,
+    ocr_engine: str | None = None,
+    force_ocr: bool = False,
+) -> dict[str, Any]:
+    """Load a document and extract structured data in one call.
+
+    Handles OCR for PDFs and images, then runs the extraction pipeline.
+    Accepts a file path or raw bytes (e.g., from a web upload).
+
+    Parameters
+    ----------
+    file:
+        Path to a document file, or raw bytes of the file content.
+    filename:
+        Original filename. Required when *file* is ``bytes`` so the
+        format can be detected from the extension.
+    template:
+        Template name or YAML file path for targeted extraction.
+    mode:
+        Extraction mode (``"auto"``, ``"radiology"``, ``"pathology"``).
+    score:
+        If ``True``, include completeness scoring in the result.
+    ocr_engine:
+        Override the configured OCR engine (``"both"``, ``"surya"``,
+        ``"chandra"``).  If ``None``, uses the config default.
+    force_ocr:
+        Force OCR even on PDFs with a native text layer.
+
+    Returns
+    -------
+    dict
+        Extraction result from :func:`extract`, plus a ``"_document"``
+        key with loading metadata (format, page_count, ocr_engine_used,
+        quality_warning).
+
+    Raises
+    ------
+    ValueError
+        If *file* is ``bytes`` and *filename* is not provided.
+    FileNotFoundError
+        If *file* is a path that does not exist.
+    """
+    import tempfile
+
+    from .config import get_config
+    from .documents.loader import load_document
+
+    cfg = get_config()
+
+    if isinstance(file, bytes):
+        if not filename:
+            raise ValueError(
+                "filename is required when file is bytes "
+                "(needed for format detection from extension)."
+            )
+        # Write to temp file for the loader
+        suffix = Path(filename).suffix
+        with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+            tmp.write(file)
+            tmp_path = Path(tmp.name)
+        try:
+            doc = load_document(
+                tmp_path,
+                ocr_engine=ocr_engine or cfg.ocr_engine,
+                force_ocr=force_ocr or cfg.force_ocr,
+                ocr_langs=cfg.ocr_langs,
+                quality_threshold=cfg.quality_threshold,
+                page_timeout=cfg.ocr_page_timeout,
+            )
+        finally:
+            tmp_path.unlink(missing_ok=True)
+    else:
+        file_path = Path(file)
+        if not file_path.exists():
+            raise FileNotFoundError(f"Document not found: {file_path}")
+        doc = load_document(
+            file_path,
+            ocr_engine=ocr_engine or cfg.ocr_engine,
+            force_ocr=force_ocr or cfg.force_ocr,
+            ocr_langs=cfg.ocr_langs,
+            quality_threshold=cfg.quality_threshold,
+            page_timeout=cfg.ocr_page_timeout,
+        )
+
+    # Extract structured data
+    result = extract(doc.text, template=template, mode=mode, score=score)
+
+    # Attach document metadata
+    result["_document"] = {
+        "format": doc.format,
+        "page_count": doc.page_count,
+        "ocr_engine_used": doc.ocr_engine_used,
+        "quality_warning": doc.quality_warning,
+    }
+
+    return result

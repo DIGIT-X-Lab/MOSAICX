@@ -63,7 +63,7 @@ class TestPublicAPI:
         for name in (
             "extract", "summarize", "generate_schema", "deidentify",
             "list_schemas", "list_modes", "list_templates", "evaluate",
-            "batch_extract",
+            "batch_extract", "process_file",
         ):
             assert name in mosaicx.__all__, f"{name!r} missing from __all__"
 
@@ -303,3 +303,66 @@ class TestListTemplates:
             assert isinstance(item, dict)
             assert "name" in item
             assert "source" in item
+
+
+class TestProcessFile:
+    """Test sdk.process_file() signature and basic validation."""
+
+    def test_importable(self):
+        from mosaicx.sdk import process_file
+        assert callable(process_file)
+
+    def test_signature_has_expected_params(self):
+        from mosaicx.sdk import process_file
+
+        sig = inspect.signature(process_file)
+        params = list(sig.parameters.keys())
+        assert "file" in params
+        assert "filename" in params
+        assert "template" in params
+        assert "mode" in params
+        assert "score" in params
+
+    def test_txt_file(self, tmp_path, monkeypatch):
+        """Process a .txt file -- no OCR, no LLM (mock extract)."""
+        from mosaicx import sdk
+
+        txt = tmp_path / "report.txt"
+        txt.write_text("Normal chest radiograph. No acute findings.")
+
+        # Mock sdk.extract to avoid needing LLM
+        monkeypatch.setattr(sdk, "extract", lambda text, **kw: {"extracted": {"summary": text[:20]}})
+        # Mock _ensure_configured to skip DSPy setup
+        monkeypatch.setattr(sdk, "_ensure_configured", lambda: None)
+
+        result = sdk.process_file(txt, mode="auto")
+        assert "extracted" in result
+        assert "_document" in result
+        assert result["_document"]["format"] == "txt"
+
+    def test_bytes_input_with_filename(self, tmp_path, monkeypatch):
+        """Process bytes input with a filename for format detection."""
+        from mosaicx import sdk
+
+        content = b"Normal chest radiograph. No acute findings."
+
+        monkeypatch.setattr(sdk, "extract", lambda text, **kw: {"extracted": {"summary": "ok"}})
+        monkeypatch.setattr(sdk, "_ensure_configured", lambda: None)
+
+        result = sdk.process_file(content, filename="report.txt", mode="auto")
+        assert "extracted" in result
+        assert "_document" in result
+
+    def test_bytes_without_filename_raises(self):
+        """Bytes input without filename should raise ValueError."""
+        from mosaicx.sdk import process_file
+
+        with pytest.raises(ValueError, match="filename"):
+            process_file(b"some bytes")
+
+    def test_nonexistent_file_raises(self, tmp_path):
+        """Nonexistent file path should raise FileNotFoundError."""
+        from mosaicx.sdk import process_file
+
+        with pytest.raises(FileNotFoundError):
+            process_file(tmp_path / "nonexistent.txt")

@@ -245,6 +245,7 @@ from mosaicx.sdk import (  # noqa: E402
     list_templates,
     evaluate,
     batch_extract,
+    process_file,
 )
 
 
@@ -260,6 +261,7 @@ __all__ = [
     "list_templates",
     "evaluate",
     "batch_extract",
+    "process_file",
     # File-based API (for document loading)
     "extract_file",
     "summarize_files",
