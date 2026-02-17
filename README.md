@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="assets/mosaicx_logo.png" alt="MOSAICX" width="800"/>
+  <img src="assets/mosaicx_logo.png" alt="MOSAICX" width="700"/>
 </div>
 
 <p align="center">
@@ -11,365 +11,179 @@
 </p>
 
 <p align="center">
-  <strong><a href="https://www.linkedin.com/company/digitx-lmu/">DIGIT-X Lab</a> · LMU Munich</strong><br>
-  Structure first. Insight follows.
+  <strong><a href="https://www.linkedin.com/company/digitx-lmu/">DIGIT-X Lab</a> &middot; LMU Munich</strong><br>
+  Turn unstructured medical documents into validated, machine-readable JSON.<br>
+  Runs locally &mdash; no PHI leaves your machine.
 </p>
 
 ---
 
-Turn unstructured medical documents (radiology reports, clinical notes, pathology summaries) into validated, machine-readable JSON. Runs locally via Ollama — no PHI leaves your machine.
+## How It Works
 
-## Quick start
+```mermaid
+flowchart LR
+    A["PDF / Image / Text"] --> B["Dual-Engine OCR"]
+    B --> C["DSPy Pipeline"]
+    C --> D["Validated JSON"]
 
-```bash
-# 1. Install Ollama (skip if already installed)
-curl -fsSL https://ollama.com/install.sh | sh
-ollama serve                    # start the daemon (runs on :11434)
-
-# 2. Pull a model
-ollama pull gpt-oss:20b         # fast  — 16 GB RAM
-ollama pull gpt-oss:120b        # best  — 64 GB RAM
-
-# 3. Install MOSAICX
-pip install mosaicx              # or: uv add mosaicx / pipx install mosaicx
-
-# 4. Verify
-mosaicx --version
+    style A fill:#B5A89A,stroke:#8a7e72,color:#fff
+    style B fill:#E87461,stroke:#c25a49,color:#fff
+    style C fill:#E87461,stroke:#c25a49,color:#fff
+    style D fill:#B5A89A,stroke:#8a7e72,color:#fff
 ```
 
-Defaults point to Ollama on localhost — no `.env` needed for local use. See [Configuration](#configuration) to customize.
+MOSAICX ships with specialized pipelines for **radiology** and **pathology** reports, a **generic extraction** mode that adapts to any document, plus **de-identification** and **patient timeline summarization**. Every pipeline is a DSPy module -- meaning it can be optimized with labeled data for your specific use case.
 
-## What it does
-
-| Command | Purpose |
-|---------|---------|
-| `mosaicx extract` | Extract structured data (auto, schema, or mode) |
-| `mosaicx batch` | Batch-process documents with schema or mode |
-| `mosaicx schema generate` | Create a Pydantic schema from a plain-English description |
-| `mosaicx schema list` | List saved schemas |
-| `mosaicx schema show <name>` | Inspect a schema's fields and types |
-| `mosaicx schema refine` | Edit a schema (LLM-driven or manual field ops) |
-| `mosaicx schema history <name>` | Show version history of a schema |
-| `mosaicx schema diff <name>` | Compare current schema against a previous version |
-| `mosaicx schema revert <name>` | Restore a previous version of a schema |
-| `mosaicx summarize` | Synthesize a patient timeline from multiple reports |
-| `mosaicx deidentify` | Remove PHI (LLM + regex belt-and-suspenders) |
-| `mosaicx template list` | List built-in radiology templates |
-| `mosaicx template validate` | Validate a custom YAML template |
-| `mosaicx optimize` | Tune a DSPy pipeline (BootstrapFewShot / MIPROv2) |
-| `mosaicx eval` | Evaluate pipeline accuracy against a labeled test set |
-| `mosaicx pipeline new <name>` | Scaffold a new extraction pipeline |
-| `mosaicx mcp serve` | Start the MCP server for AI agent integration |
-| `mosaicx config show` | Print current configuration |
-
-Run any command with `--help` for full options. For detailed guides, see the [documentation](docs/README.md).
-
-## Usage examples
-
-### Schema management
-
-Schemas live in `~/.mosaicx/schemas/` as JSON files named after their class (e.g., `EchoReport.json`). Generate, inspect, and refine them entirely from the CLI.
-
-**Generate** — describe what you need in plain English:
+## Quick Start
 
 ```bash
-mosaicx schema generate \
-  --description "echocardiography report with LVEF, valve grades, impression"
+# Install MOSAICX
+pip install mosaicx               # or: uv add mosaicx / pipx install mosaicx
 
-# optionally set the schema name (default: LLM-chosen):
-mosaicx schema generate \
-  --description "patient name, dob, age, sex, blood pressure" \
-  --name PatientVitals
+# Start a local LLM (pick one)
+ollama serve && ollama pull gpt-oss:20b                              # Ollama
+vllm-mlx serve mlx-community/gpt-oss-20b-MXFP4-Q8 --port 8000      # Apple Silicon (vLLM-MLX)
+
+# Extract structured data from a report
+mosaicx extract --document report.pdf --mode radiology
 ```
 
-**List** saved schemas:
+> [!TIP]
+> First time? The [Getting Started guide](docs/getting-started.md) walks you through setup and your first extraction in under 10 minutes.
+
+## What You Can Do
+
+| Capability | Commands | Guide |
+|------------|----------|-------|
+| **Extract structured data** from clinical documents | `mosaicx extract`, `mosaicx batch` | [Pipelines](docs/pipelines.md) |
+| **Create and manage schemas** for custom extraction targets | `mosaicx schema generate / list / refine` | [Schemas & Templates](docs/schemas-and-templates.md) |
+| **De-identify** reports (LLM + regex belt-and-suspenders) | `mosaicx deidentify` | [CLI Reference](docs/cli-reference.md) |
+| **Summarize patient timelines** across multiple reports | `mosaicx summarize` | [CLI Reference](docs/cli-reference.md) |
+| **Optimize pipelines** with labeled data (DSPy) | `mosaicx optimize`, `mosaicx eval` | [Optimization](docs/optimization.md) |
+| **Extend** with custom pipelines, MCP server, Python SDK | `mosaicx pipeline new`, `mosaicx mcp serve` | [Developer Guide](docs/developer-guide.md) |
+
+Run any command with `--help` for full options. Complete reference: [docs/cli-reference.md](docs/cli-reference.md)
+
+## Recipes
 
 ```bash
-mosaicx schema list
-```
+# Radiology report -> structured JSON
+mosaicx extract --document ct_chest.pdf --mode radiology
 
-**Refine** — add, remove, or rename fields, or let the LLM restructure:
-
-```bash
-# Add a required field (default)
-mosaicx schema refine --schema EchoReport --add "rvsp: float"
-
-# Add an optional field with a description
-mosaicx schema refine --schema EchoReport \
-  --add "hospital_name: str" \
-  --optional \
-  --description "Name of the treating hospital"
-
-# Remove or rename fields
-mosaicx schema refine --schema EchoReport --remove clinical_impression
-mosaicx schema refine --schema EchoReport --rename "lvef=lvef_percent"
-
-# LLM-driven refinement
-mosaicx schema refine --schema EchoReport \
-  --instruction "add a field for pericardial effusion severity as an enum"
-```
-
-Every generate and refine auto-archives the previous version. See [Version history](#version-history) for how to inspect and revert.
-
-### Version history
-
-Every time a schema is saved (via `generate` or `refine`), the previous version is archived to `~/.mosaicx/schemas/.history/`. Nothing is ever silently lost.
-
-**List versions:**
-
-```bash
-mosaicx schema history EchoReport
-# Version  Fields  Date
-# v1       5       2026-02-15 10:30
-# v2       6       2026-02-15 10:35
-# current  6       2026-02-15 10:35
-```
-
-**Compare against a previous version:**
-
-```bash
-mosaicx schema diff EchoReport --version 1
-# + rvsp           (float)
-# ~ lvef_percent   type: int -> float
-```
-
-**Revert to a previous version:**
-
-```bash
-mosaicx schema revert EchoReport --version 1
-# ✓ Reverted EchoReport to v1 (archived current as v3)
-```
-
-Reverting archives the current schema first, so you can always get back to it.
-
-### Extraction
-
-Extract structured data from clinical documents. Three modes:
-
-**Auto mode** — LLM reads the document and figures out what to extract:
-
-```bash
-mosaicx extract --document report.pdf
-```
-
-**Schema mode** — extract into a user-defined schema:
-
-```bash
-# First, generate a schema
+# Schema-driven extraction (define your own fields)
 mosaicx schema generate --description "echo report with LVEF, valve grades, impression"
+mosaicx extract --document echo.pdf --schema EchoReport
 
-# Then extract into it
-mosaicx extract --document report.pdf --schema EchoReport
-```
+# Batch-process a folder of reports
+mosaicx batch --input-dir ./reports --output-dir ./structured --mode radiology --format jsonl
 
-**Specialized modes** — domain-specific multi-step pipelines:
+# De-identify a clinical note
+mosaicx deidentify --document note.txt
 
-```bash
-# Radiology: 5-step chain with measurements, scoring (BI-RADS, Lung-RADS), anatomy codes
-mosaicx extract --document ct_report.pdf --mode radiology
-
-# Pathology: 5-step chain with histology, TNM staging, biomarkers
-mosaicx extract --document pathology_report.pdf --mode pathology
-
-# List available modes
-mosaicx extract --list-modes
-```
-
-**YAML templates** — extract into a compiled YAML template:
-
-```bash
-mosaicx extract --document report.pdf --template ./custom_template.yaml
-```
-
-### Batch processing
-
-```bash
-# Auto mode (LLM infers schema for each document)
-mosaicx batch --input-dir ./reports --output-dir ./structured
-
-# With a schema
-mosaicx batch --input-dir ./reports --output-dir ./structured --schema EchoReport
-
-# With a mode
-mosaicx batch --input-dir ./reports --output-dir ./structured --mode radiology
-
-# Resume after interruption
-mosaicx batch --input-dir ./reports --output-dir ./structured --mode radiology --resume
-```
-
-### Summarize reports
-
-```bash
+# Patient timeline from multiple reports
 mosaicx summarize --dir ./patient_001/ --patient P001
-mosaicx summarize --document single_report.pdf
 ```
 
-### De-identify
+See the full [CLI Reference](docs/cli-reference.md) for every flag and option.
 
-```bash
-mosaicx deidentify --document note.txt                  # LLM + regex
-mosaicx deidentify --dir ./notes --regex-only           # regex only, no LLM
-mosaicx deidentify --document note.txt --mode pseudonymize
-```
+## Privacy
 
-## Configuration
+> [!IMPORTANT]
+> **Data stays on your machine.** MOSAICX runs against a local inference server by default -- no external API calls, no cloud uploads. For HIPAA/GDPR compliance guidance and cloud backend caveats, see [Configuration](docs/configuration.md).
 
-All settings live under the `MOSAICX_` prefix. Set them as environment variables or in a `.env` file:
+## LLM Backends
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `MOSAICX_LM` | `openai/gpt-oss:120b` | Primary LLM (litellm format) |
-| `MOSAICX_LM_CHEAP` | `openai/gpt-oss:20b` | Fallback / cheap model |
-| `MOSAICX_API_KEY` | `ollama` | API key (`ollama` for local Ollama) |
-| `MOSAICX_API_BASE` | `http://localhost:11434/v1` | LLM endpoint URL |
-| `MOSAICX_OCR_ENGINE` | `both` | `surya`, `chandra`, or `both` |
-| `MOSAICX_FORCE_OCR` | `false` | Force OCR even on native PDFs |
-| `MOSAICX_OCR_LANGS` | `en,de` | OCR language hints |
-| `MOSAICX_BATCH_WORKERS` | `1` | Parallel workers for batch mode |
-| `MOSAICX_COMPLETENESS_THRESHOLD` | `0.7` | Minimum extraction quality (0-1) |
-| `MOSAICX_DEIDENTIFY_MODE` | `remove` | `remove`, `pseudonymize`, `dateshift` |
-| `MOSAICX_DEFAULT_EXPORT_FORMATS` | `parquet,jsonl` | Batch export formats |
-
-View the active config:
-
-```bash
-mosaicx config show
-```
-
-## LLM backends
-
-MOSAICX talks to any OpenAI-compatible endpoint via DSPy + litellm. Defaults point to Ollama on localhost — override with env vars for other backends.
+MOSAICX talks to any OpenAI-compatible endpoint via DSPy + litellm. Pick the backend that fits your hardware -- override with env vars.
 
 | Backend | Port | Example |
 |---------|------|---------|
 | **Ollama** | 11434 | Works out-of-the-box, no config needed |
 | **llama.cpp** | 8080 | `llama-server -m model.gguf --port 8080` |
-| **vLLM** | 8000 | `vllm serve openai/gpt-oss-120b` |
-| **SGLang** | 30000 | `python -m sglang.launch_server --model-path openai/gpt-oss-120b` |
+| **vLLM** | 8000 | `vllm serve gpt-oss:120b` |
+| **SGLang** | 30000 | `python -m sglang.launch_server --model-path gpt-oss:120b` |
 | **vLLM-MLX** | 8000 | `vllm-mlx serve mlx-community/gpt-oss-20b-MXFP4-Q8` (Apple Silicon) |
 
 ```bash
-# Ollama (default — no env vars needed)
-mosaicx schema generate --description "..."
-
-# llama.cpp / vLLM on a remote GPU server (e.g., DGX Spark)
-# 1. SSH tunnel the server port to localhost:
-ssh -L 8080:localhost:8080 user@dgx-spark      # llama.cpp (port 8080)
-ssh -L 8000:localhost:8000 user@dgx-spark      # vLLM      (port 8000)
-ssh -L 30000:localhost:30000 user@dgx-spark    # SGLang    (port 30000)
-
-# 2. Point MOSAICX at the forwarded port:
-export MOSAICX_LM=openai/your-model
-export MOSAICX_API_BASE=http://localhost:8080/v1    # llama.cpp
-export MOSAICX_API_BASE=http://localhost:8000/v1    # vLLM
-export MOSAICX_API_BASE=http://localhost:30000/v1   # SGLang
-
-# OpenAI / Together AI / Groq
-export MOSAICX_LM=openai/gpt-4o
-export MOSAICX_API_KEY=sk-...
-export MOSAICX_API_BASE=https://api.openai.com/v1
+export MOSAICX_LM=openai/gpt-oss:120b
+export MOSAICX_API_BASE=http://localhost:8000/v1   # point at your server
+export MOSAICX_API_KEY=dummy                       # or your real key for cloud APIs
 ```
 
-For vLLM and SGLang the model name must match what the server loaded. For llama.cpp any name works (only one model loaded at a time). The default `api_key` (`ollama`) is ignored by servers that don't check auth.
+<details>
+<summary><strong>Remote GPU server via SSH tunnel</strong></summary>
 
-### Local inference on Apple Silicon (vLLM-MLX)
-
-[vLLM-MLX](https://github.com/waybarrios/vllm-mlx) runs vLLM-compatible inference natively on Apple Silicon Macs using MLX. No remote GPU server needed — uses unified memory for quantized models up to ~70B on a 128 GB Mac. Has first-class gpt-oss support with dedicated Harmony format parsers.
+Forward the server port to your local machine, then point MOSAICX at `localhost`:
 
 ```bash
-# 1. Install
+# Pick the port that matches your backend
+ssh -L 8080:localhost:8080  user@gpu-server    # llama.cpp
+ssh -L 8000:localhost:8000  user@gpu-server    # vLLM
+ssh -L 30000:localhost:30000 user@gpu-server   # SGLang
+
+# Configure MOSAICX
+export MOSAICX_LM=openai/gpt-oss:120b
+export MOSAICX_API_BASE=http://localhost:8000/v1
+export MOSAICX_API_KEY=dummy
+```
+
+</details>
+
+<details>
+<summary><strong>Apple Silicon: vLLM-MLX</strong></summary>
+
+[vLLM-MLX](https://github.com/waybarrios/vllm-mlx) runs vLLM-compatible inference natively on Apple Silicon using MLX unified memory. No remote GPU needed -- quantized models up to ~70B on a 128 GB Mac.
+
+```bash
+# Install
 uv tool install git+https://github.com/waybarrios/vllm-mlx.git
 
-# 2. Serve gpt-oss (models from mlx-community on Hugging Face)
-vllm-mlx serve mlx-community/gpt-oss-20b-MXFP4-Q8 --port 8000     # 12 GB memory
-vllm-mlx serve mlx-community/gpt-oss-120b-4bit --port 8000         # ~64 GB memory
+# Serve (pick a model size)
+vllm-mlx serve mlx-community/gpt-oss-20b-MXFP4-Q8 --port 8000     # 12 GB
+vllm-mlx serve mlx-community/gpt-oss-120b-4bit --port 8000         # ~64 GB
 
-# With continuous batching for concurrent requests:
+# Enable continuous batching for concurrent requests
 vllm-mlx serve mlx-community/gpt-oss-20b-MXFP4-Q8 --port 8000 --continuous-batching
 
-# 3. Point MOSAICX at it
+# Configure MOSAICX
 export MOSAICX_LM=openai/mlx-community/gpt-oss-20b-MXFP4-Q8
 export MOSAICX_API_BASE=http://localhost:8000/v1
 export MOSAICX_API_KEY=dummy
 ```
 
-> **Note:** Set `MOSAICX_LM` to `openai/<model-id>` matching the model you loaded (e.g., `openai/mlx-community/gpt-oss-20b-MXFP4-Q8`). Do **not** use `--reasoning-parser` — MOSAICX strips Harmony channel tokens client-side.
+> **Note:** Do **not** use `--reasoning-parser` -- MOSAICX strips Harmony channel tokens client-side.
+>
+> **Troubleshooting:** If `--continuous-batching` crashes with `broadcast_shapes` or `BatchKVCache` errors, clear the prefix cache: `rm -rf ~/.cache/vllm-mlx/prefix_cache/mlx-community--gpt-oss-*` and restart. See [Troubleshooting](docs/configuration.md#vllm-mlx-crashes-with-broadcast_shapes-or-batchkvcache-errors).
 
-### Batch processing on a GPU server (vLLM / SGLang)
+</details>
 
-For batch-processing many documents, a dedicated inference server (**vLLM** or **SGLang**) is recommended over Ollama. Both use continuous batching and advanced memory management to handle concurrent requests efficiently without duplicating VRAM per slot.
+<details>
+<summary><strong>Batch processing tuning (vLLM / SGLang)</strong></summary>
 
-#### vLLM
+For batch-processing many documents, vLLM or SGLang give much higher throughput than Ollama via continuous batching.
 
-**On the GPU server** (e.g., DGX Spark with 128 GB VRAM):
-
-```bash
-# Large model (120B) — constrain concurrency to avoid OOM
-vllm serve gpt-oss:120b \
-  --gpu-memory-utilization 0.90 \
-  --max-num-seqs 4 \
-  --port 8000
-
-# Smaller model (20B) — higher concurrency, faster throughput
-vllm serve gpt-oss:20b \
-  --gpu-memory-utilization 0.90 \
-  --max-num-seqs 16 \
-  --port 8000
-```
-
-**On your Mac:**
+**vLLM server-side:**
 
 ```bash
-# 1. SSH tunnel
-ssh -L 8000:localhost:8000 user@dgx-spark
+# 120B -- constrain concurrency to avoid OOM
+vllm serve gpt-oss:120b --gpu-memory-utilization 0.90 --max-num-seqs 4 --port 8000
 
-# 2. Point MOSAICX at vLLM
-export MOSAICX_LM=openai/gpt-oss:120b
-export MOSAICX_API_BASE=http://localhost:8000/v1
-export MOSAICX_API_KEY=dummy
-
-# 3. Match --workers to --max-num-seqs on the server
-mosaicx batch --input-dir ./reports --output-dir ./structured \
-  --mode radiology --format jsonl --workers 4
+# 20B -- higher concurrency
+vllm serve gpt-oss:20b --gpu-memory-utilization 0.90 --max-num-seqs 16 --port 8000
 ```
 
-#### SGLang
-
-**On the GPU server** (e.g., DGX Spark with 128 GB VRAM):
+**SGLang server-side:**
 
 ```bash
-# Large model (120B) — constrain concurrency to avoid OOM
-python -m sglang.launch_server \
-  --model-path gpt-oss:120b \
-  --mem-fraction-static 0.90 \
-  --max-running-requests 4 \
-  --port 30000
+# 120B
+python -m sglang.launch_server --model-path gpt-oss:120b \
+  --mem-fraction-static 0.90 --max-running-requests 4 --port 30000
 
-# Smaller model (20B) — higher concurrency, faster throughput
-python -m sglang.launch_server \
-  --model-path gpt-oss:20b \
-  --mem-fraction-static 0.90 \
-  --max-running-requests 16 \
-  --port 30000
+# 20B
+python -m sglang.launch_server --model-path gpt-oss:20b \
+  --mem-fraction-static 0.90 --max-running-requests 16 --port 30000
 ```
 
-**On your Mac:**
-
-```bash
-# 1. SSH tunnel
-ssh -L 30000:localhost:30000 user@dgx-spark
-
-# 2. Point MOSAICX at SGLang
-export MOSAICX_LM=openai/gpt-oss:120b
-export MOSAICX_API_BASE=http://localhost:30000/v1
-export MOSAICX_API_KEY=dummy
-
-# 3. Match --workers to --max-running-requests on the server
-mosaicx batch --input-dir ./reports --output-dir ./structured \
-  --mode radiology --format jsonl --workers 4
-```
-
-#### Tuning workers
+**Tuning `--workers`:**
 
 | Setup | Server concurrency | `--workers` | Notes |
 |-------|-------------------|-------------|-------|
@@ -377,17 +191,20 @@ mosaicx batch --input-dir ./reports --output-dir ./structured \
 | 20B, 128 GB VRAM | 16 | 16 | Faster throughput, good quality |
 | 120B quantized (AWQ) | 8 | 8 | Balance of quality and speed |
 
-> **Tip:** Setting `--workers` higher than the server's max concurrency (`--max-num-seqs` for vLLM, `--max-running-requests` for SGLang) wastes overhead — requests queue on the server side. Keep them matched.
+> **Tip:** Setting `--workers` higher than the server's max concurrency wastes overhead -- requests queue server-side. Keep them matched.
 
-### Benchmarking backends
+</details>
 
-Compare backend performance on your hardware with the included benchmark script. It auto-detects which backends are running, runs the same extraction task on each, and prints a ranked comparison table.
+<details>
+<summary><strong>Benchmarking backends</strong></summary>
+
+Compare backend performance on your hardware with the included benchmark script:
 
 ```bash
-# Basic — benchmark all reachable backends (single run)
+# Benchmark all reachable backends
 python scripts/benchmark_backends.py --document report.txt
 
-# Multiple runs for more stable averages
+# Multiple runs for stable averages
 python scripts/benchmark_backends.py --document report.txt --runs 3 --mode radiology
 
 # Add a custom backend
@@ -403,25 +220,57 @@ python scripts/benchmark_backends.py --document report.txt --runs 3 --output res
 
 Default backends probed: **vllm-mlx** (:8000), **ollama** (:11434), **llama-cpp** (:8080), **sglang** (:30000). Offline backends are skipped automatically.
 
-## OCR engines
+</details>
 
-MOSAICX ships with two OCR engines that run in parallel by default:
+Full backend configuration: [docs/configuration.md](docs/configuration.md)
+
+## OCR Engines
 
 | Engine | Approach | Best for |
 |--------|----------|----------|
 | **Surya** | Layout detection + recognition | Clean printed text, fast |
 | **Chandra** | Vision-Language Model (Qwen3-VL 9B) | Handwriting, complex layouts, tables |
 
-The dual-engine pipeline scores both outputs per page and picks the best. Override with `MOSAICX_OCR_ENGINE=surya` or `chandra` if you only need one.
+By default both engines run in parallel, score each page, and pick the best result. Override with `MOSAICX_OCR_ENGINE=surya` or `chandra`.
+
+## Configuration
+
+```bash
+# Essential vars -- point at your local server
+export MOSAICX_LM=openai/mlx-community/gpt-oss-20b-MXFP4-Q8   # model name
+export MOSAICX_API_BASE=http://localhost:8000/v1                # server URL
+export MOSAICX_API_KEY=dummy                                    # or real key for cloud
+
+# View active config
+mosaicx config show
+```
+
+Full variable reference, `.env` file setup, and backend scenarios: [docs/configuration.md](docs/configuration.md)
+
+## Documentation
+
+| Guide | Description |
+|-------|-------------|
+| [Getting Started](docs/getting-started.md) | Install, first extraction, basics |
+| [CLI Reference](docs/cli-reference.md) | Every command, every flag, examples |
+| [Pipelines](docs/pipelines.md) | Pipeline inputs/outputs, JSONL formats |
+| [Schemas & Templates](docs/schemas-and-templates.md) | Create and manage extraction schemas |
+| [Optimization](docs/optimization.md) | Improve accuracy with DSPy optimizers |
+| [Configuration](docs/configuration.md) | Env vars, backends, OCR, export formats |
+| [MCP Server](docs/mcp-server.md) | AI agent integration via MCP |
+| [Developer Guide](docs/developer-guide.md) | Custom pipelines, Python SDK |
+| [Architecture](docs/architecture.md) | System design, key decisions |
 
 ## Development
 
 ```bash
-git clone https://github.com/LalithShiyam/MOSAICX.git
+git clone https://github.com/DIGIT-X-Lab/MOSAICX.git
 cd MOSAICX
 pip install -e ".[dev]"          # or: uv sync --group dev
-pytest tests/ -q                 # 255 tests
+pytest tests/ -q
 ```
+
+See [Developer Guide](docs/developer-guide.md) for custom pipelines and the Python SDK.
 
 ## Citation
 
@@ -430,17 +279,15 @@ pytest tests/ -q                 # 255 tests
   title   = {MOSAICX: Medical cOmputational Suite for Advanced Intelligent eXtraction},
   author  = {Sundar, Lalith Kumar Shiyam and DIGIT-X Lab},
   year    = {2025},
-  url     = {https://github.com/LalithShiyam/MOSAICX},
+  url     = {https://github.com/DIGIT-X-Lab/MOSAICX},
   doi     = {10.5281/zenodo.17601890}
 }
 ```
 
 ## License
 
-Apache 2.0. See [LICENSE](LICENSE).
+Apache 2.0 -- see [LICENSE](LICENSE).
 
 ## Contact
 
-- Research: [lalith.shiyam@med.uni-muenchen.de](mailto:lalith.shiyam@med.uni-muenchen.de)
-- Commercial: [lalith@zenta.solutions](mailto:lalith@zenta.solutions)
-- Issues: [github.com/LalithShiyam/MOSAICX/issues](https://github.com/LalithShiyam/MOSAICX/issues)
+**Research:** [lalith.shiyam@med.uni-muenchen.de](mailto:lalith.shiyam@med.uni-muenchen.de) | **Commercial:** [lalith@zenta.solutions](mailto:lalith@zenta.solutions) | **Issues:** [github.com/DIGIT-X-Lab/MOSAICX/issues](https://github.com/DIGIT-X-Lab/MOSAICX/issues)

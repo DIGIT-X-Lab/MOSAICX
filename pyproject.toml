@@ -54,10 +54,10 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/LalithShiyam/MOSAICX"
-Repository = "https://github.com/LalithShiyam/MOSAICX"
-Documentation = "https://github.com/LalithShiyam/MOSAICX#readme"
-"Bug Tracker" = "https://github.com/LalithShiyam/MOSAICX/issues"
+Homepage = "https://github.com/DIGIT-X-Lab/MOSAICX"
+Repository = "https://github.com/DIGIT-X-Lab/MOSAICX"
+Documentation = "https://github.com/DIGIT-X-Lab/MOSAICX#readme"
+"Bug Tracker" = "https://github.com/DIGIT-X-Lab/MOSAICX/issues"
 
 [project.scripts]
 mosaicx = "mosaicx.cli:cli"

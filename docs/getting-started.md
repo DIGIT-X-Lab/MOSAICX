@@ -483,7 +483,7 @@ pipx upgrade mosaicx
 ### Where can I get help?
 
 - **Documentation:** Browse the `/docs` folder in the MOSAICX repository
-- **Issues:** Report bugs or request features at [github.com/LalithShiyam/MOSAICX/issues](https://github.com/LalithShiyam/MOSAICX/issues)
+- **Issues:** Report bugs or request features at [github.com/DIGIT-X-Lab/MOSAICX/issues](https://github.com/DIGIT-X-Lab/MOSAICX/issues)
 - **Email:** Research inquiries to [lalith.shiyam@med.uni-muenchen.de](mailto:lalith.shiyam@med.uni-muenchen.de)
 
 ---

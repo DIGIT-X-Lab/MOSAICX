@@ -462,6 +462,15 @@ export MOSAICX_API_KEY=dummy
 
 **Do NOT use `--reasoning-parser`** — MOSAICX strips Harmony channel tokens client-side, so server-side parsing is not needed.
 
+**Prefix cache bug with `--continuous-batching`:** The memory-aware prefix cache in vLLM-MLX can cause crashes when merging KV caches with different shapes during batched inference. Symptoms include `ValueError: [broadcast_shapes]` or `'BatchKVCache' object has no attribute 'rotated'` errors. **Fix:** Clear the disk cache before starting:
+
+```bash
+rm -rf ~/.cache/vllm-mlx/prefix_cache/mlx-community--gpt-oss-*
+vllm-mlx serve mlx-community/gpt-oss-20b-MXFP4-Q8 --port 8000 --continuous-batching
+```
+
+If the error persists after clearing the cache, fall back to simple mode (without `--continuous-batching`), which processes requests sequentially but avoids the cache merging issue entirely.
+
 **Example:**
 
 ```bash
@@ -833,6 +842,22 @@ export MOSAICX_API_KEY=sk-...  # For OpenAI
 - Use a dedicated GPU server (vLLM, SGLang) for faster inference
 - Use vLLM-MLX on Apple Silicon for faster local inference
 
+### vLLM-MLX crashes with `broadcast_shapes` or `BatchKVCache` errors
+
+**Cause:** The prefix cache stores KV entries with different shapes. When `--continuous-batching` tries to merge them into a batch, MLX cannot broadcast tensors of different sizes (e.g., `(1,8,128,64)` vs `(1,8,200,64)`). This is a known issue in vLLM-MLX with gpt-oss models.
+
+**Solution:**
+
+1. Clear the corrupted disk cache:
+   ```bash
+   rm -rf ~/.cache/vllm-mlx/prefix_cache/mlx-community--gpt-oss-*
+   ```
+2. Restart the server:
+   ```bash
+   vllm-mlx serve mlx-community/gpt-oss-20b-MXFP4-Q8 --port 8000 --continuous-batching
+   ```
+3. If the error recurs during the session, fall back to simple mode (without `--continuous-batching`). Simple mode processes one request at a time but avoids the cache merging bug entirely.
+
 ## Advanced Topics
 
 ### Combining CLI Flags and Environment Variables
@@ -861,6 +886,40 @@ The optimal number of workers depends on your hardware and LLM backend:
 | OpenAI / Cloud APIs | 4-8 | Rate-limited by API provider |
 
 **Rule of thumb:** Start with 2-4 workers and increase gradually while monitoring memory usage. If you encounter OOM errors, reduce workers.
+
+For GPU servers, match `--workers` to the server's max concurrency setting:
+
+| Setup | Server concurrency | `--workers` | Notes |
+|-------|-------------------|-------------|-------|
+| 120B, 128 GB VRAM | 4 | 4 | Best quality, moderate speed |
+| 20B, 128 GB VRAM | 16 | 16 | Faster throughput, good quality |
+| 120B quantized (AWQ) | 8 | 8 | Balance of quality and speed |
+
+Setting `--workers` higher than the server's max concurrency (`--max-num-seqs` for vLLM, `--max-running-requests` for SGLang) wastes overhead -- requests queue on the server side. Keep them matched.
+
+### Benchmarking Backends
+
+Compare backend performance on your hardware with the included benchmark script. It auto-detects which backends are running, runs the same extraction task on each, and prints a ranked comparison table.
+
+```bash
+# Basic -- benchmark all reachable backends (single run)
+python scripts/benchmark_backends.py --document report.txt
+
+# Multiple runs for more stable averages
+python scripts/benchmark_backends.py --document report.txt --runs 3 --mode radiology
+
+# Add a custom backend
+python scripts/benchmark_backends.py --document report.txt \
+  --backend "dgx=openai/gpt-oss:120b@http://localhost:8000/v1"
+
+# Only test specific backends
+python scripts/benchmark_backends.py --document report.txt --only vllm-mlx,ollama
+
+# Save results as JSON
+python scripts/benchmark_backends.py --document report.txt --runs 3 --output results.json
+```
+
+Default backends probed: **vllm-mlx** (:8000), **ollama** (:11434), **llama-cpp** (:8080), **sglang** (:30000). Offline backends are skipped automatically.
 
 ### Optimizing OCR for Specific Languages
 
@@ -893,4 +952,4 @@ Key takeaways:
 6. **Use OCR language hints** for non-English documents
 7. **Choose the right backend** based on privacy, performance, and hardware
 
-For further help, see the [Getting Started guide](getting-started.md) or report issues at [github.com/LalithShiyam/MOSAICX/issues](https://github.com/LalithShiyam/MOSAICX/issues).
+For further help, see the [Getting Started guide](getting-started.md) or report issues at [github.com/DIGIT-X-Lab/MOSAICX/issues](https://github.com/DIGIT-X-Lab/MOSAICX/issues).

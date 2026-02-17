@@ -33,6 +33,6 @@ Welcome to the MOSAICX documentation. These guides will walk you through everyth
 
 ## Quick Links
 
-- [GitHub Repository](https://github.com/LalithShiyam/MOSAICX)
+- [GitHub Repository](https://github.com/DIGIT-X-Lab/MOSAICX)
 - [PyPI Package](https://pypi.org/project/mosaicx/)
-- [Report an Issue](https://github.com/LalithShiyam/MOSAICX/issues)
+- [Report an Issue](https://github.com/DIGIT-X-Lab/MOSAICX/issues)
