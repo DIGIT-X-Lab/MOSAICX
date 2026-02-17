@@ -1,0 +1,70 @@
+ECHOCARDIOGRAPHY REPORT
+
+EXAM: Transthoracic Echocardiogram (Complete)
+DATE OF EXAM: 01/07/2026
+ORDERING PHYSICIAN: Dr. Amanda Foster, Internal Medicine
+SONOGRAPHER: Karen Liu, RDCS
+INTERPRETING PHYSICIAN: Dr. David Nakamura, Cardiology
+
+PATIENT: Smith, Jane A.
+MRN: 00-44-7831
+DOB: 04/17/1958
+
+INDICATION: Acute decompensated heart failure, HFrEF. Reassess left ventricular function and valvular status. Prior LVEF 35% (06/2025).
+
+TECHNICAL QUALITY: Adequate. Limited by body habitus.
+
+MEASUREMENTS:
+Left Ventricle:
+  LV Internal Diameter, Diastole (LVIDd): 6.2 cm (normal <5.6 cm) -- dilated
+  LV Internal Diameter, Systole (LVIDs): 5.1 cm
+  Interventricular Septum, Diastole (IVSd): 1.0 cm (normal)
+  LV Posterior Wall, Diastole (LVPWd): 0.9 cm (normal)
+  Left Ventricular Ejection Fraction (LVEF): 30-35% (reduced, previously 35%)
+  Global longitudinal strain (GLS): -10.2% (abnormal, normal < -18%)
+  LV mass index: 128 g/m2 (mildly increased)
+
+Left Atrium:
+  LA Volume Index: 42 mL/m2 (moderately dilated, normal <34 mL/m2)
+
+Right Ventricle:
+  RV Basal Diameter: 4.1 cm (mildly dilated)
+  TAPSE: 1.5 cm (borderline reduced, normal >1.7 cm)
+
+Right Atrium:
+  RA area: 22 cm2 (mildly dilated)
+
+Aortic Root: 3.2 cm (normal)
+Ascending Aorta: 3.4 cm (normal)
+
+VALVULAR ASSESSMENT:
+
+Aortic Valve: Trileaflet. Mild sclerosis without significant stenosis. No aortic regurgitation. Peak velocity 1.4 m/s, mean gradient 6 mmHg.
+
+Mitral Valve: Leaflets are mildly thickened. Moderate mitral regurgitation (MR) by color Doppler, with a central jet. Vena contracta 0.5 cm. Regurgitant volume estimated at 35 mL. MR appears functional (secondary) due to annular dilatation and LV remodeling.
+
+Tricuspid Valve: Mild tricuspid regurgitation. Estimated RVSP 48 mmHg (elevated, indicating mild pulmonary hypertension), assuming RAP of 10 mmHg based on IVC diameter of 2.3 cm with <50% inspiratory collapse.
+
+Pulmonic Valve: Normal. No stenosis or significant regurgitation.
+
+DOPPLER FINDINGS:
+Mitral inflow: E/A ratio 2.1 (restrictive filling pattern). Deceleration time 140 ms (shortened).
+Tissue Doppler: Medial e' 4 cm/s, lateral e' 6 cm/s. E/e' ratio (average) 21 -- consistent with elevated LV filling pressures (Grade III diastolic dysfunction).
+
+PERICARDIUM: No pericardial effusion.
+
+OTHER: Bilateral pleural effusions noted, left greater than right. IVC is dilated at 2.3 cm with reduced respiratory variation (<50% collapse), consistent with elevated right atrial pressure.
+
+WALL MOTION:
+Global LV hypokinesis. Regional wall motion abnormalities noted with akinesis of the inferior and infero-septal walls (basal and mid segments), consistent with prior inferior myocardial infarction territory. Remaining segments are diffusely hypokinetic.
+
+IMPRESSION:
+1. Severely reduced left ventricular systolic function with LVEF 30-35%, mildly decreased from prior (35% in 06/2025). Global hypokinesis with regional akinesis of the inferior and infero-septal walls consistent with known ischemic cardiomyopathy.
+2. LV cavity dilation (LVIDd 6.2 cm). Moderately dilated left atrium.
+3. Moderate functional (secondary) mitral regurgitation.
+4. Elevated estimated RVSP of 48 mmHg suggesting mild pulmonary hypertension, likely secondary to left heart disease.
+5. Grade III (restrictive) diastolic dysfunction with elevated filling pressures (E/e' 21).
+6. Dilated IVC with reduced inspiratory collapse, consistent with elevated right atrial pressure and clinical volume overload.
+7. Bilateral pleural effusions.
+
+REPORTED BY: Dr. David Nakamura, MD, FACC

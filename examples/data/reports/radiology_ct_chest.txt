@@ -1,0 +1,37 @@
+RADIOLOGY REPORT
+
+EXAM: CT Chest with Contrast
+DATE OF EXAM: 09/14/2025
+ORDERING PHYSICIAN: Dr. Robert Callahan
+PATIENT: Doe, John
+MRN: 8834201
+
+CLINICAL INDICATION: 67-year-old male with persistent cough and 15-pound unintentional weight loss over 3 months. History of 40 pack-year smoking. Evaluate for pulmonary malignancy.
+
+TECHNIQUE: Helical CT of the chest was performed from the thoracic inlet to the upper abdomen following intravenous administration of 100 mL Omnipaque 350. Axial images were acquired at 1.25 mm slice thickness with coronal and sagittal reformations. Comparison: Chest radiograph dated 08/02/2025.
+
+FINDINGS:
+
+Lungs and Airways:
+A spiculated soft tissue nodule measuring 2.3 x 1.8 cm is identified in the right upper lobe (series 4, image 78), abutting the minor fissure. The lesion demonstrates heterogeneous enhancement. No cavitation is seen. A smaller 4 mm ground-glass nodule is noted in the left lower lobe (series 4, image 142), indeterminate in nature. The central airways are patent. No endobronchial lesion is identified.
+
+Mediastinum and Hila:
+Enlarged lymph nodes are present in the right paratracheal station (4R), measuring up to 1.6 cm in short axis, and in the subcarinal station (7), measuring 1.4 cm in short axis. These are above the size threshold for significance. The remaining mediastinal and hilar lymph nodes are within normal limits. No pericardial effusion.
+
+Pleura:
+A small right-sided pleural effusion is present, measuring approximately 1.5 cm in maximal depth on the dependent images. No left pleural effusion. No pneumothorax.
+
+Chest Wall and Bones:
+No suspicious osseous lesions. Mild degenerative changes are seen in the thoracic spine. No chest wall mass.
+
+Upper Abdomen (limited):
+The visualized portions of the liver, spleen, and adrenal glands are unremarkable.
+
+IMPRESSION:
+1. Spiculated 2.3 cm right upper lobe pulmonary nodule, highly suspicious for primary bronchogenic carcinoma. PET/CT is recommended for further evaluation and staging.
+2. Pathologically enlarged right paratracheal (4R) and subcarinal (7) lymph nodes, concerning for metastatic lymphadenopathy.
+3. Small right pleural effusion.
+4. Indeterminate 4 mm left lower lobe ground-glass nodule. Recommend follow-up CT in 12 months per Fleischner Society guidelines.
+
+REPORTED BY: Dr. Angela Wu, MD
+ATTENDING RADIOLOGIST: Dr. Angela Wu, MD

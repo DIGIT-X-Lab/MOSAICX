@@ -43,7 +43,8 @@ dependencies = [
 
 [project.optional-dependencies]
 hf = ["datasets>=2.0"]
-all = ["mosaicx[hf]"]
+mcp = ["mcp[cli]>=1.0.0"]
+all = ["mosaicx[hf]", "mosaicx[mcp]"]
 dev = [
     "pytest>=8.0.0",
     "pytest-cov>=4.1.0",

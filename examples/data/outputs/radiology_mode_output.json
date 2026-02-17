@@ -1,0 +1,67 @@
+{
+  "pipeline": "radiology",
+  "source_document": "ct_report.pdf",
+  "model": "mlx-community/Llama-3.3-70B-Instruct-4bit",
+  "exam_type": "CT Chest with Contrast",
+  "clinical_indication": "Persistent cough for 6 weeks with intermittent hemoptysis. History of 30 pack-year smoking. Evaluate for pulmonary malignancy.",
+  "technique": {
+    "modality": "CT",
+    "contrast": "IV iohexol 100mL",
+    "slice_thickness": "1.25mm",
+    "reconstruction": "Axial, coronal, and sagittal reformats",
+    "dose_length_product": "385 mGy-cm"
+  },
+  "findings": [
+    {
+      "anatomy": "Right upper lobe",
+      "observation": "8mm ground-glass nodule in the posterior segment",
+      "severity": "moderate",
+      "measurement": "8mm",
+      "comparison": "new finding",
+      "series_image": "Series 3, Image 87"
+    },
+    {
+      "anatomy": "Left lower lobe",
+      "observation": "3mm solid nodule in the superior segment",
+      "severity": "low",
+      "measurement": "3mm",
+      "comparison": "stable compared to prior exam dated 2024-11-15"
+    },
+    {
+      "anatomy": "Mediastinum",
+      "observation": "Subcarinal lymph node measuring 12mm in short axis",
+      "severity": "moderate",
+      "measurement": "12mm short axis",
+      "comparison": "increased from 8mm on prior exam"
+    },
+    {
+      "anatomy": "Right hilum",
+      "observation": "Mildly prominent right hilar lymph node",
+      "severity": "low",
+      "measurement": "10mm short axis",
+      "comparison": "previously 9mm, minimally changed"
+    },
+    {
+      "anatomy": "Pleura",
+      "observation": "No pleural effusion or pneumothorax",
+      "severity": "none",
+      "measurement": null,
+      "comparison": "unchanged"
+    }
+  ],
+  "incidental_findings": [
+    "Coronary artery calcifications noted in the LAD territory",
+    "Small hiatal hernia"
+  ],
+  "impressions": "1. New 8mm ground-glass nodule in the right upper lobe posterior segment, suspicious for early neoplasm given clinical history. Recommend PET-CT or short-interval follow-up.\n2. Enlarging subcarinal lymph node (8mm to 12mm), may represent reactive or neoplastic adenopathy.\n3. Stable 3mm left lower lobe solid nodule, likely benite granuloma.\n4. Coronary artery calcifications and small hiatal hernia noted incidentally.",
+  "scoring": {
+    "lung_rads": "3",
+    "recommendation": "6-month follow-up CT recommended. Consider PET-CT for further evaluation of RUL nodule given clinical risk factors."
+  },
+  "metadata": {
+    "extraction_timestamp": "2025-06-12T14:23:41Z",
+    "processing_time_seconds": 8.3,
+    "confidence": 0.94,
+    "token_count": 1847
+  }
+}

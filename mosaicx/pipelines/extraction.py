@@ -50,7 +50,7 @@ def extract_with_schema(document_text: str, schema_name: str, schema_dir: Path) 
     return val.model_dump() if hasattr(val, "model_dump") else val
 
 
-def extract_with_mode(document_text: str, mode_name: str) -> dict[str, Any]:
+def extract_with_mode(document_text: str, mode_name: str) -> tuple[dict[str, Any], "PipelineMetrics | None"]:
     """Run a registered extraction mode pipeline.
 
     Args:
@@ -58,7 +58,7 @@ def extract_with_mode(document_text: str, mode_name: str) -> dict[str, Any]:
         mode_name: Name of the registered mode (e.g., "radiology", "pathology").
 
     Returns:
-        Dict with the extracted data from the mode's pipeline.
+        Tuple of (output dict, PipelineMetrics or None).
     """
     from .modes import get_mode
 
@@ -75,7 +75,8 @@ def extract_with_mode(document_text: str, mode_name: str) -> dict[str, Any]:
             output[key] = [v.model_dump() if hasattr(v, "model_dump") else v for v in val]
         else:
             output[key] = val
-    return output
+    metrics = getattr(pipeline, "_last_metrics", None)
+    return output, metrics
 
 
 # ---------------------------------------------------------------------------
@@ -136,15 +137,23 @@ def _build_dspy_classes():
 
         def forward(self, document_text: str) -> dspy.Prediction:
             """Run the extraction pipeline."""
+            from mosaicx.metrics import PipelineMetrics, get_tracker, track_step
+
+            metrics = PipelineMetrics()
+            tracker = get_tracker()
+
             if hasattr(self, "extract_custom") and not hasattr(self, "infer_schema"):
-                # Schema mode
-                result = self.extract_custom(document_text=document_text)
+                # Schema mode: single step
+                with track_step(metrics, "Extract", tracker):
+                    result = self.extract_custom(document_text=document_text)
+                self._last_metrics = metrics
                 return dspy.Prediction(extracted=result.extracted)
 
             # Auto mode: infer schema, compile, extract
-            infer_result = self.infer_schema(
-                document_text=document_text[:2000]
-            )
+            with track_step(metrics, "Infer schema", tracker):
+                infer_result = self.infer_schema(
+                    document_text=document_text
+                )
             spec: SchemaSpec = infer_result.schema_spec
             model = compile_schema(spec)
 
@@ -165,7 +174,10 @@ def _build_dspy_classes():
                 type_=model,
             )
             extract_step = dspy.ChainOfThought(extract_sig)
-            result = extract_step(document_text=document_text)
+            with track_step(metrics, "Extract", tracker):
+                result = extract_step(document_text=document_text)
+
+            self._last_metrics = metrics
 
             return dspy.Prediction(
                 extracted=result.extracted,

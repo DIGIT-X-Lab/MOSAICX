@@ -74,6 +74,7 @@ Thumbs.db
 # Allow committing PDFs that are intentionally included for testing/documentation
 # (Previously: *.pdf)
 reports/
+!examples/data/reports/
 output/
 temp/
 .tmp/

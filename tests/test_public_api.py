@@ -1,10 +1,11 @@
 # tests/test_public_api.py
 """Tests for the mosaicx top-level public API functions.
 
-Verifies that the four convenience functions (extract, summarize,
+Verifies that the SDK convenience functions (extract, summarize,
 generate_schema, deidentify) are importable, callable, and have the
 expected signatures.  Also tests the regex-only deidentify path which
-requires no LLM.
+requires no LLM, and the new SDK-only functions (list_schemas,
+list_modes, batch_extract, evaluate).
 """
 
 import inspect
@@ -35,37 +36,69 @@ class TestPublicAPI:
 
         assert callable(deidentify)
 
+    def test_list_schemas_function(self):
+        from mosaicx import list_schemas
+
+        assert callable(list_schemas)
+
+    def test_list_modes_function(self):
+        from mosaicx import list_modes
+
+        assert callable(list_modes)
+
+    def test_batch_extract_function(self):
+        from mosaicx import batch_extract
+
+        assert callable(batch_extract)
+
+    def test_evaluate_function(self):
+        from mosaicx import evaluate
+
+        assert callable(evaluate)
+
     def test_all_exports(self):
-        """All four functions should appear in __all__."""
+        """All SDK functions should appear in __all__."""
         import mosaicx
 
-        for name in ("extract", "summarize", "generate_schema", "deidentify"):
+        for name in (
+            "extract", "summarize", "generate_schema", "deidentify",
+            "list_schemas", "list_modes", "evaluate", "batch_extract",
+        ):
             assert name in mosaicx.__all__, f"{name!r} missing from __all__"
 
+    def test_file_based_wrappers_exist(self):
+        """File-based wrappers should still be accessible."""
+        import mosaicx
 
-class TestFunctionSignatures:
-    """Verify each wrapper has the documented parameters."""
+        assert callable(mosaicx.extract_file)
+        assert callable(mosaicx.summarize_files)
+
+
+class TestSDKSignatures:
+    """Verify each SDK function has the documented parameters."""
 
     def test_extract_signature(self):
         from mosaicx import extract
 
         sig = inspect.signature(extract)
         params = list(sig.parameters.keys())
-        assert "document_path" in params
-        assert "schema" in params
+        assert "text" in params
         assert "mode" in params
-        assert "template" in params
-        # All three should default to None
-        assert sig.parameters["schema"].default is None
-        assert sig.parameters["mode"].default is None
-        assert sig.parameters["template"].default is None
+        assert "schema_name" in params
+        assert "optimized" in params
+        assert sig.parameters["mode"].default == "auto"
+        assert sig.parameters["schema_name"].default is None
+        assert sig.parameters["optimized"].default is None
 
     def test_summarize_signature(self):
         from mosaicx import summarize
 
         sig = inspect.signature(summarize)
         params = list(sig.parameters.keys())
-        assert "document_paths" in params
+        assert "reports" in params
+        assert "patient_id" in params
+        assert "optimized" in params
+        assert sig.parameters["patient_id"].default == "unknown"
 
     def test_generate_schema_signature(self):
         from mosaicx import generate_schema
@@ -73,7 +106,9 @@ class TestFunctionSignatures:
         sig = inspect.signature(generate_schema)
         params = list(sig.parameters.keys())
         assert "description" in params
+        assert "name" in params
         assert "example_text" in params
+        assert sig.parameters["name"].default is None
         assert sig.parameters["example_text"].default is None
 
     def test_deidentify_signature(self):
@@ -85,47 +120,121 @@ class TestFunctionSignatures:
         assert "mode" in params
         assert sig.parameters["mode"].default == "remove"
 
+    def test_evaluate_signature(self):
+        from mosaicx import evaluate
+
+        sig = inspect.signature(evaluate)
+        params = list(sig.parameters.keys())
+        assert "pipeline" in params
+        assert "testset_path" in params
+        assert "optimized" in params
+
+    def test_batch_extract_signature(self):
+        from mosaicx import batch_extract
+
+        sig = inspect.signature(batch_extract)
+        params = list(sig.parameters.keys())
+        assert "texts" in params
+        assert "mode" in params
+        assert "schema_name" in params
+
+
+class TestFileBasedSignatures:
+    """Verify file-based wrappers retain the original signatures."""
+
+    def test_extract_file_signature(self):
+        from mosaicx import extract_file
+
+        sig = inspect.signature(extract_file)
+        params = list(sig.parameters.keys())
+        assert "document_path" in params
+        assert "schema" in params
+        assert "mode" in params
+        assert "template" in params
+
+    def test_summarize_files_signature(self):
+        from mosaicx import summarize_files
+
+        sig = inspect.signature(summarize_files)
+        params = list(sig.parameters.keys())
+        assert "document_paths" in params
+
 
 class TestDeidentifyRegex:
-    """Test the regex-only path of deidentify (no LLM needed)."""
+    """Test the regex-only path of deidentify (no LLM needed).
+
+    The SDK deidentify() returns a dict with 'redacted_text'.
+    """
 
     def test_ssn_scrubbed(self):
         from mosaicx import deidentify
 
         result = deidentify("Patient SSN 123-45-6789", mode="regex")
-        assert "123-45-6789" not in result
-        assert "[REDACTED]" in result
+        assert "123-45-6789" not in result["redacted_text"]
+        assert "[REDACTED]" in result["redacted_text"]
 
     def test_phone_scrubbed(self):
         from mosaicx import deidentify
 
         result = deidentify("Call 555-123-4567 for info", mode="regex")
-        assert "555-123-4567" not in result
-        assert "[REDACTED]" in result
+        assert "555-123-4567" not in result["redacted_text"]
+        assert "[REDACTED]" in result["redacted_text"]
 
     def test_email_scrubbed(self):
         from mosaicx import deidentify
 
         result = deidentify("Contact: john.doe@hospital.com", mode="regex")
-        assert "john.doe@hospital.com" not in result
-        assert "[REDACTED]" in result
+        assert "john.doe@hospital.com" not in result["redacted_text"]
+        assert "[REDACTED]" in result["redacted_text"]
 
     def test_mrn_scrubbed(self):
         from mosaicx import deidentify
 
         result = deidentify("MRN: 12345678", mode="regex")
-        assert "12345678" not in result
-        assert "[REDACTED]" in result
+        assert "12345678" not in result["redacted_text"]
+        assert "[REDACTED]" in result["redacted_text"]
 
     def test_no_phi_unchanged(self):
         from mosaicx import deidentify
 
         clean = "Normal chest radiograph. No acute findings."
         result = deidentify(clean, mode="regex")
-        assert result == clean
+        assert result["redacted_text"] == clean
 
-    def test_regex_returns_string(self):
+    def test_regex_returns_dict(self):
         from mosaicx import deidentify
 
         result = deidentify("Some text 123-45-6789", mode="regex")
-        assert isinstance(result, str)
+        assert isinstance(result, dict)
+        assert "redacted_text" in result
+        assert isinstance(result["redacted_text"], str)
+
+    def test_invalid_mode_raises(self):
+        from mosaicx import deidentify
+
+        with pytest.raises(ValueError, match="Unknown deidentify mode"):
+            deidentify("test", mode="invalid_mode")
+
+
+class TestListSchemas:
+    """Test list_schemas without needing an LLM."""
+
+    def test_returns_list(self):
+        from mosaicx import list_schemas
+
+        result = list_schemas()
+        assert isinstance(result, list)
+
+
+class TestListModes:
+    """Test list_modes without needing an LLM."""
+
+    def test_returns_list_of_dicts(self):
+        from mosaicx import list_modes
+
+        result = list_modes()
+        assert isinstance(result, list)
+        for item in result:
+            assert isinstance(item, dict)
+            assert "name" in item
+            assert "description" in item

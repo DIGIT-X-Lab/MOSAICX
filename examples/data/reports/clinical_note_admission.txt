@@ -1,0 +1,132 @@
+HOSPITAL ADMISSION NOTE
+
+FACILITY: Riverside General Medical Center
+DATE OF ADMISSION: 01/06/2026
+ATTENDING PHYSICIAN: Dr. Amanda Foster, Internal Medicine
+DICTATED BY: Dr. Ryan Choi, PGY-2
+
+PATIENT INFORMATION:
+Name: Jane A. Smith
+Date of Birth: 04/17/1958
+Age: 67 years
+Sex: Female
+MRN: 00-44-7831
+SSN: 321-65-0498
+Insurance: Blue Cross Blue Shield, Policy #BCB-992104558
+Emergency Contact: Robert Smith (husband), (555) 482-3170
+Address: 1247 Maple Ridge Drive, Apt 3B, Springfield, IL 62704
+
+CHIEF COMPLAINT: Shortness of breath and chest tightness for 2 days.
+
+HISTORY OF PRESENT ILLNESS:
+Mrs. Smith is a 67-year-old female with a past medical history significant for congestive heart failure (EF 35% on last echo dated 06/2025), type 2 diabetes mellitus, hypertension, and chronic kidney disease stage 3b who presents to the emergency department with progressive dyspnea on exertion and orthopnea over the past 48 hours. She reports waking from sleep twice last night due to difficulty breathing and needing to prop herself up on three pillows. She endorses bilateral lower extremity swelling worsening over the past week, a 6-pound weight gain over 5 days, and decreased urine output. She denies chest pain, palpitations, fever, cough, or hemoptysis. She admits to dietary indiscretion over the holidays, consuming high-sodium foods. She reports medication compliance, though she ran out of her furosemide 4 days ago and has not been able to refill it.
+
+PAST MEDICAL HISTORY:
+1. Congestive heart failure, HFrEF (LVEF 35%, ischemic cardiomyopathy)
+2. Type 2 diabetes mellitus (last HbA1c 7.8%, 09/2025)
+3. Hypertension
+4. Chronic kidney disease, stage 3b (baseline creatinine 1.6-1.8)
+5. Hyperlipidemia
+6. Obesity (BMI 33.2)
+7. Osteoarthritis, bilateral knees
+8. Remote history of DVT, right lower extremity (2019), completed anticoagulation
+
+PAST SURGICAL HISTORY:
+- Coronary artery bypass grafting x3 (2018)
+- Cholecystectomy (2005)
+- Right total knee arthroplasty (2022)
+
+MEDICATIONS (home):
+1. Furosemide 40 mg PO twice daily (ran out 4 days ago)
+2. Carvedilol 12.5 mg PO twice daily
+3. Lisinopril 10 mg PO daily
+4. Spironolactone 25 mg PO daily
+5. Metformin 1000 mg PO twice daily
+6. Atorvastatin 40 mg PO at bedtime
+7. Aspirin 81 mg PO daily
+8. Empagliflozin 10 mg PO daily
+9. Acetaminophen 650 mg PO PRN for joint pain
+
+ALLERGIES:
+1. Penicillin -- rash and hives
+2. Sulfonamides -- anaphylaxis
+3. Iodinated contrast dye -- urticaria (premedication protocol required)
+
+SOCIAL HISTORY:
+Non-smoker. Former social drinker, quit 10 years ago. Retired school teacher. Lives with husband. Independent with ADLs at baseline. No illicit drug use.
+
+FAMILY HISTORY:
+Father: deceased at age 72 from myocardial infarction.
+Mother: alive at age 89, history of hypertension and Alzheimer disease.
+Brother: age 70, type 2 diabetes, coronary artery disease.
+
+VITAL SIGNS ON ADMISSION:
+Temperature: 98.2 F (36.8 C)
+Heart Rate: 104 bpm, regular
+Blood Pressure: 158/92 mmHg
+Respiratory Rate: 24 breaths/min
+SpO2: 91% on room air, improved to 96% on 3L nasal cannula
+Weight: 198 lbs (89.8 kg), baseline weight approximately 192 lbs
+
+PHYSICAL EXAMINATION:
+General: Alert, oriented, in mild respiratory distress, speaking in full sentences.
+HEENT: Normocephalic, atraumatic. Jugular venous distension to 12 cm H2O at 45 degrees. Moist mucous membranes.
+Cardiovascular: Tachycardic, regular rhythm. S1, S2 present. S3 gallop appreciated at the apex. Grade 2/6 holosystolic murmur at the apex radiating to the axilla. No rubs.
+Pulmonary: Bilateral basilar crackles extending to mid-lung fields. No wheezing. Decreased breath sounds at both bases.
+Abdomen: Soft, non-tender, mildly distended. Positive hepatojugular reflux. Liver edge palpable 3 cm below the right costal margin.
+Extremities: 3+ pitting edema bilateral lower extremities to the mid-shins. No calf tenderness. Peripheral pulses 2+ bilaterally.
+Neurologic: Alert, oriented x4. Cranial nerves II-XII intact. No focal deficits.
+
+LABORATORY RESULTS (ED):
+BMP: Na 132, K 4.8, Cl 98, CO2 22, BUN 48, Creatinine 2.3 (baseline 1.6-1.8), Glucose 187
+CBC: WBC 7.2, Hgb 11.4, Hct 34.2, Platelets 198
+BNP: 1,840 pg/mL (elevated, prior 420 pg/mL in 06/2025)
+Troponin I: 0.03 ng/mL (normal <0.04), repeat pending
+Lactate: 1.4 mmol/L
+Procalcitonin: 0.08 ng/mL (normal)
+HbA1c: 8.1%
+TSH: 2.4 mIU/L (normal)
+
+Chest X-ray (portable): Cardiomegaly. Bilateral pleural effusions, left greater than right. Pulmonary vascular congestion with cephalization of flow. Kerley B lines. No consolidation.
+
+ECG: Sinus tachycardia at 104 bpm. Left axis deviation. Low voltage in limb leads. No acute ST-T wave changes. Old Q waves in leads II, III, aVF consistent with prior inferior MI.
+
+ASSESSMENT AND PLAN:
+
+1. ACUTE DECOMPENSATED HEART FAILURE (HFrEF exacerbation):
+   Most likely precipitated by medication non-adherence (furosemide lapse) and dietary sodium excess. BNP markedly elevated at 1,840 from baseline of 420. Patient is volume overloaded with pulmonary congestion and peripheral edema.
+   - IV furosemide 80 mg bolus now, then 40 mg IV q12h with goal net negative 1-2 L/day
+   - Strict I&Os, daily weights, 1500 mL fluid restriction, 2 g sodium diet
+   - Continue carvedilol, lisinopril, spironolactone at home doses
+   - Hold empagliflozin given AKI; reassess when creatinine trends down
+   - Supplemental O2 via NC to maintain SpO2 >93%
+   - Telemetry monitoring
+   - Echocardiogram in AM to reassess LV function and valvular status
+
+2. ACUTE KIDNEY INJURY (on chronic kidney disease stage 3b):
+   Creatinine elevated to 2.3 from baseline of 1.6-1.8, likely cardiorenal syndrome in setting of decompensated heart failure. Pre-renal physiology.
+   - Monitor BMP q12h, trend creatinine
+   - Hold metformin and empagliflozin until renal function improves
+   - Renally dose all medications
+   - Avoid nephrotoxins
+
+3. TYPE 2 DIABETES MELLITUS (uncontrolled, HbA1c 8.1%):
+   - Hold metformin per above
+   - Sliding scale insulin while inpatient
+   - Diabetic diet, blood glucose monitoring QAC and QHS
+   - Endocrine consult for optimization prior to discharge
+
+4. HYPERTENSION:
+   - Currently elevated at 158/92, likely related to fluid overload
+   - Continue home antihypertensives
+   - Expect improvement with diuresis
+
+5. DVT PROPHYLAXIS:
+   - Enoxaparin 40 mg SC daily (adjust for renal function if GFR drops further)
+   - SCDs bilateral
+
+CODE STATUS: Full code. Health care power of attorney: Robert Smith (husband).
+DISPOSITION: Admit to cardiac step-down unit.
+
+Electronically signed by: Dr. Ryan Choi, MD / Dr. Amanda Foster, MD
+Date/Time: 01/06/2026 22:47 EST

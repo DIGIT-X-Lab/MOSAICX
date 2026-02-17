@@ -227,3 +227,31 @@ def _format_value(val: Any) -> str:
     if isinstance(val, list):
         return ", ".join(str(v) for v in val)
     return str(val)
+
+
+# ---------------------------------------------------------------------------
+# Performance metrics display
+# ---------------------------------------------------------------------------
+
+
+def render_metrics(metrics: "PipelineMetrics", console: Console) -> None:
+    """Render a compact single-line performance summary."""
+    from .metrics import PipelineMetrics  # noqa: F811 — runtime guard
+
+    if not isinstance(metrics, PipelineMetrics) or not metrics.steps:
+        return
+
+    console.print()
+    console.print(
+        f"  [{theme.GREIGE}]{'─' * len(theme.TAGLINE)}[/{theme.GREIGE}]"
+    )
+    n = len(metrics.steps)
+    console.print(
+        f"  [{theme.CORAL}]{metrics.total_tokens:,}[/{theme.CORAL}]"
+        f" [{theme.GREIGE}]tokens[/{theme.GREIGE}]"
+        f" [{theme.GREIGE}]·[/{theme.GREIGE}]"
+        f" [{theme.CORAL}]{metrics.total_duration_s:.1f}s[/{theme.CORAL}]"
+        f" [{theme.GREIGE}]·[/{theme.GREIGE}]"
+        f" [{theme.CORAL}]{n}[/{theme.CORAL}]"
+        f" [{theme.GREIGE}]step{'s' if n != 1 else ''}[/{theme.GREIGE}]"
+    )

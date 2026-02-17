@@ -76,24 +76,36 @@ def _build_dspy_classes():
             self.extract_diagnosis = dspy.ChainOfThought(ExtractPathDiagnosis)
 
         def forward(self, report_text: str, report_header: str = "") -> dspy.Prediction:
+            from mosaicx.metrics import PipelineMetrics, get_tracker, track_step
+
+            metrics = PipelineMetrics()
+            tracker = get_tracker()
+
             header = report_header or report_text[:200]
-            classify_result = self.classify_specimen(report_header=header)
+            with track_step(metrics, "Classify specimen type", tracker):
+                classify_result = self.classify_specimen(report_header=header)
             specimen_type: str = classify_result.specimen_type
 
-            sections_result = self.parse_sections(report_text=report_text)
+            with track_step(metrics, "Parse sections", tracker):
+                sections_result = self.parse_sections(report_text=report_text)
             sections: PathSections = sections_result.sections
 
-            specimen_result = self.extract_specimen_details(gross_text=sections.gross_description)
+            with track_step(metrics, "Extract specimen details", tracker):
+                specimen_result = self.extract_specimen_details(gross_text=sections.gross_description)
 
-            findings_result = self.extract_findings(microscopic_text=sections.microscopic, specimen_type=specimen_type)
+            with track_step(metrics, "Extract findings", tracker):
+                findings_result = self.extract_findings(microscopic_text=sections.microscopic, specimen_type=specimen_type)
             findings: List[PathFinding] = findings_result.findings
 
             findings_json = "[" + ", ".join(f.model_dump_json() for f in findings) + "]"
-            diagnosis_result = self.extract_diagnosis(
-                diagnosis_text=sections.diagnosis,
-                findings_context=findings_json,
-                ancillary_text=sections.ancillary_studies,
-            )
+            with track_step(metrics, "Extract diagnosis", tracker):
+                diagnosis_result = self.extract_diagnosis(
+                    diagnosis_text=sections.diagnosis,
+                    findings_context=findings_json,
+                    ancillary_text=sections.ancillary_studies,
+                )
+
+            self._last_metrics = metrics
 
             return dspy.Prediction(
                 specimen_type=specimen_type,

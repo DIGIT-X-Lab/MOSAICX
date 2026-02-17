@@ -1,0 +1,86 @@
+{
+  "pipeline": "pathology",
+  "source_document": "biopsy.pdf",
+  "model": "mlx-community/Llama-3.3-70B-Instruct-4bit",
+  "specimen_type": "Left breast, upper outer quadrant, core needle biopsy",
+  "clinical_history": "52-year-old female with a palpable mass in the left breast. Mammography shows a 2.1cm irregular spiculated mass (BI-RADS 5). Ultrasound-guided core biopsy performed.",
+  "gross_description": "Received in formalin labeled 'left breast core biopsy' are four tan-white tissue cores, each measuring 1.2 to 1.5 cm in length and 0.1 cm in diameter. The tissue is firm and tan-white on cut surface. Entirely submitted in one cassette.",
+  "microscopic_findings": [
+    {
+      "finding": "Invasive ductal carcinoma, not otherwise specified (NOS)",
+      "details": "Moderately differentiated infiltrating carcinoma arranged in irregular nests, cords, and tubules. Tumor cells show moderate nuclear pleomorphism with visible nucleoli and occasional mitotic figures.",
+      "grade_component": "Tubule formation: 2, Nuclear pleomorphism: 2, Mitotic count: 2"
+    },
+    {
+      "finding": "Ductal carcinoma in situ (DCIS)",
+      "details": "Associated intermediate-grade DCIS with cribriform and solid patterns. No comedo necrosis identified.",
+      "grade_component": null
+    },
+    {
+      "finding": "Lymphovascular invasion",
+      "details": "Focal lymphovascular invasion identified in one core.",
+      "grade_component": null
+    },
+    {
+      "finding": "Stromal response",
+      "details": "Moderate desmoplastic stromal reaction surrounding invasive tumor nests. Scattered tumor-infiltrating lymphocytes present.",
+      "grade_component": null
+    }
+  ],
+  "diagnosis": "Left breast, core needle biopsy: Invasive ductal carcinoma, Nottingham grade 2 (moderately differentiated), with associated intermediate-grade DCIS and focal lymphovascular invasion.",
+  "histologic_grade": {
+    "system": "Nottingham (Elston-Ellis modification of Scarff-Bloom-Richardson)",
+    "tubule_formation": 2,
+    "nuclear_pleomorphism": 2,
+    "mitotic_count": 2,
+    "total_score": 6,
+    "grade": 2,
+    "description": "Moderately differentiated"
+  },
+  "staging": {
+    "system": "AJCC 8th Edition",
+    "primary_tumor": "T2",
+    "regional_nodes": "NX",
+    "distant_metastasis": "MX",
+    "clinical_stage_group": "At least IIA (pending nodal assessment)",
+    "notes": "Final pathologic staging pending excision and sentinel lymph node biopsy."
+  },
+  "biomarkers": {
+    "estrogen_receptor": {
+      "status": "Positive",
+      "percent_staining": 95,
+      "intensity": "Strong",
+      "allred_score": 8
+    },
+    "progesterone_receptor": {
+      "status": "Positive",
+      "percent_staining": 70,
+      "intensity": "Moderate",
+      "allred_score": 7
+    },
+    "her2_neu": {
+      "ihc_score": "1+",
+      "ihc_status": "Negative",
+      "fish": "Not performed",
+      "fish_ratio": null
+    },
+    "ki67": {
+      "percentage": 18,
+      "interpretation": "Intermediate proliferation index"
+    }
+  },
+  "margins": {
+    "status": "Not applicable (core biopsy)",
+    "notes": "Margin assessment deferred to excision specimen."
+  },
+  "ancillary_studies": {
+    "oncotype_dx": "Recommended pending surgical excision",
+    "additional_ihc": "E-cadherin positive, confirming ductal phenotype"
+  },
+  "metadata": {
+    "extraction_timestamp": "2025-06-12T15:01:18Z",
+    "processing_time_seconds": 11.7,
+    "confidence": 0.91,
+    "token_count": 2314
+  }
+}

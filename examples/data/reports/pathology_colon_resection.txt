@@ -1,0 +1,52 @@
+SURGICAL PATHOLOGY REPORT
+
+PATIENT: Williams, Harold R.
+MRN: 6639012
+DOB: 07/15/1955
+DATE OF PROCEDURE: 08/21/2025
+DATE REPORTED: 08/27/2025
+REFERRING PHYSICIAN: Dr. Michael Tanaka, Colorectal Surgery
+PATHOLOGIST: Dr. Priya Gupta, MD
+
+SPECIMEN: Right hemicolectomy
+
+CLINICAL HISTORY: 70-year-old male with iron deficiency anemia and positive fecal immunochemical test. Colonoscopy revealed a 4.5 cm fungating mass in the cecum with partial obstruction of the ileocecal valve. Biopsy confirmed adenocarcinoma. No evidence of distant metastatic disease on staging CT. CEA level: 8.4 ng/mL (elevated).
+
+GROSS DESCRIPTION:
+Received fresh labeled "right hemicolectomy" is a segment of colon measuring 22 cm in length with attached terminal ileum measuring 6 cm. The mesentery is attached and measures up to 8 cm in width. In the cecum, there is a fungating, partially circumferential mass measuring 4.3 x 3.8 x 1.6 cm. The mass is located 8.5 cm from the distal (ascending colon) margin and 7.2 cm from the proximal (ileal) margin. On serial sectioning, the mass invades through the muscularis propria into the pericolic adipose tissue. The uninvolved mucosa is tan-brown and unremarkable. The appendix is present, measures 5.5 cm in length, and appears grossly normal. Twenty-two lymph nodes are identified in the mesenteric fat.
+
+MICROSCOPIC DESCRIPTION:
+Sections of the cecal mass demonstrate a moderately differentiated adenocarcinoma composed of irregular, infiltrating glands lined by columnar epithelial cells with enlarged, hyperchromatic nuclei and loss of nuclear polarity. The tumor arises from a background of tubulovillous adenoma with high-grade dysplasia. The carcinoma invades through the full thickness of the muscularis propria into the pericolic adipose tissue. No serosal surface involvement is identified. Lymphovascular invasion is present. Perineural invasion is identified focally. Tumor budding score is high (Bd3: 14 buds per 0.785 mm2). No tumor deposits are identified.
+
+MARGINS:
+Proximal (ileal) margin: Negative for carcinoma (7.2 cm from tumor)
+Distal (ascending colon) margin: Negative for carcinoma (8.5 cm from tumor)
+Radial (mesenteric/circumferential) margin: Negative for carcinoma (closest approach 0.4 cm)
+
+LYMPH NODES:
+Two of twenty-two lymph nodes are positive for metastatic adenocarcinoma (2/22).
+The largest metastatic deposit measures 0.6 cm. No extranodal extension.
+
+ANCILLARY STUDIES:
+Mismatch Repair (MMR) Protein Immunohistochemistry:
+  MLH1: Intact nuclear expression
+  PMS2: Intact nuclear expression
+  MSH2: Intact nuclear expression
+  MSH6: Intact nuclear expression
+Interpretation: Mismatch repair proficient (pMMR). Low probability of microsatellite instability.
+
+KRAS/NRAS/BRAF: Pending, results to follow in addendum.
+
+DIAGNOSIS:
+Right hemicolectomy:
+  - Invasive moderately differentiated adenocarcinoma of the cecum
+  - Tumor size: 4.3 cm in greatest dimension
+  - Depth of invasion: Through muscularis propria into pericolic fat (pT3)
+  - Lymph node metastasis: 2 of 22 nodes positive (pN1b)
+  - Lymphovascular invasion: Present
+  - Perineural invasion: Present
+  - All surgical margins negative
+  - Mismatch repair: Proficient (pMMR)
+
+PATHOLOGIC STAGING (AJCC 8th Edition):
+pT3 N1b M0 -- Stage IIIB

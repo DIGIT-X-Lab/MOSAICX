@@ -1,0 +1,41 @@
+SURGICAL PATHOLOGY REPORT
+
+PATIENT: Chen, Margaret L.
+MRN: 5501987
+DOB: 03/22/1961
+DATE OF PROCEDURE: 10/08/2025
+DATE REPORTED: 10/12/2025
+REFERRING PHYSICIAN: Dr. Lisa Ortega, Breast Surgery
+PATHOLOGIST: Dr. James Harmon, MD
+
+SPECIMEN: Right breast, 2 o'clock position, ultrasound-guided core needle biopsy
+
+CLINICAL HISTORY: 64-year-old female with a palpable mass in the right breast at the 2 o'clock position, 4 cm from the nipple, identified on screening mammography as a BI-RADS 5 irregular mass with associated microcalcifications measuring 1.8 cm. No family history of breast cancer. No prior breast biopsies.
+
+GROSS DESCRIPTION:
+Received in formalin labeled "Right breast, 2 o'clock" are four tan-white core biopsy fragments measuring 0.8 to 1.4 cm in length and 0.1 cm in diameter. All tissue is submitted in one cassette (A1). Specimen radiograph confirms the presence of microcalcifications within the cores.
+
+MICROSCOPIC DESCRIPTION:
+Sections reveal an infiltrating carcinoma composed of irregular nests, cords, and glands of atypical epithelial cells invading a desmoplastic stroma. The tumor cells exhibit moderate nuclear pleomorphism with prominent nucleoli and frequent mitotic figures (12 mitoses per 10 high-power fields). No definite lymphovascular invasion is identified on H&E-stained sections. Associated high-grade ductal carcinoma in situ (DCIS) with comedo-type necrosis and microcalcifications is present, comprising approximately 25% of the tumor volume. The in situ component extends to within 0.5 mm of one core biopsy edge. No lobular carcinoma in situ is identified. Background breast parenchyma shows fibrocystic changes with apocrine metaplasia.
+
+ANCILLARY STUDIES / BIOMARKERS:
+Estrogen Receptor (ER): Positive, strong (95% of tumor nuclei, Allred score 8/8)
+Progesterone Receptor (PR): Positive, moderate (40% of tumor nuclei, Allred score 6/8)
+HER2/neu by Immunohistochemistry: Score 1+ (Negative)
+HER2/neu by FISH: Not performed (IHC 1+ is considered negative per ASCO/CAP guidelines)
+Ki-67 Proliferation Index: 28% (intermediate-high)
+
+DIAGNOSIS:
+Right breast, 2 o'clock position, core needle biopsy:
+  - Invasive ductal carcinoma (invasive carcinoma of no special type, WHO 2019)
+  - Nottingham histologic grade 2 (tubule score 3, nuclear grade 2, mitotic score 2; total score 7/9)
+  - Associated high-grade DCIS with comedo necrosis
+  - Biomarker profile: ER+/PR+/HER2-negative (Luminal A-like)
+  - Lymphovascular invasion: Not identified
+
+COMMENT:
+Given the core biopsy findings of invasive ductal carcinoma with associated high-grade DCIS, surgical excision is recommended for definitive treatment, margin assessment, and complete staging. Oncotype DX genomic testing may be considered following excision to guide adjuvant chemotherapy decisions. Recommend multidisciplinary tumor board discussion.
+
+STAGING (AJCC 8th Edition, clinical):
+cT1c cNX cMX
+Final pathologic staging deferred to excision specimen.

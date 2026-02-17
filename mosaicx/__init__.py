@@ -1,15 +1,23 @@
 # mosaicx/__init__.py
 """
-MOSAICX — Medical Document Structuring Platform.
+MOSAICX -- Medical Document Structuring Platform.
 
-Public API:
-    - mosaicx.extract(document_path, schema=None, mode=None, template=None)
-    - mosaicx.summarize(document_paths)
-    - mosaicx.generate_schema(description, example_text=None)
+Public API (text-based SDK):
+    - mosaicx.extract(text, mode="auto", schema_name=None, optimized=None)
     - mosaicx.deidentify(text, mode="remove")
+    - mosaicx.summarize(reports, patient_id="unknown", optimized=None)
+    - mosaicx.generate_schema(description, name=None, example_text=None)
+    - mosaicx.sdk.list_schemas()
+    - mosaicx.sdk.list_modes()
+    - mosaicx.sdk.evaluate(pipeline, testset_path, optimized=None)
+    - mosaicx.sdk.batch_extract(texts, mode="auto", schema_name=None)
     - mosaicx.config.MosaicxConfig / get_config()
     - mosaicx.documents.load_document()
     - mosaicx.cli.cli (Click entry point)
+
+File-based API (for document loading + extraction in one call):
+    - mosaicx.extract_file(document_path, schema=None, mode=None, template=None)
+    - mosaicx.summarize_files(document_paths)
 """
 
 from __future__ import annotations
@@ -85,17 +93,17 @@ def _load_doc_with_config(path: Path) -> "LoadedDocument":
 
 
 # ---------------------------------------------------------------------------
-# Public API wrappers
+# File-based API wrappers (load document from disk, then process)
 # ---------------------------------------------------------------------------
 
 
-def extract(
+def extract_file(
     document_path: Union[str, Path],
     schema: str | None = None,
     mode: str | None = None,
     template: str | None = None,
 ) -> dict[str, Any]:
-    """Extract structured data from a clinical document.
+    """Extract structured data from a clinical document file.
 
     Parameters
     ----------
@@ -184,10 +192,10 @@ def extract(
     return output
 
 
-def summarize(
+def summarize_files(
     document_paths: list[Union[str, Path]],
 ) -> dict[str, Any]:
-    """Summarize a collection of clinical reports into a patient timeline.
+    """Summarize a collection of clinical report files into a patient timeline.
 
     Parameters
     ----------
@@ -220,79 +228,37 @@ def summarize(
     }
 
 
-def generate_schema(
-    description: str,
-    example_text: str | None = None,
-) -> dict[str, Any]:
-    """Generate a Pydantic schema from a natural-language description.
+# ---------------------------------------------------------------------------
+# SDK convenience imports (text-based API -- the primary public interface)
+# ---------------------------------------------------------------------------
+# These override the file-based wrappers above so that:
+#     from mosaicx import extract, deidentify, summarize, generate_schema
+# uses the SDK text-based functions directly.
 
-    Parameters
-    ----------
-    description:
-        Natural-language description of the document type to structure.
-    example_text:
-        Optional example document text for grounding.
-
-    Returns
-    -------
-    dict
-        Keys: ``schema_spec`` (dict) and ``compiled_model`` (the
-        generated Pydantic BaseModel class).
-    """
-    from .pipelines.schema_gen import SchemaGenerator  # lazy (triggers dspy)
-
-    _configure_dspy()
-    generator = SchemaGenerator()
-    result = generator(
-        description=description,
-        example_text=example_text or "",
-    )
-    return {
-        "schema_spec": result.schema_spec.model_dump(),
-        "compiled_model": result.compiled_model,
-    }
-
-
-def deidentify(
-    text: str,
-    mode: str = "remove",
-) -> str:
-    """De-identify clinical text by removing or replacing PHI.
-
-    Parameters
-    ----------
-    text:
-        The clinical text to de-identify.
-    mode:
-        De-identification strategy:
-        - ``"remove"``       -- LLM + regex, replace PHI with [REDACTED].
-        - ``"pseudonymize"`` -- LLM + regex, replace with fake values.
-        - ``"dateshift"``    -- LLM + regex, shift dates consistently.
-        - ``"regex"``        -- Regex-only scrubbing (no LLM needed).
-
-    Returns
-    -------
-    str
-        The de-identified text.
-    """
-    from .pipelines.deidentifier import regex_scrub_phi  # lazy, no dspy dep
-
-    if mode == "regex":
-        return regex_scrub_phi(text)
-
-    # Full LLM + regex pipeline
-    from .pipelines.deidentifier import Deidentifier  # lazy (triggers dspy)
-
-    _configure_dspy()
-    deid = Deidentifier()
-    result = deid(document_text=text, mode=mode)
-    return result.redacted_text
+from mosaicx.sdk import (  # noqa: E402
+    extract,
+    deidentify,
+    summarize,
+    generate_schema,
+    list_schemas,
+    list_modes,
+    evaluate,
+    batch_extract,
+)
 
 
 __all__ = [
     "__version__",
+    # SDK text-based API (primary)
     "extract",
+    "deidentify",
     "summarize",
     "generate_schema",
-    "deidentify",
+    "list_schemas",
+    "list_modes",
+    "evaluate",
+    "batch_extract",
+    # File-based API (for document loading)
+    "extract_file",
+    "summarize_files",
 ]

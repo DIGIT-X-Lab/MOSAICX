@@ -57,9 +57,10 @@ Defaults point to Ollama on localhost — no `.env` needed for local use. See [C
 | `mosaicx template list` | List built-in radiology templates |
 | `mosaicx template validate` | Validate a custom YAML template |
 | `mosaicx optimize` | Tune a DSPy pipeline (BootstrapFewShot / MIPROv2) |
+| `mosaicx eval` | Evaluate pipeline accuracy against a labeled test set |
 | `mosaicx config show` | Print current configuration |
 
-Run any command with `--help` for full options.
+Run any command with `--help` for full options. For detailed guides, see the [documentation](docs/README.md).
 
 ## Usage examples
 

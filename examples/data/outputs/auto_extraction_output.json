@@ -1,0 +1,24 @@
+{
+  "pipeline": "extraction",
+  "mode": "auto",
+  "source_document": "report.pdf",
+  "model": "mlx-community/Llama-3.3-70B-Instruct-4bit",
+  "document_type": "Radiology Report",
+  "extracted": {
+    "exam_type": "MRI Brain without and with Contrast",
+    "exam_date": "2025-03-14",
+    "ordering_physician": "Dr. R. Mehta",
+    "clinical_indication": "New onset seizures, evaluate for intracranial pathology",
+    "findings": "No acute infarct or hemorrhage. No abnormal parenchymal or meningeal enhancement. Mild non-specific white matter T2/FLAIR hyperintensities in the periventricular regions, likely representing small vessel ischemic changes. Normal ventricles and sulci for age. Pituitary gland and sella turcica are unremarkable. Mastoid air cells and paranasal sinuses are clear.",
+    "impression": "1. No acute intracranial abnormality. 2. Mild periventricular white matter changes, likely small vessel ischemic disease. 3. No mass, hemorrhage, or abnormal enhancement to suggest seizure etiology on MRI.",
+    "comparison": "No prior imaging available for comparison",
+    "radiologist": "Dr. S. Nakamura"
+  },
+  "metadata": {
+    "extraction_timestamp": "2025-06-12T09:44:02Z",
+    "processing_time_seconds": 5.1,
+    "confidence": 0.88,
+    "token_count": 1102,
+    "schema_inferred": true
+  }
+}

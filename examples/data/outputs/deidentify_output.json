@@ -1,0 +1,77 @@
+{
+  "pipeline": "deidentify",
+  "mode": "remove",
+  "source_document": "note.txt",
+  "model": "mlx-community/Llama-3.3-70B-Instruct-4bit",
+  "original_length": 1842,
+  "redacted_length": 1756,
+  "phi_removed": [
+    {
+      "type": "PERSON",
+      "original": "[REDACTED]",
+      "position": [45, 59],
+      "category": "Patient Name"
+    },
+    {
+      "type": "DATE",
+      "original": "[REDACTED]",
+      "position": [78, 88],
+      "category": "Date of Birth"
+    },
+    {
+      "type": "SSN",
+      "original": "[REDACTED]",
+      "position": [120, 131],
+      "category": "Social Security Number"
+    },
+    {
+      "type": "MRN",
+      "original": "[REDACTED]",
+      "position": [148, 157],
+      "category": "Medical Record Number"
+    },
+    {
+      "type": "PHONE",
+      "original": "[REDACTED]",
+      "position": [203, 215],
+      "category": "Phone Number"
+    },
+    {
+      "type": "ADDRESS",
+      "original": "[REDACTED]",
+      "position": [232, 271],
+      "category": "Street Address"
+    },
+    {
+      "type": "PERSON",
+      "original": "[REDACTED]",
+      "position": [1685, 1700],
+      "category": "Provider Name"
+    },
+    {
+      "type": "ID",
+      "original": "[REDACTED]",
+      "position": [1720, 1730],
+      "category": "Provider NPI"
+    }
+  ],
+  "phi_summary": {
+    "total_entities_redacted": 8,
+    "by_type": {
+      "PERSON": 2,
+      "DATE": 1,
+      "SSN": 1,
+      "MRN": 1,
+      "PHONE": 1,
+      "ADDRESS": 1,
+      "ID": 1
+    }
+  },
+  "redacted_text": "CLINIC NOTE\n\nPatient: [REDACTED], a 67-year-old male\nDOB: [REDACTED]\nSSN: [REDACTED]\nMRN: [REDACTED]\nPhone: [REDACTED]\nAddress: [REDACTED]\n\nCHIEF COMPLAINT: Follow-up for type 2 diabetes mellitus and hypertension.\n\nHISTORY OF PRESENT ILLNESS:\nPatient presents for routine 3-month follow-up. He reports good compliance with metformin 1000mg twice daily and lisinopril 20mg daily. Home blood glucose readings range from 110-145 mg/dL fasting. He denies polyuria, polydipsia, blurred vision, or numbness/tingling in extremities. Blood pressure home readings average 132/78 mmHg.\n\nMEDICATIONS:\n1. Metformin 1000mg PO BID\n2. Lisinopril 20mg PO daily\n3. Atorvastatin 40mg PO QHS\n4. Aspirin 81mg PO daily\n\nVITAL SIGNS:\nBP: 134/80 mmHg | HR: 72 bpm | Temp: 98.4F | SpO2: 98% RA | Weight: 198 lbs\n\nLABORATORY RESULTS (drawn 2025-05-28):\n- HbA1c: 7.1% (prior 7.4%)\n- Fasting glucose: 128 mg/dL\n- Creatinine: 1.0 mg/dL, eGFR >60\n- Microalbumin/Cr ratio: 18 mg/g (normal)\n- Lipid panel: TC 185, LDL 98, HDL 45, TG 155\n\nASSESSMENT AND PLAN:\n1. Type 2 diabetes mellitus - improving control, HbA1c trending down. Continue current regimen. Recheck HbA1c in 3 months. Annual diabetic eye exam due.\n2. Hypertension - at goal. Continue lisinopril 20mg daily.\n3. Hyperlipidemia - LDL near goal. Continue atorvastatin 40mg.\n4. Health maintenance - influenza vaccine administered today. Colonoscopy due, referral placed.\n\nReturn to clinic in 3 months.\n\nElectronically signed by [REDACTED]\nNPI: [REDACTED]",
+  "metadata": {
+    "extraction_timestamp": "2025-06-12T11:32:09Z",
+    "processing_time_seconds": 3.8,
+    "confidence": 0.97,
+    "token_count": 892
+  }
+}

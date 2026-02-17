@@ -1,0 +1,26 @@
+RADIOLOGY REPORT
+
+EXAM: MRI Brain Without and With Contrast
+DATE OF EXAM: 11/03/2025
+ORDERING PHYSICIAN: Dr. Susan Park
+PATIENT: Martinez, Elena
+MRN: 7720345
+
+CLINICAL HISTORY: 42-year-old female presenting with progressive headaches over 6 weeks, new onset visual disturbance, and one episode of left-sided weakness lasting 30 minutes. Rule out intracranial mass or demyelinating disease.
+
+TECHNIQUE: Multiplanar multisequence MRI of the brain was performed on a 3T scanner. Sequences include axial T1, axial T2, axial FLAIR, axial diffusion-weighted imaging (DWI) with ADC map, axial susceptibility-weighted imaging (SWI), and axial/coronal/sagittal post-contrast T1-weighted images following intravenous administration of 15 mL Gadavist. No prior comparison available.
+
+FINDINGS:
+
+A 1.4 x 1.2 x 1.3 cm ring-enhancing lesion is identified in the right parietal lobe at the gray-white junction (series 8, image 24). The lesion demonstrates central T2/FLAIR hyperintensity with a thin, uniformly enhancing peripheral rim. Surrounding vasogenic edema extends into the adjacent white matter. No restricted diffusion is seen centrally. No associated hemorrhage on SWI.
+
+Multiple ovoid T2/FLAIR hyperintense foci are noted in the periventricular and juxtacortical white matter bilaterally, the largest measuring 8 mm in the left frontal periventricular region. Several lesions are oriented perpendicular to the lateral ventricles. At least two periventricular lesions demonstrate incomplete ring enhancement, consistent with active demyelination.
+
+The ventricles and sulci are normal in caliber for the patient's age. No midline shift. The major intracranial vascular flow voids are preserved. The orbits, paranasal sinuses, and mastoid air cells are unremarkable. No extra-axial collection.
+
+IMPRESSION:
+1. Ring-enhancing right parietal lesion with surrounding edema. In the clinical context of demyelinating lesions elsewhere, this most likely represents a tumefactive demyelinating lesion. However, neoplasm (primary or metastatic) cannot be excluded. MR spectroscopy and/or biopsy may be considered for further characterization.
+2. Multiple periventricular and juxtacortical white matter lesions with enhancement pattern suggestive of active demyelinating disease, raising concern for multiple sclerosis. Clinical correlation with CSF analysis and evoked potentials is recommended. Findings meet McDonald criteria for dissemination in space.
+
+REPORTED BY: Dr. Kevin Tran, MD
+ATTENDING RADIOLOGIST: Dr. Kevin Tran, MD

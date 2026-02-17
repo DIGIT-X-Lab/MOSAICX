@@ -1,0 +1,44 @@
+{
+  "pipeline": "extraction",
+  "mode": "schema",
+  "source_document": "echo.pdf",
+  "model": "mlx-community/Llama-3.3-70B-Instruct-4bit",
+  "schema_name": "EchoReport",
+  "extracted": {
+    "lvef": 55,
+    "lv_end_diastolic_diameter": 48,
+    "lv_end_systolic_diameter": 32,
+    "lv_end_diastolic_volume": 112,
+    "lv_end_systolic_volume": 50,
+    "lv_mass_index": 88,
+    "lv_wall_motion": "Normal global and regional wall motion",
+    "interventricular_septum_thickness": 10,
+    "posterior_wall_thickness": 10,
+    "left_atrial_volume_index": 28,
+    "mitral_valve": "Trace regurgitation, no stenosis, normal leaflet morphology",
+    "aortic_valve": "Normal trileaflet morphology, no stenosis or regurgitation",
+    "tricuspid_valve": "Mild regurgitation, structurally normal",
+    "pulmonic_valve": "Trace regurgitation",
+    "rvsp": 28,
+    "right_ventricle": "Normal size and systolic function, TAPSE 22mm",
+    "aortic_root_diameter": 33,
+    "ascending_aorta_diameter": 34,
+    "pericardium": "No effusion",
+    "inferior_vena_cava": "Normal caliber with greater than 50% inspiratory collapse",
+    "e_over_e_prime": 9.2,
+    "diastolic_function": "Normal (Grade I)",
+    "impression": "Normal left ventricular size and systolic function with estimated LVEF of 55%. No significant valvular abnormality. Normal diastolic function. Normal right ventricular size and function. No pericardial effusion."
+  },
+  "schema_validation": {
+    "fields_expected": 22,
+    "fields_extracted": 22,
+    "fields_missing": 0,
+    "validation_passed": true
+  },
+  "metadata": {
+    "extraction_timestamp": "2025-06-12T10:17:55Z",
+    "processing_time_seconds": 7.9,
+    "confidence": 0.96,
+    "token_count": 1563
+  }
+}

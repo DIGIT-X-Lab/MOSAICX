@@ -184,6 +184,10 @@ class MosaicxGroup(click.Group):
     """Click group with DIGITX-styled help output."""
 
     def format_help(self, ctx: click.Context, formatter: click.HelpFormatter) -> None:
+        # Show banner at the top of root-level help (mosaicx --help)
+        if ctx.parent is None:
+            cfg = get_config()
+            theme.print_banner(_VERSION_NUMBER, console, lm=cfg.lm, lm_cheap=cfg.lm_cheap)
         tmp = click.HelpFormatter(width=formatter.width)
         super().format_help(ctx, tmp)
         formatter.write(_render_styled_help(tmp.getvalue(), formatter.width or 80))
@@ -224,9 +228,11 @@ class MosaicxCommand(click.Command):
 def cli(ctx: click.Context) -> None:
     """MOSAICX -- Medical cOmputational Suite for Advanced Intelligent eXtraction."""
     cfg = get_config()
-    theme.print_banner(_VERSION_NUMBER, console, lm=cfg.lm, lm_cheap=cfg.lm_cheap)
-    if ctx.invoked_subcommand is None:
-        console.print()
+    if ctx.invoked_subcommand is not None:
+        # Subcommand execution — show banner before running the command
+        theme.print_banner(_VERSION_NUMBER, console, lm=cfg.lm, lm_cheap=cfg.lm_cheap)
+    else:
+        # No subcommand — show help (banner included via format_help)
         click.echo(ctx.get_help())
 
 
@@ -562,6 +568,66 @@ def batch(
 
 
 # ---------------------------------------------------------------------------
+# pipeline (group)
+# ---------------------------------------------------------------------------
+
+
+@cli.group()
+def pipeline() -> None:
+    """Scaffold and manage extraction pipelines."""
+
+
+@pipeline.command("new")
+@click.argument("name")
+@click.option(
+    "--description", "-d",
+    type=str,
+    default="",
+    help="One-line description of the pipeline.",
+)
+def pipeline_new(name: str, description: str) -> None:
+    """Scaffold a new extraction pipeline from a template.
+
+    NAME is the pipeline name (e.g. cardiology, ophthalmology).
+    A snake_case file and PascalCase DSPy Module will be generated
+    automatically.
+    """
+    from .pipelines.scaffold import scaffold_pipeline, WIRING_CHECKLIST, _to_snake_case
+
+    snake = _to_snake_case(name)
+
+    try:
+        created = scaffold_pipeline(name, description)
+    except FileExistsError as exc:
+        raise click.ClickException(str(exc))
+    except ValueError as exc:
+        raise click.ClickException(str(exc))
+
+    console.print(theme.ok(f"Pipeline scaffolded: {created}"))
+
+    theme.section("Next Steps", console)
+    console.print()
+    console.print(theme.info(
+        "The generated pipeline is runnable but needs to be wired"
+    ))
+    console.print(theme.info(
+        "into the rest of MOSAICX.  Complete these manual steps:"
+    ))
+    console.print()
+
+    for line in WIRING_CHECKLIST:
+        formatted = line.format(name=snake, class_name=_to_snake_case(name).replace("_", " ").title().replace(" ", ""))
+        if line.startswith("    "):
+            console.print(f"      [{theme.GREIGE}]{formatted.strip()}[/{theme.GREIGE}]")
+        elif line == "":
+            console.print()
+        else:
+            console.print(f"  [{theme.CORAL}]>[/{theme.CORAL}] {formatted}")
+
+    console.print()
+
+
+# ---------------------------------------------------------------------------
 # template (group)
 # ---------------------------------------------------------------------------
 
@@ -627,19 +693,53 @@ def schema() -> None:
 
 
 @schema.command("generate")
-@click.option("--description", type=str, required=True, help="Natural-language description of the schema.")
+@click.option("--description", type=str, default=None, help="Natural-language description of the schema.")
+@click.option("--from-document", "from_document", type=click.Path(exists=False, path_type=Path), default=None, help="Path to a document to infer schema from.")
 @click.option("--name", type=str, default=None, help="Schema class name (default: LLM-chosen).")
 @click.option("--example-text", type=str, default="", help="Optional example document text for grounding.")
 @click.option("--output", type=click.Path(path_type=Path), default=None, help="Save schema to this path (default: ~/.mosaicx/schemas/).")
-def schema_generate(description: str, name: Optional[str], example_text: str, output: Optional[Path]) -> None:
-    """Generate a Pydantic schema from a description."""
+def schema_generate(description: Optional[str], from_document: Optional[Path], name: Optional[str], example_text: str, output: Optional[Path]) -> None:
+    """Generate a Pydantic schema from a description and/or document."""
+    if description is None and from_document is None:
+        raise click.ClickException(
+            "Provide --description or --from-document (or both)."
+        )
+
+    # Load document if provided
+    document_text = ""
+    if from_document is not None:
+        from .documents.models import DocumentLoadError
+
+        try:
+            doc = _load_doc_with_config(from_document)
+        except (FileNotFoundError, ValueError, DocumentLoadError) as exc:
+            raise click.ClickException(str(exc))
+
+        if doc.quality_warning:
+            console.print(theme.warn("Low OCR quality detected \u2014 results may be unreliable"))
+        if doc.is_empty:
+            raise click.ClickException(f"Document is empty: {from_document}")
+
+        parts = [f"{doc.format} document", f"{doc.char_count:,} chars"]
+        if doc.ocr_engine_used:
+            parts.append(f"OCR: {doc.ocr_engine_used}")
+        if doc.ocr_confidence:
+            parts.append(f"confidence: {doc.ocr_confidence:.0%}")
+        console.print(theme.info(" \u00b7 ".join(parts)))
+
+        document_text = doc.text
+
     _configure_dspy()
 
     from .pipelines.schema_gen import SchemaGenerator, save_schema
 
     generator = SchemaGenerator()
     with theme.spinner("Generating schema... hold my beer", console):
-        result = generator(description=description, example_text=example_text)
+        result = generator(
+            description=description or "",
+            example_text=example_text,
+            document_text=document_text,
+        )
 
     # Override class_name if user specified --name
     if name:
@@ -1205,21 +1305,37 @@ def deidentify(
     help="Optimization budget preset.",
 )
 @click.option("--save", type=click.Path(path_type=Path), help="Save optimized program to this path.")
+@click.option("--list-pipelines", is_flag=True, default=False, help="List available pipelines and exit.")
 def optimize(
     pipeline: Optional[str],
     trainset: Optional[Path],
     valset: Optional[Path],
     budget: str,
     save: Optional[Path],
+    list_pipelines: bool,
 ) -> None:
-    """Optimize a DSPy pipeline."""
-    from .evaluation.optimize import OPTIMIZATION_STRATEGY, get_optimizer_config
+    """Optimize a DSPy pipeline with labeled examples."""
+    from .evaluation.optimize import (
+        OPTIMIZATION_STRATEGY,
+        get_optimizer_config,
+        get_pipeline_class,
+        list_pipelines as _list_pipelines,
+        run_optimization,
+    )
+
+    # --list-pipelines: show available pipelines and exit
+    if list_pipelines:
+        theme.section("Available Pipelines", console, "01")
+        for name in _list_pipelines():
+            console.print(f"  [#E87461]>[/#E87461] [#B5A89A]{name}[/#B5A89A]")
+        return
 
     try:
         opt_config = get_optimizer_config(budget)
     except ValueError as exc:
         raise click.ClickException(str(exc))
 
+    # 01 · Configuration display
     theme.section("Optimization", console, "01")
     t = theme.make_kv_table()
     t.add_row("Pipeline", pipeline or "[dim]not specified[/dim]")
@@ -1232,7 +1348,7 @@ def optimize(
     t.add_row("Save path", str(save) if save else "[dim]not specified[/dim]")
     console.print(t)
 
-    # Progressive strategy
+    # 02 · Progressive strategy
     theme.section("Progressive Strategy", console, "02")
     strat_table = theme.make_table()
     strat_table.add_column("Stage", style="bold cyan", no_wrap=True)
@@ -1249,12 +1365,220 @@ def optimize(
         )
     console.print(strat_table)
 
-    if trainset is None or valset is None:
+    # Validate required args
+    if not pipeline:
         console.print()
         console.print(theme.warn(
-            "Provide --trainset and --valset to run optimization. "
+            "Specify --pipeline to run optimization. "
+            "Use --list-pipelines to see available options."
+        ))
+        return
+
+    if not trainset:
+        console.print()
+        console.print(theme.warn(
+            "Provide --trainset to run optimization. "
             "Requires MOSAICX_API_KEY."
         ))
+        return
+
+    # Validate pipeline name
+    try:
+        pipeline_cls = get_pipeline_class(pipeline)
+    except ValueError as exc:
+        raise click.ClickException(str(exc))
+
+    # Load dataset
+    from .evaluation.dataset import load_jsonl
+    from .evaluation.metrics import get_metric
+
+    try:
+        train_examples = load_jsonl(trainset, pipeline)
+    except (FileNotFoundError, ValueError) as exc:
+        raise click.ClickException(str(exc))
+
+    val_examples = None
+    if valset:
+        try:
+            val_examples = load_jsonl(valset, pipeline)
+        except (FileNotFoundError, ValueError) as exc:
+            raise click.ClickException(str(exc))
+
+    try:
+        metric = get_metric(pipeline)
+    except ValueError as exc:
+        raise click.ClickException(str(exc))
+
+    console.print(theme.info(f"Loaded {len(train_examples)} training examples"))
+    if val_examples:
+        console.print(theme.info(f"Loaded {len(val_examples)} validation examples"))
+
+    # Configure DSPy
+    _configure_dspy()
+
+    # Determine save path
+    if save is None:
+        cfg = get_config()
+        save = cfg.optimized_dir / f"{pipeline}_optimized.json"
+
+    # Run optimization
+    theme.section("Running Optimization", console, "03")
+    module = pipeline_cls()
+    with theme.spinner("Optimizing... patience you must have", console):
+        optimized, results = run_optimization(
+            module=module,
+            trainset=train_examples,
+            valset=val_examples,
+            metric=metric,
+            budget=budget,
+            save_path=save,
+        )
+
+    # 04 · Results
+    theme.section("Results", console, "04")
+    results_table = theme.make_kv_table()
+    results_table.add_row("Strategy", results["strategy"])
+    results_table.add_row("Train examples", str(results["num_train"]))
+    results_table.add_row("Val examples", str(results["num_val"]))
+    results_table.add_row("Train score", f"{results['train_score']:.3f}")
+    results_table.add_row("Val score", f"{results['val_score']:.3f}")
+    results_table.add_row("Saved to", str(save))
+    console.print(results_table)
+
+
+# ---------------------------------------------------------------------------
+# eval
+# ---------------------------------------------------------------------------
+
+
+@cli.command(name="eval")
+@click.option("--pipeline", type=str, required=True, help="Pipeline to evaluate.")
+@click.option("--testset", type=click.Path(exists=True, path_type=Path), required=True, help="Test dataset path.")
+@click.option("--optimized", type=click.Path(exists=True, path_type=Path), default=None, help="Path to optimized program.")
+@click.option("--output", type=click.Path(path_type=Path), default=None, help="Save detailed results JSON to this path.")
+def eval_cmd(
+    pipeline: str,
+    testset: Path,
+    optimized: Optional[Path],
+    output: Optional[Path],
+) -> None:
+    """Evaluate a pipeline against a labeled test set."""
+    from .evaluation.dataset import load_jsonl
+    from .evaluation.metrics import get_metric
+    from .evaluation.optimize import get_pipeline_class, load_optimized
+
+    # Validate pipeline
+    try:
+        pipeline_cls = get_pipeline_class(pipeline)
+    except ValueError as exc:
+        raise click.ClickException(str(exc))
+
+    # Load test set
+    try:
+        test_examples = load_jsonl(testset, pipeline)
+    except (FileNotFoundError, ValueError) as exc:
+        raise click.ClickException(str(exc))
+
+    try:
+        metric = get_metric(pipeline)
+    except ValueError as exc:
+        raise click.ClickException(str(exc))
+
+    theme.section("Evaluation", console, "01")
+    t = theme.make_kv_table()
+    t.add_row("Pipeline", pipeline)
+    t.add_row("Test set", str(testset))
+    t.add_row("Examples", str(len(test_examples)))
+    t.add_row("Optimized", str(optimized) if optimized else "[dim]baseline[/dim]")
+    console.print(t)
+
+    # Configure DSPy and instantiate module
+    _configure_dspy()
+
+    if optimized:
+        module = load_optimized(pipeline_cls, optimized)
+        console.print(theme.info(f"Loaded optimized program from {optimized}"))
+    else:
+        module = pipeline_cls()
+        console.print(theme.info("Evaluating baseline (unoptimized) program"))
+
+    # Run each example through pipeline
+    import statistics
+
+    scores: list[float] = []
+    details: list[dict] = []
+
+    with theme.spinner("Evaluating... patience you must have", console):
+        for i, example in enumerate(test_examples):
+            try:
+                prediction = module(**dict(example.inputs()))
+                score = metric(example, prediction)
+            except Exception as exc:
+                score = 0.0
+                prediction = None
+                console.print(theme.warn(f"Example {i+1} failed: {exc}"))
+
+            scores.append(score)
+            details.append({
+                "index": i,
+                "score": score,
+                "inputs": {k: str(v)[:200] for k, v in example.inputs().items()},
+            })
+
+    # 02 · Statistics
+    theme.section("Statistics", console, "02")
+    stats_table = theme.make_kv_table()
+    stats_table.add_row("Count", str(len(scores)))
+    stats_table.add_row("Mean", f"{statistics.mean(scores):.3f}")
+    stats_table.add_row("Median", f"{statistics.median(scores):.3f}")
+    if len(scores) >= 2:
+        stats_table.add_row("Std Dev", f"{statistics.stdev(scores):.3f}")
+    stats_table.add_row("Min", f"{min(scores):.3f}")
+    stats_table.add_row("Max", f"{max(scores):.3f}")
+    console.print(stats_table)
+
+    # 03 · Score distribution histogram (unicode bar chart)
+    theme.section("Score Distribution", console, "03")
+    bins = [0.0, 0.2, 0.4, 0.6, 0.8, 1.0]
+    bin_counts = [0] * (len(bins) - 1)
+    for s in scores:
+        for j in range(len(bins) - 1):
+            if bins[j] <= s < bins[j + 1] or (j == len(bins) - 2 and s == bins[j + 1]):
+                bin_counts[j] += 1
+                break
+
+    max_count = max(bin_counts) if bin_counts else 1
+    bar_width = 30
+    hist_table = theme.make_table()
+    hist_table.add_column("Range", style="bold cyan", no_wrap=True)
+    hist_table.add_column("Count", style="magenta", justify="right")
+    hist_table.add_column("Distribution")
+
+    for j in range(len(bins) - 1):
+        label = f"{bins[j]:.1f}-{bins[j+1]:.1f}"
+        count = bin_counts[j]
+        bar_len = int((count / max_count) * bar_width) if max_count > 0 else 0
+        bar = "\u2588" * bar_len
+        hist_table.add_row(label, str(count), f"[cyan]{bar}[/cyan]")
+    console.print(hist_table)
+
+    # Save detailed results
+    if output:
+        output_data = {
+            "pipeline": pipeline,
+            "testset": str(testset),
+            "optimized": str(optimized) if optimized else None,
+            "count": len(scores),
+            "mean": statistics.mean(scores),
+            "median": statistics.median(scores),
+            "stdev": statistics.stdev(scores) if len(scores) >= 2 else 0.0,
+            "min": min(scores),
+            "max": max(scores),
+            "details": details,
+        }
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(json.dumps(output_data, indent=2))
+        console.print(theme.info(f"Results saved to {output}"))
 
 
 # ---------------------------------------------------------------------------
@@ -1340,3 +1664,53 @@ def config_set(key: str, value: str) -> None:
         "Runtime config changes are not persisted yet. "
         "Use environment variables (MOSAICX_*) or a .env file."
     ))
+
+
+# ---------------------------------------------------------------------------
+# mcp (group)
+# ---------------------------------------------------------------------------
+
+
+@cli.group()
+def mcp() -> None:
+    """Model Context Protocol (MCP) server for AI agents."""
+
+
+@mcp.command("serve")
+@click.option(
+    "--transport",
+    type=click.Choice(["stdio", "sse"], case_sensitive=False),
+    default="stdio",
+    show_default=True,
+    help="MCP transport protocol.",
+)
+@click.option(
+    "--port",
+    type=int,
+    default=8080,
+    show_default=True,
+    help="Port for SSE transport (ignored for stdio).",
+)
+def mcp_serve(transport: str, port: int) -> None:
+    """Start the MOSAICX MCP server.
+
+    Exposes MOSAICX pipelines as MCP tools that AI agents (Claude, etc.)
+    can call directly. Defaults to stdio transport, which is the standard
+    for Claude Code and Claude Desktop.
+    """
+    try:
+        from .mcp_server import mcp as mcp_server
+    except SystemExit:
+        raise click.ClickException(
+            "The 'mcp' package is required. Install with: pip install 'mosaicx[mcp]'"
+        )
+
+    cfg = get_config()
+    console.print(theme.info(f"Starting MOSAICX MCP server (transport: {transport})"))
+    console.print(theme.info(f"Model: {cfg.lm}"))
+    console.print(theme.info("Tools: extract_document, deidentify_text, generate_schema, list_schemas, list_modes"))
+
+    if transport == "sse":
+        mcp_server.run(transport="sse", port=port)
+    else:
+        mcp_server.run(transport="stdio")

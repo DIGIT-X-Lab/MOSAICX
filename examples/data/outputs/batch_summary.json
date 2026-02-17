@@ -1,0 +1,196 @@
+{
+  "pipeline": "batch",
+  "mode": "radiology",
+  "model": "mlx-community/Llama-3.3-70B-Instruct-4bit",
+  "total_documents": 25,
+  "successful": 23,
+  "failed": 2,
+  "skipped": 0,
+  "export_formats": ["jsonl", "parquet"],
+  "input_directory": "./reports",
+  "output_directory": "./structured",
+  "duration_seconds": 142,
+  "average_time_per_document_seconds": 5.68,
+  "documents": [
+    {
+      "file": "report_001.pdf",
+      "status": "success",
+      "fields_extracted": 12,
+      "processing_time_seconds": 6.2,
+      "confidence": 0.95
+    },
+    {
+      "file": "report_002.pdf",
+      "status": "success",
+      "fields_extracted": 9,
+      "processing_time_seconds": 4.8,
+      "confidence": 0.92
+    },
+    {
+      "file": "report_003.pdf",
+      "status": "failed",
+      "fields_extracted": 0,
+      "processing_time_seconds": 1.1,
+      "error": "OCR returned empty text. The document may be a scanned image with insufficient quality for text extraction."
+    },
+    {
+      "file": "report_004.pdf",
+      "status": "success",
+      "fields_extracted": 14,
+      "processing_time_seconds": 7.3,
+      "confidence": 0.97
+    },
+    {
+      "file": "report_005.pdf",
+      "status": "success",
+      "fields_extracted": 11,
+      "processing_time_seconds": 5.5,
+      "confidence": 0.93
+    },
+    {
+      "file": "report_006.pdf",
+      "status": "success",
+      "fields_extracted": 10,
+      "processing_time_seconds": 5.1,
+      "confidence": 0.90
+    },
+    {
+      "file": "report_007.pdf",
+      "status": "success",
+      "fields_extracted": 13,
+      "processing_time_seconds": 6.8,
+      "confidence": 0.94
+    },
+    {
+      "file": "report_008.pdf",
+      "status": "success",
+      "fields_extracted": 8,
+      "processing_time_seconds": 4.2,
+      "confidence": 0.89
+    },
+    {
+      "file": "report_009.pdf",
+      "status": "success",
+      "fields_extracted": 11,
+      "processing_time_seconds": 5.7,
+      "confidence": 0.91
+    },
+    {
+      "file": "report_010.pdf",
+      "status": "success",
+      "fields_extracted": 15,
+      "processing_time_seconds": 8.1,
+      "confidence": 0.96
+    },
+    {
+      "file": "report_011.pdf",
+      "status": "success",
+      "fields_extracted": 10,
+      "processing_time_seconds": 5.3,
+      "confidence": 0.92
+    },
+    {
+      "file": "report_012.pdf",
+      "status": "success",
+      "fields_extracted": 12,
+      "processing_time_seconds": 6.0,
+      "confidence": 0.93
+    },
+    {
+      "file": "report_013.pdf",
+      "status": "success",
+      "fields_extracted": 9,
+      "processing_time_seconds": 4.6,
+      "confidence": 0.88
+    },
+    {
+      "file": "report_014.pdf",
+      "status": "success",
+      "fields_extracted": 11,
+      "processing_time_seconds": 5.9,
+      "confidence": 0.91
+    },
+    {
+      "file": "report_015.pdf",
+      "status": "failed",
+      "fields_extracted": 0,
+      "processing_time_seconds": 2.3,
+      "error": "Document appears to be password-protected. Unable to extract text content."
+    },
+    {
+      "file": "report_016.pdf",
+      "status": "success",
+      "fields_extracted": 13,
+      "processing_time_seconds": 6.5,
+      "confidence": 0.95
+    },
+    {
+      "file": "report_017.pdf",
+      "status": "success",
+      "fields_extracted": 10,
+      "processing_time_seconds": 5.2,
+      "confidence": 0.90
+    },
+    {
+      "file": "report_018.pdf",
+      "status": "success",
+      "fields_extracted": 14,
+      "processing_time_seconds": 7.1,
+      "confidence": 0.96
+    },
+    {
+      "file": "report_019.pdf",
+      "status": "success",
+      "fields_extracted": 8,
+      "processing_time_seconds": 4.4,
+      "confidence": 0.87
+    },
+    {
+      "file": "report_020.pdf",
+      "status": "success",
+      "fields_extracted": 12,
+      "processing_time_seconds": 6.3,
+      "confidence": 0.94
+    },
+    {
+      "file": "report_021.pdf",
+      "status": "success",
+      "fields_extracted": 11,
+      "processing_time_seconds": 5.6,
+      "confidence": 0.92
+    },
+    {
+      "file": "report_022.pdf",
+      "status": "success",
+      "fields_extracted": 10,
+      "processing_time_seconds": 5.0,
+      "confidence": 0.91
+    },
+    {
+      "file": "report_023.pdf",
+      "status": "success",
+      "fields_extracted": 13,
+      "processing_time_seconds": 6.7,
+      "confidence": 0.93
+    },
+    {
+      "file": "report_024.pdf",
+      "status": "success",
+      "fields_extracted": 9,
+      "processing_time_seconds": 4.9,
+      "confidence": 0.89
+    },
+    {
+      "file": "report_025.pdf",
+      "status": "success",
+      "fields_extracted": 12,
+      "processing_time_seconds": 6.1,
+      "confidence": 0.94
+    }
+  ],
+  "metadata": {
+    "extraction_timestamp": "2025-06-12T16:45:33Z",
+    "mosaicx_version": "0.3.0",
+    "total_tokens_used": 38421
+  }
+}

@@ -164,36 +164,48 @@ def _build_dspy_classes():
                 Keys: exam_type, sections, modality, body_region, contrast,
                 protocol, findings, impressions.
             """
+            from mosaicx.metrics import PipelineMetrics, get_tracker, track_step
+
+            metrics = PipelineMetrics()
+            tracker = get_tracker()
+
             # Step 1: classify exam type
             header = report_header or report_text[:200]
-            classify_result = self.classify_exam(report_header=header)
+            with track_step(metrics, "Classify exam type", tracker):
+                classify_result = self.classify_exam(report_header=header)
             exam_type: str = classify_result.exam_type
 
             # Step 2: parse sections
-            sections_result = self.parse_sections(report_text=report_text)
+            with track_step(metrics, "Parse sections", tracker):
+                sections_result = self.parse_sections(report_text=report_text)
             sections: ReportSections = sections_result.sections
 
             # Step 3: extract technique
-            technique_result = self.extract_technique(
-                technique_text=sections.technique
-            )
+            with track_step(metrics, "Extract technique", tracker):
+                technique_result = self.extract_technique(
+                    technique_text=sections.technique
+                )
 
             # Step 4: extract findings
-            findings_result = self.extract_findings(
-                findings_text=sections.findings,
-                exam_type=exam_type,
-            )
+            with track_step(metrics, "Extract findings", tracker):
+                findings_result = self.extract_findings(
+                    findings_text=sections.findings,
+                    exam_type=exam_type,
+                )
             findings: List[RadReportFinding] = findings_result.findings
 
             # Step 5: extract impression
             findings_json = "[" + ", ".join(
                 f.model_dump_json() for f in findings
             ) + "]"
-            impression_result = self.extract_impression(
-                impression_text=sections.impression,
-                exam_type=exam_type,
-                findings_context=findings_json,
-            )
+            with track_step(metrics, "Extract impression", tracker):
+                impression_result = self.extract_impression(
+                    impression_text=sections.impression,
+                    exam_type=exam_type,
+                    findings_context=findings_json,
+                )
+
+            self._last_metrics = metrics
 
             return dspy.Prediction(
                 exam_type=exam_type,
