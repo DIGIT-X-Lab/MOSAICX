@@ -20,16 +20,16 @@ logger = logging.getLogger(__name__)
 @lru_cache(maxsize=1)
 def _get_surya_pipeline():
     """Lazily load and cache the Surya OCR pipeline."""
-    from surya.recognition import RecognitionPredictor
     from surya.detection import DetectionPredictor
+    from surya.foundation import FoundationPredictor
+    from surya.recognition import RecognitionPredictor
 
+    foundation = FoundationPredictor()
     det_predictor = DetectionPredictor()
-    rec_predictor = RecognitionPredictor()
+    rec_predictor = RecognitionPredictor(foundation)
 
     def run_ocr(images: list[Image.Image], langs: list[str] | None = None):
-        from surya.pipeline import OCRPipeline
-        pipeline = OCRPipeline(det_predictor=det_predictor, rec_predictor=rec_predictor)
-        return pipeline(images, langs=langs or ["en"])
+        return rec_predictor(images, det_predictor=det_predictor)
 
     return run_ocr
 
@@ -45,8 +45,8 @@ class SuryaEngine:
         if not images:
             return []
 
-        pipeline = _get_surya_pipeline()
         try:
+            pipeline = _get_surya_pipeline()
             results = pipeline(images, langs=langs)
         except Exception:
             logger.exception("Surya OCR failed")

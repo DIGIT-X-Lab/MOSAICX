@@ -112,7 +112,7 @@ All documents in the input directory are processed and saved as individual JSON 
 | `--output-dir` | PATH | Yes | Directory for output files |
 | `--schema` | TEXT | No | Schema name to use for all documents |
 | `--mode` | TEXT | No | Extraction mode for all documents (e.g., `radiology`) |
-| `--format` | TEXT | No | Output format(s): `jsonl`, `parquet`, `csv` (can repeat) |
+| `--format` | TEXT | No | Output format(s): `jsonl`, `parquet` (can repeat) |
 | `--workers` | INT | No | Number of parallel workers (default: 1) |
 | `--resume` | flag | No | Resume from last checkpoint |
 
@@ -744,6 +744,84 @@ Same JSONL format as training data. See `mosaicx optimize` for details.
 
 ---
 
+## `mosaicx pipeline new`
+
+Scaffold a new extraction pipeline from a built-in template.
+
+Generates a complete DSPy pipeline module with lazy loading, mode registration, and a single-step extraction chain. The generated file follows the same pattern as the built-in radiology and pathology pipelines.
+
+**Usage:**
+
+```bash
+mosaicx pipeline new <name> [--description "..."]
+```
+
+**Options:**
+
+| Flag | Type | Required | Description |
+|------|------|----------|-------------|
+| `name` | TEXT | Yes | Pipeline name (auto-normalized to snake_case) |
+| `-d`, `--description` | TEXT | No | One-line description of the pipeline |
+
+**Examples:**
+
+```bash
+# Scaffold a cardiology pipeline
+mosaicx pipeline new cardiology --description "Cardiology report structurer"
+
+# PascalCase and kebab-case are normalized automatically
+mosaicx pipeline new echo-report -d "Echocardiography report extraction"
+
+# Minimal — auto-generates a description
+mosaicx pipeline new dermatology
+```
+
+**What gets generated:**
+
+A new file at `mosaicx/pipelines/<name>.py` containing:
+- Mode registration (so `--mode <name>` works with `mosaicx extract`)
+- A DSPy Signature class for input/output fields
+- A DSPy Module class with a `forward()` method
+- Lazy loading boilerplate (module imports DSPy only when needed)
+
+**After scaffolding:**
+
+The command prints a wiring checklist of manual steps to complete the pipeline registration (adding to mode modules, evaluation registries, and CLI imports).
+
+---
+
+## `mosaicx mcp serve`
+
+Start the MOSAICX Model Context Protocol (MCP) server.
+
+The MCP server exposes MOSAICX tools (extract, deidentify, schema generate, list schemas, list modes) for AI agents like Claude Code, Claude Desktop, and other MCP-compatible clients.
+
+**Options:**
+
+| Flag | Type | Required | Description |
+|------|------|----------|-------------|
+| `--transport` | CHOICE | No | Transport protocol: `stdio` or `sse` (default: `stdio`) |
+| `--port` | INT | No | Port for the SSE HTTP server (default: `8080`) |
+
+**Examples:**
+
+```bash
+# Start with stdio transport (default — for Claude Code / Claude Desktop)
+mosaicx mcp serve
+
+# Start with SSE transport on port 9000
+mosaicx mcp serve --transport sse --port 9000
+```
+
+**Important:**
+- Requires the `mcp` optional dependency: `pip install mosaicx[mcp]`
+- Use `stdio` transport for local integrations (Claude Code, Claude Desktop)
+- Use `sse` transport for remote/network integrations
+
+See the [MCP Server guide](mcp-server.md) for setup instructions with Claude Code and Claude Desktop.
+
+---
+
 ## `mosaicx config show`
 
 Print current configuration values.
@@ -860,7 +938,7 @@ All configuration options can be set via environment variables with the `MOSAICX
 | `MOSAICX_CHECKPOINT_EVERY` | int | `50` | Checkpoint frequency |
 | `MOSAICX_HOME_DIR` | path | `~/.mosaicx` | MOSAICX home directory |
 | `MOSAICX_DEIDENTIFY_MODE` | choice | `remove` | De-identification mode (`remove`, `pseudonymize`, `dateshift`) |
-| `MOSAICX_DEFAULT_EXPORT_FORMATS` | list | `["parquet", "jsonl"]` | Default export formats (JSON array) |
+| `MOSAICX_DEFAULT_EXPORT_FORMATS` | list | `["parquet", "jsonl"]` | Default export formats |
 | `MOSAICX_OCR_ENGINE` | choice | `both` | OCR engine (`both`, `surya`, `chandra`) |
 | `MOSAICX_CHANDRA_BACKEND` | choice | `auto` | Chandra backend (`vllm`, `hf`, `auto`) |
 | `MOSAICX_CHANDRA_SERVER_URL` | string | `""` | Chandra server URL |

@@ -9,11 +9,17 @@ from pathlib import Path
 class TestMosaicxConfig:
     """Test MosaicxConfig defaults and overrides."""
 
-    def test_default_values(self):
+    def test_default_values(self, monkeypatch):
         """Config should have sensible defaults without any env vars."""
         from mosaicx.config import MosaicxConfig
 
-        cfg = MosaicxConfig()
+        # Isolate from any .env file or env vars that override defaults
+        monkeypatch.delenv("MOSAICX_LM", raising=False)
+        monkeypatch.delenv("MOSAICX_LM_CHEAP", raising=False)
+        monkeypatch.delenv("MOSAICX_API_KEY", raising=False)
+        monkeypatch.delenv("MOSAICX_API_BASE", raising=False)
+        monkeypatch.delenv("MOSAICX_BATCH_WORKERS", raising=False)
+        cfg = MosaicxConfig(_env_file=None)
         assert cfg.lm == "openai/gpt-oss:120b"
         assert cfg.lm_cheap == "openai/gpt-oss:20b"
         assert cfg.completeness_threshold == 0.7

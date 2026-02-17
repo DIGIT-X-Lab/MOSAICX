@@ -153,15 +153,24 @@ def _build_dspy_classes():
             dspy.Prediction
                 Keys: ``redacted_text`` (str) -- the de-identified text.
             """
+            from mosaicx.metrics import PipelineMetrics, get_tracker, track_step
+
+            metrics = PipelineMetrics()
+            tracker = get_tracker()
+
             # Layer 1: LLM-based redaction
-            llm_result = self.redact(
-                document_text=document_text,
-                mode=mode,
-            )
+            with track_step(metrics, "LLM redaction", tracker):
+                llm_result = self.redact(
+                    document_text=document_text,
+                    mode=mode,
+                )
             llm_text: str = llm_result.redacted_text
 
             # Layer 2: regex safety net
-            scrubbed_text = regex_scrub_phi(llm_text)
+            with track_step(metrics, "Regex guard", tracker):
+                scrubbed_text = regex_scrub_phi(llm_text)
+
+            self._last_metrics = metrics
 
             return dspy.Prediction(redacted_text=scrubbed_text)
 

@@ -3,9 +3,10 @@
 
 The ``PIPELINE_TEMPLATE`` string uses Python :meth:`str.format` placeholders:
 
-- ``{name}``        -- snake_case pipeline name  (e.g. ``cardiology``)
-- ``{class_name}``  -- PascalCase module class   (e.g. ``CardiologyReportStructurer``)
-- ``{description}`` -- one-line human description
+- ``{name}``             -- snake_case pipeline name  (e.g. ``cardiology``)
+- ``{class_name}``       -- PascalCase module class   (e.g. ``CardiologyReportStructurer``)
+- ``{class_name_short}`` -- PascalCase short name     (e.g. ``Cardiology``)
+- ``{description}``      -- one-line human description
 """
 
 from __future__ import annotations

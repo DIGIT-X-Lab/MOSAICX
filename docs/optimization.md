@@ -457,12 +457,12 @@ Example: Gold has `{"name": "John", "age": 45}`. Prediction has `{"name": "John"
 
 ### Schema
 
-**Formula:** 0.7 × field_name_overlap - 0.3 × extra_field_penalty
+**Formula:** 0.7 × field_name_overlap + 0.3 × extra_field_score
 
 - **field_name_overlap (70%):** What fraction of gold field names appear in the prediction? `len(gold_fields ∩ pred_fields) / len(gold_fields)`
-- **extra_field_penalty (30%):** Penalty for predicting extra fields not in gold. `max(0, 1 - len(extra_fields) / len(gold_fields))`
+- **extra_field_score (30%):** How few extra fields were predicted beyond gold? `max(0, 1 - len(extra_fields) / len(gold_fields))`. A perfect score (1.0) means no extra fields.
 
-Example: Gold has fields `["lvef", "valve_grade"]`. Prediction has `["lvef", "valve_grade", "wall_motion"]`. Overlap = 2/2 = 1.0. Extra penalty = 1 - 1/2 = 0.5. Score = 0.7 × 1.0 + 0.3 × 0.5 = 0.85.
+Example: Gold has fields `["lvef", "valve_grade"]`. Prediction has `["lvef", "valve_grade", "wall_motion"]`. Overlap = 2/2 = 1.0. Extra score = max(0, 1 - 1/2) = 0.5. Score = 0.7 × 1.0 + 0.3 × 0.5 = 0.85.
 
 ## Tips
 

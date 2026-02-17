@@ -331,7 +331,7 @@ class TestOptimize:
     def test_optimize_shows_note_without_datasets(self, runner: CliRunner):
         result = runner.invoke(cli, ["optimize", "--budget", "light"])
         assert result.exit_code == 0
-        assert "Provide --trainset and --valset" in result.output
+        assert "Specify --pipeline to run optimization" in result.output
 
 
 # -------------------------------------------------------------------------

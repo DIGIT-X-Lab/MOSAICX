@@ -128,23 +128,32 @@ def _build_dspy_classes():
             dspy.Prediction
                 Keys: ``events`` (list[TimelineEvent]), ``narrative`` (str).
             """
+            from mosaicx.metrics import PipelineMetrics, get_tracker, track_step
+
+            metrics = PipelineMetrics()
+            tracker = get_tracker()
+
             # Step 1: extract one event per report
             events: list[TimelineEvent] = []
-            for report_text in reports:
-                result = self.extract_event(
-                    report_text=report_text,
-                    patient_id=patient_id,
-                )
+            for i, report_text in enumerate(reports, 1):
+                with track_step(metrics, f"Extract event ({i}/{len(reports)})", tracker):
+                    result = self.extract_event(
+                        report_text=report_text,
+                        patient_id=patient_id,
+                    )
                 events.append(result.event)
 
             # Step 2: synthesize into narrative
             events_json = (
                 "[" + ", ".join(e.model_dump_json() for e in events) + "]"
             )
-            synth_result = self.synthesize(
-                events_json=events_json,
-                patient_id=patient_id,
-            )
+            with track_step(metrics, "Synthesize narrative", tracker):
+                synth_result = self.synthesize(
+                    events_json=events_json,
+                    patient_id=patient_id,
+                )
+
+            self._last_metrics = metrics
 
             return dspy.Prediction(
                 events=events,

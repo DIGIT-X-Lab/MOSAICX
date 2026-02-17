@@ -481,6 +481,9 @@ def batch(
     console.print(Padding(t, (0, 0, 0, 2)))
 
     # Build process function based on extraction path
+    from .metrics import PipelineMetrics
+    batch_metrics = PipelineMetrics()
+
     if schema_name:
         from mosaicx.pipelines.extraction import extract_with_schema
         _configure_dspy()
@@ -492,7 +495,9 @@ def batch(
         from mosaicx.pipelines.extraction import extract_with_mode
         _configure_dspy()
         def process_fn(text: str) -> dict:
-            output_data, _metrics = extract_with_mode(text, mode)
+            output_data, metrics = extract_with_mode(text, mode)
+            if metrics is not None:
+                batch_metrics.steps.extend(metrics.steps)
             return output_data
     else:
         from mosaicx.pipelines.extraction import DocumentExtractor
@@ -500,6 +505,9 @@ def batch(
         extractor = DocumentExtractor()
         def process_fn(text: str) -> dict:
             result = extractor(document_text=text)
+            doc_metrics = getattr(extractor, "_last_metrics", None)
+            if doc_metrics is not None:
+                batch_metrics.steps.extend(doc_metrics.steps)
             output = {}
             if hasattr(result, "extracted"):
                 val = result.extracted
@@ -565,6 +573,10 @@ def batch(
                 "pandas + pyarrow required for parquet: pip install pandas pyarrow"
             ))
 
+    # Display aggregate performance metrics
+    if batch_metrics.steps:
+        from .cli_display import render_metrics
+        render_metrics(batch_metrics, console)
 
 
 # ---------------------------------------------------------------------------
@@ -1192,6 +1204,12 @@ def summarize(
     if result.events:
         console.print(theme.info(f"{len(result.events)} timeline event(s) extracted"))
 
+    # Display performance metrics
+    metrics = getattr(summarizer, "_last_metrics", None)
+    if metrics is not None:
+        from .cli_display import render_metrics
+        render_metrics(metrics, console)
+
 
 # ---------------------------------------------------------------------------
 # deidentify
@@ -1265,7 +1283,11 @@ def deidentify(
         from .documents.models import DocumentLoadError
         from .pipelines.deidentifier import Deidentifier
 
+        from .cli_display import render_metrics
+        from .metrics import PipelineMetrics
+
         deid = Deidentifier()
+        aggregate_metrics = PipelineMetrics()
         for p in paths:
             try:
                 doc = _load_doc_with_config(p)
@@ -1286,6 +1308,14 @@ def deidentify(
                     padding=(1, 2),
                 )
             )
+            # Accumulate metrics
+            doc_metrics = getattr(deid, "_last_metrics", None)
+            if doc_metrics is not None:
+                aggregate_metrics.steps.extend(doc_metrics.steps)
+
+        # Display aggregate performance metrics
+        if aggregate_metrics.steps:
+            render_metrics(aggregate_metrics, console)
 
 
 # ---------------------------------------------------------------------------

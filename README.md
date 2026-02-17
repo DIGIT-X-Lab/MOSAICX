@@ -58,6 +58,8 @@ Defaults point to Ollama on localhost — no `.env` needed for local use. See [C
 | `mosaicx template validate` | Validate a custom YAML template |
 | `mosaicx optimize` | Tune a DSPy pipeline (BootstrapFewShot / MIPROv2) |
 | `mosaicx eval` | Evaluate pipeline accuracy against a labeled test set |
+| `mosaicx pipeline new <name>` | Scaffold a new extraction pipeline |
+| `mosaicx mcp serve` | Start the MCP server for AI agent integration |
 | `mosaicx config show` | Print current configuration |
 
 Run any command with `--help` for full options. For detailed guides, see the [documentation](docs/README.md).
@@ -223,7 +225,7 @@ All settings live under the `MOSAICX_` prefix. Set them as environment variables
 | `MOSAICX_OCR_ENGINE` | `both` | `surya`, `chandra`, or `both` |
 | `MOSAICX_FORCE_OCR` | `false` | Force OCR even on native PDFs |
 | `MOSAICX_OCR_LANGS` | `en,de` | OCR language hints |
-| `MOSAICX_BATCH_WORKERS` | `4` | Parallel workers for batch mode |
+| `MOSAICX_BATCH_WORKERS` | `1` | Parallel workers for batch mode |
 | `MOSAICX_COMPLETENESS_THRESHOLD` | `0.7` | Minimum extraction quality (0-1) |
 | `MOSAICX_DEIDENTIFY_MODE` | `remove` | `remove`, `pseudonymize`, `dateshift` |
 | `MOSAICX_DEFAULT_EXPORT_FORMATS` | `parquet,jsonl` | Batch export formats |

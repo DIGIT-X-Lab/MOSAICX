@@ -83,7 +83,7 @@ MOSAICX_COMPLETENESS_THRESHOLD=0.7
 
 # Number of parallel workers for batch processing
 # Start with 1-4, increase if you have more CPU cores and RAM
-MOSAICX_BATCH_WORKERS=4
+MOSAICX_BATCH_WORKERS=1
 
 # Save a checkpoint every N documents during batch processing
 # Useful for resuming large batch jobs after interruptions
@@ -180,7 +180,7 @@ Below is a complete reference of every MOSAICX configuration variable.
 | `MOSAICX_CHECKPOINT_EVERY` | `50` | Save a checkpoint every N documents in batch mode. Useful for resuming interrupted batch jobs |
 | `MOSAICX_HOME_DIR` | `~/.mosaicx` | Home directory for storing schemas, optimized programs, checkpoints, and logs |
 | `MOSAICX_DEIDENTIFY_MODE` | `remove` | Default de-identification strategy. Options: `remove` (strip PHI), `pseudonymize` (replace with fake data), `dateshift` (shift dates consistently) |
-| `MOSAICX_DEFAULT_EXPORT_FORMATS` | `parquet,jsonl` | Default export formats for batch processing (comma-separated). Options: `parquet`, `jsonl`, `csv` |
+| `MOSAICX_DEFAULT_EXPORT_FORMATS` | `parquet,jsonl` | Default export formats for batch processing (comma-separated). Options: `parquet`, `jsonl` |
 | `MOSAICX_OCR_ENGINE` | `both` | OCR engine to use. Options: `both` (Surya + Chandra in parallel), `surya` (traditional OCR), `chandra` (VLM-based OCR) |
 | `MOSAICX_CHANDRA_BACKEND` | `auto` | Backend for Chandra OCR. Options: `vllm` (fast, GPU-only), `hf` (Hugging Face Transformers, CPU-compatible), `auto` (auto-detect) |
 | `MOSAICX_CHANDRA_SERVER_URL` | (empty) | URL for a remote Chandra server. Leave empty for local inference |
@@ -630,7 +630,7 @@ MOSAICX supports multiple export formats for batch processing:
 For batch processing, MOSAICX exports to JSONL and Parquet by default. You can change this with:
 
 ```bash
-export MOSAICX_DEFAULT_EXPORT_FORMATS=jsonl,parquet,csv
+export MOSAICX_DEFAULT_EXPORT_FORMATS=jsonl,parquet
 ```
 
 Or specify formats per-batch with the `--format` flag:
@@ -831,22 +831,13 @@ export MOSAICX_API_KEY=sk-...  # For OpenAI
 
 ## Advanced Topics
 
-### Using a Custom `.env` File Location
-
-By default, MOSAICX reads `.env` from the current directory. To use a `.env` file from a different location, export it before running MOSAICX:
-
-```bash
-export MOSAICX_ENV_FILE=/path/to/custom/.env
-mosaicx extract --document report.pdf
-```
-
 ### Combining CLI Flags and Environment Variables
 
 You can mix CLI flags and environment variables. CLI flags take precedence:
 
 ```bash
 # Set default in .env
-export MOSAICX_BATCH_WORKERS=4
+export MOSAICX_BATCH_WORKERS=8
 
 # Override with CLI flag
 mosaicx batch --input-dir ./reports --output-dir ./structured --workers 8

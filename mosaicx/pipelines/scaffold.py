@@ -112,7 +112,7 @@ WIRING_CHECKLIST: list[str] = [
     '    "{name}": <your_metric_function>,',
     "",
     "Add to mosaicx/evaluation/optimize.py _PIPELINE_REGISTRY dict:",
-    '    "{name}": "mosaicx.pipelines.{name}.{class_name}ReportStructurer",',
+    '    "{name}": ("mosaicx.pipelines.{name}", "{class_name}ReportStructurer"),',
     "",
     "Wire CLI: add `import mosaicx.pipelines.{name}` alongside other",
     "    pipeline imports in mosaicx/cli.py (extract and batch commands).",
