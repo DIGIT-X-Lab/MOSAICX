@@ -1,7 +1,9 @@
 """Batch processing engine with checkpointing."""
 
 from __future__ import annotations
+
 import json
+import threading
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Optional
@@ -30,11 +32,11 @@ class BatchCheckpoint:
         path = self.checkpoint_dir / f"{self.batch_id}.json"
         data = {"batch_id": self.batch_id, "completed": self._completed,
                 "saved_at": datetime.now().isoformat()}
-        path.write_text(json.dumps(data, indent=2, default=str))
+        path.write_text(json.dumps(data, indent=2, default=str), encoding="utf-8")
 
     @classmethod
     def load(cls, path: Path) -> BatchCheckpoint:
-        data = json.loads(Path(path).read_text())
+        data = json.loads(Path(path).read_text(encoding="utf-8"))
         cp = cls(batch_id=data["batch_id"], checkpoint_dir=Path(path).parent)
         cp._completed = data.get("completed", {})
         return cp
@@ -43,8 +45,10 @@ class BatchCheckpoint:
 class BatchProcessor:
     """Parallel document processor with error isolation."""
 
+    MAX_WORKERS = 32
+
     def __init__(self, workers: int = 4, checkpoint_every: int = 50) -> None:
-        self.workers = workers
+        self.workers = min(max(1, workers), self.MAX_WORKERS)
         self.checkpoint_every = checkpoint_every
 
     def process_directory(
@@ -132,37 +136,41 @@ class BatchProcessor:
                 if on_progress:
                     on_progress(doc_path.name, False)
 
+        _write_lock = threading.Lock()
+
         def _process_one(doc_path: Path, text: str) -> tuple[str, dict | None, str | None]:
             try:
                 result = process_fn(text)
                 out_path = output_dir / f"{doc_path.stem}.json"
-                out_path.write_text(
-                    json.dumps(result, indent=2, default=str), encoding="utf-8"
-                )
+                data = json.dumps(result, indent=2, default=str, ensure_ascii=False)
+                with _write_lock:
+                    out_path.write_text(data, encoding="utf-8")
                 return doc_path.name, result, None
             except Exception as exc:
-                return doc_path.name, None, str(exc)
+                return doc_path.name, None, f"{type(exc).__name__}: {exc}"
 
-        with ThreadPoolExecutor(max_workers=self.workers) as pool:
-            futures = {pool.submit(_process_one, p, t): p for p, t in to_process}
-            processed = 0
-            for future in as_completed(futures):
-                name, result, error = future.result()
-                processed += 1
-                if error:
-                    failed += 1
-                    errors.append({"file": name, "error": error})
-                else:
-                    succeeded += 1
-                    if checkpoint:
-                        checkpoint.mark_completed(name, result or {})
-                        if processed % self.checkpoint_every == 0:
-                            checkpoint.save()
-                if on_progress:
-                    on_progress(name, error is None)
-
-        if checkpoint:
-            checkpoint.save()
+        try:
+            with ThreadPoolExecutor(max_workers=self.workers) as pool:
+                futures = {pool.submit(_process_one, p, t): p for p, t in to_process}
+                processed = 0
+                for future in as_completed(futures):
+                    name, result, error = future.result()
+                    processed += 1
+                    if error:
+                        failed += 1
+                        errors.append({"file": name, "error": error})
+                    else:
+                        succeeded += 1
+                        if checkpoint:
+                            checkpoint.mark_completed(name, result or {})
+                            if processed % self.checkpoint_every == 0:
+                                checkpoint.save()
+                    if on_progress:
+                        on_progress(name, error is None)
+        finally:
+            # Always save checkpoint on exit (including Ctrl+C)
+            if checkpoint:
+                checkpoint.save()
 
         return {
             "total": len(docs) + skipped,

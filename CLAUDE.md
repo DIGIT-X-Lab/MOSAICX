@@ -40,6 +40,8 @@ mosaicx/
 ├── cli_theme.py        # Theme colors: coral (#E87461), greige (#B5A89A)
 ├── config.py           # MosaicxConfig (pydantic-settings, MOSAICX_* env vars)
 ├── batch.py            # Batch processing with checkpointing
+├── sdk.py              # Python SDK (programmatic access without CLI)
+├── mcp_server.py       # MCP server (Model Context Protocol for AI agents)
 ├── display.py          # Display utilities
 ├── metrics.py          # PipelineMetrics tracking (latency per step)
 │

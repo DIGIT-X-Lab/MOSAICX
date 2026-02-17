@@ -187,6 +187,18 @@ def extract(
         If conflicting parameters are provided, or if the template/mode
         is unknown.
     """
+    # Validate mode early, before configuring DSPy
+    if mode not in ("auto",) and template is None:
+        import mosaicx.pipelines.pathology  # noqa: F401
+        import mosaicx.pipelines.radiology  # noqa: F401
+        from .pipelines.modes import list_modes
+
+        available = list_modes()
+        if mode not in available:
+            raise ValueError(
+                f"Unknown mode {mode!r}. Available: {', '.join(sorted(available))}"
+            )
+
     _ensure_configured()
 
     # --- Template-based extraction ---
@@ -273,6 +285,12 @@ def extract(
         return output_data
 
     # --- Auto extraction (LLM infers schema) ---
+    if score:
+        logger.warning(
+            "score=True has no effect in auto mode (no template to score against). "
+            "Provide a template to enable completeness scoring."
+        )
+
     from .pipelines.extraction import DocumentExtractor
 
     extractor = DocumentExtractor()
@@ -717,11 +735,11 @@ def batch_extract(
         a dict with an ``"error"`` key.
     """
     results: list[dict[str, Any]] = []
-    for text in texts:
+    for i, text in enumerate(texts):
         try:
             result = extract(text, mode=mode, template=template)
         except Exception as exc:
-            logger.warning("batch_extract failed for one document: %s", exc)
-            result = {"error": str(exc)}
+            logger.warning("batch_extract failed for document %d: %s", i, exc)
+            result = {"error": str(exc), "document_index": i}
         results.append(result)
     return results

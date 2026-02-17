@@ -14,11 +14,14 @@ Key functions:
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel
+
+logger = logging.getLogger(__name__)
 
 
 def _find_primary_model(prediction: Any) -> BaseModel | None:
@@ -112,10 +115,17 @@ def resolve_template(
     if saved_model is not None:
         return saved_model, template
 
+    from .config import get_config
+
+    cfg = get_config()
+    templates_dir = Path(__file__).parent / "schemas" / "radreport" / "templates"
     raise ValueError(
-        f"Template {template!r} not found. It is not a YAML file, "
-        f"a built-in template, or a saved schema. "
-        f"Use 'mosaicx template list' to see available templates."
+        f"Template {template!r} not found. Searched:\n"
+        f"  1. File path (as .yaml/.yml)\n"
+        f"  2. User templates: {cfg.templates_dir}\n"
+        f"  3. Built-in templates: {templates_dir}\n"
+        f"  4. Saved schemas: {cfg.schema_dir}\n"
+        f"Run 'mosaicx template list' to see available templates."
     )
 
 
@@ -132,7 +142,10 @@ def _try_load_saved_schema(
             schema_dir = get_config().schema_dir
         spec = load_schema(name, schema_dir)
         return compile_schema(spec)
-    except (FileNotFoundError, Exception):
+    except FileNotFoundError:
+        return None
+    except Exception:
+        logger.debug("Failed to load saved schema %r", name, exc_info=True)
         return None
 
 
@@ -171,7 +184,7 @@ def _read_mode_from_yaml(path: Path) -> str | None:
         if isinstance(data, dict):
             return data.get("mode")
     except Exception:
-        pass
+        logger.debug("Failed to read mode from YAML template: %s", path, exc_info=True)
     return None
 
 

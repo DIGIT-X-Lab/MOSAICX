@@ -1,4 +1,4 @@
-# Templates
+# Schemas and Templates
 
 This guide explains how to create, manage, and use templates in MOSAICX. Templates are YAML files that define exactly what data gets extracted from a clinical document and how it is structured. Whether you are extracting patient vitals from a clinical note or structured findings from a radiology report, a template gives you precise control over the output.
 

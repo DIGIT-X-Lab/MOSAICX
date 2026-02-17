@@ -94,6 +94,35 @@ def _json_result(data: Any) -> str:
     return json.dumps(data, indent=2, default=str, ensure_ascii=False)
 
 
+def _metrics_to_dict(metrics: Any) -> dict[str, Any]:
+    """Convert PipelineMetrics to a plain dict with per-step breakdown."""
+    return {
+        "total_duration_s": metrics.total_duration_s,
+        "total_tokens": metrics.total_tokens,
+        "steps": [
+            {
+                "name": s.name,
+                "duration_s": s.duration_s,
+                "input_tokens": s.input_tokens,
+                "output_tokens": s.output_tokens,
+            }
+            for s in metrics.steps
+        ],
+    }
+
+
+def _compute_completeness(model_instance: Any, text: str) -> dict[str, Any]:
+    """Compute completeness scoring and return as a plain dict."""
+    from dataclasses import asdict
+
+    from .evaluation.completeness import compute_report_completeness
+
+    comp = compute_report_completeness(
+        model_instance, text, type(model_instance)
+    )
+    return asdict(comp)
+
+
 # ---------------------------------------------------------------------------
 # MCP Tools
 # ---------------------------------------------------------------------------
@@ -104,23 +133,37 @@ def extract_document(
     document_text: str,
     mode: str = "auto",
     template: str | None = None,
+    score: bool = False,
 ) -> str:
     """Extract structured data from a medical document.
 
     Supports three extraction paths:
-    - auto (default): The LLM infers an appropriate structure from the document and extracts into it.
+    - auto (default): The LLM infers an appropriate structure from the document.
     - mode-based: Use a registered extraction mode (e.g. "radiology", "pathology") for domain-specific multi-step extraction.
-    - template-based: Use a template name for targeted extraction.
+    - template-based: Use a template name for targeted extraction with an optional completeness score.
 
     Args:
         document_text: Full text of the clinical document to extract from.
         mode: Extraction strategy -- "auto", "radiology", or "pathology". Ignored if template is provided.
         template: Template name (built-in or user-created) or YAML file path. If provided, extraction uses this template.
+        score: If true, compute completeness scoring against the template. Only effective with template or mode extraction (not auto).
 
     Returns:
-        JSON string containing the extracted structured data.
+        JSON string containing the extracted structured data, with optional "_metrics" and "completeness" keys.
     """
     try:
+        # Validate mode early before configuring DSPy
+        if mode and mode != "auto" and template is None:
+            import mosaicx.pipelines.pathology  # noqa: F401
+            import mosaicx.pipelines.radiology  # noqa: F401
+            from .pipelines.modes import list_modes
+
+            available = list_modes()
+            if mode not in available:
+                return _json_result({
+                    "error": f"Unknown mode {mode!r}. Available: {', '.join(sorted(available))}"
+                })
+
         _ensure_dspy()
 
         if template is not None:
@@ -131,19 +174,33 @@ def extract_document(
             effective_mode = detect_mode(tpl_name)
 
             if effective_mode is not None and template_model is None:
-                # Mode pipeline
+                # Mode pipeline (built-in template like chest_ct)
                 import mosaicx.pipelines.pathology  # noqa: F401
                 import mosaicx.pipelines.radiology  # noqa: F401
-                from .pipelines.extraction import extract_with_mode
 
-                output_data, metrics = extract_with_mode(document_text, effective_mode)
-                result: dict[str, Any] = dict(output_data)
+                if score:
+                    from .pipelines.extraction import extract_with_mode_raw
+                    from .report import _find_primary_model
+
+                    output_data, metrics, raw_pred = extract_with_mode_raw(
+                        document_text, effective_mode
+                    )
+                    result: dict[str, Any] = dict(output_data)
+                    model_instance = _find_primary_model(raw_pred)
+                    if model_instance is not None:
+                        result["completeness"] = _compute_completeness(
+                            model_instance, document_text
+                        )
+                else:
+                    from .pipelines.extraction import extract_with_mode
+
+                    output_data, metrics = extract_with_mode(document_text, effective_mode)
+                    result: dict[str, Any] = dict(output_data)
+
                 if metrics is not None:
-                    result["_metrics"] = {
-                        "total_duration_s": metrics.total_duration_s,
-                        "total_tokens": metrics.total_tokens,
-                    }
+                    result["_metrics"] = _metrics_to_dict(metrics)
                 return _json_result(result)
+
             elif template_model is not None:
                 from .pipelines.extraction import DocumentExtractor
 
@@ -152,27 +209,54 @@ def extract_document(
                 output: dict[str, Any] = {}
                 if hasattr(prediction, "extracted"):
                     val = prediction.extracted
-                    output["extracted"] = val.model_dump() if hasattr(val, "model_dump") else val
+                    if hasattr(val, "model_dump"):
+                        output["extracted"] = val.model_dump()
+                        if score:
+                            output["completeness"] = _compute_completeness(
+                                val, document_text
+                            )
+                    else:
+                        output["extracted"] = val
                 return _json_result(output)
             else:
-                return _json_result({"error": f"Template {template!r} resolved but produced no extraction template."})
+                return _json_result({
+                    "error": f"Template {template!r} resolved but produced no extraction template."
+                })
 
         if mode and mode != "auto":
             # Mode-based extraction (radiology, pathology, etc.)
-            import mosaicx.pipelines.radiology  # noqa: F401
             import mosaicx.pipelines.pathology  # noqa: F401
-            from .pipelines.extraction import extract_with_mode
+            import mosaicx.pipelines.radiology  # noqa: F401
 
-            output_data, metrics = extract_with_mode(document_text, mode)
-            result: dict[str, Any] = dict(output_data)
+            if score:
+                from .pipelines.extraction import extract_with_mode_raw
+                from .report import _find_primary_model
+
+                output_data, metrics, raw_pred = extract_with_mode_raw(
+                    document_text, mode
+                )
+                result: dict[str, Any] = dict(output_data)
+                model_instance = _find_primary_model(raw_pred)
+                if model_instance is not None:
+                    result["completeness"] = _compute_completeness(
+                        model_instance, document_text
+                    )
+            else:
+                from .pipelines.extraction import extract_with_mode
+
+                output_data, metrics = extract_with_mode(document_text, mode)
+                result: dict[str, Any] = dict(output_data)
+
             if metrics is not None:
-                result["_metrics"] = {
-                    "total_duration_s": metrics.total_duration_s,
-                    "total_tokens": metrics.total_tokens,
-                }
+                result["_metrics"] = _metrics_to_dict(metrics)
             return _json_result(result)
 
         # Auto mode: LLM infers schema
+        if score:
+            logger.warning(
+                "score=True has no effect in auto mode (no template to score against)."
+            )
+
         from .pipelines.extraction import DocumentExtractor
 
         extractor = DocumentExtractor()
@@ -194,21 +278,33 @@ def extract_document(
 def deidentify_text(
     text: str,
     mode: str = "remove",
+    regex_only: bool = False,
 ) -> str:
     """Remove Protected Health Information (PHI) from clinical text.
 
-    Uses a two-layer approach:
+    Uses a two-layer approach by default:
     1. LLM-based redaction identifies context-dependent PHI (names, addresses, etc.).
     2. Regex safety net catches format-based PHI (SSNs, phone numbers, MRNs, emails).
+
+    Set regex_only=true to skip the LLM and use only regex pattern matching (faster, no API key needed).
 
     Args:
         text: The clinical text to de-identify.
         mode: De-identification strategy -- "remove" (replace with [REDACTED]), "pseudonymize" (replace with fake values), or "dateshift" (shift dates by a consistent offset).
+        regex_only: If true, skip LLM and use only regex-based scrubbing. Faster but less comprehensive.
 
     Returns:
         JSON string with "redacted_text" containing the de-identified text.
     """
     try:
+        from .pipelines.deidentifier import regex_scrub_phi
+
+        if regex_only:
+            return _json_result({
+                "redacted_text": regex_scrub_phi(text),
+                "mode": "regex",
+            })
+
         _ensure_dspy()
 
         from .pipelines.deidentifier import Deidentifier
@@ -227,24 +323,65 @@ def deidentify_text(
 
 
 @mcp.tool()
+def summarize_reports(
+    reports: list[str],
+    patient_id: str = "unknown",
+) -> str:
+    """Summarize multiple clinical reports into a patient timeline.
+
+    Takes a list of report texts and produces a narrative summary with
+    a structured timeline of clinical events.
+
+    Args:
+        reports: List of clinical report texts to summarize.
+        patient_id: Patient identifier for the summary.
+
+    Returns:
+        JSON string with "narrative" (summary text) and "events" (list of timeline events).
+    """
+    try:
+        if not reports:
+            return _json_result({"error": "No reports provided to summarize."})
+
+        _ensure_dspy()
+
+        from .pipelines.summarizer import ReportSummarizer
+
+        summarizer = ReportSummarizer()
+        result = summarizer(reports=reports, patient_id=patient_id)
+
+        return _json_result({
+            "events": [e.model_dump() for e in result.events],
+            "narrative": result.narrative,
+        })
+
+    except Exception as exc:
+        logger.exception("summarize_reports failed")
+        return _json_result({"error": str(exc)})
+
+
+@mcp.tool()
 def generate_template(
     description: str,
     name: str | None = None,
     mode: str | None = None,
+    document_text: str | None = None,
 ) -> str:
     """Generate a YAML template from a natural-language description.
 
     The LLM will create a structured template specification based on the
-    description. The template is saved to ~/.mosaicx/templates/ and can
-    be used for targeted extraction via the extract_document tool.
+    description. Optionally, a sample document can be provided to help the
+    LLM infer richer field types. The template is saved to ~/.mosaicx/templates/
+    and can be used for targeted extraction via the extract_document tool.
 
     Args:
         description: Natural-language description of the document type to create a template for (e.g. "chest CT radiology report with findings and impressions").
         name: Optional name for the generated template. If not provided, the LLM chooses an appropriate name.
         mode: Optional pipeline mode to embed in the template (e.g. "radiology", "pathology").
+        document_text: Optional sample document text. When provided, the LLM uses it to infer field types and structure.
 
     Returns:
-        JSON string containing the generated template with name, description, and fields.
+        JSON string containing the generated template with name, fields, and save location.
     """
     try:
         _ensure_dspy()
@@ -253,7 +390,10 @@ def generate_template(
         from .schemas.template_compiler import schema_spec_to_template_yaml
 
         generator = SchemaGenerator()
-        result = generator(description=description)
+        result = generator(
+            description=description,
+            document_text=document_text or "",
+        )
 
         if name:
             result.schema_spec.class_name = name
@@ -269,6 +409,7 @@ def generate_template(
 
         spec_data = result.schema_spec.model_dump()
         spec_data["_saved_to"] = str(dest)
+        spec_data["_yaml"] = yaml_str
         return _json_result(spec_data)
 
     except Exception as exc:
@@ -284,7 +425,7 @@ def list_templates() -> str:
     from ~/.mosaicx/templates/.
 
     Returns:
-        JSON string containing template summaries.
+        JSON string containing template summaries with name, description, mode, and source.
     """
     try:
         from .config import get_config
@@ -345,8 +486,8 @@ def list_modes() -> str:
     """
     try:
         # Trigger eager registration of mode metadata
-        import mosaicx.pipelines.radiology  # noqa: F401
         import mosaicx.pipelines.pathology  # noqa: F401
+        import mosaicx.pipelines.radiology  # noqa: F401
         from .pipelines.modes import list_modes as _list_modes
 
         modes = [

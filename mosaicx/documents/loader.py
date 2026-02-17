@@ -177,7 +177,8 @@ def _run_engines(
 
         for name, future in futures.items():
             try:
-                result = future.result(timeout=page_timeout * len(images))
+                max_timeout = min(page_timeout * len(images), 600)  # cap at 10 min
+                result = future.result(timeout=max_timeout)
             except Exception:
                 logger.warning("OCR engine '%s' failed, skipping", name)
                 empty = [

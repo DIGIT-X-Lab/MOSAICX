@@ -8,9 +8,10 @@ MCP stands for **Model Context Protocol**. It is an open standard that lets AI a
 
 MOSAICX exposes its core features as MCP tools:
 
-- **Extract structured data** from medical documents (radiology reports, pathology reports, clinical notes)
-- **De-identify clinical text** by removing or replacing Protected Health Information (PHI)
-- **Generate extraction templates** from natural-language descriptions
+- **Extract structured data** from medical documents with optional completeness scoring
+- **De-identify clinical text** by removing or replacing Protected Health Information (PHI), with optional regex-only mode
+- **Summarize clinical reports** into patient timelines with structured events
+- **Generate extraction templates** from natural-language descriptions or sample documents
 - **List saved templates** and available extraction modes
 
 This means you can say something like "extract the findings from this radiology report" in a Claude conversation, and Claude will call the MOSAICX extraction tool behind the scenes, returning structured JSON data without you ever touching the command line.
@@ -167,7 +168,7 @@ After saving the file, restart Claude Desktop for the changes to take effect. Yo
 
 ## Available Tools
 
-The MOSAICX MCP server exposes five tools. Each tool accepts parameters as JSON and returns a JSON string with the result.
+The MOSAICX MCP server exposes seven tools. Each tool accepts parameters as JSON and returns a JSON string with the result.
 
 ---
 
@@ -188,14 +189,16 @@ Supports three extraction strategies:
 | `document_text` | `string` | (required) | Full text of the clinical document to extract from. |
 | `mode` | `string` | `"auto"` | Extraction strategy. Options: `"auto"`, `"radiology"`, `"pathology"`. Ignored if `template` is provided. |
 | `template` | `string` | `null` | Name of a saved template (from `~/.mosaicx/templates/`). If provided, extraction uses this template instead of `mode`. |
+| `score` | `boolean` | `false` | If true, compute completeness scoring against the template. Only effective with template or mode extraction (not auto). |
 
 **Return value:**
 
 A JSON string containing the extracted data. The exact structure depends on the extraction strategy:
 
 - **auto mode:** `{"extracted": {...}, "inferred_schema": {...}}`
-- **mode-based:** Domain-specific fields plus optional `_metrics` with `total_duration_s` and `total_tokens`
+- **mode-based:** Domain-specific fields plus `_metrics` with per-step breakdown
 - **template-based:** `{"extracted": {...}}` with fields matching the template
+- **with score:** Adds `"completeness"` key with field coverage metrics
 
 If an error occurs, returns `{"error": "description of what went wrong"}`.
 
@@ -274,6 +277,7 @@ Uses a two-layer approach for thorough de-identification:
 |------|------|---------|-------------|
 | `text` | `string` | (required) | The clinical text to de-identify. |
 | `mode` | `string` | `"remove"` | De-identification strategy. Options: `"remove"` (replace PHI with `[REDACTED]`), `"pseudonymize"` (replace PHI with realistic fake values), `"dateshift"` (shift all dates by a consistent random offset). |
+| `regex_only` | `boolean` | `false` | If true, skip the LLM and use only regex-based scrubbing. Faster but less comprehensive. No API key needed. |
 
 **Return value:**
 
@@ -320,6 +324,8 @@ Describe what kind of document you want to extract data from and what fields mat
 |------|------|---------|-------------|
 | `description` | `string` | (required) | Natural-language description of the document type and desired fields (e.g., "echocardiography report with LVEF, valve grades, and clinical impression"). |
 | `name` | `string` | `null` | Optional class name for the generated template. If not provided, the LLM chooses an appropriate name. |
+| `mode` | `string` | `null` | Optional pipeline mode to embed in the template (e.g., `"radiology"`, `"pathology"`). |
+| `document_text` | `string` | `null` | Optional sample document text. When provided, the LLM uses it to infer richer field types and structure. |
 
 **Return value:**
 
@@ -350,6 +356,39 @@ The AI assistant calls:
 ```
 
 Returns the generated template specification with all inferred fields and the path where it was saved.
+
+---
+
+### summarize_reports
+
+Summarize multiple clinical reports into a patient timeline.
+
+Takes a list of report texts and produces a narrative summary with a structured timeline of clinical events.
+
+**Parameters:**
+
+| Name | Type | Default | Description |
+|------|------|---------|-------------|
+| `reports` | `list[string]` | (required) | List of clinical report texts to summarize. |
+| `patient_id` | `string` | `"unknown"` | Patient identifier for the summary. |
+
+**Return value:**
+
+```json
+{
+  "narrative": "Patient underwent chest CT on 2026-01-10 showing...",
+  "events": [
+    {
+      "date": "2026-01-10",
+      "event_type": "imaging",
+      "description": "Chest CT showing 6mm nodule in RUL",
+      "significance": "high"
+    }
+  ]
+}
+```
+
+If an error occurs, returns `{"error": "description of what went wrong"}`.
 
 ---
 

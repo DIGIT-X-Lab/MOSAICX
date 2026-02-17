@@ -57,6 +57,15 @@ def _print_version(
 # ---------------------------------------------------------------------------
 
 
+def _check_api_key() -> None:
+    """Fast preflight check — fail before loading documents."""
+    cfg = get_config()
+    if not cfg.api_key:
+        raise click.ClickException(
+            "No API key configured. Set MOSAICX_API_KEY or add api_key to your config."
+        )
+
+
 def _configure_dspy() -> None:
     """Configure DSPy with the LM from MosaicxConfig.
 
@@ -307,6 +316,26 @@ def extract(
             "--template and --mode are mutually exclusive. Provide at most one."
         )
 
+    # Validate template/mode early (cheap checks before expensive I/O)
+    if template is not None:
+        from .report import resolve_template
+        try:
+            resolve_template(template=template)
+        except (ValueError, FileNotFoundError) as exc:
+            raise click.ClickException(str(exc))
+
+    if mode is not None and template is None:
+        import mosaicx.pipelines.pathology  # noqa: F401
+        import mosaicx.pipelines.radiology  # noqa: F401
+        from .pipelines.modes import get_mode
+        try:
+            get_mode(mode)
+        except ValueError as exc:
+            raise click.ClickException(str(exc))
+
+    # Preflight: check API key before expensive document loading
+    _check_api_key()
+
     # Load the document
     from .documents.models import DocumentLoadError
 
@@ -319,7 +348,8 @@ def extract(
         console.print(theme.warn("Low OCR quality detected \u2014 results may be unreliable"))
 
     if doc.is_empty:
-        raise click.ClickException(f"Document is empty: {document}")
+        hint = " Try --force-ocr if the document is a scanned image." if document.suffix.lower() == ".pdf" else ""
+        raise click.ClickException(f"Document is empty: {document}.{hint}")
 
     # Build a descriptive load line
     parts = [f"{doc.format} document", f"{doc.char_count:,} chars"]
@@ -502,16 +532,16 @@ def extract(
 
 
 @cli.command()
-@click.option("--input-dir", type=click.Path(exists=True, file_okay=False, path_type=Path), help="Directory of input documents.")
-@click.option("--output-dir", type=click.Path(path_type=Path), help="Directory for output files.")
+@click.option("--input-dir", required=True, type=click.Path(exists=True, file_okay=False, path_type=Path), help="Directory of input documents.")
+@click.option("--output-dir", required=True, type=click.Path(path_type=Path), help="Directory for output files.")
 @click.option("--template", type=str, default=None, help="Template name, YAML file path, or saved template name.")
 @click.option("--mode", type=str, default=None, help="Extraction mode name (e.g., radiology, pathology).")
-@click.option("--format", "formats", type=str, multiple=True, help="Output format(s).")
+@click.option("--format", "formats", type=str, multiple=True, help="Output format(s): json, jsonl, csv, parquet.")
 @click.option("--workers", type=int, default=1, show_default=True, help="Number of parallel workers.")
 @click.option("--resume", is_flag=True, help="Resume from last checkpoint.")
 def batch(
-    input_dir: Optional[Path],
-    output_dir: Optional[Path],
+    input_dir: Path,
+    output_dir: Path,
     template: Optional[str],
     mode: Optional[str],
     formats: tuple[str, ...],
@@ -519,14 +549,13 @@ def batch(
     resume: bool,
 ) -> None:
     """Batch-process a directory of documents."""
-    if input_dir is None:
-        raise click.ClickException("--input-dir is required.")
-    if output_dir is None:
-        raise click.ClickException("--output-dir is required.")
+    # Preflight: check API key before expensive document loading
+    _check_api_key()
+
     # Validate mode name early (before configuring DSPy)
     if mode is not None and template is None:
-        import mosaicx.pipelines.radiology  # noqa: F401
         import mosaicx.pipelines.pathology  # noqa: F401
+        import mosaicx.pipelines.radiology  # noqa: F401
         from .pipelines.modes import get_mode
         try:
             get_mode(mode)
@@ -676,6 +705,24 @@ def batch(
                 data["_source"] = jf.stem
                 f.write(json.dumps(data, default=str, ensure_ascii=False) + "\n")
         console.print(theme.ok(f"Exported {jsonl_path}"))
+
+    if "csv" in effective_formats and json_files:
+        try:
+            import pandas as pd
+
+            records = []
+            for jf in json_files:
+                data = json.loads(jf.read_text(encoding="utf-8"))
+                data["_source"] = jf.stem
+                records.append(data)
+            df = pd.json_normalize(records, sep="_")
+            csv_path = output_dir / "results.csv"
+            df.to_csv(csv_path, index=False)
+            console.print(theme.ok(f"Exported {csv_path}"))
+        except ImportError:
+            console.print(theme.warn(
+                "pandas required for CSV export: pip install pandas"
+            ))
 
     if "parquet" in effective_formats and json_files:
         try:
@@ -937,6 +984,7 @@ def template_create(
         if mode is None:
             console.print(theme.info("Mode defaulting to 'radiology' (RadReport source). Use --mode to override."))
 
+        _check_api_key()
         _configure_dspy()
 
         from .pipelines.schema_gen import SchemaGenerator
@@ -981,6 +1029,8 @@ def template_create(
         return
 
     # --- Path 3: LLM-powered generation (--describe / --from-document / --from-url) ---
+    _check_api_key()
+
     description = describe or ""
     document_text = ""
     example_text = ""
@@ -1592,7 +1642,7 @@ def template_diff(name: str, version_num: int) -> None:
 @click.option("--document", type=click.Path(exists=True, path_type=Path), default=None, help="Single document to summarize.")
 @click.option("--dir", "directory", type=click.Path(exists=True, file_okay=False, path_type=Path), default=None, help="Directory of reports.")
 @click.option("--patient", type=str, default=None, help="Patient identifier.")
-@click.option("--format", "formats", type=str, multiple=True, help="Output format(s).")
+@click.option("--format", "formats", type=str, multiple=True, help="Output format(s): json, jsonl, csv, parquet.")
 def summarize(
     document: Optional[Path],
     directory: Optional[Path],
@@ -1600,6 +1650,12 @@ def summarize(
     formats: tuple[str, ...],
 ) -> None:
     """Summarize clinical reports for a patient."""
+    if document is None and directory is None:
+        raise click.ClickException("Provide --document or --dir.")
+
+    # Preflight: check API key before expensive document loading
+    _check_api_key()
+
     from .documents.models import DocumentLoadError
 
     # Collect report texts
@@ -1626,8 +1682,6 @@ def summarize(
                     report_texts.append(doc.text)
                 except Exception:
                     console.print(theme.warn(f"Skipping {p.name}: unsupported or unreadable"))
-    else:
-        raise click.ClickException("Provide --document or --dir.")
 
     if not report_texts:
         raise click.ClickException(
@@ -1696,6 +1750,10 @@ def deidentify(
 
     if document is None and directory is None:
         raise click.ClickException("Provide --document or --dir.")
+
+    # Preflight: check API key if LLM is needed
+    if not regex_only:
+        _check_api_key()
 
     # Collect file paths
     paths: list[Path] = []
@@ -1819,7 +1877,7 @@ def optimize(
     if list_pipelines:
         theme.section("Available Pipelines", console, "01")
         for name in _list_pipelines():
-            console.print(f"  [#E87461]>[/#E87461] [#B5A89A]{name}[/#B5A89A]")
+            console.print(f"  [{theme.CORAL}]>[/{theme.CORAL}] [{theme.GREIGE}]{name}[/{theme.GREIGE}]")
         return
 
     # Validate required args early
@@ -1876,6 +1934,7 @@ def optimize(
     except ValueError as exc:
         raise click.ClickException(str(exc))
 
+    theme.section("Dataset", console, "02")
     console.print(theme.info(f"Loaded {len(train_examples)} training examples"))
     if val_examples:
         console.print(theme.info(f"Loaded {len(val_examples)} validation examples"))

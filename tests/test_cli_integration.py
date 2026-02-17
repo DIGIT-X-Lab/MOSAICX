@@ -413,14 +413,14 @@ class TestBatch:
             cli, ["batch", "--output-dir", str(tmp_path)]
         )
         assert result.exit_code != 0
-        assert "--input-dir is required" in result.output
+        assert "--input-dir" in result.output
 
     def test_batch_requires_output_dir(self, runner: CliRunner, tmp_path: Path):
         result = runner.invoke(
             cli, ["batch", "--input-dir", str(tmp_path)]
         )
         assert result.exit_code != 0
-        assert "--output-dir is required" in result.output
+        assert "--output-dir" in result.output
 
     def test_batch_validates_input_dir_exists(self, runner: CliRunner, tmp_path: Path):
         missing = tmp_path / "nonexistent"

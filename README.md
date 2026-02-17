@@ -40,7 +40,9 @@ MOSAICX ships with specialized pipelines for **radiology** and **pathology** rep
 
 ```bash
 # Install MOSAICX
-pip install mosaicx               # or: uv add mosaicx / pipx install mosaicx
+pip install mosaicx               # core
+pip install 'mosaicx[mcp]'       # + MCP server for AI agents
+pip install 'mosaicx[all]'       # everything
 
 # Start a local LLM (Apple Silicon via vLLM-MLX)
 uv tool install git+https://github.com/waybarrios/vllm-mlx.git
