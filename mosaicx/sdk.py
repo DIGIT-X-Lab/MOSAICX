@@ -149,19 +149,25 @@ def _compute_completeness_dict(model_instance: Any, text: str) -> dict[str, Any]
 
 
 def extract(
-    text: str,
+    text: str | None = None,
     *,
+    document: str | Path | None = None,
     template: str | Path | None = None,
     mode: str = "auto",
     score: bool = False,
     optimized: str | Path | None = None,
 ) -> dict[str, Any]:
-    """Extract structured data from document text.
+    """Extract structured data from document text or a file.
 
     Parameters
     ----------
     text:
-        Document text to extract from.
+        Document text to extract from.  Mutually exclusive with
+        *document*.
+    document:
+        Path to a document file (PDF, DOCX, image, etc.).  The file is
+        loaded and OCR'd automatically before extraction.  Mutually
+        exclusive with *text*.
     template:
         Template name (built-in or user-created), or path to a YAML
         template file.  Resolved via :func:`mosaicx.report.resolve_template`.
@@ -180,14 +186,53 @@ def extract(
     -------
     dict
         Extracted data.  Structure depends on mode / template.  When
-        *score* is ``True``, includes a ``"completeness"`` key.
+        *score* is ``True``, includes a ``"completeness"`` key.  When
+        *document* is used, includes a ``"_document"`` key with loading
+        metadata (format, page_count, ocr_engine_used, quality_warning).
 
     Raises
     ------
     ValueError
-        If conflicting parameters are provided, or if the template/mode
-        is unknown.
+        If both *text* and *document* are provided, if neither is
+        provided, or if the template/mode is unknown.
+    FileNotFoundError
+        If *document* is a path that does not exist.
     """
+    # --- Resolve input: text or document path ---
+    if text is not None and document is not None:
+        raise ValueError("Provide either text or document, not both.")
+    if text is None and document is None:
+        raise ValueError("Provide text or document.")
+
+    doc_metadata: dict[str, Any] | None = None
+
+    if document is not None:
+        from .config import get_config
+        from .documents.loader import load_document
+
+        cfg = get_config()
+        doc_path = Path(document)
+        if not doc_path.exists():
+            raise FileNotFoundError(f"Document not found: {doc_path}")
+
+        doc = load_document(
+            doc_path,
+            ocr_engine=cfg.ocr_engine,
+            force_ocr=cfg.force_ocr,
+            ocr_langs=cfg.ocr_langs,
+            quality_threshold=cfg.quality_threshold,
+            page_timeout=cfg.ocr_page_timeout,
+        )
+        text = doc.text
+        doc_metadata = {
+            "format": doc.format,
+            "page_count": doc.page_count,
+            "ocr_engine_used": doc.ocr_engine_used,
+            "quality_warning": doc.quality_warning,
+        }
+
+    assert text is not None  # guaranteed by validation above
+
     # Validate mode early, before configuring DSPy
     if mode not in ("auto",) and template is None:
         import mosaicx.pipelines.pathology  # noqa: F401
@@ -234,6 +279,8 @@ def extract(
                 output_data, metrics = extract_with_mode(text, effective_mode)
             if metrics is not None:
                 output_data["_metrics"] = _metrics_to_dict(metrics)
+            if doc_metadata is not None:
+                output_data["_document"] = doc_metadata
             return output_data
         elif template_model is not None:
             from .pipelines.extraction import DocumentExtractor
@@ -255,6 +302,8 @@ def extract(
                         )
                 else:
                     output["extracted"] = val
+            if doc_metadata is not None:
+                output["_document"] = doc_metadata
             return output
         else:
             raise ValueError(
@@ -283,6 +332,8 @@ def extract(
             output_data, metrics = extract_with_mode(text, mode)
         if metrics is not None:
             output_data["_metrics"] = _metrics_to_dict(metrics)
+        if doc_metadata is not None:
+            output_data["_document"] = doc_metadata
         return output_data
 
     # --- Auto extraction (LLM infers schema) ---
@@ -310,6 +361,8 @@ def extract(
     if hasattr(result, "inferred_schema"):
         output["inferred_schema"] = result.inferred_schema.model_dump()
 
+    if doc_metadata is not None:
+        output["_document"] = doc_metadata
     return output
 
 

@@ -84,9 +84,12 @@ class TestSDKSignatures:
         sig = inspect.signature(extract)
         params = list(sig.parameters.keys())
         assert "text" in params
+        assert "document" in params
         assert "mode" in params
         assert "template" in params
         assert "optimized" in params
+        assert sig.parameters["text"].default is None
+        assert sig.parameters["document"].default is None
         assert sig.parameters["mode"].default == "auto"
         assert sig.parameters["template"].default is None
         assert sig.parameters["optimized"].default is None
@@ -303,6 +306,84 @@ class TestListTemplates:
             assert isinstance(item, dict)
             assert "name" in item
             assert "source" in item
+
+
+class TestExtractDocument:
+    """Test extract() with the document parameter (file path input)."""
+
+    def test_extract_with_document_path(self, tmp_path, monkeypatch):
+        """extract(document=path) should load the file and extract."""
+        from mosaicx import sdk
+        from mosaicx.sdk import extract
+
+        txt = tmp_path / "report.txt"
+        txt.write_text("Normal chest radiograph. No acute findings.")
+
+        monkeypatch.setattr(sdk, "_ensure_configured", lambda: None)
+
+        # Mock DocumentExtractor to avoid needing LLM
+        class FakeExtractor:
+            def __init__(self, **kw):
+                pass
+
+            def __call__(self, **kw):
+                class R:
+                    extracted = {"summary": kw["document_text"][:20]}
+                return R()
+
+        monkeypatch.setattr(
+            "mosaicx.pipelines.extraction.DocumentExtractor", FakeExtractor
+        )
+
+        result = extract(document=txt)
+        assert "extracted" in result
+        assert "_document" in result
+        assert result["_document"]["format"] == "txt"
+
+    def test_extract_text_still_works(self, monkeypatch):
+        """extract(text) should still work as before (no _document key)."""
+        from mosaicx import sdk
+        from mosaicx.sdk import extract
+
+        monkeypatch.setattr(sdk, "_ensure_configured", lambda: None)
+
+        class FakeExtractor:
+            def __init__(self, **kw):
+                pass
+
+            def __call__(self, **kw):
+                class R:
+                    extracted = {"summary": "ok"}
+                return R()
+
+        monkeypatch.setattr(
+            "mosaicx.pipelines.extraction.DocumentExtractor", FakeExtractor
+        )
+
+        result = extract("Some text here")
+        assert "extracted" in result
+        assert "_document" not in result
+
+    def test_both_text_and_document_raises(self):
+        """Providing both text and document should raise ValueError."""
+        from mosaicx.sdk import extract
+
+        with pytest.raises(ValueError, match="not both"):
+            extract("some text", document="/some/path.pdf")
+
+    def test_neither_text_nor_document_raises(self):
+        """Providing neither text nor document should raise ValueError."""
+        from mosaicx.sdk import extract
+
+        with pytest.raises(ValueError, match="text or document"):
+            extract()
+
+    def test_nonexistent_document_raises(self, tmp_path):
+        """Nonexistent document path should raise FileNotFoundError."""
+        from mosaicx.sdk import extract
+
+        with pytest.raises(FileNotFoundError):
+            extract(document=tmp_path / "nonexistent.pdf")
 
 
 class TestProcessFile:
