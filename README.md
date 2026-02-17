@@ -34,22 +34,28 @@ flowchart LR
 
 MOSAICX ships with specialized pipelines for **radiology** and **pathology** reports, a **generic extraction** mode that adapts to any document, plus **de-identification** and **patient timeline summarization**. Every pipeline is a DSPy module -- meaning it can be optimized with labeled data for your specific use case.
 
+**Why MOSAICX?** -- Fully local (no PHI leaves your machine), schema-driven (define exactly what to extract), dual-engine OCR (handles scans and handwriting), and DSPy-optimizable (improve accuracy with your own labeled data). One CLI for radiology, pathology, de-identification, and summarization.
+
 ## Quick Start
 
 ```bash
 # Install MOSAICX
 pip install mosaicx               # or: uv add mosaicx / pipx install mosaicx
 
-# Start a local LLM (pick one)
-ollama serve && ollama pull gpt-oss:20b                              # Ollama
-vllm-mlx serve mlx-community/gpt-oss-20b-MXFP4-Q8 --port 8000      # Apple Silicon (vLLM-MLX)
+# Start a local LLM (Apple Silicon via vLLM-MLX)
+uv tool install git+https://github.com/waybarrios/vllm-mlx.git
+vllm-mlx serve mlx-community/gpt-oss-20b-MXFP4-Q8 --port 8000
+
+# Point MOSAICX at it
+export MOSAICX_LM=openai/mlx-community/gpt-oss-20b-MXFP4-Q8
+export MOSAICX_API_BASE=http://localhost:8000/v1
 
 # Extract structured data from a report
 mosaicx extract --document report.pdf --mode radiology
 ```
 
 > [!TIP]
-> First time? The [Getting Started guide](docs/getting-started.md) walks you through setup and your first extraction in under 10 minutes.
+> **Not on Apple Silicon?** Use [Ollama](https://ollama.com), [vLLM](https://docs.vllm.ai), or any OpenAI-compatible server. See the [Getting Started guide](docs/getting-started.md) for all backend options.
 
 ## What You Can Do
 
@@ -109,120 +115,7 @@ export MOSAICX_API_BASE=http://localhost:8000/v1   # point at your server
 export MOSAICX_API_KEY=dummy                       # or your real key for cloud APIs
 ```
 
-<details>
-<summary><strong>Remote GPU server via SSH tunnel</strong></summary>
-
-Forward the server port to your local machine, then point MOSAICX at `localhost`:
-
-```bash
-# Pick the port that matches your backend
-ssh -L 8080:localhost:8080  user@gpu-server    # llama.cpp
-ssh -L 8000:localhost:8000  user@gpu-server    # vLLM
-ssh -L 30000:localhost:30000 user@gpu-server   # SGLang
-
-# Configure MOSAICX
-export MOSAICX_LM=openai/gpt-oss:120b
-export MOSAICX_API_BASE=http://localhost:8000/v1
-export MOSAICX_API_KEY=dummy
-```
-
-</details>
-
-<details>
-<summary><strong>Apple Silicon: vLLM-MLX</strong></summary>
-
-[vLLM-MLX](https://github.com/waybarrios/vllm-mlx) runs vLLM-compatible inference natively on Apple Silicon using MLX unified memory. No remote GPU needed -- quantized models up to ~70B on a 128 GB Mac.
-
-```bash
-# Install
-uv tool install git+https://github.com/waybarrios/vllm-mlx.git
-
-# Serve (pick a model size)
-vllm-mlx serve mlx-community/gpt-oss-20b-MXFP4-Q8 --port 8000     # 12 GB
-vllm-mlx serve mlx-community/gpt-oss-120b-4bit --port 8000         # ~64 GB
-
-# Enable continuous batching for concurrent requests
-vllm-mlx serve mlx-community/gpt-oss-20b-MXFP4-Q8 --port 8000 --continuous-batching
-
-# Configure MOSAICX
-export MOSAICX_LM=openai/mlx-community/gpt-oss-20b-MXFP4-Q8
-export MOSAICX_API_BASE=http://localhost:8000/v1
-export MOSAICX_API_KEY=dummy
-```
-
-> **Note:** Do **not** use `--reasoning-parser` -- MOSAICX strips Harmony channel tokens client-side.
->
-> **Troubleshooting:** If `--continuous-batching` crashes with `broadcast_shapes` or `BatchKVCache` errors, clear the prefix cache: `rm -rf ~/.cache/vllm-mlx/prefix_cache/mlx-community--gpt-oss-*` and restart. See [Troubleshooting](docs/configuration.md#vllm-mlx-crashes-with-broadcast_shapes-or-batchkvcache-errors).
-
-</details>
-
-<details>
-<summary><strong>Batch processing tuning (vLLM / SGLang)</strong></summary>
-
-For batch-processing many documents, vLLM or SGLang give much higher throughput than Ollama via continuous batching.
-
-**vLLM server-side:**
-
-```bash
-# 120B -- constrain concurrency to avoid OOM
-vllm serve gpt-oss:120b --gpu-memory-utilization 0.90 --max-num-seqs 4 --port 8000
-
-# 20B -- higher concurrency
-vllm serve gpt-oss:20b --gpu-memory-utilization 0.90 --max-num-seqs 16 --port 8000
-```
-
-**SGLang server-side:**
-
-```bash
-# 120B
-python -m sglang.launch_server --model-path gpt-oss:120b \
-  --mem-fraction-static 0.90 --max-running-requests 4 --port 30000
-
-# 20B
-python -m sglang.launch_server --model-path gpt-oss:20b \
-  --mem-fraction-static 0.90 --max-running-requests 16 --port 30000
-```
-
-**Tuning `--workers`:**
-
-| Setup | Server concurrency | `--workers` | Notes |
-|-------|-------------------|-------------|-------|
-| 120B, 128 GB VRAM | 4 | 4 | Best quality, moderate speed |
-| 20B, 128 GB VRAM | 16 | 16 | Faster throughput, good quality |
-| 120B quantized (AWQ) | 8 | 8 | Balance of quality and speed |
-
-> **Tip:** Setting `--workers` higher than the server's max concurrency wastes overhead -- requests queue server-side. Keep them matched.
-
-</details>
-
-<details>
-<summary><strong>Benchmarking backends</strong></summary>
-
-Compare backend performance on your hardware with the included benchmark script:
-
-```bash
-# Benchmark all reachable backends
-python scripts/benchmark_backends.py --document report.txt
-
-# Multiple runs for stable averages
-python scripts/benchmark_backends.py --document report.txt --runs 3 --mode radiology
-
-# Add a custom backend
-python scripts/benchmark_backends.py --document report.txt \
-  --backend "dgx=openai/gpt-oss:120b@http://localhost:8000/v1"
-
-# Only test specific backends
-python scripts/benchmark_backends.py --document report.txt --only vllm-mlx,ollama
-
-# Save results as JSON
-python scripts/benchmark_backends.py --document report.txt --runs 3 --output results.json
-```
-
-Default backends probed: **vllm-mlx** (:8000), **ollama** (:11434), **llama-cpp** (:8080), **sglang** (:30000). Offline backends are skipped automatically.
-
-</details>
-
-Full backend configuration: [docs/configuration.md](docs/configuration.md)
+SSH tunneling, vLLM-MLX setup, batch tuning, and benchmarking: [docs/configuration.md](docs/configuration.md)
 
 ## OCR Engines
 
