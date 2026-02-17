@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Any, List, Optional, Type
 
 import yaml
-from pydantic import BaseModel, create_model
+from pydantic import BaseModel, Field, create_model
 
 __all__ = [
     "SectionSpec",
@@ -127,11 +127,14 @@ def _build_nested_model(
     for fspec in fields:
         assert fspec.name is not None, "Fields inside an object must have a name."
         py_type = _resolve_type(fspec, parent_name=model_name)
+        desc = fspec.description or ""
+        if fspec.type == "enum" and fspec.values:
+            values_str = ", ".join(fspec.values)
+            desc = f"{desc} (allowed: {values_str})" if desc else f"One of: {values_str}"
         if fspec.required:
-            # (type, Ellipsis) means required with no default
-            field_definitions[fspec.name] = (py_type, ...)
+            field_definitions[fspec.name] = (py_type, Field(..., description=desc or None))
         else:
-            field_definitions[fspec.name] = (Optional[py_type], None)
+            field_definitions[fspec.name] = (Optional[py_type], Field(None, description=desc or None))
 
     return create_model(model_name, **field_definitions)  # type: ignore[call-overload]
 
@@ -204,10 +207,15 @@ def compile_template(yaml_content: str) -> type[BaseModel]:
 
     for section in meta.sections:
         py_type = _resolve_type(section, parent_name=meta.name)
+        # Build description — for enum fields, include allowed values
+        desc = section.description or ""
+        if section.type == "enum" and section.values:
+            values_str = ", ".join(section.values)
+            desc = f"{desc} (allowed: {values_str})" if desc else f"One of: {values_str}"
         if section.required:
-            field_definitions[section.name] = (py_type, ...)
+            field_definitions[section.name] = (py_type, Field(..., description=desc or None))
         else:
-            field_definitions[section.name] = (Optional[py_type], None)
+            field_definitions[section.name] = (Optional[py_type], Field(None, description=desc or None))
 
     return create_model(meta.name, **field_definitions)  # type: ignore[call-overload]
 

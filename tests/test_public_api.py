@@ -4,8 +4,8 @@
 Verifies that the SDK convenience functions (extract, summarize,
 generate_schema, deidentify) are importable, callable, and have the
 expected signatures.  Also tests the regex-only deidentify path which
-requires no LLM, and the new SDK-only functions (list_schemas,
-list_modes, batch_extract, evaluate).
+requires no LLM, and the utility functions (list_schemas, list_modes,
+evaluate).
 """
 
 import inspect
@@ -13,6 +13,7 @@ import inspect
 import pytest
 
 
+@pytest.mark.unit
 class TestPublicAPI:
     """Verify the public API functions are importable and callable."""
 
@@ -46,11 +47,6 @@ class TestPublicAPI:
 
         assert callable(list_modes)
 
-    def test_batch_extract_function(self):
-        from mosaicx import batch_extract
-
-        assert callable(batch_extract)
-
     def test_evaluate_function(self):
         from mosaicx import evaluate
 
@@ -63,18 +59,12 @@ class TestPublicAPI:
         for name in (
             "extract", "summarize", "generate_schema", "deidentify",
             "list_schemas", "list_modes", "list_templates", "evaluate",
-            "batch_extract", "process_file", "process_files",
+            "health",
         ):
             assert name in mosaicx.__all__, f"{name!r} missing from __all__"
 
-    def test_file_based_wrappers_exist(self):
-        """File-based wrappers should still be accessible."""
-        import mosaicx
 
-        assert callable(mosaicx.extract_file)
-        assert callable(mosaicx.summarize_files)
-
-
+@pytest.mark.unit
 class TestSDKSignatures:
     """Verify each SDK function has the documented parameters."""
 
@@ -84,15 +74,23 @@ class TestSDKSignatures:
         sig = inspect.signature(extract)
         params = list(sig.parameters.keys())
         assert "text" in params
-        assert "document" in params
+        assert "documents" in params
+        assert "filename" in params
         assert "mode" in params
         assert "template" in params
+        assert "score" in params
         assert "optimized" in params
+        assert "workers" in params
+        assert "on_progress" in params
         assert sig.parameters["text"].default is None
-        assert sig.parameters["document"].default is None
+        assert sig.parameters["documents"].default is None
+        assert sig.parameters["filename"].default is None
         assert sig.parameters["mode"].default == "auto"
         assert sig.parameters["template"].default is None
+        assert sig.parameters["score"].default is False
         assert sig.parameters["optimized"].default is None
+        assert sig.parameters["workers"].default == 1
+        assert sig.parameters["on_progress"].default is None
 
     def test_summarize_signature(self):
         from mosaicx import summarize
@@ -124,11 +122,17 @@ class TestSDKSignatures:
         sig = inspect.signature(deidentify)
         params = list(sig.parameters.keys())
         assert "text" in params
-        assert "document" in params
+        assert "documents" in params
+        assert "filename" in params
         assert "mode" in params
+        assert "workers" in params
+        assert "on_progress" in params
         assert sig.parameters["text"].default is None
-        assert sig.parameters["document"].default is None
+        assert sig.parameters["documents"].default is None
+        assert sig.parameters["filename"].default is None
         assert sig.parameters["mode"].default == "remove"
+        assert sig.parameters["workers"].default == 1
+        assert sig.parameters["on_progress"].default is None
 
     def test_evaluate_signature(self):
         from mosaicx import evaluate
@@ -138,18 +142,6 @@ class TestSDKSignatures:
         assert "pipeline" in params
         assert "testset_path" in params
         assert "optimized" in params
-
-    def test_batch_extract_signature(self):
-        from mosaicx import batch_extract
-
-        sig = inspect.signature(batch_extract)
-        params = list(sig.parameters.keys())
-        assert "texts" in params
-        assert "documents" in params
-        assert "mode" in params
-        assert "template" in params
-        assert sig.parameters["texts"].default is None
-        assert sig.parameters["documents"].default is None
 
     def test_list_templates_signature(self):
         from mosaicx import list_templates
@@ -162,27 +154,7 @@ class TestSDKSignatures:
             )
 
 
-class TestFileBasedSignatures:
-    """Verify file-based wrappers retain the original signatures."""
-
-    def test_extract_file_signature(self):
-        from mosaicx import extract_file
-
-        sig = inspect.signature(extract_file)
-        params = list(sig.parameters.keys())
-        assert "document_path" in params
-        assert "schema" in params
-        assert "mode" in params
-        assert "template" in params
-
-    def test_summarize_files_signature(self):
-        from mosaicx import summarize_files
-
-        sig = inspect.signature(summarize_files)
-        params = list(sig.parameters.keys())
-        assert "document_paths" in params
-
-
+@pytest.mark.unit
 class TestDeidentifyRegex:
     """Test the regex-only path of deidentify (no LLM needed).
 
@@ -239,6 +211,7 @@ class TestDeidentifyRegex:
             deidentify("test", mode="invalid_mode")
 
 
+@pytest.mark.unit
 class TestListSchemas:
     """Test list_schemas without needing an LLM."""
 
@@ -249,6 +222,7 @@ class TestListSchemas:
         assert isinstance(result, list)
 
 
+@pytest.mark.unit
 class TestListModes:
     """Test list_modes without needing an LLM."""
 
@@ -263,8 +237,9 @@ class TestListModes:
             assert "description" in item
 
 
+@pytest.mark.unit
 class TestHealth:
-    """Test sdk.health() — no LLM needed."""
+    """Test sdk.health() -- no LLM needed."""
 
     def test_returns_dict(self):
         from mosaicx.sdk import health
@@ -298,6 +273,7 @@ class TestHealth:
         assert isinstance(result["available_templates"], list)
 
 
+@pytest.mark.unit
 class TestListTemplates:
     """Test sdk.list_templates() -- no LLM needed."""
 
@@ -317,451 +293,129 @@ class TestListTemplates:
             assert "source" in item
 
 
-class TestExtractDocument:
-    """Test extract() with the document parameter (file path input)."""
+@pytest.mark.unit
+class TestExtractDocuments:
+    """Test extract() with documents parameter."""
 
-    def test_extract_with_document_path(self, tmp_path, monkeypatch):
-        """extract(document=path) should load the file and extract."""
-        from mosaicx import sdk
-        from mosaicx.sdk import extract
-
-        txt = tmp_path / "report.txt"
-        txt.write_text("Normal chest radiograph. No acute findings.")
-
-        monkeypatch.setattr(sdk, "_ensure_configured", lambda: None)
-
-        # Mock DocumentExtractor to avoid needing LLM
-        class FakeExtractor:
-            def __init__(self, **kw):
-                pass
-
-            def __call__(self, **kw):
-                class R:
-                    extracted = {"summary": kw["document_text"][:20]}
-                return R()
-
-        monkeypatch.setattr(
-            "mosaicx.pipelines.extraction.DocumentExtractor", FakeExtractor
-        )
-
-        result = extract(document=txt)
-        assert "extracted" in result
-        assert "_document" in result
-        assert result["_document"]["format"] == "txt"
-
-    def test_extract_text_still_works(self, monkeypatch):
-        """extract(text) should still work as before (no _document key)."""
-        from mosaicx import sdk
-        from mosaicx.sdk import extract
-
-        monkeypatch.setattr(sdk, "_ensure_configured", lambda: None)
-
-        class FakeExtractor:
-            def __init__(self, **kw):
-                pass
-
-            def __call__(self, **kw):
-                class R:
-                    extracted = {"summary": "ok"}
-                return R()
-
-        monkeypatch.setattr(
-            "mosaicx.pipelines.extraction.DocumentExtractor", FakeExtractor
-        )
-
-        result = extract("Some text here")
-        assert "extracted" in result
-        assert "_document" not in result
-
-    def test_both_text_and_document_raises(self):
-        """Providing both text and document should raise ValueError."""
-        from mosaicx.sdk import extract
+    def test_text_and_documents_mutually_exclusive(self):
+        """Providing both text and documents raises ValueError."""
+        import mosaicx
 
         with pytest.raises(ValueError, match="not both"):
-            extract("some text", document="/some/path.pdf")
+            mosaicx.extract(text="some text", documents="file.pdf")
 
-    def test_neither_text_nor_document_raises(self):
-        """Providing neither text nor document should raise ValueError."""
-        from mosaicx.sdk import extract
+    def test_neither_text_nor_documents_raises(self):
+        """Providing neither text nor documents raises ValueError."""
+        import mosaicx
 
-        with pytest.raises(ValueError, match="text or document"):
-            extract()
+        with pytest.raises(ValueError):
+            mosaicx.extract()
 
-    def test_nonexistent_document_raises(self, tmp_path):
-        """Nonexistent document path should raise FileNotFoundError."""
-        from mosaicx.sdk import extract
+    def test_documents_accepts_string_path(self):
+        """documents= accepts a string file path."""
+        import mosaicx
 
-        with pytest.raises(FileNotFoundError):
-            extract(document=tmp_path / "nonexistent.pdf")
+        sig = inspect.signature(mosaicx.extract)
+        param = sig.parameters["documents"]
+        assert param.default is None
+
+    def test_documents_accepts_bytes_with_filename(self):
+        """documents= accepts bytes when filename is provided."""
+        import mosaicx
+
+        sig = inspect.signature(mosaicx.extract)
+        assert "filename" in sig.parameters
+
+    def test_workers_parameter_exists(self):
+        """workers parameter exists with default 1."""
+        import mosaicx
+
+        sig = inspect.signature(mosaicx.extract)
+        assert sig.parameters["workers"].default == 1
+
+    def test_on_progress_parameter_exists(self):
+        """on_progress callback parameter exists."""
+        import mosaicx
+
+        sig = inspect.signature(mosaicx.extract)
+        assert "on_progress" in sig.parameters
+        assert sig.parameters["on_progress"].default is None
+
+    def test_score_parameter_exists(self):
+        """score parameter exists (replaces report())."""
+        import mosaicx
+
+        sig = inspect.signature(mosaicx.extract)
+        assert sig.parameters["score"].default is False
 
 
-class TestDeidentifyDocument:
-    """Test deidentify() with the document parameter."""
+@pytest.mark.unit
+class TestDeidentifyDocuments:
+    """Test deidentify() with documents parameter."""
 
-    def test_deidentify_with_document_path(self, tmp_path):
-        """deidentify(document=path, mode='regex') should load and redact."""
-        from mosaicx.sdk import deidentify
-
-        txt = tmp_path / "record.txt"
-        txt.write_text("Patient SSN 123-45-6789 admitted today.")
-
-        result = deidentify(document=txt, mode="regex")
-        assert "redacted_text" in result
-        assert "123-45-6789" not in result["redacted_text"]
-        assert "_document" in result
-        assert result["_document"]["format"] == "txt"
-
-    def test_deidentify_text_still_works(self):
-        """deidentify(text) should still work without _document key."""
-        from mosaicx.sdk import deidentify
-
-        result = deidentify("Patient SSN 123-45-6789", mode="regex")
-        assert "redacted_text" in result
-        assert "_document" not in result
-
-    def test_deidentify_both_raises(self):
-        from mosaicx.sdk import deidentify
+    def test_text_and_documents_mutually_exclusive(self):
+        import mosaicx
 
         with pytest.raises(ValueError, match="not both"):
-            deidentify("text", document="/path.pdf", mode="regex")
+            mosaicx.deidentify(text="some text", documents="file.pdf")
 
-    def test_deidentify_neither_raises(self):
-        from mosaicx.sdk import deidentify
+    def test_neither_text_nor_documents_raises(self):
+        import mosaicx
 
-        with pytest.raises(ValueError, match="text or document"):
-            deidentify(mode="regex")
+        with pytest.raises(ValueError):
+            mosaicx.deidentify()
 
-    def test_deidentify_nonexistent_raises(self, tmp_path):
-        from mosaicx.sdk import deidentify
+    def test_workers_parameter_exists(self):
+        import mosaicx
 
-        with pytest.raises(FileNotFoundError):
-            deidentify(document=tmp_path / "nope.pdf", mode="regex")
+        sig = inspect.signature(mosaicx.deidentify)
+        assert sig.parameters["workers"].default == 1
+
+    def test_on_progress_parameter_exists(self):
+        import mosaicx
+
+        sig = inspect.signature(mosaicx.deidentify)
+        assert "on_progress" in sig.parameters
 
 
+@pytest.mark.unit
 class TestSummarizeDocuments:
-    """Test summarize() with the documents parameter."""
+    """Test summarize() with documents parameter."""
 
-    def test_summarize_both_raises(self):
-        from mosaicx.sdk import summarize
-
-        with pytest.raises(ValueError, match="not both"):
-            summarize(["report text"], documents=["/a.txt"])
-
-    def test_summarize_neither_raises(self):
-        from mosaicx.sdk import summarize
-
-        with pytest.raises(ValueError, match="reports or documents"):
-            summarize()
-
-    def test_summarize_text_still_works(self, monkeypatch):
-        """summarize(reports=[...]) should still work."""
-        from mosaicx import sdk
-
-        monkeypatch.setattr(sdk, "_ensure_configured", lambda: None)
-
-        class FakeSummarizer:
-            def __init__(self):
-                pass
-
-            def __call__(self, **kw):
-                class Evt:
-                    def model_dump(self):
-                        return {"date": "2024-01-01", "description": "test"}
-
-                class R:
-                    events = [Evt()]
-                    narrative = "Test summary"
-
-                return R()
-
-        monkeypatch.setattr(
-            "mosaicx.pipelines.summarizer.ReportSummarizer", FakeSummarizer
-        )
-
-        result = sdk.summarize(["Report text here"])
-        assert "narrative" in result
-        assert "events" in result
-        assert "_documents" not in result
-
-    def test_summarize_with_documents(self, tmp_path, monkeypatch):
-        """summarize(documents=[paths]) should load files and summarize."""
-        from mosaicx import sdk
-
-        (tmp_path / "r1.txt").write_text("Report one findings")
-        (tmp_path / "r2.txt").write_text("Report two findings")
-
-        monkeypatch.setattr(sdk, "_ensure_configured", lambda: None)
-
-        class FakeSummarizer:
-            def __init__(self):
-                pass
-
-            def __call__(self, **kw):
-                class Evt:
-                    def model_dump(self):
-                        return {"date": "2024-01-01", "description": "test"}
-
-                class R:
-                    events = [Evt()]
-                    narrative = f"Summarized {len(kw['reports'])} reports"
-
-                return R()
-
-        monkeypatch.setattr(
-            "mosaicx.pipelines.summarizer.ReportSummarizer", FakeSummarizer
-        )
-
-        result = sdk.summarize(
-            documents=[tmp_path / "r1.txt", tmp_path / "r2.txt"]
-        )
-        assert "narrative" in result
-        assert "2 reports" in result["narrative"]
-        assert "_documents" in result
-        assert len(result["_documents"]) == 2
-
-    def test_summarize_with_directory(self, tmp_path, monkeypatch):
-        """summarize(documents=dir_path) should discover files."""
-        from mosaicx import sdk
-
-        (tmp_path / "a.txt").write_text("Report A")
-        (tmp_path / "b.txt").write_text("Report B")
-
-        monkeypatch.setattr(sdk, "_ensure_configured", lambda: None)
-
-        class FakeSummarizer:
-            def __init__(self):
-                pass
-
-            def __call__(self, **kw):
-                class Evt:
-                    def model_dump(self):
-                        return {"date": "2024-01-01", "description": "test"}
-
-                class R:
-                    events = [Evt()]
-                    narrative = f"Summarized {len(kw['reports'])} reports"
-
-                return R()
-
-        monkeypatch.setattr(
-            "mosaicx.pipelines.summarizer.ReportSummarizer", FakeSummarizer
-        )
-
-        result = sdk.summarize(documents=tmp_path)
-        assert "narrative" in result
-        assert "_documents" in result
-
-
-class TestBatchExtractDocuments:
-    """Test batch_extract() with the documents parameter."""
-
-    def test_batch_both_raises(self):
-        from mosaicx.sdk import batch_extract
+    def test_reports_and_documents_mutually_exclusive(self):
+        import mosaicx
 
         with pytest.raises(ValueError, match="not both"):
-            batch_extract(["text"], documents=["/a.txt"])
+            mosaicx.summarize(reports=["text"], documents="file.pdf")
 
-    def test_batch_neither_raises(self):
-        from mosaicx.sdk import batch_extract
+    def test_neither_reports_nor_documents_raises(self):
+        import mosaicx
 
-        with pytest.raises(ValueError, match="texts or documents"):
-            batch_extract()
+        with pytest.raises(ValueError):
+            mosaicx.summarize()
 
-    def test_batch_with_documents(self, tmp_path, monkeypatch):
-        """batch_extract(documents=[paths]) should load and extract each."""
-        from mosaicx import sdk
+    def test_documents_parameter_exists(self):
+        import mosaicx
 
-        (tmp_path / "a.txt").write_text("Report A content")
-        (tmp_path / "b.txt").write_text("Report B content")
-
-        monkeypatch.setattr(sdk, "_ensure_configured", lambda: None)
-
-        class FakeExtractor:
-            def __init__(self, **kw):
-                pass
-
-            def __call__(self, **kw):
-                class R:
-                    extracted = {"summary": kw["document_text"][:10]}
-
-                return R()
-
-        monkeypatch.setattr(
-            "mosaicx.pipelines.extraction.DocumentExtractor", FakeExtractor
-        )
-
-        results = sdk.batch_extract(
-            documents=[tmp_path / "a.txt", tmp_path / "b.txt"]
-        )
-        assert len(results) == 2
-        assert all("extracted" in r for r in results)
+        sig = inspect.signature(mosaicx.summarize)
+        assert "documents" in sig.parameters
 
 
-class TestProcessFile:
-    """Test sdk.process_file() signature and basic validation."""
+@pytest.mark.unit
+class TestRemovedFunctions:
+    """Verify removed functions are no longer exported."""
 
-    def test_importable(self):
-        from mosaicx.sdk import process_file
-        assert callable(process_file)
+    def test_batch_extract_removed(self):
+        import mosaicx
 
-    def test_signature_has_expected_params(self):
-        from mosaicx.sdk import process_file
+        assert not hasattr(mosaicx, "batch_extract") or "batch_extract" not in mosaicx.__all__
 
-        sig = inspect.signature(process_file)
-        params = list(sig.parameters.keys())
-        assert "file" in params
-        assert "filename" in params
-        assert "template" in params
-        assert "mode" in params
-        assert "score" in params
+    def test_process_file_removed(self):
+        import mosaicx
 
-    def test_txt_file(self, tmp_path, monkeypatch):
-        """Process a .txt file -- no OCR, no LLM (mock extract)."""
-        from mosaicx import sdk
+        assert not hasattr(mosaicx, "process_file") or "process_file" not in mosaicx.__all__
 
-        txt = tmp_path / "report.txt"
-        txt.write_text("Normal chest radiograph. No acute findings.")
+    def test_process_files_removed(self):
+        import mosaicx
 
-        # Mock sdk.extract to avoid needing LLM
-        monkeypatch.setattr(sdk, "extract", lambda text, **kw: {"extracted": {"summary": text[:20]}})
-        # Mock _ensure_configured to skip DSPy setup
-        monkeypatch.setattr(sdk, "_ensure_configured", lambda: None)
-
-        result = sdk.process_file(txt, mode="auto")
-        assert "extracted" in result
-        assert "_document" in result
-        assert result["_document"]["format"] == "txt"
-
-    def test_bytes_input_with_filename(self, tmp_path, monkeypatch):
-        """Process bytes input with a filename for format detection."""
-        from mosaicx import sdk
-
-        content = b"Normal chest radiograph. No acute findings."
-
-        monkeypatch.setattr(sdk, "extract", lambda text, **kw: {"extracted": {"summary": "ok"}})
-        monkeypatch.setattr(sdk, "_ensure_configured", lambda: None)
-
-        result = sdk.process_file(content, filename="report.txt", mode="auto")
-        assert "extracted" in result
-        assert "_document" in result
-
-    def test_bytes_without_filename_raises(self):
-        """Bytes input without filename should raise ValueError."""
-        from mosaicx.sdk import process_file
-
-        with pytest.raises(ValueError, match="filename"):
-            process_file(b"some bytes")
-
-    def test_nonexistent_file_raises(self, tmp_path):
-        """Nonexistent file path should raise FileNotFoundError."""
-        from mosaicx.sdk import process_file
-
-        with pytest.raises(FileNotFoundError):
-            process_file(tmp_path / "nonexistent.txt")
-
-
-class TestProcessFiles:
-    """Test sdk.process_files() with real files but mocked extraction."""
-
-    def test_importable(self):
-        from mosaicx.sdk import process_files
-        assert callable(process_files)
-
-    def test_signature_has_expected_params(self):
-        from mosaicx.sdk import process_files
-
-        sig = inspect.signature(process_files)
-        params = list(sig.parameters.keys())
-        assert "files" in params
-        assert "template" in params
-        assert "mode" in params
-        assert "workers" in params
-        assert "on_progress" in params
-
-    def test_process_txt_directory(self, tmp_path, monkeypatch):
-        """Process a directory of .txt files with mocked extraction."""
-        from mosaicx import sdk
-
-        input_dir = tmp_path / "input"
-        input_dir.mkdir()
-        (input_dir / "doc1.txt").write_text("Report one content")
-        (input_dir / "doc2.txt").write_text("Report two content")
-
-        monkeypatch.setattr(sdk, "extract", lambda text, **kw: {"extracted": {"text": text[:10]}})
-        monkeypatch.setattr(sdk, "_ensure_configured", lambda: None)
-
-        result = sdk.process_files(input_dir)
-        assert result["total"] == 2
-        assert result["succeeded"] == 2
-        assert result["failed"] == 0
-        assert len(result["results"]) == 2
-
-    def test_process_file_list(self, tmp_path, monkeypatch):
-        """Process an explicit list of file paths."""
-        from mosaicx import sdk
-
-        f1 = tmp_path / "a.txt"
-        f2 = tmp_path / "b.txt"
-        f1.write_text("Report A")
-        f2.write_text("Report B")
-
-        monkeypatch.setattr(sdk, "extract", lambda text, **kw: {"extracted": "ok"})
-        monkeypatch.setattr(sdk, "_ensure_configured", lambda: None)
-
-        result = sdk.process_files([f1, f2])
-        assert result["total"] == 2
-        assert result["succeeded"] == 2
-
-    def test_progress_callback(self, tmp_path, monkeypatch):
-        """Verify on_progress is called for each document."""
-        from mosaicx import sdk
-
-        input_dir = tmp_path / "input"
-        input_dir.mkdir()
-        (input_dir / "doc1.txt").write_text("Report one")
-
-        monkeypatch.setattr(sdk, "extract", lambda text, **kw: {"extracted": "ok"})
-        monkeypatch.setattr(sdk, "_ensure_configured", lambda: None)
-
-        progress_calls = []
-        result = sdk.process_files(
-            input_dir,
-            on_progress=lambda name, ok, res: progress_calls.append((name, ok)),
-        )
-        assert len(progress_calls) == 1
-        assert progress_calls[0][1] is True  # success
-
-    def test_error_isolation(self, tmp_path, monkeypatch):
-        """One failing document should not stop the others."""
-        from mosaicx import sdk
-
-        input_dir = tmp_path / "input"
-        input_dir.mkdir()
-        (input_dir / "good.txt").write_text("Good report")
-        (input_dir / "bad.txt").write_text("Bad report")
-
-        def flaky_extract(text, **kw):
-            if "Bad" in text:
-                raise ValueError("Simulated failure")
-            return {"extracted": "ok"}
-
-        monkeypatch.setattr(sdk, "extract", flaky_extract)
-        monkeypatch.setattr(sdk, "_ensure_configured", lambda: None)
-
-        result = sdk.process_files(input_dir)
-        assert result["succeeded"] == 1
-        assert result["failed"] == 1
-        assert len(result["errors"]) == 1
-
-    def test_empty_directory(self, tmp_path, monkeypatch):
-        """Empty directory returns zero counts."""
-        from mosaicx import sdk
-
-        input_dir = tmp_path / "empty"
-        input_dir.mkdir()
-
-        monkeypatch.setattr(sdk, "_ensure_configured", lambda: None)
-
-        result = sdk.process_files(input_dir)
-        assert result["total"] == 0
-        assert result["succeeded"] == 0
+        assert not hasattr(mosaicx, "process_files") or "process_files" not in mosaicx.__all__

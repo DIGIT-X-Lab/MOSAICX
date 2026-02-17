@@ -20,12 +20,6 @@ class TestCLISkeleton:
         assert result.exit_code == 0
         assert "document" in result.output.lower()
 
-    def test_batch_command_registered(self):
-        from mosaicx.cli import cli
-        runner = CliRunner()
-        result = runner.invoke(cli, ["batch", "--help"])
-        assert result.exit_code == 0
-
     def test_template_command_registered(self):
         from mosaicx.cli import cli
         runner = CliRunner()

@@ -452,7 +452,7 @@ mosaicx extract --document scan.pdf --template chest_ct -o result.json
 Process an entire directory of documents with the same template:
 
 ```bash
-mosaicx batch --input-dir ./reports --output-dir ./structured --template chest_ct
+mosaicx extract --dir ./reports --output-dir ./structured --template chest_ct
 ```
 
 All documents in `./reports` will be processed using the `chest_ct` template, and the structured output will be saved to `./structured`.
@@ -658,9 +658,8 @@ You do not need to interact with SchemaSpec directly. It exists for backward com
 2. Create a template for your document type.
 3. Test it on a few sample documents with `mosaicx extract --template ... --document ...`.
 4. Refine based on results.
-5. Use it for batch processing with `mosaicx batch --template ...`.
+5. Use it for batch processing with `mosaicx extract --dir ... --template ...`.
 
 For more information:
-- `mosaicx extract --help` for extraction options
-- `mosaicx batch --help` for batch processing options
+- `mosaicx extract --help` for extraction and batch processing options
 - `mosaicx template --help` for all template commands

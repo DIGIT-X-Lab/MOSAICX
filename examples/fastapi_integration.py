@@ -85,8 +85,8 @@ async def extract_file(
     """Upload a document file (PDF, image, text) and extract structured data."""
     content = await file.read()
     try:
-        return sdk.process_file(
-            content,
+        return sdk.extract(
+            documents=content,
             filename=file.filename,
             template=template,
             mode=mode,

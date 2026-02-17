@@ -5,8 +5,7 @@ MOSAICX CLI v2 -- Click commands with DigiTx-inspired terminal UI.
 Provides the ``mosaicx`` console entry-point declared in pyproject.toml as
 ``mosaicx.cli:cli``.  Commands call into the actual pipeline modules:
 
-- extract:    DocumentExtractor (DSPy)
-- batch:      BatchProcessor
+- extract:    DocumentExtractor (DSPy) -- single file or batch via --dir
 - template:   template management (create, list, show, refine, migrate, etc.)
 - summarize:  ReportSummarizer (DSPy)
 - deidentify: Deidentifier (DSPy) or regex_scrub_phi (--regex-only)
@@ -20,7 +19,7 @@ import io
 import json
 import re
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 import click
 from rich import box
@@ -28,6 +27,7 @@ from rich.console import Console
 from rich.markup import escape as _esc
 from rich.padding import Padding
 from rich.panel import Panel
+from rich.table import Table
 
 from . import cli_theme as theme
 from .config import get_config
@@ -244,30 +244,274 @@ def cli(ctx: click.Context) -> None:
 
 
 # ---------------------------------------------------------------------------
+# extract -- batch helper
+# ---------------------------------------------------------------------------
+
+
+def _extract_batch(
+    ctx: click.Context,
+    directory: Path,
+    template: Optional[str],
+    mode: Optional[str],
+    optimized: Optional[Path],
+    output_dir_path: Optional[Path],
+    formats: tuple[str, ...],
+    workers: int,
+    resume: bool,
+) -> None:
+    """Batch-process a directory of documents (called from the extract command)."""
+    # Preflight: check API key before expensive document loading
+    _check_api_key()
+
+    # Validate mode name early (before configuring DSPy)
+    if mode is not None and template is None:
+        import mosaicx.pipelines.pathology  # noqa: F401
+        import mosaicx.pipelines.radiology  # noqa: F401
+        from .pipelines.modes import get_mode
+        try:
+            get_mode(mode)
+        except ValueError as exc:
+            raise click.ClickException(str(exc))
+
+    from .batch import BatchProcessor
+
+    cfg = get_config()
+
+    # Default output dir to a sibling of the input directory
+    if output_dir_path is None:
+        output_dir_path = directory.parent / f"{directory.name}_output"
+
+    effective_formats = formats if formats else tuple(cfg.default_export_formats)
+    effective_workers = workers
+
+    processor = BatchProcessor(
+        workers=effective_workers,
+        checkpoint_every=cfg.checkpoint_every,
+    )
+
+    theme.section("Batch Processing", console, "01")
+    t = theme.make_clean_table(show_header=False)
+    t.add_column("Key", style=f"bold {theme.CORAL}", no_wrap=True)
+    t.add_column("Value")
+    t.add_row("Input directory", str(directory))
+    t.add_row("Output directory", str(output_dir_path))
+    if template:
+        t.add_row("Template", template)
+    if mode:
+        t.add_row("Mode", mode)
+    t.add_row("Export formats", ", ".join(effective_formats))
+    t.add_row("Workers", str(effective_workers))
+    t.add_row("Resume", theme.badge("Yes", "stable") if resume else "No")
+    console.print(Padding(t, (0, 0, 0, 2)))
+
+    # Build process function based on extraction path
+    from .metrics import PipelineMetrics
+    batch_metrics = PipelineMetrics()
+
+    if template:
+        # Resolve template once, then use for all documents
+        from .report import detect_mode, resolve_template
+
+        try:
+            template_model, tpl_name = resolve_template(template=template)
+        except (ValueError, FileNotFoundError) as exc:
+            raise click.ClickException(str(exc))
+
+        if tpl_name:
+            console.print(theme.info(f"Template: {tpl_name}"))
+
+        effective_mode = detect_mode(tpl_name)
+
+        if effective_mode is not None and template_model is None:
+            # Mode pipeline (no YAML schema)
+            import mosaicx.pipelines.radiology  # noqa: F401
+            import mosaicx.pipelines.pathology  # noqa: F401
+            from mosaicx.pipelines.extraction import extract_with_mode
+
+            console.print(theme.info(f"Mode: {effective_mode}"))
+            _configure_dspy()
+
+            def process_fn(text: str) -> dict:
+                output_data, metrics = extract_with_mode(text, effective_mode)
+                if metrics is not None:
+                    batch_metrics.steps.extend(metrics.steps)
+                return output_data
+        elif template_model is not None:
+            from mosaicx.pipelines.extraction import DocumentExtractor
+
+            _configure_dspy()
+            extractor = DocumentExtractor(output_schema=template_model)
+            if optimized is not None:
+                from .evaluation.optimize import load_optimized
+                extractor = load_optimized(type(extractor), optimized)
+
+            def process_fn(text: str) -> dict:
+                result = extractor(document_text=text)
+                doc_metrics = getattr(extractor, "_last_metrics", None)
+                if doc_metrics is not None:
+                    batch_metrics.steps.extend(doc_metrics.steps)
+                output = {}
+                if hasattr(result, "extracted"):
+                    val = result.extracted
+                    output["extracted"] = val.model_dump() if hasattr(val, "model_dump") else val
+                return output
+        else:
+            raise click.ClickException(
+                f"Template {template!r} resolved but produced no extraction template."
+            )
+    elif mode:
+        import mosaicx.pipelines.radiology  # noqa: F401
+        import mosaicx.pipelines.pathology  # noqa: F401
+        from mosaicx.pipelines.extraction import extract_with_mode
+        _configure_dspy()
+
+        def process_fn(text: str) -> dict:
+            output_data, metrics = extract_with_mode(text, mode)
+            if metrics is not None:
+                batch_metrics.steps.extend(metrics.steps)
+            return output_data
+    else:
+        from mosaicx.pipelines.extraction import DocumentExtractor
+        _configure_dspy()
+        extractor = DocumentExtractor()
+        if optimized is not None:
+            from .evaluation.optimize import load_optimized
+            extractor = load_optimized(type(extractor), optimized)
+
+        def process_fn(text: str) -> dict:
+            result = extractor(document_text=text)
+            doc_metrics = getattr(extractor, "_last_metrics", None)
+            if doc_metrics is not None:
+                batch_metrics.steps.extend(doc_metrics.steps)
+            output = {}
+            if hasattr(result, "extracted"):
+                val = result.extracted
+                output["extracted"] = val.model_dump() if hasattr(val, "model_dump") else val
+            return output
+
+    resume_id = "resume" if resume else None
+    checkpoint_dir = output_dir_path / ".checkpoints" if resume else None
+
+    # Count documents for progress bar
+    supported = {".txt", ".md", ".pdf", ".docx", ".png", ".jpg", ".jpeg", ".tif", ".tiff"}
+    total_docs = sum(1 for p in directory.iterdir() if p.is_file() and p.suffix.lower() in supported)
+
+    with theme.progress(total_docs, "documents", console) as advance:
+        result = processor.process_directory(
+            input_dir=directory,
+            output_dir=output_dir_path,
+            process_fn=process_fn,
+            resume_id=resume_id,
+            checkpoint_dir=checkpoint_dir,
+            load_fn=lambda p: _load_doc_with_config(p).text,
+            on_progress=lambda name, success: advance(),
+        )
+
+    console.print(theme.ok(f"Batch complete -- {result['succeeded']}/{result['total']} succeeded"))
+    if result["skipped"]:
+        console.print(theme.info(f"{result['skipped']} skipped (already processed)"))
+    if result["failed"]:
+        console.print(theme.warn(f"{result['failed']} failed"))
+        for err in result.get("errors", []):
+            console.print(theme.info(f"{err['file']}: {err['error']}"))
+
+    # -- Export consolidated formats -----------------------------------------
+    json_files = sorted(
+        p for p in output_dir_path.glob("*.json")
+        if not p.name.startswith(".")
+    )
+
+    if "jsonl" in effective_formats and json_files:
+        jsonl_path = output_dir_path / "results.jsonl"
+        with open(jsonl_path, "w", encoding="utf-8") as f:
+            for jf in json_files:
+                data = json.loads(jf.read_text(encoding="utf-8"))
+                data["_source"] = jf.stem
+                f.write(json.dumps(data, default=str, ensure_ascii=False) + "\n")
+        console.print(theme.ok(f"Exported {jsonl_path}"))
+
+    if "csv" in effective_formats and json_files:
+        try:
+            import pandas as pd
+
+            records = []
+            for jf in json_files:
+                data = json.loads(jf.read_text(encoding="utf-8"))
+                data["_source"] = jf.stem
+                records.append(data)
+            df = pd.json_normalize(records, sep="_")
+            csv_path = output_dir_path / "results.csv"
+            df.to_csv(csv_path, index=False)
+            console.print(theme.ok(f"Exported {csv_path}"))
+        except ImportError:
+            console.print(theme.warn(
+                "pandas required for CSV export: pip install pandas"
+            ))
+
+    if "parquet" in effective_formats and json_files:
+        try:
+            import pandas as pd
+
+            records = []
+            for jf in json_files:
+                data = json.loads(jf.read_text(encoding="utf-8"))
+                data["_source"] = jf.stem
+                records.append(data)
+            df = pd.json_normalize(records, sep="_")
+            parquet_path = output_dir_path / "results.parquet"
+            df.to_parquet(parquet_path, index=False)
+            console.print(theme.ok(f"Exported {parquet_path}"))
+        except ImportError:
+            console.print(theme.warn(
+                "pandas + pyarrow required for parquet: pip install pandas pyarrow"
+            ))
+
+    # Display aggregate performance metrics
+    if batch_metrics.steps:
+        from .cli_display import render_metrics
+        render_metrics(batch_metrics, console)
+
+
+# ---------------------------------------------------------------------------
 # extract
 # ---------------------------------------------------------------------------
 
 
 @cli.command()
-@click.option("--document", type=click.Path(exists=True, path_type=Path), default=None, help="Path to clinical document.")
+@click.option("--document", type=click.Path(exists=True, path_type=Path), default=None, help="Path to clinical document (single file).")
+@click.option("--dir", "directory", type=click.Path(exists=True, file_okay=False, path_type=Path), default=None, help="Directory of documents to process (batch mode).")
 @click.option("--template", type=str, default=None, help="Template name, YAML file path, or saved template name.")
 @click.option("--mode", type=str, default=None, help="Extraction mode name (e.g., radiology, pathology).")
 @click.option("--score", is_flag=True, default=False, help="Score completeness of extracted data against the template.")
 @click.option("--optimized", type=click.Path(exists=True, path_type=Path), default=None, help="Path to optimized program.")
-@click.option("--output", "-o", type=click.Path(path_type=Path), default=None, help="Save output to file (.json or .yaml/.yml).")
+@click.option("--output", "-o", type=click.Path(path_type=Path), default=None, help="Save output to file (.json or .yaml/.yml) for single-file extraction.")
+@click.option("--output-dir", type=click.Path(path_type=Path), default=None, help="Output directory for batch results (used with --dir).")
+@click.option("--format", "formats", type=click.Choice(["json", "jsonl", "csv", "parquet"], case_sensitive=False), multiple=True, default=("json",), show_default=True, help="Output format(s) for batch results.")
+@click.option("--workers", type=int, default=1, show_default=True, help="Number of parallel workers for batch processing.")
+@click.option("--resume", is_flag=True, default=False, help="Resume batch processing from last checkpoint.")
 @click.option("--list-modes", is_flag=True, default=False, help="Print available modes and exit.")
 @click.pass_context
 def extract(
     ctx: click.Context,
     document: Optional[Path],
+    directory: Optional[Path],
     template: Optional[str],
     mode: Optional[str],
     score: bool,
     optimized: Optional[Path],
     output: Optional[Path],
+    output_dir: Optional[Path],
+    formats: tuple[str, ...],
+    workers: int,
+    resume: bool,
     list_modes: bool,
 ) -> None:
-    """Extract structured data from a clinical document.
+    """Extract structured data from a clinical document or directory.
+
+    \b
+    Supports single-file extraction (--document) and batch processing
+    (--dir). When --dir is used, all supported documents in the directory
+    are processed and results are written to --output-dir.
 
     \b
     The --template flag is the unified way to specify what to extract.
@@ -277,12 +521,17 @@ def extract(
       3. Legacy saved schema (from ~/.mosaicx/schemas/)
 
     \b
-    Examples:
+    Examples (single file):
       mosaicx extract --document scan.pdf
       mosaicx extract --document scan.pdf --template chest_ct
-      mosaicx extract --document scan.pdf --template echo.yaml
-      mosaicx extract --document scan.pdf --template EchoReport
       mosaicx extract --document scan.pdf --template chest_ct --score
+
+    \b
+    Examples (batch / directory):
+      mosaicx extract --dir reports/ --template chest_ct
+      mosaicx extract --dir reports/ --workers 4 --output-dir results/
+      mosaicx extract --dir reports/ --format json csv
+      mosaicx extract --dir reports/ --resume
     """
 
     # --list-modes: print available modes and exit (no document needed)
@@ -304,10 +553,18 @@ def extract(
         ctx.exit()
         return
 
-    # Validate: --document is required for extraction
-    if document is None:
+    # Mutual exclusivity: --document and --dir
+    if document is not None and directory is not None:
+        raise click.UsageError(
+            "--document and --dir are mutually exclusive. Provide one or the other."
+        )
+
+    # Validate: either --document or --dir is required for extraction
+    if document is None and directory is None:
         raise click.ClickException(
-            "--document is required. Usage: mosaicx extract --document <file>"
+            "--document or --dir is required. Usage:\n"
+            "  mosaicx extract --document <file>    (single file)\n"
+            "  mosaicx extract --dir <directory>     (batch mode)"
         )
 
     # Mutual exclusivity: --template and --mode
@@ -315,6 +572,21 @@ def extract(
         raise click.ClickException(
             "--template and --mode are mutually exclusive. Provide at most one."
         )
+
+    # Route to batch processing when --dir is used
+    if directory is not None:
+        _extract_batch(
+            ctx=ctx,
+            directory=directory,
+            template=template,
+            mode=mode,
+            optimized=optimized,
+            output_dir_path=output_dir,
+            formats=formats,
+            workers=workers,
+            resume=resume,
+        )
+        return
 
     # Validate template/mode early (cheap checks before expensive I/O)
     if template is not None:
@@ -527,228 +799,6 @@ def extract(
 
 
 # ---------------------------------------------------------------------------
-# batch
-# ---------------------------------------------------------------------------
-
-
-@cli.command()
-@click.option("--input-dir", required=True, type=click.Path(exists=True, file_okay=False, path_type=Path), help="Directory of input documents.")
-@click.option("--output-dir", required=True, type=click.Path(path_type=Path), help="Directory for output files.")
-@click.option("--template", type=str, default=None, help="Template name, YAML file path, or saved template name.")
-@click.option("--mode", type=str, default=None, help="Extraction mode name (e.g., radiology, pathology).")
-@click.option("--format", "formats", type=str, multiple=True, help="Output format(s): json, jsonl, csv, parquet.")
-@click.option("--workers", type=int, default=1, show_default=True, help="Number of parallel workers.")
-@click.option("--resume", is_flag=True, help="Resume from last checkpoint.")
-def batch(
-    input_dir: Path,
-    output_dir: Path,
-    template: Optional[str],
-    mode: Optional[str],
-    formats: tuple[str, ...],
-    workers: int,
-    resume: bool,
-) -> None:
-    """Batch-process a directory of documents."""
-    # Preflight: check API key before expensive document loading
-    _check_api_key()
-
-    # Validate mode name early (before configuring DSPy)
-    if mode is not None and template is None:
-        import mosaicx.pipelines.pathology  # noqa: F401
-        import mosaicx.pipelines.radiology  # noqa: F401
-        from .pipelines.modes import get_mode
-        try:
-            get_mode(mode)
-        except ValueError as exc:
-            raise click.ClickException(str(exc))
-
-    from .batch import BatchProcessor
-
-    cfg = get_config()
-    effective_formats = formats if formats else tuple(cfg.default_export_formats)
-    effective_workers = workers
-
-    processor = BatchProcessor(
-        workers=effective_workers,
-        checkpoint_every=cfg.checkpoint_every,
-    )
-
-    theme.section("Batch Processing", console, "01")
-    t = theme.make_clean_table(show_header=False)
-    t.add_column("Key", style=f"bold {theme.CORAL}", no_wrap=True)
-    t.add_column("Value")
-    t.add_row("Input directory", str(input_dir))
-    t.add_row("Output directory", str(output_dir))
-    if template:
-        t.add_row("Template", template)
-    if mode:
-        t.add_row("Mode", mode)
-    t.add_row("Export formats", ", ".join(effective_formats))
-    t.add_row("Workers", str(effective_workers))
-    t.add_row("Resume", theme.badge("Yes", "stable") if resume else "No")
-    console.print(Padding(t, (0, 0, 0, 2)))
-
-    # Build process function based on extraction path
-    from .metrics import PipelineMetrics
-    batch_metrics = PipelineMetrics()
-
-    if template:
-        # Resolve template once, then use for all documents
-        from .report import detect_mode, resolve_template
-
-        try:
-            template_model, tpl_name = resolve_template(template=template)
-        except (ValueError, FileNotFoundError) as exc:
-            raise click.ClickException(str(exc))
-
-        if tpl_name:
-            console.print(theme.info(f"Template: {tpl_name}"))
-
-        effective_mode = detect_mode(tpl_name)
-
-        if effective_mode is not None and template_model is None:
-            # Mode pipeline (no YAML schema)
-            import mosaicx.pipelines.radiology  # noqa: F401
-            import mosaicx.pipelines.pathology  # noqa: F401
-            from mosaicx.pipelines.extraction import extract_with_mode
-
-            console.print(theme.info(f"Mode: {effective_mode}"))
-            _configure_dspy()
-
-            def process_fn(text: str) -> dict:
-                output_data, metrics = extract_with_mode(text, effective_mode)
-                if metrics is not None:
-                    batch_metrics.steps.extend(metrics.steps)
-                return output_data
-        elif template_model is not None:
-            from mosaicx.pipelines.extraction import DocumentExtractor
-
-            _configure_dspy()
-            extractor = DocumentExtractor(output_schema=template_model)
-
-            def process_fn(text: str) -> dict:
-                result = extractor(document_text=text)
-                doc_metrics = getattr(extractor, "_last_metrics", None)
-                if doc_metrics is not None:
-                    batch_metrics.steps.extend(doc_metrics.steps)
-                output = {}
-                if hasattr(result, "extracted"):
-                    val = result.extracted
-                    output["extracted"] = val.model_dump() if hasattr(val, "model_dump") else val
-                return output
-        else:
-            raise click.ClickException(
-                f"Template {template!r} resolved but produced no extraction template."
-            )
-    elif mode:
-        import mosaicx.pipelines.radiology  # noqa: F401
-        import mosaicx.pipelines.pathology  # noqa: F401
-        from mosaicx.pipelines.extraction import extract_with_mode
-        _configure_dspy()
-        def process_fn(text: str) -> dict:
-            output_data, metrics = extract_with_mode(text, mode)
-            if metrics is not None:
-                batch_metrics.steps.extend(metrics.steps)
-            return output_data
-    else:
-        from mosaicx.pipelines.extraction import DocumentExtractor
-        _configure_dspy()
-        extractor = DocumentExtractor()
-        def process_fn(text: str) -> dict:
-            result = extractor(document_text=text)
-            doc_metrics = getattr(extractor, "_last_metrics", None)
-            if doc_metrics is not None:
-                batch_metrics.steps.extend(doc_metrics.steps)
-            output = {}
-            if hasattr(result, "extracted"):
-                val = result.extracted
-                output["extracted"] = val.model_dump() if hasattr(val, "model_dump") else val
-            return output
-
-    resume_id = "resume" if resume else None
-    checkpoint_dir = output_dir / ".checkpoints" if resume else None
-
-    # Count documents for progress bar
-    supported = {".txt", ".md", ".pdf", ".docx", ".png", ".jpg", ".jpeg", ".tif", ".tiff"}
-    total_docs = sum(1 for p in input_dir.iterdir() if p.is_file() and p.suffix.lower() in supported)
-
-    with theme.progress(total_docs, "documents", console) as advance:
-        result = processor.process_directory(
-            input_dir=input_dir,
-            output_dir=output_dir,
-            process_fn=process_fn,
-            resume_id=resume_id,
-            checkpoint_dir=checkpoint_dir,
-            load_fn=lambda p: _load_doc_with_config(p).text,
-            on_progress=lambda name, success: advance(),
-        )
-
-    console.print(theme.ok(f"Batch complete \u2014 {result['succeeded']}/{result['total']} succeeded"))
-    if result["skipped"]:
-        console.print(theme.info(f"{result['skipped']} skipped (already processed)"))
-    if result["failed"]:
-        console.print(theme.warn(f"{result['failed']} failed"))
-        for err in result.get("errors", []):
-            console.print(theme.info(f"{err['file']}: {err['error']}"))
-
-    # ── Export consolidated formats ──────────────────────────────
-    json_files = sorted(
-        p for p in output_dir.glob("*.json")
-        if not p.name.startswith(".")
-    )
-
-    if "jsonl" in effective_formats and json_files:
-        jsonl_path = output_dir / "results.jsonl"
-        with open(jsonl_path, "w", encoding="utf-8") as f:
-            for jf in json_files:
-                data = json.loads(jf.read_text(encoding="utf-8"))
-                data["_source"] = jf.stem
-                f.write(json.dumps(data, default=str, ensure_ascii=False) + "\n")
-        console.print(theme.ok(f"Exported {jsonl_path}"))
-
-    if "csv" in effective_formats and json_files:
-        try:
-            import pandas as pd
-
-            records = []
-            for jf in json_files:
-                data = json.loads(jf.read_text(encoding="utf-8"))
-                data["_source"] = jf.stem
-                records.append(data)
-            df = pd.json_normalize(records, sep="_")
-            csv_path = output_dir / "results.csv"
-            df.to_csv(csv_path, index=False)
-            console.print(theme.ok(f"Exported {csv_path}"))
-        except ImportError:
-            console.print(theme.warn(
-                "pandas required for CSV export: pip install pandas"
-            ))
-
-    if "parquet" in effective_formats and json_files:
-        try:
-            import pandas as pd
-
-            records = []
-            for jf in json_files:
-                data = json.loads(jf.read_text(encoding="utf-8"))
-                data["_source"] = jf.stem
-                records.append(data)
-            df = pd.json_normalize(records, sep="_")
-            parquet_path = output_dir / "results.parquet"
-            df.to_parquet(parquet_path, index=False)
-            console.print(theme.ok(f"Exported {parquet_path}"))
-        except ImportError:
-            console.print(theme.warn(
-                "pandas + pyarrow required for parquet: pip install pandas pyarrow"
-            ))
-
-    # Display aggregate performance metrics
-    if batch_metrics.steps:
-        from .cli_display import render_metrics
-        render_metrics(batch_metrics, console)
-
-
-# ---------------------------------------------------------------------------
 # pipeline (group)
 # ---------------------------------------------------------------------------
 
@@ -772,6 +822,11 @@ def pipeline_new(name: str, description: str) -> None:
     NAME is the pipeline name (e.g. cardiology, ophthalmology).
     A snake_case file and PascalCase DSPy Module will be generated
     automatically.
+
+    \b
+    Examples:
+      mosaicx pipeline new cardiology
+      mosaicx pipeline new ophthalmology -d "Ophthalmic imaging reports"
     """
     from .pipelines.scaffold import scaffold_pipeline, WIRING_CHECKLIST, _to_snake_case
 
@@ -820,7 +875,12 @@ def template() -> None:
 
 @template.command("list")
 def template_list() -> None:
-    """List available built-in and user-created templates."""
+    """List available built-in and user-created templates.
+
+    \b
+    Examples:
+      mosaicx template list
+    """
     from .schemas.radreport.registry import list_templates
 
     templates = list_templates()
@@ -880,7 +940,12 @@ def template_list() -> None:
 @template.command("validate")
 @click.option("--file", "file_path", type=click.Path(exists=True, path_type=Path), required=True, help="Template YAML file to validate.")
 def template_validate(file_path: Path) -> None:
-    """Validate a template file."""
+    """Validate a template YAML file and show its compiled fields.
+
+    \b
+    Examples:
+      mosaicx template validate --file my_template.yaml
+    """
     from .schemas.template_compiler import compile_template_file
 
     try:
@@ -911,7 +976,20 @@ def template_create(
     mode: Optional[str],
     output: Optional[Path],
 ) -> None:
-    """Create a new YAML template from a description, document, URL, or JSON schema."""
+    """Create a new YAML template from a description, document, URL, or JSON schema.
+
+    \b
+    Provide exactly one source. The LLM generates a template and saves
+    it to ~/.mosaicx/templates/ (or --output path).
+
+    \b
+    Examples:
+      mosaicx template create --describe "chest CT with nodules and lung-rads"
+      mosaicx template create --from-document sample_report.pdf
+      mosaicx template create --from-radreport 50890
+      mosaicx template create --from-json old_schema.json
+      mosaicx template create --from-url https://radreport.org/home/50
+    """
     from .schemas.template_compiler import schema_spec_to_template_yaml
 
     sources = sum(x is not None for x in (describe, from_document, from_url, from_radreport, from_json))
@@ -1151,7 +1229,16 @@ def _save_template_yaml(
 @template.command("show")
 @click.argument("name")
 def template_show(name: str) -> None:
-    """Show details of a template (built-in or user-created)."""
+    """Show details of a template (built-in or user-created).
+
+    NAME is the template name (e.g. chest_ct, MedicalReport).
+    Use 'mosaicx template list' to see available names.
+
+    \b
+    Examples:
+      mosaicx template show chest_ct
+      mosaicx template show MedicalReport
+    """
     from .report import _find_builtin_template_yaml, _find_user_template_yaml
     from .schemas.template_compiler import parse_template
 
@@ -1260,7 +1347,16 @@ def template_show(name: str) -> None:
 @click.option("--instruction", type=str, required=True, help="Natural-language refinement instruction.")
 @click.option("--output", type=click.Path(path_type=Path), default=None, help="Save refined template to a different path.")
 def template_refine(name: str, instruction: str, output: Optional[Path]) -> None:
-    """Refine an existing template using LLM-powered instructions."""
+    """Refine an existing template using LLM-powered instructions.
+
+    NAME is the template name (e.g. chest_ct, MedicalReport).
+    Use 'mosaicx template list' to see available names.
+
+    \b
+    Examples:
+      mosaicx template refine MedicalReport --instruction "add pathology"
+      mosaicx template refine chest_ct --instruction "add lung-rads scoring"
+    """
     from .report import _find_builtin_template_yaml, _find_user_template_yaml
     from .schemas.template_compiler import parse_template, schema_spec_to_template_yaml
 
@@ -1354,6 +1450,11 @@ def template_migrate(dry_run: bool) -> None:
     """Migrate legacy JSON schemas to YAML templates.
 
     Converts ~/.mosaicx/schemas/*.json to ~/.mosaicx/templates/*.yaml.
+
+    \b
+    Examples:
+      mosaicx template migrate --dry-run
+      mosaicx template migrate
     """
     from .pipelines.schema_gen import load_schema
     from .schemas.template_compiler import schema_spec_to_template_yaml
@@ -1463,7 +1564,14 @@ def _archive_template(name: str, current_path: Path) -> int:
 @template.command("history")
 @click.argument("name")
 def template_history(name: str) -> None:
-    """Show version history of a user template."""
+    """Show version history of a user template.
+
+    NAME is the template name (e.g. MedicalReport).
+
+    \b
+    Examples:
+      mosaicx template history MedicalReport
+    """
     from .report import _find_user_template_yaml
 
     path = _find_user_template_yaml(name)
@@ -1507,7 +1615,15 @@ def template_history(name: str) -> None:
 @click.argument("name")
 @click.option("--version", "version_num", type=int, required=True, help="Version number to revert to.")
 def template_revert(name: str, version_num: int) -> None:
-    """Revert a user template to a previous version."""
+    """Revert a user template to a previous version.
+
+    NAME is the template name (e.g. MedicalReport).
+    Use 'mosaicx template history NAME' to see available versions.
+
+    \b
+    Examples:
+      mosaicx template revert MedicalReport --version 2
+    """
     import shutil
 
     from .report import _find_user_template_yaml
@@ -1543,7 +1659,14 @@ def template_revert(name: str, version_num: int) -> None:
 @click.argument("name")
 @click.option("--version", "version_num", type=int, required=True, help="Version number to compare against current.")
 def template_diff(name: str, version_num: int) -> None:
-    """Show differences between current template and a previous version."""
+    """Show differences between current template and a previous version.
+
+    NAME is the template name (e.g. MedicalReport).
+
+    \b
+    Examples:
+      mosaicx template diff MedicalReport --version 1
+    """
     try:
         import yaml
     except ImportError:
@@ -1642,14 +1765,28 @@ def template_diff(name: str, version_num: int) -> None:
 @click.option("--document", type=click.Path(exists=True, path_type=Path), default=None, help="Single document to summarize.")
 @click.option("--dir", "directory", type=click.Path(exists=True, file_okay=False, path_type=Path), default=None, help="Directory of reports.")
 @click.option("--patient", type=str, default=None, help="Patient identifier.")
+@click.option("--output", "-o", type=click.Path(path_type=Path), default=None, help="Save output to file (.json or .yaml/.yml).")
 @click.option("--format", "formats", type=str, multiple=True, help="Output format(s): json, jsonl, csv, parquet.")
 def summarize(
     document: Optional[Path],
     directory: Optional[Path],
     patient: Optional[str],
+    output: Optional[Path],
     formats: tuple[str, ...],
 ) -> None:
-    """Summarize clinical reports for a patient."""
+    """Summarize clinical reports for a patient.
+
+    \b
+    Produces a narrative summary and a timeline of key clinical events.
+    Accepts a single file (--document) or a directory of reports (--dir).
+
+    \b
+    Examples:
+      mosaicx summarize --document report.pdf
+      mosaicx summarize --document report.pdf --patient "Patient A"
+      mosaicx summarize --document report.pdf -o summary.json
+      mosaicx summarize --dir reports/
+    """
     if document is None and directory is None:
         raise click.ClickException("Provide --document or --dir.")
 
@@ -1701,18 +1838,47 @@ def summarize(
 
     console.print(theme.ok("TL;DR ready \u2014 I see this as an absolute win"))
 
+    # Build output data dict
+    output_data = {
+        "narrative": result.narrative,
+        "events": [e.model_dump() for e in result.events] if result.events else [],
+    }
+
+    # Save to file if --output specified
+    if output is not None:
+        suffix = output.suffix.lower()
+        if suffix in (".yaml", ".yml"):
+            try:
+                import yaml
+            except ImportError:
+                raise click.ClickException("PyYAML required for YAML output: pip install pyyaml")
+            output.parent.mkdir(parents=True, exist_ok=True)
+            output.write_text(yaml.dump(output_data, default_flow_style=False, sort_keys=False, allow_unicode=True), encoding="utf-8")
+        else:
+            if not suffix:
+                output = output.with_suffix(".json")
+            output.parent.mkdir(parents=True, exist_ok=True)
+            output.write_text(json.dumps(output_data, indent=2, default=str, ensure_ascii=False), encoding="utf-8")
+        console.print(theme.ok(f"Saved to {output}"))
+
     theme.section("Narrative Summary", console)
-    console.print(
-        Panel(
-            result.narrative,
-            box=box.ROUNDED,
-            border_style=theme.GREIGE,
-            padding=(1, 2),
-        )
-    )
+    console.print(Padding(result.narrative, (1, 2, 1, 4)))
 
     if result.events:
-        console.print(theme.info(f"{len(result.events)} timeline event(s) extracted"))
+        theme.section("Timeline Events", console)
+        t = Table(box=box.SIMPLE_HEAD, border_style=theme.GREIGE, padding=(0, 1))
+        t.add_column("Date", style=f"bold {theme.CORAL}", no_wrap=True)
+        t.add_column("Exam", style=f"bold")
+        t.add_column("Key Finding")
+        t.add_column("Change from Prior", style=f"{theme.MUTED}")
+        for ev in result.events:
+            t.add_row(
+                ev.date,
+                ev.exam_type,
+                ev.key_finding,
+                ev.change_from_prior or "",
+            )
+        console.print(Padding(t, (0, 0, 0, 2)))
 
     # Display performance metrics
     metrics = getattr(summarizer, "_last_metrics", None)
@@ -1724,6 +1890,138 @@ def summarize(
 # ---------------------------------------------------------------------------
 # deidentify
 # ---------------------------------------------------------------------------
+
+
+def _deidentify_batch(
+    directory: Path,
+    mode: str,
+    regex_only: bool,
+    output_dir_path: Optional[Path],
+    formats: tuple[str, ...],
+    workers: int,
+    resume: bool,
+) -> None:
+    """Batch de-identify a directory of documents."""
+    if not regex_only:
+        _check_api_key()
+
+    from .batch import BatchProcessor
+
+    cfg = get_config()
+
+    if output_dir_path is None:
+        output_dir_path = directory.parent / f"{directory.name}_deidentified"
+
+    effective_formats = formats if formats else ("json",)
+
+    processor = BatchProcessor(
+        workers=workers,
+        checkpoint_every=cfg.checkpoint_every,
+    )
+
+    theme.section("Batch De-identification", console, "01")
+    t = theme.make_clean_table(show_header=False)
+    t.add_column("Key", style=f"bold {theme.CORAL}", no_wrap=True)
+    t.add_column("Value")
+    t.add_row("Input directory", str(directory))
+    t.add_row("Output directory", str(output_dir_path))
+    t.add_row("Mode", mode)
+    t.add_row("Regex-only", theme.badge("Yes", "stable") if regex_only else "No")
+    t.add_row("Export formats", ", ".join(effective_formats))
+    t.add_row("Workers", str(workers))
+    t.add_row("Resume", theme.badge("Yes", "stable") if resume else "No")
+    console.print(Padding(t, (0, 0, 0, 2)))
+
+    if regex_only:
+        from .pipelines.deidentifier import regex_scrub_phi
+
+        def process_fn(text: str) -> dict:
+            return {"redacted_text": regex_scrub_phi(text), "mode": "regex"}
+    else:
+        _configure_dspy()
+        from .pipelines.deidentifier import Deidentifier
+
+        deid = Deidentifier()
+
+        def process_fn(text: str) -> dict:
+            result = deid(document_text=text, mode=mode)
+            return {"redacted_text": result.redacted_text, "mode": mode}
+
+    resume_id = "resume" if resume else None
+    checkpoint_dir = output_dir_path / ".checkpoints" if resume else None
+
+    supported = {".txt", ".md", ".pdf", ".docx"}
+    total_docs = sum(1 for p in directory.iterdir() if p.is_file() and p.suffix.lower() in supported)
+
+    with theme.progress(total_docs, "documents", console) as advance:
+        result = processor.process_directory(
+            input_dir=directory,
+            output_dir=output_dir_path,
+            process_fn=process_fn,
+            resume_id=resume_id,
+            checkpoint_dir=checkpoint_dir,
+            load_fn=lambda p: _load_doc_with_config(p).text,
+            on_progress=lambda name, success: advance(),
+        )
+
+    console.print(theme.ok(f"Batch complete -- {result['succeeded']}/{result['total']} succeeded"))
+    if result["skipped"]:
+        console.print(theme.info(f"{result['skipped']} skipped (already processed)"))
+    if result["failed"]:
+        console.print(theme.warn(f"{result['failed']} failed"))
+        for err in result.get("errors", []):
+            console.print(theme.info(f"{err['file']}: {err['error']}"))
+
+    # -- Export consolidated formats -----------------------------------------
+    json_files = sorted(
+        p for p in output_dir_path.glob("*.json")
+        if not p.name.startswith(".")
+    )
+
+    if "jsonl" in effective_formats and json_files:
+        jsonl_path = output_dir_path / "results.jsonl"
+        with open(jsonl_path, "w", encoding="utf-8") as f:
+            for jf in json_files:
+                data = json.loads(jf.read_text(encoding="utf-8"))
+                data["_source"] = jf.stem
+                f.write(json.dumps(data, default=str, ensure_ascii=False) + "\n")
+        console.print(theme.ok(f"Exported {jsonl_path}"))
+
+    if "csv" in effective_formats and json_files:
+        try:
+            import pandas as pd
+
+            records = []
+            for jf in json_files:
+                data = json.loads(jf.read_text(encoding="utf-8"))
+                data["_source"] = jf.stem
+                records.append(data)
+            df = pd.json_normalize(records, sep="_")
+            csv_path = output_dir_path / "results.csv"
+            df.to_csv(csv_path, index=False)
+            console.print(theme.ok(f"Exported {csv_path}"))
+        except ImportError:
+            console.print(theme.warn(
+                "pandas required for CSV export: pip install pandas"
+            ))
+
+    if "parquet" in effective_formats and json_files:
+        try:
+            import pandas as pd
+
+            records = []
+            for jf in json_files:
+                data = json.loads(jf.read_text(encoding="utf-8"))
+                data["_source"] = jf.stem
+                records.append(data)
+            df = pd.json_normalize(records, sep="_")
+            parquet_path = output_dir_path / "results.parquet"
+            df.to_parquet(parquet_path, index=False)
+            console.print(theme.ok(f"Exported {parquet_path}"))
+        except ImportError:
+            console.print(theme.warn(
+                "pandas + pyarrow required for parquet: pip install pandas pyarrow"
+            ))
 
 
 @cli.command()
@@ -1738,104 +2036,131 @@ def summarize(
 )
 @click.option("--regex-only", is_flag=True, default=False, help="Use regex-only PHI scrubbing (no LLM needed).")
 @click.option("--workers", type=int, default=1, show_default=True, help="Number of parallel workers.")
+@click.option("--output", "-o", type=click.Path(path_type=Path), default=None, help="Save output to file (.json or .yaml/.yml) for single-file de-identification.")
+@click.option("--output-dir", type=click.Path(path_type=Path), default=None, help="Output directory for batch results (used with --dir).")
+@click.option("--format", "formats", type=click.Choice(["json", "jsonl", "csv", "parquet"], case_sensitive=False), multiple=True, default=("json",), show_default=True, help="Output format(s) for batch results.")
+@click.option("--resume", is_flag=True, default=False, help="Resume batch processing from last checkpoint.")
 def deidentify(
     document: Optional[Path],
     directory: Optional[Path],
     mode: str,
     regex_only: bool,
     workers: int,
+    output: Optional[Path],
+    output_dir: Optional[Path],
+    formats: tuple[str, ...],
+    resume: bool,
 ) -> None:
-    """De-identify clinical documents."""
-    from .pipelines.deidentifier import regex_scrub_phi
+    """De-identify clinical documents by removing or replacing PHI.
 
+    \b
+    Accepts a single file (--document) or a directory (--dir).
+    Use --regex-only for fast rule-based scrubbing without an LLM.
+
+    \b
+    Examples:
+      mosaicx deidentify --document note.pdf
+      mosaicx deidentify --document note.pdf --mode pseudonymize
+      mosaicx deidentify --document note.pdf --regex-only -o clean.json
+      mosaicx deidentify --dir notes/ --workers 4 --output-dir cleaned/
+    """
     if document is None and directory is None:
         raise click.ClickException("Provide --document or --dir.")
+    if document is not None and directory is not None:
+        raise click.UsageError("--document and --dir are mutually exclusive.")
 
-    # Preflight: check API key if LLM is needed
+    # Route batch to helper
+    if directory is not None:
+        _deidentify_batch(
+            directory=directory,
+            mode=mode,
+            regex_only=regex_only,
+            output_dir_path=output_dir,
+            formats=formats,
+            workers=workers,
+            resume=resume,
+        )
+        return
+
+    # Single file processing
     if not regex_only:
         _check_api_key()
 
-    # Collect file paths
-    paths: list[Path] = []
-    if document is not None:
-        paths.append(document)
-    elif directory is not None:
-        supported = (".txt", ".md", ".markdown", ".pdf")
-        for p in sorted(directory.iterdir()):
-            if p.suffix.lower() in supported:
-                paths.append(p)
+    from .documents.models import DocumentLoadError
 
-    if not paths:
-        raise click.ClickException(
-            "No documents found. --dir scans for .txt, .md, and .pdf files."
-        )
+    try:
+        doc = _load_doc_with_config(document)
+    except (FileNotFoundError, ValueError, DocumentLoadError) as exc:
+        raise click.ClickException(str(exc))
 
-    console.print(theme.info(
-        f"De-identifying {len(paths)} document(s) \u00b7 mode: {mode}"
-        f"{' \u00b7 regex-only' if regex_only else ''}"
-    ))
+    if doc.quality_warning:
+        console.print(theme.warn("Low OCR quality detected -- results may be unreliable"))
+
+    console.print(theme.info(f"De-identifying 1 document -- mode: {mode}{'  -- regex-only' if regex_only else ''}"))
 
     if regex_only:
-        # Regex-only mode: no LLM needed
-        from .documents.models import DocumentLoadError
+        from .pipelines.deidentifier import regex_scrub_phi
 
-        for p in paths:
-            try:
-                doc = _load_doc_with_config(p)
-                text = doc.text
-            except (FileNotFoundError, ValueError, DocumentLoadError) as exc:
-                console.print(theme.warn(f"Skipping {p.name}: {exc}"))
-                continue
-            scrubbed = regex_scrub_phi(text)
-            theme.section(p.name, console, uppercase=False)
-            console.print(
-                Panel(
-                    scrubbed,
-                    box=box.ROUNDED,
-                    border_style=theme.GREIGE,
-                    padding=(1, 2),
-                )
-            )
+        redacted = regex_scrub_phi(doc.text)
     else:
-        # Full LLM + regex pipeline
         _configure_dspy()
-
-        from .documents.models import DocumentLoadError
         from .pipelines.deidentifier import Deidentifier
 
-        from .cli_display import render_metrics
-        from .metrics import PipelineMetrics
-
         deid = Deidentifier()
-        aggregate_metrics = PipelineMetrics()
-        for p in paths:
-            try:
-                doc = _load_doc_with_config(p)
-            except (FileNotFoundError, ValueError, DocumentLoadError) as exc:
-                console.print(theme.warn(f"Skipping {p.name}: {exc}"))
-                continue
-            if doc.quality_warning:
-                console.print(theme.warn("Low OCR quality detected \u2014 results may be unreliable"))
-            with theme.spinner(f"Scrubbing {p.name}... nothing to see here", console):
-                result = deid(document_text=doc.text, mode=mode)
-            console.print(theme.ok("Scrubbed \u2014 PHI has left the chat"))
-            theme.section(p.name, console, uppercase=False)
-            console.print(
-                Panel(
-                    result.redacted_text,
-                    box=box.ROUNDED,
-                    border_style=theme.GREIGE,
-                    padding=(1, 2),
-                )
-            )
-            # Accumulate metrics
-            doc_metrics = getattr(deid, "_last_metrics", None)
-            if doc_metrics is not None:
-                aggregate_metrics.steps.extend(doc_metrics.steps)
+        with theme.spinner(f"Scrubbing {document.name}... nothing to see here", console):
+            result = deid(document_text=doc.text, mode=mode)
+        redacted = result.redacted_text
+        console.print(theme.ok("Scrubbed -- PHI has left the chat"))
 
-        # Display aggregate performance metrics
-        if aggregate_metrics.steps:
-            render_metrics(aggregate_metrics, console)
+    # Save if --output
+    if output is not None:
+        save_data = {"redacted_text": redacted, "mode": "regex" if regex_only else mode}
+        suffix = output.suffix.lower()
+        if suffix in (".yaml", ".yml"):
+            try:
+                import yaml
+            except ImportError:
+                raise click.ClickException(
+                    "PyYAML required for YAML output: pip install pyyaml"
+                )
+            output.parent.mkdir(parents=True, exist_ok=True)
+            output.write_text(
+                yaml.dump(
+                    save_data,
+                    default_flow_style=False,
+                    sort_keys=False,
+                    allow_unicode=True,
+                ),
+                encoding="utf-8",
+            )
+        else:
+            if not suffix:
+                output = output.with_suffix(".json")
+            output.parent.mkdir(parents=True, exist_ok=True)
+            output.write_text(
+                json.dumps(save_data, indent=2, default=str, ensure_ascii=False),
+                encoding="utf-8",
+            )
+        console.print(theme.ok(f"Saved to {output}"))
+
+    # Display
+    theme.section(document.name, console, uppercase=False)
+    console.print(
+        Panel(
+            redacted,
+            box=box.ROUNDED,
+            border_style=theme.GREIGE,
+            padding=(1, 2),
+        )
+    )
+
+    # Metrics (LLM path only)
+    if not regex_only:
+        doc_metrics = getattr(deid, "_last_metrics", None)
+        if doc_metrics is not None:
+            from .cli_display import render_metrics
+
+            render_metrics(doc_metrics, console)
 
 
 # ---------------------------------------------------------------------------
@@ -1864,7 +2189,19 @@ def optimize(
     save: Optional[Path],
     list_pipelines: bool,
 ) -> None:
-    """Optimize a DSPy pipeline with labeled examples."""
+    """Optimize a DSPy pipeline with labeled examples.
+
+    \b
+    Tunes pipeline prompts using a training set. Use --list-pipelines
+    to see available pipelines.
+
+    \b
+    Examples:
+      mosaicx optimize --pipeline radiology --trainset train.jsonl
+      mosaicx optimize --pipeline radiology --trainset train.jsonl --budget heavy
+      mosaicx optimize --pipeline radiology --trainset train.jsonl --save optimized.json
+      mosaicx optimize --list-pipelines
+    """
     from .evaluation.optimize import (
         OPTIMIZATION_STRATEGY,
         get_optimizer_config,
@@ -1988,7 +2325,18 @@ def eval_cmd(
     optimized: Optional[Path],
     output: Optional[Path],
 ) -> None:
-    """Evaluate a pipeline against a labeled test set."""
+    """Evaluate a pipeline against a labeled test set.
+
+    \b
+    Runs the pipeline on each example in the test set and reports
+    accuracy metrics. Optionally use an optimized program.
+
+    \b
+    Examples:
+      mosaicx eval --pipeline radiology --testset test.jsonl
+      mosaicx eval --pipeline radiology --testset test.jsonl --optimized opt.json
+      mosaicx eval --pipeline radiology --testset test.jsonl --output results.json
+    """
     from .evaluation.dataset import load_jsonl
     from .evaluation.metrics import get_metric
     from .evaluation.optimize import get_pipeline_class, load_optimized
@@ -2119,7 +2467,12 @@ def config() -> None:
 
 @config.command("show")
 def config_show() -> None:
-    """Show current configuration."""
+    """Show current configuration.
+
+    \b
+    Examples:
+      mosaicx config show
+    """
     cfg = get_config()
     dump = cfg.model_dump()
 
@@ -2187,6 +2540,15 @@ def config_set(key: str, value: str) -> None:
     """Set a configuration value.
 
     Not yet implemented -- use environment variables instead.
+
+    \b
+    KEY is the config key (e.g. lm, api_base, lm_temperature).
+    VALUE is the value to set.
+
+    \b
+    Examples:
+      mosaicx config set lm ollama_chat/llama3.1
+      mosaicx config set api_base http://localhost:11434
     """
     env_var = f"MOSAICX_{key.upper()}"
     console.print(theme.warn(
@@ -2224,9 +2586,15 @@ def mcp() -> None:
 def mcp_serve(transport: str, port: int) -> None:
     """Start the MOSAICX MCP server.
 
+    \b
     Exposes MOSAICX pipelines as MCP tools that AI agents (Claude, etc.)
-    can call directly. Defaults to stdio transport, which is the standard
-    for Claude Code and Claude Desktop.
+    can call directly. Use stdio for Claude Code/Desktop integration,
+    or sse for HTTP-based clients.
+
+    \b
+    Examples:
+      mosaicx mcp serve
+      mosaicx mcp serve --transport sse --port 9090
     """
     try:
         from .mcp_server import mcp as mcp_server

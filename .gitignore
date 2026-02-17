@@ -70,6 +70,9 @@ venv.bak/
 ehthumbs.db
 Thumbs.db
 
+# MkDocs
+site/
+
 # Project specific
 # Allow committing PDFs that are intentionally included for testing/documentation
 # (Previously: *.pdf)

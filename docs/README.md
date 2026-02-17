@@ -14,6 +14,7 @@ Welcome to the MOSAICX documentation. These guides will walk you through everyth
 | [Configuration](configuration.md) | Environment variables, LLM backends, OCR engines, export formats |
 | [MCP Server](mcp-server.md) | Use MOSAICX as an AI agent tool via Model Context Protocol |
 | [Developer Guide](developer-guide.md) | Create custom pipelines, Python SDK, extend MOSAICX |
+| [SDK Reference](sdk-reference.md) | Complete Python API -- function signatures, examples, input/output matrix |
 | [Architecture](architecture.md) | System design, pipeline patterns, key design decisions |
 
 ## Where to Start
@@ -27,7 +28,7 @@ Welcome to the MOSAICX documentation. These guides will walk you through everyth
 - **"I want to improve extraction accuracy"** -- [Optimization and Evaluation](optimization.md)
 - **"I want to connect to a different LLM backend"** -- [Configuration](configuration.md)
 - **"I need the exact flags for a command"** -- [CLI Reference](cli-reference.md)
-- **"I want to use MOSAICX from Python code"** -- [Developer Guide](developer-guide.md)
+- **"I want to use MOSAICX from Python code"** -- [SDK Reference](sdk-reference.md)
 - **"I want to let AI agents use MOSAICX"** -- [MCP Server](mcp-server.md)
 - **"I want to build a new pipeline"** -- [Developer Guide](developer-guide.md), then [Architecture](architecture.md)
 

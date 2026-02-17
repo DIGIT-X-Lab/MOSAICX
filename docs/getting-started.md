@@ -378,7 +378,7 @@ If you have many documents to process, use batch mode instead of running `extrac
 Suppose you have a folder full of radiology reports at `./reports/`. To process all of them:
 
 ```bash
-mosaicx batch --input-dir ./reports --output-dir ./structured
+mosaicx extract --dir ./reports --output-dir ./structured
 ```
 
 MOSAICX will:
@@ -392,7 +392,7 @@ MOSAICX will:
 To use a specialized mode (e.g., radiology) for all documents:
 
 ```bash
-mosaicx batch --input-dir ./reports --output-dir ./structured --mode radiology
+mosaicx extract --dir ./reports --output-dir ./structured --mode radiology
 ```
 
 ### Batch with a template
@@ -400,7 +400,7 @@ mosaicx batch --input-dir ./reports --output-dir ./structured --mode radiology
 To extract using a specific template:
 
 ```bash
-mosaicx batch --input-dir ./reports --output-dir ./structured --template chest_ct
+mosaicx extract --dir ./reports --output-dir ./structured --template chest_ct
 ```
 
 ### Resume after interruption
@@ -408,7 +408,7 @@ mosaicx batch --input-dir ./reports --output-dir ./structured --template chest_c
 If batch processing stops (e.g., your computer went to sleep), you can resume where you left off:
 
 ```bash
-mosaicx batch --input-dir ./reports --output-dir ./structured --mode radiology --resume
+mosaicx extract --dir ./reports --output-dir ./structured --mode radiology --resume
 ```
 
 MOSAICX will skip files that have already been processed.
@@ -418,7 +418,7 @@ MOSAICX will skip files that have already been processed.
 By default, MOSAICX processes one document at a time. You can process multiple documents in parallel to speed things up:
 
 ```bash
-mosaicx batch --input-dir ./reports --output-dir ./structured --mode radiology --workers 4
+mosaicx extract --dir ./reports --output-dir ./structured --mode radiology --workers 4
 ```
 
 The `--workers` flag tells MOSAICX how many documents to process at once. Start with 2-4 workers and increase if your system has enough RAM and CPU cores.
@@ -430,7 +430,7 @@ The `--workers` flag tells MOSAICX how many documents to process at once. Start 
 By default, batch mode creates individual JSON files for each document. You can also export as JSONL (JSON Lines) or Parquet:
 
 ```bash
-mosaicx batch --input-dir ./reports --output-dir ./structured \
+mosaicx extract --dir ./reports --output-dir ./structured \
   --mode radiology --format jsonl --format parquet
 ```
 

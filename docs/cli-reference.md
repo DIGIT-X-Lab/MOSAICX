@@ -54,10 +54,16 @@ The `--template` flag resolves its argument through a resolution chain:
 | `--optimized` | PATH | No | Path to an optimized DSPy program (`.json` file) |
 | `-o`, `--output` | PATH | No | Save output to JSON or YAML file |
 | `--list-modes` | flag | No | List available extraction modes and exit |
+| `--dir` | PATH | No | Directory of documents for batch processing |
+| `--workers` | INT | No | Number of parallel workers (default: 1) |
+| `--output-dir` | PATH | No | Directory for output files (batch mode) |
+| `--format` | TEXT | No | Export format(s): `jsonl`, `parquet` (can repeat) |
+| `--resume` | flag | No | Resume from last checkpoint |
 
 **Important:**
 - `--template` and `--mode` are mutually exclusive -- use only one
-- If neither is provided, auto mode is used
+- `--document` and `--dir` are mutually exclusive -- use only one
+- If neither `--template` nor `--mode` is provided, auto mode is used
 - Supported formats: PDF, TXT, DOCX, MD, PNG, JPG, JPEG, TIF, TIFF
 
 **Examples:**
@@ -102,6 +108,18 @@ mosaicx extract --document report.pdf --template chest_ct \
 # Combine mode with custom save location
 mosaicx extract --document ct_report.pdf --mode radiology \
   -o /path/to/results/structured_report.json
+
+# Batch process a directory
+mosaicx extract --dir ./reports --output-dir ./structured --mode radiology
+
+# Batch with 4 parallel workers
+mosaicx extract --dir ./reports --output-dir ./structured --workers 4
+
+# Batch with export formats
+mosaicx extract --dir ./reports --output-dir ./structured --format jsonl --format parquet
+
+# Resume a failed batch
+mosaicx extract --dir ./reports --output-dir ./structured --resume
 ```
 
 **What you'll see:**
@@ -109,91 +127,6 @@ mosaicx extract --document ct_report.pdf --mode radiology \
 Without `--output`, results are displayed in the terminal as formatted tables. Use `--output` to save the full structured data as JSON or YAML.
 
 When `--score` is used, a completeness report is shown after the extracted data, scoring how thoroughly the template fields were populated.
-
----
-
-## `mosaicx batch`
-
-Batch-process a directory of documents using parallel workers.
-
-All documents in the input directory are processed and saved as individual JSON files in the output directory. Optionally export consolidated formats (JSONL, Parquet).
-
-**Options:**
-
-| Flag | Type | Required | Description |
-|------|------|----------|-------------|
-| `--input-dir` | PATH | Yes | Directory containing input documents |
-| `--output-dir` | PATH | Yes | Directory for output files |
-| `--template` | TEXT | No | Template name, YAML file path, or saved schema name |
-| `--mode` | TEXT | No | Extraction mode for all documents (e.g., `radiology`) |
-| `--format` | TEXT | No | Output format(s): `jsonl`, `parquet` (can repeat) |
-| `--workers` | INT | No | Number of parallel workers (default: 1) |
-| `--resume` | flag | No | Resume from last checkpoint |
-
-**Important:**
-- Each document produces a separate JSON file named `{original_filename}.json`
-- Checkpoints are saved in `{output_dir}/.checkpoints/` if `--resume` is used
-- Supported input formats: PDF, TXT, DOCX, MD, PNG, JPG, JPEG, TIF, TIFF
-- `--format` can be specified multiple times (e.g., `--format jsonl --format parquet`)
-
-**Examples:**
-
-```bash
-# Basic batch -- auto mode, single worker
-mosaicx batch --input-dir ./reports --output-dir ./structured
-
-# Batch with radiology mode
-mosaicx batch --input-dir ./ct_scans --output-dir ./structured_ct --mode radiology
-
-# Batch with pathology mode and 4 parallel workers
-mosaicx batch --input-dir ./biopsies --output-dir ./structured_path \
-  --mode pathology --workers 4
-
-# Use a built-in template
-mosaicx batch --input-dir ./ct_scans --output-dir ./structured_ct \
-  --template chest_ct
-
-# Use a custom YAML template
-mosaicx batch --input-dir ./echo_reports --output-dir ./structured_echo \
-  --template echo.yaml
-
-# Export as JSONL (one JSON object per line)
-mosaicx batch --input-dir ./reports --output-dir ./out \
-  --mode radiology --format jsonl
-
-# Export as both JSONL and Parquet
-mosaicx batch --input-dir ./reports --output-dir ./out \
-  --mode radiology --format jsonl --format parquet
-
-# Resume a failed batch run
-mosaicx batch --input-dir ./reports --output-dir ./out \
-  --mode radiology --resume
-
-# Maximum parallelism with 8 workers
-mosaicx batch --input-dir ./large_dataset --output-dir ./processed \
-  --mode radiology --workers 8 --format parquet
-```
-
-**Output structure:**
-
-```
-output_dir/
-├── report1.json
-├── report2.json
-├── report3.json
-├── results.jsonl          # if --format jsonl
-├── results.parquet        # if --format parquet
-└── .checkpoints/
-    └── resume.json        # if --resume
-```
-
-**Resume behavior:**
-
-If a batch crashes or is interrupted, use `--resume` to skip already-processed documents. MOSAICX will:
-1. Load the checkpoint file
-2. Skip documents already in the checkpoint
-3. Process only remaining documents
-4. Update the checkpoint every 50 documents (configurable via `MOSAICX_CHECKPOINT_EVERY`)
 
 ---
 
@@ -565,7 +498,7 @@ Generates a narrative summary and extracts key events from one or more documents
 | `--document` | PATH | No* | Single document to summarize |
 | `--dir` | PATH | No* | Directory of reports for one patient |
 | `--patient` | TEXT | No | Patient identifier |
-| `--format` | TEXT | No | Output format(s) (not yet implemented) |
+| `-o`, `--output` | PATH | No | Save output to JSON or YAML file |
 
 **Important:**
 - Must provide `--document` or `--dir`
@@ -588,8 +521,7 @@ mosaicx summarize --document discharge_summary.pdf --patient "John Doe"
 
 Displays:
 - Narrative summary (prose description of patient timeline)
-- Number of extracted timeline events
-- Event details (if any)
+- Timeline events table with columns: Date, Exam, Key Finding, Change from Prior
 
 ---
 
@@ -610,7 +542,11 @@ Supports three de-identification strategies:
 | `--dir` | PATH | No* | Directory of documents to de-identify |
 | `--mode` | CHOICE | No | De-identification strategy: `remove`, `pseudonymize`, `dateshift` (default: `remove`) |
 | `--regex-only` | flag | No | Use regex-only PHI scrubbing (no LLM call, faster) |
+| `-o`, `--output` | PATH | No | Save output to JSON or YAML file (single document) |
+| `--output-dir` | PATH | No | Directory for output files (batch mode) |
+| `--format` | TEXT | No | Export format(s): `jsonl`, `parquet`, `csv` (can repeat) |
 | `--workers` | INT | No | Number of parallel workers (default: 1) |
+| `--resume` | flag | No | Resume from last checkpoint |
 
 **Important:**
 - Must provide `--document` or `--dir`
@@ -637,6 +573,16 @@ mosaicx deidentify --document report.txt --regex-only
 
 # Parallel de-identification with 4 workers
 mosaicx deidentify --dir ./patient_reports --workers 4 --mode pseudonymize
+
+# Save single-document output to file
+mosaicx deidentify --document clinic_note.txt -o deidentified.json
+
+# Batch with output directory and export formats
+mosaicx deidentify --dir ./reports --output-dir ./deidentified \
+  --format jsonl --format csv
+
+# Resume a failed batch
+mosaicx deidentify --dir ./reports --output-dir ./deidentified --resume
 ```
 
 **What gets redacted:**
@@ -1038,7 +984,7 @@ mosaicx extract --document ct_chest.pdf --template chest_ct --score -o output.js
 ### Batch process 100 pathology reports with 4 workers
 
 ```bash
-mosaicx batch --input-dir ./biopsies --output-dir ./structured \
+mosaicx extract --dir ./biopsies --output-dir ./structured \
   --mode pathology --workers 4 --format jsonl --format parquet
 ```
 
@@ -1137,7 +1083,7 @@ export MOSAICX_HOME_DIR=/path/to/custom/dir
 
 6. **Create templates for repeated use**: If you process the same report type often, create a template with `mosaicx template create` and reuse it.
 
-7. **Use batch mode for large datasets**: Don't run `extract` 100 times manually -- use `mosaicx batch` with `--workers` for parallelism.
+7. **Use batch mode for large datasets**: Don't run `extract` 100 times manually -- use `mosaicx extract --dir` with `--workers` for parallelism.
 
 8. **Optimize for your data**: If you have labeled examples, use `mosaicx optimize` to improve accuracy on your specific reports.
 

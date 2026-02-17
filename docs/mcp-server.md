@@ -168,7 +168,7 @@ After saving the file, restart Claude Desktop for the changes to take effect. Yo
 
 ## Available Tools
 
-The MOSAICX MCP server exposes seven tools. Each tool accepts parameters as JSON and returns a JSON string with the result.
+The MOSAICX MCP server exposes six tools. Each tool accepts parameters as JSON and returns a JSON string with the result.
 
 ---
 
@@ -380,9 +380,10 @@ Takes a list of report texts and produces a narrative summary with a structured 
   "events": [
     {
       "date": "2026-01-10",
-      "event_type": "imaging",
-      "description": "Chest CT showing 6mm nodule in RUL",
-      "significance": "high"
+      "exam_type": "CT Chest",
+      "key_finding": "6mm nodule in RUL",
+      "clinical_context": "Routine screening",
+      "change_from_prior": null
     }
   ]
 }

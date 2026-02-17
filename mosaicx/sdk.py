@@ -2,21 +2,28 @@
 """
 MOSAICX Python SDK -- programmatic access without the CLI.
 
-This module provides high-level functions that wrap the internal DSPy
-pipelines. Every function:
-    - Accepts plain Python types (str, dict, Path).
-    - Returns plain Python dicts (not DSPy Predictions or Pydantic models).
-    - Configures DSPy automatically on first use.
-    - Supports loading optimized DSPy programs via the ``optimized`` parameter.
+This module provides three core functions that wrap the internal DSPy
+pipelines, plus utility functions for schema management, evaluation, and
+health checks.
 
-Quick start::
+Core functions::
 
-    from mosaicx.sdk import extract, deidentify, summarize, generate_schema
+    from mosaicx.sdk import extract, deidentify, summarize
 
     result   = extract("Patient presents with chest pain...", template="chest_ct")
+    result   = extract(documents="scan.pdf", mode="radiology")
+    results  = extract(documents=["a.pdf", "b.pdf"], workers=4)
     clean    = deidentify("John Doe, SSN 123-45-6789")
+    clean    = deidentify(documents="record.pdf")
     summary  = summarize(["Report 1 text...", "Report 2 text..."])
+    summary  = summarize(documents=["r1.pdf", "r2.pdf"], patient_id="P001")
+
+Utilities::
+
+    from mosaicx.sdk import generate_schema, health, list_modes, list_templates
+
     template = generate_schema("echo report with LVEF and valve grades")
+    status   = health()
 
 All heavy dependencies (DSPy, pipeline modules) are imported lazily so
 this module stays importable even in environments where DSPy is not
@@ -26,7 +33,9 @@ installed.
 from __future__ import annotations
 
 import logging
+import tempfile
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any
 
@@ -144,95 +153,176 @@ def _compute_completeness_dict(model_instance: Any, text: str) -> dict[str, Any]
 
 
 # ---------------------------------------------------------------------------
-# extract
+# Document resolution helpers
 # ---------------------------------------------------------------------------
 
 
-def extract(
-    text: str | None = None,
-    *,
-    document: str | Path | None = None,
-    template: str | Path | None = None,
-    mode: str = "auto",
-    score: bool = False,
-    optimized: str | Path | None = None,
-) -> dict[str, Any]:
-    """Extract structured data from document text or a file.
+def _load_doc_with_config(path: Path) -> Any:
+    """Load a document using OCR settings from config.
+
+    Returns a ``LoadedDocument`` instance from :mod:`mosaicx.documents.loader`.
+    """
+    from .config import get_config
+    from .documents.loader import load_document
+
+    cfg = get_config()
+    return load_document(
+        path,
+        ocr_engine=cfg.ocr_engine,
+        force_ocr=cfg.force_ocr,
+        ocr_langs=cfg.ocr_langs,
+        chandra_backend=cfg.chandra_backend if cfg.chandra_backend != "auto" else None,
+        quality_threshold=cfg.quality_threshold,
+        page_timeout=cfg.ocr_page_timeout,
+    )
+
+
+def _build_document_meta(doc: Any, filepath: str | Path | None = None) -> dict[str, Any]:
+    """Build the ``_document`` metadata dict from a loaded document.
 
     Parameters
     ----------
-    text:
-        Document text to extract from.  Mutually exclusive with
-        *document*.
-    document:
-        Path to a document file (PDF, DOCX, image, etc.).  The file is
-        loaded and OCR'd automatically before extraction.  Mutually
-        exclusive with *text*.
-    template:
-        Template name (built-in or user-created), or path to a YAML
-        template file.  Resolved via :func:`mosaicx.report.resolve_template`.
-    mode:
-        Extraction mode. ``"auto"`` lets the LLM infer the structure.
-        ``"radiology"`` and ``"pathology"`` run specialised multi-step
-        pipelines.  Ignored when *template* is provided.
-    score:
-        If ``True``, compute completeness scoring against the template
-        and include it in the output under ``"completeness"``.
-    optimized:
-        Path to an optimized DSPy program to load. Only applicable for
-        ``mode="auto"`` or template-based extraction.
+    doc:
+        A ``LoadedDocument`` instance.
+    filepath:
+        Original file path (used for the ``"file"`` key). If ``None``,
+        the ``source_path`` from the document is used.
 
     Returns
     -------
     dict
-        Extracted data.  Structure depends on mode / template.  When
-        *score* is ``True``, includes a ``"completeness"`` key.  When
-        *document* is used, includes a ``"_document"`` key with loading
-        metadata (format, page_count, ocr_engine_used, quality_warning).
+        Keys: ``"file"``, ``"format"``, ``"page_count"``,
+        ``"ocr_engine_used"``, ``"quality_warning"``.
+    """
+    name = Path(filepath).name if filepath is not None else doc.source_path.name
+    return {
+        "file": name,
+        "format": doc.format,
+        "page_count": doc.page_count,
+        "ocr_engine_used": doc.ocr_engine_used,
+        "quality_warning": doc.quality_warning if doc.quality_warning else None,
+    }
+
+
+def _resolve_documents(
+    documents: str | Path | bytes | list[str | Path],
+    filename: str | None = None,
+) -> list[tuple[str, str, dict[str, Any]]]:
+    """Resolve the ``documents`` parameter into loaded document texts.
+
+    Handles four input types:
+
+    1. ``bytes`` -- write to temp file (extension from *filename*), load,
+       return text, cleanup temp file.
+    2. ``str`` or ``Path`` pointing to a **file** -- load directly.
+    3. ``str`` or ``Path`` pointing to a **directory** -- discover all
+       supported files and load each.
+    4. ``list[str | Path]`` -- load each path in the list.
+
+    Parameters
+    ----------
+    documents:
+        The documents parameter from the public API.
+    filename:
+        Original filename, required when *documents* is ``bytes``.
+
+    Returns
+    -------
+    list[tuple[str, str, dict]]
+        List of ``(filepath_str, loaded_text, document_metadata)`` tuples.
+        ``filepath_str`` is the display name for progress callbacks.
 
     Raises
     ------
     ValueError
-        If both *text* and *document* are provided, if neither is
-        provided, or if the template/mode is unknown.
+        If *documents* is ``bytes`` and *filename* is not provided.
     FileNotFoundError
-        If *document* is a path that does not exist.
+        If a file path does not exist.
     """
-    # --- Resolve input: text or document path ---
-    if text is not None and document is not None:
-        raise ValueError("Provide either text or document, not both.")
-    if text is None and document is None:
-        raise ValueError("Provide text or document.")
+    from .documents.engines.base import SUPPORTED_FORMATS
 
-    doc_metadata: dict[str, Any] | None = None
+    results: list[tuple[str, str, dict[str, Any]]] = []
 
-    if document is not None:
-        from .config import get_config
-        from .documents.loader import load_document
+    if isinstance(documents, bytes):
+        # bytes -> write to temp file, load, cleanup
+        if not filename:
+            raise ValueError(
+                "filename is required when documents is bytes "
+                "(needed for format detection from extension)."
+            )
+        suffix = Path(filename).suffix
+        with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+            tmp.write(documents)
+            tmp_path = Path(tmp.name)
+        try:
+            doc = _load_doc_with_config(tmp_path)
+            meta = _build_document_meta(doc, filepath=filename)
+            results.append((filename, doc.text, meta))
+        finally:
+            tmp_path.unlink(missing_ok=True)
+        return results
 
-        cfg = get_config()
-        doc_path = Path(document)
-        if not doc_path.exists():
-            raise FileNotFoundError(f"Document not found: {doc_path}")
+    if isinstance(documents, (str, Path)):
+        doc_path = Path(documents)
+        if doc_path.is_dir():
+            # Directory -> discover all supported files
+            file_list = sorted(
+                p for p in doc_path.iterdir()
+                if p.is_file() and p.suffix.lower() in SUPPORTED_FORMATS
+            )
+            if not file_list:
+                raise ValueError(
+                    f"No supported documents found in directory: {doc_path}"
+                )
+            for fp in file_list:
+                doc = _load_doc_with_config(fp)
+                meta = _build_document_meta(doc, filepath=fp)
+                results.append((fp.name, doc.text, meta))
+            return results
+        else:
+            # Single file
+            if not doc_path.exists():
+                raise FileNotFoundError(f"Document not found: {doc_path}")
+            doc = _load_doc_with_config(doc_path)
+            meta = _build_document_meta(doc, filepath=doc_path)
+            results.append((doc_path.name, doc.text, meta))
+            return results
 
-        doc = load_document(
-            doc_path,
-            ocr_engine=cfg.ocr_engine,
-            force_ocr=cfg.force_ocr,
-            ocr_langs=cfg.ocr_langs,
-            quality_threshold=cfg.quality_threshold,
-            page_timeout=cfg.ocr_page_timeout,
-        )
-        text = doc.text
-        doc_metadata = {
-            "format": doc.format,
-            "page_count": doc.page_count,
-            "ocr_engine_used": doc.ocr_engine_used,
-            "quality_warning": doc.quality_warning,
-        }
+    if isinstance(documents, list):
+        for item in documents:
+            fp = Path(item)
+            if not fp.exists():
+                raise FileNotFoundError(f"Document not found: {fp}")
+            doc = _load_doc_with_config(fp)
+            meta = _build_document_meta(doc, filepath=fp)
+            results.append((fp.name, doc.text, meta))
+        return results
 
-    assert text is not None  # guaranteed by validation above
+    raise TypeError(
+        f"Unsupported documents type: {type(documents).__name__}. "
+        "Expected str, Path, bytes, or list[str | Path]."
+    )
 
+
+# ---------------------------------------------------------------------------
+# extract
+# ---------------------------------------------------------------------------
+
+
+def _extract_single_text(
+    text: str,
+    *,
+    template: str | Path | None,
+    mode: str,
+    score: bool,
+    optimized: str | Path | None,
+) -> dict[str, Any]:
+    """Core extraction logic for a single text input.
+
+    This is the internal workhorse called by :func:`extract` for each
+    document.  It handles template resolution, mode selection, and
+    completeness scoring.
+    """
     # Validate mode early, before configuring DSPy
     if mode not in ("auto",) and template is None:
         import mosaicx.pipelines.pathology  # noqa: F401
@@ -258,8 +348,8 @@ def extract(
 
         if effective_mode is not None and template_model is None:
             # Built-in template with mode pipeline
-            import mosaicx.pipelines.radiology  # noqa: F401
             import mosaicx.pipelines.pathology  # noqa: F401
+            import mosaicx.pipelines.radiology  # noqa: F401
 
             if score:
                 from .pipelines.extraction import extract_with_mode_raw
@@ -279,8 +369,6 @@ def extract(
                 output_data, metrics = extract_with_mode(text, effective_mode)
             if metrics is not None:
                 output_data["_metrics"] = _metrics_to_dict(metrics)
-            if doc_metadata is not None:
-                output_data["_document"] = doc_metadata
             return output_data
         elif template_model is not None:
             from .pipelines.extraction import DocumentExtractor
@@ -302,8 +390,6 @@ def extract(
                         )
                 else:
                     output["extracted"] = val
-            if doc_metadata is not None:
-                output["_document"] = doc_metadata
             return output
         else:
             raise ValueError(
@@ -313,8 +399,8 @@ def extract(
     # --- Mode-based extraction (radiology, pathology, ...) ---
     if mode not in ("auto",):
         # Trigger lazy loading of mode pipeline modules
-        import mosaicx.pipelines.radiology  # noqa: F401
         import mosaicx.pipelines.pathology  # noqa: F401
+        import mosaicx.pipelines.radiology  # noqa: F401
 
         if score:
             from .pipelines.extraction import extract_with_mode_raw
@@ -332,8 +418,6 @@ def extract(
             output_data, metrics = extract_with_mode(text, mode)
         if metrics is not None:
             output_data["_metrics"] = _metrics_to_dict(metrics)
-        if doc_metadata is not None:
-            output_data["_document"] = doc_metadata
         return output_data
 
     # --- Auto extraction (LLM infers schema) ---
@@ -361,98 +445,162 @@ def extract(
     if hasattr(result, "inferred_schema"):
         output["inferred_schema"] = result.inferred_schema.model_dump()
 
-    if doc_metadata is not None:
-        output["_document"] = doc_metadata
     return output
 
 
-# ---------------------------------------------------------------------------
-# report
-# ---------------------------------------------------------------------------
-
-
-def report(
-    text: str,
+def extract(
+    text: str | None = None,
     *,
+    documents: str | Path | bytes | list[str | Path] | None = None,
+    filename: str | None = None,
     template: str | Path | None = None,
-    schema_name: str | None = None,
-    describe: str | None = None,
-    mode: str | None = None,
-) -> dict[str, Any]:
-    """Extract structured data and score completeness against a template.
-
-    .. deprecated::
-        Use :func:`extract` with ``score=True`` instead.
+    mode: str = "auto",
+    score: bool = False,
+    optimized: str | Path | None = None,
+    workers: int = 1,
+    on_progress: Callable[[str, bool, dict[str, Any] | None], None] | None = None,
+) -> dict[str, Any] | list[dict[str, Any]]:
+    """Extract structured data from text or document files.
 
     Parameters
     ----------
     text:
-        Document text to extract from.
+        Document text to extract from.  Mutually exclusive with
+        *documents*.
+    documents:
+        Document source(s). Accepts:
+
+        - ``bytes`` -- raw file content (requires *filename*).
+        - ``str`` or ``Path`` to a **file** -- loaded directly.
+        - ``str`` or ``Path`` to a **directory** -- discovers all
+          supported files.
+        - ``list[str | Path]`` -- processes each path.
+
+        Mutually exclusive with *text*.
+    filename:
+        Original filename. Required when *documents* is ``bytes`` (for
+        format detection from the extension).
     template:
-        Built-in RDES template name (e.g. ``"chest_ct"``) or path to
-        a YAML template file, or a saved schema name.
-    schema_name:
-        *Deprecated* -- use *template* instead.
-    describe:
-        Plain-English description to AI-generate a template on the fly.
+        Template name (built-in or user-created), or path to a YAML
+        template file.  Resolved via :func:`mosaicx.report.resolve_template`.
     mode:
-        Explicit pipeline mode override.  If ``None``, auto-detected
-        from the template.
+        Extraction mode. ``"auto"`` lets the LLM infer the structure.
+        ``"radiology"`` and ``"pathology"`` run specialised multi-step
+        pipelines.  Ignored when *template* is provided.
+    score:
+        If ``True``, compute completeness scoring against the template
+        and include it in the output under ``"completeness"``.
+    optimized:
+        Path to an optimized DSPy program to load. Only applicable for
+        ``mode="auto"`` or template-based extraction.
+    workers:
+        Number of parallel extraction workers for multi-file processing.
+        Document loading is always sequential (pypdfium2 is not
+        thread-safe), but extraction is parallelised.
+    on_progress:
+        Optional callback ``(filename, success, result_or_none)`` called
+        after each file completes (multi-file mode only).
 
     Returns
     -------
-    dict
-        Keys: ``"extracted"`` (dict), ``"completeness"`` (dict with
-        ``overall``, ``required_coverage``, ``optional_coverage``,
-        ``missing_required``, etc.), ``"template_name"`` (str | None),
-        ``"mode_used"`` (str | None), ``"metrics"`` (dict | None).
+    dict | list[dict]
+        **Smart return**: single input returns ``dict``, multiple inputs
+        returns ``list[dict]``.  Each result dict includes a
+        ``"_document"`` key with loading metadata when loaded from a file.
 
     Raises
     ------
     ValueError
-        If more than one of *template*, *schema_name*, *describe* is
-        provided, or if the template/schema cannot be resolved.
+        If both *text* and *documents* are provided, if neither is
+        provided, or if the template/mode is unknown.
+    FileNotFoundError
+        If a document path does not exist.
     """
-    import warnings
+    # --- Input validation ---
+    if text is not None and documents is not None:
+        raise ValueError("Provide either text or documents, not both.")
+    if text is None and documents is None:
+        raise ValueError("Provide text or documents.")
 
-    warnings.warn(
-        "sdk.report() is deprecated. Use sdk.extract(score=True) instead.",
-        DeprecationWarning,
-        stacklevel=2,
-    )
-
-    # Map deprecated params to template
-    effective_template = template
-    if schema_name is not None:
-        if effective_template is not None:
-            raise ValueError(
-                "Provide at most one of template or schema_name."
-            )
-        effective_template = schema_name
-    if describe is not None:
-        raise ValueError(
-            "The 'describe' parameter is no longer supported in sdk.report(). "
-            "Use 'mosaicx template create --describe' to create a template first, "
-            "then pass the template name."
+    # --- Text-only path (single result) ---
+    if text is not None:
+        return _extract_single_text(
+            text, template=template, mode=mode, score=score, optimized=optimized,
         )
 
-    _ensure_configured()
+    # --- Document-based path ---
+    assert documents is not None
 
-    from .report import resolve_template, run_report
+    # Resolve documents: load all files sequentially (OCR not thread-safe)
+    loaded = _resolve_documents(documents, filename=filename)
 
-    template_str = str(effective_template) if effective_template is not None else None
-    template_model, tpl_name = resolve_template(template=template_str)
-
-    result = run_report(
-        document_text=text,
-        template_model=template_model,
-        template_name=tpl_name,
-        mode=mode,
+    # Determine if this is a single-input call (smart return)
+    is_single = (
+        isinstance(documents, bytes)
+        or (isinstance(documents, (str, Path)) and Path(documents).is_file())
     )
 
-    from dataclasses import asdict
+    # Extract from each loaded document
+    def _do_extract(
+        name: str, doc_text: str, doc_meta: dict[str, Any],
+    ) -> tuple[str, dict[str, Any] | None, str | None]:
+        try:
+            result = _extract_single_text(
+                doc_text,
+                template=template,
+                mode=mode,
+                score=score,
+                optimized=optimized,
+            )
+            result["_document"] = doc_meta
+            return name, result, None
+        except Exception as exc:
+            return name, None, f"{type(exc).__name__}: {exc}"
 
-    return asdict(result)
+    if len(loaded) == 1:
+        # Single document -- no threading needed
+        name, doc_text, doc_meta = loaded[0]
+        name, result, error = _do_extract(name, doc_text, doc_meta)
+        if error:
+            result_dict: dict[str, Any] = {
+                "error": error, "_document": doc_meta,
+            }
+            if on_progress:
+                on_progress(name, False, None)
+            if is_single:
+                return result_dict
+            return [result_dict]
+        if on_progress:
+            on_progress(name, True, result)
+        if is_single:
+            return result  # type: ignore[return-value]
+        return [result]  # type: ignore[list-item]
+
+    # Multiple documents -- parallel extraction
+    results: list[dict[str, Any]] = [{}] * len(loaded)  # preserve order
+    index_map = {name: i for i, (name, _, _) in enumerate(loaded)}
+
+    max_w = min(max(1, workers), 32)
+    with ThreadPoolExecutor(max_workers=max_w) as pool:
+        futures = {
+            pool.submit(_do_extract, name, doc_text, doc_meta): (name, doc_meta)
+            for name, doc_text, doc_meta in loaded
+        }
+        for future in as_completed(futures):
+            name, doc_meta = futures[future]
+            fname, result, error = future.result()
+            idx = index_map[fname]
+            if error:
+                results[idx] = {"error": error, "_document": doc_meta}
+                if on_progress:
+                    on_progress(fname, False, None)
+            else:
+                assert result is not None
+                results[idx] = result
+                if on_progress:
+                    on_progress(fname, True, result)
+
+    return results
 
 
 # ---------------------------------------------------------------------------
@@ -460,77 +608,12 @@ def report(
 # ---------------------------------------------------------------------------
 
 
-def deidentify(
-    text: str | None = None,
+def _deidentify_single_text(
+    text: str,
     *,
-    document: str | Path | None = None,
-    mode: str = "remove",
+    mode: str,
 ) -> dict[str, Any]:
-    """Remove PHI from text or a document file.
-
-    Parameters
-    ----------
-    text:
-        Text containing Protected Health Information.  Mutually
-        exclusive with *document*.
-    document:
-        Path to a document file (PDF, DOCX, image, etc.).  Loaded and
-        OCR'd automatically.  Mutually exclusive with *text*.
-    mode:
-        De-identification strategy:
-        - ``"remove"``       -- Replace PHI with ``[REDACTED]``.
-        - ``"pseudonymize"`` -- Replace PHI with realistic fake values.
-        - ``"dateshift"``    -- Shift dates by a consistent random offset.
-        - ``"regex"``        -- Regex-only scrubbing (no LLM needed).
-
-    Returns
-    -------
-    dict
-        Keys: ``"redacted_text"`` (str).  When *document* is used,
-        includes a ``"_document"`` key with loading metadata.
-
-    Raises
-    ------
-    ValueError
-        If both *text* and *document* are provided, if neither is
-        provided, or if ``mode`` is not one of the supported values.
-    FileNotFoundError
-        If *document* is a path that does not exist.
-    """
-    if text is not None and document is not None:
-        raise ValueError("Provide either text or document, not both.")
-    if text is None and document is None:
-        raise ValueError("Provide text or document.")
-
-    doc_metadata: dict[str, Any] | None = None
-
-    if document is not None:
-        from .config import get_config
-        from .documents.loader import load_document
-
-        cfg = get_config()
-        doc_path = Path(document)
-        if not doc_path.exists():
-            raise FileNotFoundError(f"Document not found: {doc_path}")
-
-        doc = load_document(
-            doc_path,
-            ocr_engine=cfg.ocr_engine,
-            force_ocr=cfg.force_ocr,
-            ocr_langs=cfg.ocr_langs,
-            quality_threshold=cfg.quality_threshold,
-            page_timeout=cfg.ocr_page_timeout,
-        )
-        text = doc.text
-        doc_metadata = {
-            "format": doc.format,
-            "page_count": doc.page_count,
-            "ocr_engine_used": doc.ocr_engine_used,
-            "quality_warning": doc.quality_warning,
-        }
-
-    assert text is not None  # guaranteed by validation above
-
+    """Core de-identification logic for a single text input."""
     valid_modes = {"remove", "pseudonymize", "dateshift", "regex"}
     if mode not in valid_modes:
         raise ValueError(
@@ -541,10 +624,7 @@ def deidentify(
     from .pipelines.deidentifier import regex_scrub_phi
 
     if mode == "regex":
-        output: dict[str, Any] = {"redacted_text": regex_scrub_phi(text)}
-        if doc_metadata is not None:
-            output["_document"] = doc_metadata
-        return output
+        return {"redacted_text": regex_scrub_phi(text)}
 
     _ensure_configured()
 
@@ -552,10 +632,132 @@ def deidentify(
 
     deid = Deidentifier()
     result = deid(document_text=text, mode=mode)
-    output = {"redacted_text": result.redacted_text}
-    if doc_metadata is not None:
-        output["_document"] = doc_metadata
-    return output
+    return {"redacted_text": result.redacted_text}
+
+
+def deidentify(
+    text: str | None = None,
+    *,
+    documents: str | Path | bytes | list[str | Path] | None = None,
+    filename: str | None = None,
+    mode: str = "remove",
+    workers: int = 1,
+    on_progress: Callable[[str, bool, dict[str, Any] | None], None] | None = None,
+) -> dict[str, Any] | list[dict[str, Any]]:
+    """Remove PHI from text or document files.
+
+    Parameters
+    ----------
+    text:
+        Text containing Protected Health Information.  Mutually
+        exclusive with *documents*.
+    documents:
+        Document source(s). Accepts the same types as
+        :func:`extract` -- ``bytes``, file path, directory, or list of
+        paths.  Mutually exclusive with *text*.
+    filename:
+        Original filename. Required when *documents* is ``bytes``.
+    mode:
+        De-identification strategy:
+
+        - ``"remove"``       -- Replace PHI with ``[REDACTED]``.
+        - ``"pseudonymize"`` -- Replace PHI with realistic fake values.
+        - ``"dateshift"``    -- Shift dates by a consistent random offset.
+        - ``"regex"``        -- Regex-only scrubbing (no LLM needed).
+    workers:
+        Number of parallel workers for multi-file processing.
+    on_progress:
+        Optional callback ``(filename, success, result_or_none)`` called
+        after each file completes (multi-file mode only).
+
+    Returns
+    -------
+    dict | list[dict]
+        **Smart return**: single input returns ``dict``, multiple inputs
+        returns ``list[dict]``.  Keys: ``"redacted_text"`` (str).  When
+        loaded from a file, includes a ``"_document"`` key with metadata.
+
+    Raises
+    ------
+    ValueError
+        If both *text* and *documents* are provided, if neither is
+        provided, or if ``mode`` is not one of the supported values.
+    FileNotFoundError
+        If a document path does not exist.
+    """
+    # --- Input validation ---
+    if text is not None and documents is not None:
+        raise ValueError("Provide either text or documents, not both.")
+    if text is None and documents is None:
+        raise ValueError("Provide text or documents.")
+
+    # --- Text-only path (single result) ---
+    if text is not None:
+        return _deidentify_single_text(text, mode=mode)
+
+    # --- Document-based path ---
+    assert documents is not None
+
+    loaded = _resolve_documents(documents, filename=filename)
+
+    is_single = (
+        isinstance(documents, bytes)
+        or (isinstance(documents, (str, Path)) and Path(documents).is_file())
+    )
+
+    def _do_deid(
+        name: str, doc_text: str, doc_meta: dict[str, Any],
+    ) -> tuple[str, dict[str, Any] | None, str | None]:
+        try:
+            result = _deidentify_single_text(doc_text, mode=mode)
+            result["_document"] = doc_meta
+            return name, result, None
+        except Exception as exc:
+            return name, None, f"{type(exc).__name__}: {exc}"
+
+    if len(loaded) == 1:
+        name, doc_text, doc_meta = loaded[0]
+        name, result, error = _do_deid(name, doc_text, doc_meta)
+        if error:
+            result_dict: dict[str, Any] = {
+                "error": error, "_document": doc_meta,
+            }
+            if on_progress:
+                on_progress(name, False, None)
+            if is_single:
+                return result_dict
+            return [result_dict]
+        if on_progress:
+            on_progress(name, True, result)
+        if is_single:
+            return result  # type: ignore[return-value]
+        return [result]  # type: ignore[list-item]
+
+    # Multiple documents -- parallel
+    results: list[dict[str, Any]] = [{}] * len(loaded)
+    index_map = {name: i for i, (name, _, _) in enumerate(loaded)}
+
+    max_w = min(max(1, workers), 32)
+    with ThreadPoolExecutor(max_workers=max_w) as pool:
+        futures = {
+            pool.submit(_do_deid, name, doc_text, doc_meta): (name, doc_meta)
+            for name, doc_text, doc_meta in loaded
+        }
+        for future in as_completed(futures):
+            name, doc_meta = futures[future]
+            fname, result, error = future.result()
+            idx = index_map[fname]
+            if error:
+                results[idx] = {"error": error, "_document": doc_meta}
+                if on_progress:
+                    on_progress(fname, False, None)
+            else:
+                assert result is not None
+                results[idx] = result
+                if on_progress:
+                    on_progress(fname, True, result)
+
+    return results
 
 
 # ---------------------------------------------------------------------------
@@ -566,7 +768,7 @@ def deidentify(
 def summarize(
     reports: list[str] | None = None,
     *,
-    documents: list[str | Path] | str | Path | None = None,
+    documents: str | Path | list[str | Path] | None = None,
     patient_id: str = "unknown",
     optimized: str | Path | None = None,
 ) -> dict[str, Any]:
@@ -579,7 +781,8 @@ def summarize(
     documents:
         File paths to load reports from.  Accepts a list of paths,
         a single path, or a directory (discovers all supported files).
-        Mutually exclusive with *reports*.
+        Mutually exclusive with *reports*.  No ``bytes`` support
+        (summarize merges all reports into one timeline).
     patient_id:
         Patient identifier for the summary.
     optimized:
@@ -589,7 +792,7 @@ def summarize(
     -------
     dict
         Keys: ``"narrative"`` (str), ``"events"`` (list of event dicts).
-        When *documents* is used, includes ``"_documents"`` with a list
+        When *documents* is used, includes ``"_document"`` with a list
         of loading metadata dicts.
 
     Raises
@@ -608,50 +811,13 @@ def summarize(
     doc_metadata_list: list[dict[str, Any]] | None = None
 
     if documents is not None:
-        from .config import get_config
-        from .documents.engines.base import SUPPORTED_FORMATS
-        from .documents.loader import load_document
-
-        cfg = get_config()
-
-        # Resolve file list
-        if isinstance(documents, (str, Path)):
-            doc_path = Path(documents)
-            if doc_path.is_dir():
-                file_list = sorted(
-                    p for p in doc_path.iterdir()
-                    if p.is_file() and p.suffix.lower() in SUPPORTED_FORMATS
-                )
-            else:
-                file_list = [doc_path]
-        else:
-            file_list = [Path(p) for p in documents]
-
-        if not file_list:
-            raise ValueError("No supported documents found.")
-
+        loaded = _resolve_documents(documents)
         reports = []
         doc_metadata_list = []
-        for fp in file_list:
-            if not fp.exists():
-                raise FileNotFoundError(f"Document not found: {fp}")
-            doc = load_document(
-                fp,
-                ocr_engine=cfg.ocr_engine,
-                force_ocr=cfg.force_ocr,
-                ocr_langs=cfg.ocr_langs,
-                quality_threshold=cfg.quality_threshold,
-                page_timeout=cfg.ocr_page_timeout,
-            )
-            if doc.text:
-                reports.append(doc.text)
-                doc_metadata_list.append({
-                    "file": fp.name,
-                    "format": doc.format,
-                    "page_count": doc.page_count,
-                    "ocr_engine_used": doc.ocr_engine_used,
-                    "quality_warning": doc.quality_warning,
-                })
+        for _name, doc_text, doc_meta in loaded:
+            if doc_text:
+                reports.append(doc_text)
+                doc_metadata_list.append(doc_meta)
 
     assert reports is not None  # guaranteed by validation above
 
@@ -676,7 +842,7 @@ def summarize(
         "narrative": result.narrative,
     }
     if doc_metadata_list is not None:
-        output["_documents"] = doc_metadata_list
+        output["_document"] = doc_metadata_list
     return output
 
 
@@ -928,85 +1094,6 @@ def evaluate(
 
 
 # ---------------------------------------------------------------------------
-# batch_extract
-# ---------------------------------------------------------------------------
-
-
-def batch_extract(
-    texts: list[str] | None = None,
-    *,
-    documents: list[str | Path] | str | Path | None = None,
-    mode: str = "auto",
-    template: str | None = None,
-) -> list[dict[str, Any]]:
-    """Extract structured data from multiple documents.
-
-    A convenience wrapper that calls :func:`extract` for each input.
-    All documents use the same mode / template.
-
-    Parameters
-    ----------
-    texts:
-        List of document texts.  Mutually exclusive with *documents*.
-    documents:
-        File paths to load documents from.  Accepts a list of paths,
-        a single path, or a directory (discovers all supported files).
-        Mutually exclusive with *texts*.
-    mode:
-        Extraction mode (see :func:`extract`).
-    template:
-        Template name or YAML file path (see :func:`extract`).
-
-    Returns
-    -------
-    list[dict]
-        One result dict per input.  Failed extractions produce
-        a dict with an ``"error"`` key.
-    """
-    if texts is not None and documents is not None:
-        raise ValueError("Provide either texts or documents, not both.")
-    if texts is None and documents is None:
-        raise ValueError("Provide texts or documents.")
-
-    if documents is not None:
-        from .documents.engines.base import SUPPORTED_FORMATS
-
-        # Resolve file list
-        if isinstance(documents, (str, Path)):
-            doc_path = Path(documents)
-            if doc_path.is_dir():
-                file_list = sorted(
-                    p for p in doc_path.iterdir()
-                    if p.is_file() and p.suffix.lower() in SUPPORTED_FORMATS
-                )
-            else:
-                file_list = [doc_path]
-        else:
-            file_list = [Path(p) for p in documents]
-
-        results: list[dict[str, Any]] = []
-        for i, fp in enumerate(file_list):
-            try:
-                result = extract(document=fp, mode=mode, template=template)
-            except Exception as exc:
-                logger.warning("batch_extract failed for %s: %s", fp.name, exc)
-                result = {"error": str(exc), "file": fp.name}
-            results.append(result)
-        return results
-
-    assert texts is not None
-    results = []
-    for i, text in enumerate(texts):
-        try:
-            result = extract(text, mode=mode, template=template)
-        except Exception as exc:
-            logger.warning("batch_extract failed for document %d: %s", i, exc)
-            result = {"error": str(exc), "document_index": i}
-        results.append(result)
-    return results
-
-
-# ---------------------------------------------------------------------------
 # health
 # ---------------------------------------------------------------------------
 
@@ -1036,7 +1123,7 @@ def health() -> dict[str, Any]:
 
     cfg = get_config()
 
-    # Modes (no DSPy needed — just registry scan)
+    # Modes (no DSPy needed -- just registry scan)
     import mosaicx.pipelines.pathology  # noqa: F401
     import mosaicx.pipelines.radiology  # noqa: F401
 
@@ -1055,248 +1142,4 @@ def health() -> dict[str, Any]:
         "available_modes": modes,
         "available_templates": templates,
         "ocr_engine": cfg.ocr_engine,
-    }
-
-
-# ---------------------------------------------------------------------------
-# process_file
-# ---------------------------------------------------------------------------
-
-
-def process_file(
-    file: Path | bytes,
-    *,
-    filename: str | None = None,
-    template: str | None = None,
-    mode: str = "auto",
-    score: bool = False,
-    ocr_engine: str | None = None,
-    force_ocr: bool = False,
-) -> dict[str, Any]:
-    """Load a document and extract structured data in one call.
-
-    Handles OCR for PDFs and images, then runs the extraction pipeline.
-    Accepts a file path or raw bytes (e.g., from a web upload).
-
-    Parameters
-    ----------
-    file:
-        Path to a document file, or raw bytes of the file content.
-    filename:
-        Original filename. Required when *file* is ``bytes`` so the
-        format can be detected from the extension.
-    template:
-        Template name or YAML file path for targeted extraction.
-    mode:
-        Extraction mode (``"auto"``, ``"radiology"``, ``"pathology"``).
-    score:
-        If ``True``, include completeness scoring in the result.
-    ocr_engine:
-        Override the configured OCR engine (``"both"``, ``"surya"``,
-        ``"chandra"``).  If ``None``, uses the config default.
-    force_ocr:
-        Force OCR even on PDFs with a native text layer.
-
-    Returns
-    -------
-    dict
-        Extraction result from :func:`extract`, plus a ``"_document"``
-        key with loading metadata (format, page_count, ocr_engine_used,
-        quality_warning).
-
-    Raises
-    ------
-    ValueError
-        If *file* is ``bytes`` and *filename* is not provided.
-    FileNotFoundError
-        If *file* is a path that does not exist.
-    """
-    import tempfile
-
-    from .config import get_config
-    from .documents.loader import load_document
-
-    cfg = get_config()
-
-    if isinstance(file, bytes):
-        if not filename:
-            raise ValueError(
-                "filename is required when file is bytes "
-                "(needed for format detection from extension)."
-            )
-        # Write to temp file for the loader
-        suffix = Path(filename).suffix
-        with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
-            tmp.write(file)
-            tmp_path = Path(tmp.name)
-        try:
-            doc = load_document(
-                tmp_path,
-                ocr_engine=ocr_engine or cfg.ocr_engine,
-                force_ocr=force_ocr or cfg.force_ocr,
-                ocr_langs=cfg.ocr_langs,
-                quality_threshold=cfg.quality_threshold,
-                page_timeout=cfg.ocr_page_timeout,
-            )
-        finally:
-            tmp_path.unlink(missing_ok=True)
-    else:
-        file_path = Path(file)
-        if not file_path.exists():
-            raise FileNotFoundError(f"Document not found: {file_path}")
-        doc = load_document(
-            file_path,
-            ocr_engine=ocr_engine or cfg.ocr_engine,
-            force_ocr=force_ocr or cfg.force_ocr,
-            ocr_langs=cfg.ocr_langs,
-            quality_threshold=cfg.quality_threshold,
-            page_timeout=cfg.ocr_page_timeout,
-        )
-
-    # Extract structured data
-    result = extract(doc.text, template=template, mode=mode, score=score)
-
-    # Attach document metadata
-    result["_document"] = {
-        "format": doc.format,
-        "page_count": doc.page_count,
-        "ocr_engine_used": doc.ocr_engine_used,
-        "quality_warning": doc.quality_warning,
-    }
-
-    return result
-
-
-# ---------------------------------------------------------------------------
-# process_files
-# ---------------------------------------------------------------------------
-
-
-def process_files(
-    files: list[Path] | Path,
-    *,
-    template: str | None = None,
-    mode: str = "auto",
-    score: bool = False,
-    workers: int = 4,
-    on_progress: Callable[[str, bool, dict[str, Any] | None], None] | None = None,
-) -> dict[str, Any]:
-    """Process multiple documents with parallel extraction.
-
-    Accepts a directory path (discovers all supported documents) or an
-    explicit list of file paths.
-
-    Parameters
-    ----------
-    files:
-        Directory path or list of file paths.
-    template:
-        Template name for targeted extraction.
-    mode:
-        Extraction mode (``"auto"``, ``"radiology"``, ``"pathology"``).
-    score:
-        Include completeness scoring.
-    workers:
-        Number of parallel extraction workers.
-    on_progress:
-        Optional callback ``(filename: str, success: bool, result: dict | None) -> None``
-        called after each document completes.
-
-    Returns
-    -------
-    dict
-        Keys: ``"total"``, ``"succeeded"``, ``"failed"``,
-        ``"results"`` (list of result dicts), ``"errors"`` (list of
-        error dicts with ``"file"`` and ``"error"`` keys).
-    """
-    from concurrent.futures import ThreadPoolExecutor, as_completed
-
-    from .config import get_config
-    from .documents.engines.base import SUPPORTED_FORMATS
-    from .documents.loader import load_document
-
-    cfg = get_config()
-
-    # Resolve file list
-    if isinstance(files, Path) and files.is_dir():
-        file_list = sorted(
-            p for p in files.iterdir()
-            if p.is_file() and p.suffix.lower() in SUPPORTED_FORMATS
-        )
-    elif isinstance(files, Path):
-        file_list = [files]
-    else:
-        file_list = [Path(f) for f in files]
-
-    if not file_list:
-        return {"total": 0, "succeeded": 0, "failed": 0, "results": [], "errors": []}
-
-    # Load documents sequentially (pypdfium2 is not thread-safe)
-    loaded: list[tuple[Path, str | None, str | None]] = []
-    for path in file_list:
-        try:
-            doc = load_document(
-                path,
-                ocr_engine=cfg.ocr_engine,
-                force_ocr=cfg.force_ocr,
-                ocr_langs=cfg.ocr_langs,
-                quality_threshold=cfg.quality_threshold,
-                page_timeout=cfg.ocr_page_timeout,
-            )
-            loaded.append((path, doc.text, None))
-        except Exception as exc:
-            loaded.append((path, None, f"{type(exc).__name__}: {exc}"))
-
-    succeeded = 0
-    failed = 0
-    results: list[dict[str, Any]] = []
-    errors: list[dict[str, str]] = []
-
-    # Handle load failures
-    to_extract = []
-    for path, text, err in loaded:
-        if err is not None:
-            failed += 1
-            errors.append({"file": path.name, "error": err})
-            if on_progress:
-                on_progress(path.name, False, None)
-        elif text:
-            to_extract.append((path, text))
-        else:
-            # Document loaded but has no text (e.g., blank page)
-            failed += 1
-            errors.append({"file": path.name, "error": "Document loaded but contains no text."})
-            if on_progress:
-                on_progress(path.name, False, None)
-
-    # Parallel extraction
-    def _do_extract(path: Path, text: str) -> tuple[str, dict | None, str | None]:
-        try:
-            result = extract(text, template=template, mode=mode, score=score)
-            return path.name, result, None
-        except Exception as exc:
-            return path.name, None, f"{type(exc).__name__}: {exc}"
-
-    max_w = min(max(1, workers), 32)
-    with ThreadPoolExecutor(max_workers=max_w) as pool:
-        futures = {pool.submit(_do_extract, p, t): p for p, t in to_extract}
-        for future in as_completed(futures):
-            name, result, error = future.result()
-            if error:
-                failed += 1
-                errors.append({"file": name, "error": error})
-                if on_progress:
-                    on_progress(name, False, None)
-            else:
-                succeeded += 1
-                results.append({"file": name, **(result or {})})
-                if on_progress:
-                    on_progress(name, True, result)
-
-    return {
-        "total": len(file_list),
-        "succeeded": succeeded,
-        "failed": failed,
-        "results": results,
-        "errors": errors,
     }

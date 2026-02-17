@@ -147,17 +147,21 @@ def compile_schema(spec: SchemaSpec) -> type[BaseModel]:
     for field in spec.fields:
         py_type = _resolve_type(field)
 
+        # Enhance description for enum fields with allowed values
+        desc = field.description or ""
+        if field.type.strip().lower() == "enum" and field.enum_values:
+            values_str = ", ".join(field.enum_values)
+            desc = f"{desc} (allowed: {values_str})" if desc else f"One of: {values_str}"
+
         if field.required:
-            # Required field: (type, Field(...))
             field_definitions[field.name] = (
                 py_type,
-                Field(..., description=field.description),
+                Field(..., description=desc or None),
             )
         else:
-            # Optional field: (Optional[type], Field(default=None))
             field_definitions[field.name] = (
                 Optional[py_type],
-                Field(default=None, description=field.description),
+                Field(default=None, description=desc or None),
             )
 
     model = create_model(

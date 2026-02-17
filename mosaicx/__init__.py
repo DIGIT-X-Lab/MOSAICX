@@ -2,20 +2,25 @@
 """
 MOSAICX -- Medical Document Structuring Platform.
 
-Public API (text-based SDK):
-    - mosaicx.extract(text=None, document=None, template=None, mode="auto", score=False, optimized=None)
-    - mosaicx.deidentify(text=None, document=None, mode="remove")
-    - mosaicx.summarize(reports=None, documents=None, patient_id="unknown", optimized=None)
+Three core SDK functions:
+    - mosaicx.extract(text=..., documents=..., template=..., mode=..., score=..., workers=...)
+    - mosaicx.deidentify(text=..., documents=..., mode=..., workers=...)
+    - mosaicx.summarize(reports=..., documents=..., patient_id=..., optimized=...)
+
+Utilities:
     - mosaicx.generate_schema(description, name=None, example_text=None, save=False)
     - mosaicx.list_schemas()
     - mosaicx.list_modes()
+    - mosaicx.list_templates()
     - mosaicx.evaluate(pipeline, testset_path, optimized=None)
-    - mosaicx.batch_extract(texts=None, documents=None, mode="auto", template=None)
+    - mosaicx.health()
+
+Configuration:
     - mosaicx.config.MosaicxConfig / get_config()
     - mosaicx.documents.load_document()
     - mosaicx.cli.cli (Click entry point)
 
-File-based API (for document loading + extraction in one call):
+Legacy file-based API (still works, prefer SDK functions):
     - mosaicx.extract_file(document_path, schema=None, mode=None, template=None)
     - mosaicx.summarize_files(document_paths)
 """
@@ -93,7 +98,7 @@ def _load_doc_with_config(path: Path) -> "LoadedDocument":
 
 
 # ---------------------------------------------------------------------------
-# File-based API wrappers (load document from disk, then process)
+# Legacy file-based API wrappers (load document from disk, then process)
 # ---------------------------------------------------------------------------
 
 
@@ -104,6 +109,9 @@ def extract_file(
     template: str | None = None,
 ) -> dict[str, Any]:
     """Extract structured data from a clinical document file.
+
+    .. note::
+        Legacy wrapper. Prefer ``mosaicx.extract(documents=path)`` instead.
 
     Parameters
     ----------
@@ -197,6 +205,9 @@ def summarize_files(
 ) -> dict[str, Any]:
     """Summarize a collection of clinical report files into a patient timeline.
 
+    .. note::
+        Legacy wrapper. Prefer ``mosaicx.summarize(documents=[...])`` instead.
+
     Parameters
     ----------
     document_paths:
@@ -229,14 +240,13 @@ def summarize_files(
 
 
 # ---------------------------------------------------------------------------
-# SDK convenience imports (text-based API -- the primary public interface)
+# SDK convenience imports (the primary public interface)
 # ---------------------------------------------------------------------------
-# These override the file-based wrappers above so that:
+# These provide the unified SDK API so that:
 #     from mosaicx import extract, deidentify, summarize, generate_schema
-# uses the SDK text-based functions directly.
+# uses the SDK functions directly.
 
 from mosaicx.sdk import (  # noqa: E402
-    batch_extract,
     deidentify,
     evaluate,
     extract,
@@ -245,28 +255,24 @@ from mosaicx.sdk import (  # noqa: E402
     list_modes,
     list_schemas,
     list_templates,
-    process_file,
-    process_files,
     summarize,
 )
 
 
 __all__ = [
     "__version__",
-    # SDK text-based API (primary)
+    # SDK core functions
     "extract",
     "deidentify",
     "summarize",
+    # SDK utilities
     "generate_schema",
     "list_schemas",
     "list_modes",
     "list_templates",
     "evaluate",
-    "batch_extract",
     "health",
-    "process_file",
-    "process_files",
-    # File-based API (for document loading)
+    # Legacy file-based API
     "extract_file",
     "summarize_files",
 ]

@@ -399,10 +399,10 @@ The `--optimized` flag tells MOSAICX to load the optimized prompts instead of th
 ### Batch Processing
 
 ```bash
-mosaicx batch --input-dir ./reports --output-dir ./structured --mode radiology --optimized ~/.mosaicx/optimized/radiology_optimized.json
+mosaicx extract --dir ./reports --output-dir ./structured --mode radiology --optimized ~/.mosaicx/optimized/radiology_optimized.json
 ```
 
-The batch command also accepts `--optimized`. All documents in the batch will use the optimized prompts.
+The `--dir` batch mode also accepts `--optimized`. All documents in the batch will use the optimized prompts.
 
 > **Note:** The `--optimized` flag works with `--mode` and `--template`. It does not work with auto mode (no flags), because auto mode uses a different pipeline that infers the schema dynamically.
 
@@ -647,7 +647,7 @@ mosaicx extract --document new_report.pdf --mode radiology --optimized ~/.mosaic
 or in batch:
 
 ```bash
-mosaicx batch --input-dir ./new_reports --output-dir ./structured --mode radiology --optimized ~/.mosaicx/optimized/radiology_optimized.json
+mosaicx extract --dir ./new_reports --output-dir ./structured --mode radiology --optimized ~/.mosaicx/optimized/radiology_optimized.json
 ```
 
 Done. Your pipeline now uses optimized prompts tuned to your institution's radiology reports.

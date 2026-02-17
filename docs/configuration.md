@@ -251,7 +251,7 @@ Batch processing checkpoints are saved to `~/.mosaicx/checkpoints/` (or a custom
 Resume a batch job with:
 
 ```bash
-mosaicx batch --input-dir ./reports --output-dir ./structured --mode radiology --resume
+mosaicx extract --dir ./reports --output-dir ./structured --mode radiology --resume
 ```
 
 ### Logs
@@ -375,7 +375,7 @@ mosaicx extract --document report.pdf
 Match `--workers` to the server's `--max-num-seqs` for optimal throughput:
 
 ```bash
-mosaicx batch --input-dir ./reports --output-dir ./structured \
+mosaicx extract --dir ./reports --output-dir ./structured \
   --mode radiology --workers 4
 ```
 
@@ -421,7 +421,7 @@ mosaicx extract --document report.pdf
 Match `--workers` to the server's `--max-running-requests` for optimal throughput:
 
 ```bash
-mosaicx batch --input-dir ./reports --output-dir ./structured \
+mosaicx extract --dir ./reports --output-dir ./structured \
   --mode radiology --workers 4
 ```
 
@@ -649,7 +649,7 @@ export MOSAICX_DEFAULT_EXPORT_FORMATS=jsonl,parquet
 Or specify formats per-batch with the `--format` flag:
 
 ```bash
-mosaicx batch --input-dir ./reports --output-dir ./structured \
+mosaicx extract --dir ./reports --output-dir ./structured \
   --mode radiology --format jsonl --format csv
 ```
 
@@ -722,7 +722,7 @@ export MOSAICX_API_BASE=http://localhost:8000/v1
 export MOSAICX_API_KEY=dummy
 
 # Run batch processing with parallel workers
-mosaicx batch --input-dir ./reports --output-dir ./structured \
+mosaicx extract --dir ./reports --output-dir ./structured \
   --mode radiology --workers 4
 ```
 
@@ -869,7 +869,7 @@ You can mix CLI flags and environment variables. CLI flags take precedence:
 export MOSAICX_BATCH_WORKERS=8
 
 # Override with CLI flag
-mosaicx batch --input-dir ./reports --output-dir ./structured --workers 8
+mosaicx extract --dir ./reports --output-dir ./structured --workers 8
 ```
 
 ### Tuning Batch Workers for Optimal Throughput

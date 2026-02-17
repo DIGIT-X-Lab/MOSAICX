@@ -274,22 +274,30 @@ class TestDeidentifyRegexOnly:
         assert "sample_report.txt" in result.output
 
     def test_regex_only_directory(self, runner: CliRunner, tmp_path: Path):
-        """Regex-only mode works with a directory of files."""
+        """Regex-only mode works with a directory of files via batch."""
+        input_dir = tmp_path / "input"
+        input_dir.mkdir()
+        output_dir = tmp_path / "output"
         for i in range(3):
-            p = tmp_path / f"report_{i}.txt"
+            p = input_dir / f"report_{i}.txt"
             p.write_text(f"Patient phone: (555) 000-{i:04d}\nFindings: normal.\n")
 
         result = runner.invoke(
             cli,
-            ["deidentify", "--dir", str(tmp_path), "--regex-only"],
+            ["deidentify", "--dir", str(input_dir), "--regex-only",
+             "--output-dir", str(output_dir)],
         )
         assert result.exit_code == 0
-        # All three filenames should appear
-        assert "report_0.txt" in result.output
-        assert "report_1.txt" in result.output
-        assert "report_2.txt" in result.output
-        # Phone numbers scrubbed
-        assert "(555) 000-" not in result.output
+        # Batch success message
+        assert "3/3 succeeded" in result.output
+        # Output JSON files should exist with scrubbed content
+        for i in range(3):
+            out_file = output_dir / f"report_{i}.json"
+            assert out_file.exists(), f"Missing output: {out_file}"
+            import json
+            data = json.loads(out_file.read_text())
+            assert "(555) 000-" not in data["redacted_text"]
+            assert "normal" in data["redacted_text"]
 
     def test_deidentify_no_input_shows_error(self, runner: CliRunner):
         result = runner.invoke(cli, ["deidentify", "--regex-only"])
@@ -351,7 +359,7 @@ class TestLLMCommandsGracefulFailure:
     def test_extract_no_document(self, runner: CliRunner, _no_api_key):
         result = runner.invoke(cli, ["extract"])
         assert result.exit_code != 0
-        assert "--document is required" in result.output
+        assert "--document or --dir is required" in result.output
 
     def test_extract_missing_document(
         self, runner: CliRunner, tmp_path: Path, _no_api_key
@@ -407,61 +415,23 @@ class TestLLMCommandsGracefulFailure:
 # -------------------------------------------------------------------------
 
 
-class TestBatch:
-    def test_batch_requires_input_dir(self, runner: CliRunner, tmp_path: Path):
-        result = runner.invoke(
-            cli, ["batch", "--output-dir", str(tmp_path)]
-        )
-        assert result.exit_code != 0
-        assert "--input-dir" in result.output
+class TestExtractDir:
+    """Tests for extract --dir (replaces old batch command)."""
 
-    def test_batch_requires_output_dir(self, runner: CliRunner, tmp_path: Path):
-        result = runner.invoke(
-            cli, ["batch", "--input-dir", str(tmp_path)]
-        )
-        assert result.exit_code != 0
-        assert "--output-dir" in result.output
-
-    def test_batch_validates_input_dir_exists(self, runner: CliRunner, tmp_path: Path):
-        missing = tmp_path / "nonexistent"
-        result = runner.invoke(
-            cli,
-            ["batch", "--input-dir", str(missing), "--output-dir", str(tmp_path)],
-        )
-        assert result.exit_code != 0
-        assert "does not exist" in result.output
-
-    def test_batch_shows_config_table(self, runner: CliRunner, tmp_path: Path, monkeypatch):
-        input_dir = tmp_path / "input"
-        input_dir.mkdir()
-        output_dir = tmp_path / "output"
-
-        # Mock _configure_dspy and DocumentExtractor so batch runs without API key
-        monkeypatch.setattr("mosaicx.cli._configure_dspy", lambda: None)
-
-        class _FakeResult:
-            extracted = {"mock": "data"}
-
-        class _FakeExtractor:
-            def __call__(self, document_text: str):
-                return _FakeResult()
-
-        monkeypatch.setattr(
-            "mosaicx.pipelines.extraction.DocumentExtractor", _FakeExtractor
-        )
-
-        result = runner.invoke(
-            cli,
-            [
-                "batch",
-                "--input-dir", str(input_dir),
-                "--output-dir", str(output_dir),
-                "--workers", "2",
-            ],
-        )
+    def test_extract_dir_shows_in_help(self, runner: CliRunner):
+        result = runner.invoke(cli, ["extract", "--help"])
         assert result.exit_code == 0
-        assert "BATCH PROCESSING" in result.output
-        assert "Batch complete" in result.output
+        assert "--dir" in result.output
+
+    def test_extract_document_and_dir_mutually_exclusive(
+        self, runner: CliRunner, tmp_path: Path
+    ):
+        doc = tmp_path / "test.txt"
+        doc.write_text("test")
+        result = runner.invoke(
+            cli, ["extract", "--document", str(doc), "--dir", str(tmp_path)]
+        )
+        assert result.exit_code != 0
 
 
 # -------------------------------------------------------------------------
@@ -514,10 +484,11 @@ class TestUnifiedTemplateFlag:
         assert result.exit_code != 0
         assert "not found" in result.output.lower()
 
-    def test_batch_help_shows_template(self, runner: CliRunner):
-        result = runner.invoke(cli, ["batch", "--help"])
+    def test_extract_dir_help_shows_workers(self, runner: CliRunner):
+        """extract --help shows --workers flag (batch functionality)."""
+        result = runner.invoke(cli, ["extract", "--help"])
         assert result.exit_code == 0
-        assert "--template" in result.output
+        assert "--workers" in result.output
 
 
 
