@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="assets/mosaicx_logo.png" alt="MOSAICX" width="700"/>
+  <img src="assets/mosaicx_logo.png?v=2" alt="MOSAICX" width="700"/>
 </div>
 
 <p align="center">
