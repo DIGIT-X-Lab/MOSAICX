@@ -128,7 +128,13 @@ def make_table(title: str | None = None, **kwargs: object) -> Table:
 
 def make_kv_table() -> Table:
     """Create a headerless two-column key\u2013value table."""
-    t = make_table(show_header=False)
+    t = Table(
+        box=box.ROUNDED,
+        border_style=GREIGE,
+        show_header=False,
+        show_edge=False,
+        padding=(0, 1, 0, 2),
+    )
     t.add_column("Key", style=f"bold {CORAL}", no_wrap=True)
     t.add_column("Value")
     return t

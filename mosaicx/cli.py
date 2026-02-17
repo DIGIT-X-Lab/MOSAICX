@@ -78,7 +78,7 @@ def _configure_dspy() -> None:
         )
     from .metrics import TokenTracker, make_harmony_lm, set_tracker
 
-    lm = make_harmony_lm(cfg.lm, api_key=cfg.api_key, api_base=cfg.api_base)
+    lm = make_harmony_lm(cfg.lm, api_key=cfg.api_key, api_base=cfg.api_base, temperature=cfg.lm_temperature)
     dspy.configure(lm=lm)
 
     # Install token usage tracker
@@ -1635,6 +1635,7 @@ def config_show() -> None:
     t.add_row("lm", dump["lm"])
     t.add_row("lm_cheap", dump["lm_cheap"])
     t.add_row("api_base", dump["api_base"])
+    t.add_row("lm_temperature", str(dump["lm_temperature"]))
     api_key = dump["api_key"]
     if api_key:
         masked = api_key[:4] + "\u00b7\u00b7\u00b7" + api_key[-4:] if len(api_key) > 8 else "***"

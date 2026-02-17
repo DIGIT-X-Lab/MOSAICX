@@ -71,6 +71,9 @@ MOSAICX_API_KEY=ollama
 # LLM API endpoint URL
 MOSAICX_API_BASE=http://localhost:11434/v1
 
+# LLM sampling temperature (0.0 = deterministic, higher = more variation)
+MOSAICX_LM_TEMPERATURE=0.0
+
 # ========================================
 # Processing Settings
 # ========================================
@@ -174,6 +177,7 @@ Below is a complete reference of every MOSAICX configuration variable.
 | `MOSAICX_LM_CHEAP` | `openai/gpt-oss:20b` | Cheap/fast model for simple tasks like classification and section parsing |
 | `MOSAICX_API_KEY` | `ollama` | API key for the LLM provider. Use `ollama` for local Ollama servers, or your actual key for cloud APIs (e.g., `sk-...` for OpenAI) |
 | `MOSAICX_API_BASE` | `http://localhost:11434/v1` | Base URL for the LLM API endpoint. Must end with `/v1` for OpenAI-compatible servers |
+| `MOSAICX_LM_TEMPERATURE` | `0.0` | LLM sampling temperature. `0.0` = deterministic (greedy decoding), higher values (e.g. `0.7`) = more variation. Default is `0.0` for reproducible extractions |
 | `MOSAICX_DEFAULT_TEMPLATE` | `auto` | Default extraction template name. `auto` lets the LLM infer structure |
 | `MOSAICX_COMPLETENESS_THRESHOLD` | `0.7` | Minimum extraction quality score (0.0 to 1.0). Higher values enforce stricter extraction quality |
 | `MOSAICX_BATCH_WORKERS` | `1` | Number of parallel workers for batch processing. Increase for faster processing if you have sufficient RAM and CPU cores |

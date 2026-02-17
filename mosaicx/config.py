@@ -30,6 +30,7 @@ class MosaicxConfig(BaseSettings):
     lm_cheap: str = "openai/gpt-oss:20b"
     api_key: str = "ollama"
     api_base: str = "http://localhost:11434/v1"
+    lm_temperature: float = 0.0
 
     # --- Processing ---
     default_template: str = "auto"
