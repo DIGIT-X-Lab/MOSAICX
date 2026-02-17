@@ -10,8 +10,8 @@ MOSAICX exposes its core features as MCP tools:
 
 - **Extract structured data** from medical documents (radiology reports, pathology reports, clinical notes)
 - **De-identify clinical text** by removing or replacing Protected Health Information (PHI)
-- **Generate extraction schemas** from natural-language descriptions
-- **List saved schemas** and available extraction modes
+- **Generate extraction templates** from natural-language descriptions
+- **List saved templates** and available extraction modes
 
 This means you can say something like "extract the findings from this radiology report" in a Claude conversation, and Claude will call the MOSAICX extraction tool behind the scenes, returning structured JSON data without you ever touching the command line.
 
@@ -179,15 +179,15 @@ Supports three extraction strategies:
 
 - **auto** (default): The LLM reads the document, infers an appropriate schema, and extracts data into it. Best for one-off extractions where you do not have a predefined schema.
 - **mode-based**: Uses a specialized multi-step pipeline for a specific document domain (e.g., `radiology` or `pathology`). These pipelines include classification, section parsing, and domain-specific extraction steps.
-- **schema-based**: Uses a previously saved schema by name for targeted extraction. The schema defines exactly which fields to extract.
+- **template-based**: Uses a previously saved template by name for targeted extraction. The template defines exactly which fields to extract.
 
 **Parameters:**
 
 | Name | Type | Default | Description |
 |------|------|---------|-------------|
 | `document_text` | `string` | (required) | Full text of the clinical document to extract from. |
-| `mode` | `string` | `"auto"` | Extraction strategy. Options: `"auto"`, `"radiology"`, `"pathology"`. Ignored if `schema_name` is provided. |
-| `schema_name` | `string` | `null` | Name of a saved schema (from `~/.mosaicx/schemas/`). If provided, extraction uses this schema instead of `mode`. |
+| `mode` | `string` | `"auto"` | Extraction strategy. Options: `"auto"`, `"radiology"`, `"pathology"`. Ignored if `template` is provided. |
+| `template` | `string` | `null` | Name of a saved template (from `~/.mosaicx/templates/`). If provided, extraction uses this template instead of `mode`. |
 
 **Return value:**
 
@@ -195,7 +195,7 @@ A JSON string containing the extracted data. The exact structure depends on the 
 
 - **auto mode:** `{"extracted": {...}, "inferred_schema": {...}}`
 - **mode-based:** Domain-specific fields plus optional `_metrics` with `total_duration_s` and `total_tokens`
-- **schema-based:** `{"extracted": {...}}` with fields matching the schema
+- **template-based:** `{"extracted": {...}}` with fields matching the template
 
 If an error occurs, returns `{"error": "description of what went wrong"}`.
 
@@ -246,16 +246,16 @@ Returns:
 
 Returns domain-specific radiology fields (exam classification, parsed sections, technique details, structured findings, and impression) along with processing metrics.
 
-**Example -- schema-based:**
+**Example -- template-based:**
 
 ```json
 {
   "document_text": "CT CHEST WITHOUT CONTRAST\n...",
-  "schema_name": "EchoReport"
+  "template": "EchoReport"
 }
 ```
 
-Returns only the fields defined in the `EchoReport` schema.
+Returns only the fields defined in the `EchoReport` template.
 
 ---
 
@@ -308,31 +308,31 @@ Returns:
 
 ---
 
-### generate_schema
+### generate_template
 
-Generate a Pydantic extraction schema from a natural-language description.
+Generate an extraction template from a natural-language description.
 
-Describe what kind of document you want to extract data from and what fields matter, and the LLM will create a structured schema specification. The schema is automatically saved to `~/.mosaicx/schemas/` and can be used for targeted extraction with `extract_document`.
+Describe what kind of document you want to extract data from and what fields matter, and the LLM will create a structured template specification. The template is automatically saved to `~/.mosaicx/templates/` and can be used for targeted extraction with `extract_document`.
 
 **Parameters:**
 
 | Name | Type | Default | Description |
 |------|------|---------|-------------|
 | `description` | `string` | (required) | Natural-language description of the document type and desired fields (e.g., "echocardiography report with LVEF, valve grades, and clinical impression"). |
-| `name` | `string` | `null` | Optional class name for the generated schema. If not provided, the LLM chooses an appropriate name. |
+| `name` | `string` | `null` | Optional class name for the generated template. If not provided, the LLM chooses an appropriate name. |
 
 **Return value:**
 
 ```json
 {
   "class_name": "EchoReport",
-  "description": "Schema for echocardiography reports",
+  "description": "Template for echocardiography reports",
   "fields": [
     {"name": "lvef", "type": "float", "required": true, "description": "Left ventricular ejection fraction"},
     {"name": "valve_grades", "type": "dict", "required": true, "description": "Valve grades"},
     {"name": "clinical_impression", "type": "str", "required": true, "description": "Clinical impression"}
   ],
-  "_saved_to": "/Users/yourusername/.mosaicx/schemas/EchoReport.json"
+  "_saved_to": "/Users/yourusername/.mosaicx/templates/EchoReport.yaml"
 }
 ```
 
@@ -349,15 +349,15 @@ The AI assistant calls:
 }
 ```
 
-Returns the generated schema specification with all inferred fields and the path where it was saved.
+Returns the generated template specification with all inferred fields and the path where it was saved.
 
 ---
 
-### list_schemas
+### list_templates
 
-List all saved extraction schemas.
+List all saved extraction templates.
 
-Returns the schemas stored in `~/.mosaicx/schemas/` with their class names, field counts, descriptions, and field details. This tool requires no parameters.
+Returns the templates stored in `~/.mosaicx/templates/` with their class names, field counts, descriptions, and field details. This tool requires no parameters.
 
 **Parameters:**
 
@@ -367,12 +367,12 @@ None.
 
 ```json
 {
-  "schema_dir": "/Users/yourusername/.mosaicx/schemas",
+  "template_dir": "/Users/yourusername/.mosaicx/templates",
   "count": 2,
-  "schemas": [
+  "templates": [
     {
       "class_name": "EchoReport",
-      "description": "Schema for echocardiography reports",
+      "description": "Template for echocardiography reports",
       "field_count": 3,
       "fields": [
         {"name": "lvef", "type": "float", "required": true},
@@ -382,7 +382,7 @@ None.
     },
     {
       "class_name": "ChestCTReport",
-      "description": "Schema for chest CT radiology reports",
+      "description": "Template for chest CT radiology reports",
       "field_count": 4,
       "fields": [
         {"name": "findings", "type": "str", "required": true},
@@ -395,7 +395,7 @@ None.
 }
 ```
 
-If no schemas are saved, `count` will be `0` and `schemas` will be an empty list.
+If no templates are saved, `count` will be `0` and `templates` will be an empty list.
 
 ---
 
@@ -480,7 +480,7 @@ The MCP server uses the same `MOSAICX_*` environment variables as the CLI. No se
 | `MOSAICX_LM_CHEAP` | `openai/gpt-oss:20b` | Fast model for classification steps |
 | `MOSAICX_API_KEY` | `ollama` | API key for the LLM provider |
 | `MOSAICX_API_BASE` | `http://localhost:11434/v1` | Base URL for the LLM API endpoint |
-| `MOSAICX_HOME_DIR` | `~/.mosaicx` | Directory for schemas, optimized programs, and logs |
+| `MOSAICX_HOME_DIR` | `~/.mosaicx` | Directory for templates, optimized programs, and logs |
 
 ### Setting environment variables for the MCP server
 
@@ -641,22 +641,22 @@ Claude calls the `deidentify_text` tool with `mode: "remove"`. The MOSAICX de-id
 }
 ```
 
-### Scenario 3: Create a schema for echocardiography reports
+### Scenario 3: Create a template for echocardiography reports
 
 **You say:**
 
-> Create an extraction schema for echocardiography reports. I need LVEF, chamber dimensions, valve regurgitation grades, and the clinical impression.
+> Create an extraction template for echocardiography reports. I need LVEF, chamber dimensions, valve regurgitation grades, and the clinical impression.
 
 **What happens behind the scenes:**
 
-Claude calls the `generate_schema` tool with the description and optionally a name like `"EchoReport"`.
+Claude calls the `generate_template` tool with the description and optionally a name like `"EchoReport"`.
 
 **Claude responds with:**
 
 ```json
 {
   "class_name": "EchoReport",
-  "description": "Schema for echocardiography reports including cardiac function and valve assessment",
+  "description": "Template for echocardiography reports including cardiac function and valve assessment",
   "fields": [
     {"name": "lvef_percent", "type": "float", "required": true, "description": "Left ventricular ejection fraction (%)"},
     {"name": "lv_end_diastolic_diameter_cm", "type": "float", "required": false, "description": "LV end-diastolic diameter in cm"},
@@ -667,11 +667,11 @@ Claude calls the `generate_schema` tool with the description and optionally a na
     {"name": "tricuspid_regurgitation", "type": "str", "required": false, "description": "Tricuspid regurgitation grade"},
     {"name": "clinical_impression", "type": "str", "required": true, "description": "Overall clinical impression"}
   ],
-  "_saved_to": "/Users/yourusername/.mosaicx/schemas/EchoReport.json"
+  "_saved_to": "/Users/yourusername/.mosaicx/templates/EchoReport.yaml"
 }
 ```
 
-You can now use this schema for extraction: "Extract data from this echo report using the EchoReport schema."
+You can now use this template for extraction: "Extract data from this echo report using the EchoReport template."
 
 ### Scenario 4: Check what extraction modes are available
 

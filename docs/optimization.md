@@ -132,9 +132,9 @@ Example record:
 - `mode`: De-identification mode: `remove`, `pseudonymize`, or `dateshift` (string)
 - `redacted_text`: The expected output with PHI removed or replaced (string)
 
-#### Schema
+#### Template
 
-Generate a Pydantic schema from a description.
+Generate an extraction template from a description.
 
 **Inputs:** `description`, `example_text`, `document_text`
 **Labels:** `schema_spec`
@@ -145,7 +145,7 @@ Example record:
 {"description": "echocardiography report with LVEF and valve grades", "schema_spec": {"class_name": "EchoReport", "fields": [{"name": "lvef", "type": "float", "required": true, "description": "Left ventricular ejection fraction"}, {"name": "valve_grades", "type": "list[str]", "required": false, "description": "Valve regurgitation grades"}]}}
 ```
 
-- `description`: Natural-language description of the schema (string)
+- `description`: Natural-language description of the template (string)
 - `example_text`: Optional example document snippet (string)
 - `document_text`: Optional full document text (string)
 - `schema_spec`: The expected SchemaSpec object with `class_name` and `fields` (dictionary)
@@ -197,7 +197,7 @@ Output:
 > extract
 > pathology
 > radiology
-> schema
+> template
 > summarize
 ```
 
@@ -404,7 +404,7 @@ mosaicx batch --input-dir ./reports --output-dir ./structured --mode radiology -
 
 The batch command also accepts `--optimized`. All documents in the batch will use the optimized prompts.
 
-> **Note:** The `--optimized` flag works with `--mode`, `--schema`, and `--template`. It does not work with auto mode (no flags), because auto mode uses a different pipeline that infers the schema dynamically.
+> **Note:** The `--optimized` flag works with `--mode` and `--template`. It does not work with auto mode (no flags), because auto mode uses a different pipeline that infers the schema dynamically.
 
 ## How Metrics Work
 
@@ -455,7 +455,7 @@ Example: Gold has `{"name": "John", "age": 45}`. Prediction has `{"name": "John"
 - **phi_leak_score (60%):** How well did the pipeline avoid leaking PHI? Measured using regex patterns for common PHI (names, SSNs, dates). Lower leak = higher score.
 - **text_overlap (40%):** Token overlap between predicted and gold redacted text. `len(gold_tokens ∩ pred_tokens) / len(gold_tokens)`
 
-### Schema
+### Template
 
 **Formula:** 0.7 × field_name_overlap + 0.3 × extra_field_score
 

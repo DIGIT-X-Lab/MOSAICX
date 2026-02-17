@@ -32,50 +32,62 @@ mosaicx extract --help
 Extract structured data from a clinical document.
 
 MOSAICX can extract data in three ways:
-1. **Auto mode** (no schema flag): LLM automatically determines what to extract
-2. **Schema mode** (`--schema`): Use a saved schema from `~/.mosaicx/schemas/`
+1. **Auto mode** (no flags): LLM automatically determines what to extract
+2. **Template mode** (`--template`): Use a built-in template, user template, YAML file, or legacy saved schema
 3. **Mode mode** (`--mode`): Use a built-in multi-step pipeline (radiology, pathology)
-4. **Template mode** (`--template`): Use a custom YAML template file
+
+The `--template` flag resolves its argument through a resolution chain:
+1. YAML file path (if suffix is `.yaml`/`.yml` and file exists)
+2. User template in `~/.mosaicx/templates/`
+3. Built-in template name (e.g. `chest_ct`, `brain_mri`)
+4. Legacy saved schema from `~/.mosaicx/schemas/`
+5. Error if nothing matches
 
 **Options:**
 
 | Flag | Type | Required | Description |
 |------|------|----------|-------------|
 | `--document` | PATH | Yes | Path to the document (PDF, TXT, DOCX, PNG, JPG, TIFF) |
-| `--schema` | TEXT | No | Name of a saved schema from `~/.mosaicx/schemas/` |
+| `--template` | TEXT | No | Template name, YAML file path, or saved schema name |
 | `--mode` | TEXT | No | Extraction mode (e.g., `radiology`, `pathology`) |
-| `--template` | PATH | No | Path to a YAML template file |
+| `--score` | flag | No | Score completeness of extracted data against the template |
 | `--optimized` | PATH | No | Path to an optimized DSPy program (`.json` file) |
 | `-o`, `--output` | PATH | No | Save output to JSON or YAML file |
 | `--list-modes` | flag | No | List available extraction modes and exit |
 
 **Important:**
-- `--schema`, `--mode`, and `--template` are mutually exclusive — use only one
-- If none are provided, auto mode is used
+- `--template` and `--mode` are mutually exclusive -- use only one
+- If neither is provided, auto mode is used
 - Supported formats: PDF, TXT, DOCX, MD, PNG, JPG, JPEG, TIF, TIFF
 
 **Examples:**
 
 ```bash
-# Auto mode — LLM decides what to extract from the document
+# Auto mode -- LLM decides what to extract from the document
 mosaicx extract --document report.pdf
 
 # List available modes
 mosaicx extract --list-modes
 
-# Radiology mode — 5-step pipeline for radiology reports
-# Steps: classify exam → parse sections → extract technique → findings → impression
+# Radiology mode -- 5-step pipeline for radiology reports
+# Steps: classify exam -> parse sections -> extract technique -> findings -> impression
 mosaicx extract --document ct_chest.pdf --mode radiology
 
-# Pathology mode — 5-step pipeline for pathology reports
-# Steps: classify specimen → parse sections → specimen details → findings → diagnosis
+# Pathology mode -- 5-step pipeline for pathology reports
+# Steps: classify specimen -> parse sections -> specimen details -> findings -> diagnosis
 mosaicx extract --document biopsy.pdf --mode pathology
 
-# Use a saved schema (must exist in ~/.mosaicx/schemas/)
-mosaicx extract --document echo.pdf --schema EchoReport
+# Use a built-in template by name
+mosaicx extract --document ct_chest.pdf --template chest_ct
 
-# Use a custom YAML template
-mosaicx extract --document report.pdf --template my_template.yaml
+# Use a user-created YAML template file
+mosaicx extract --document report.pdf --template echo.yaml
+
+# Use a legacy saved schema (resolved from ~/.mosaicx/schemas/)
+mosaicx extract --document echo.pdf --template EchoReport
+
+# Extract with completeness scoring
+mosaicx extract --document ct_chest.pdf --template chest_ct --score
 
 # Save output to JSON
 mosaicx extract --document report.pdf --mode radiology -o output.json
@@ -84,7 +96,7 @@ mosaicx extract --document report.pdf --mode radiology -o output.json
 mosaicx extract --document report.pdf --mode radiology -o output.yaml
 
 # Use an optimized program (from mosaicx optimize)
-mosaicx extract --document report.pdf --mode radiology \
+mosaicx extract --document report.pdf --template chest_ct \
   --optimized ~/.mosaicx/optimized/radiology_optimized.json
 
 # Combine mode with custom save location
@@ -95,6 +107,8 @@ mosaicx extract --document ct_report.pdf --mode radiology \
 **What you'll see:**
 
 Without `--output`, results are displayed in the terminal as formatted tables. Use `--output` to save the full structured data as JSON or YAML.
+
+When `--score` is used, a completeness report is shown after the extracted data, scoring how thoroughly the template fields were populated.
 
 ---
 
@@ -110,7 +124,7 @@ All documents in the input directory are processed and saved as individual JSON 
 |------|------|----------|-------------|
 | `--input-dir` | PATH | Yes | Directory containing input documents |
 | `--output-dir` | PATH | Yes | Directory for output files |
-| `--schema` | TEXT | No | Schema name to use for all documents |
+| `--template` | TEXT | No | Template name, YAML file path, or saved schema name |
 | `--mode` | TEXT | No | Extraction mode for all documents (e.g., `radiology`) |
 | `--format` | TEXT | No | Output format(s): `jsonl`, `parquet` (can repeat) |
 | `--workers` | INT | No | Number of parallel workers (default: 1) |
@@ -125,7 +139,7 @@ All documents in the input directory are processed and saved as individual JSON 
 **Examples:**
 
 ```bash
-# Basic batch — auto mode, single worker
+# Basic batch -- auto mode, single worker
 mosaicx batch --input-dir ./reports --output-dir ./structured
 
 # Batch with radiology mode
@@ -135,9 +149,13 @@ mosaicx batch --input-dir ./ct_scans --output-dir ./structured_ct --mode radiolo
 mosaicx batch --input-dir ./biopsies --output-dir ./structured_path \
   --mode pathology --workers 4
 
-# Use a saved schema
+# Use a built-in template
+mosaicx batch --input-dir ./ct_scans --output-dir ./structured_ct \
+  --template chest_ct
+
+# Use a custom YAML template
 mosaicx batch --input-dir ./echo_reports --output-dir ./structured_echo \
-  --schema EchoReport
+  --template echo.yaml
 
 # Export as JSONL (one JSON object per line)
 mosaicx batch --input-dir ./reports --output-dir ./out \
@@ -179,211 +197,264 @@ If a batch crashes or is interrupted, use `--resume` to skip already-processed d
 
 ---
 
-## `mosaicx schema generate`
+## `mosaicx template create`
 
-Generate a Pydantic schema from natural language or a sample document.
+Create a new YAML template from a description, sample document, web page, RadReport ID, or JSON schema.
 
-Schemas are saved to `~/.mosaicx/schemas/` by default and can be reused with `mosaicx extract --schema`.
+Templates are saved to `~/.mosaicx/templates/` by default and can be reused with `mosaicx extract --template`.
 
 **Options:**
 
 | Flag | Type | Required | Description |
 |------|------|----------|-------------|
-| `--description` | TEXT | No* | Plain-English description of desired fields |
-| `--from-document` | PATH | No* | Infer schema from a sample document |
-| `--name` | TEXT | No | Override the schema class name |
-| `--example-text` | TEXT | No | Example text for grounding the schema |
-| `--output` | PATH | No | Custom save path (default: `~/.mosaicx/schemas/`) |
+| `--describe` | TEXT | No* | Natural-language description of the template |
+| `--from-document` | PATH | No* | Infer template from a sample document |
+| `--from-url` | TEXT | No* | Infer template from a web page (e.g. RadReport URL) |
+| `--from-radreport` | TEXT | No* | RadReport template ID (e.g. `RPT50890` or `50890`) |
+| `--from-json` | PATH | No* | Convert a saved SchemaSpec JSON to YAML template |
+| `--name` | TEXT | No | Override the template name (default: LLM-chosen) |
+| `--mode` | TEXT | No | Pipeline mode to embed (e.g. `radiology`, `pathology`) |
+| `--output` | PATH | No | Custom save path (default: `~/.mosaicx/templates/`) |
 
 **Important:**
-- Must provide `--description` or `--from-document` (or both)
-- Schemas are saved as JSON files in `~/.mosaicx/schemas/{name}.json`
+- Must provide at least one source: `--describe`, `--from-document`, `--from-url`, `--from-radreport`, or `--from-json`
+- `--from-json` cannot be combined with other sources
+- `--describe` and `--from-document` can be combined for better results
+- Templates are saved as YAML files in `~/.mosaicx/templates/{name}.yaml`
 
 **Examples:**
 
 ```bash
 # Generate from description
-mosaicx schema generate \
-  --description "echo report with LVEF, valve grades, chamber dimensions, and impression"
+mosaicx template create \
+  --describe "echo report with LVEF, valve grades, chamber dimensions, and impression"
 
 # Generate from sample document
-mosaicx schema generate --from-document sample_echo.pdf
+mosaicx template create --from-document sample_echo.pdf
 
 # Combine description and document
-mosaicx schema generate \
-  --description "extract vital signs and lab values" \
+mosaicx template create \
+  --describe "extract vital signs and lab values" \
   --from-document clinic_note.pdf
 
-# Override the auto-generated class name
-mosaicx schema generate \
-  --description "CT lung nodule report with LUNG-RADS score" \
+# Generate from a web page
+mosaicx template create --from-url https://radreport.org/template/0050890
+
+# Generate from a RadReport template ID
+mosaicx template create --from-radreport RPT50890
+
+# Convert a legacy JSON schema to YAML template
+mosaicx template create --from-json ~/.mosaicx/schemas/EchoReport.json
+
+# Override the auto-generated name
+mosaicx template create \
+  --describe "CT lung nodule report with LUNG-RADS score" \
   --name CTLungNodule
 
-# Add example text for better grounding
-mosaicx schema generate \
-  --description "MRI brain with lesion measurements" \
-  --example-text "Multiple T2 hyperintense foci in subcortical white matter..."
+# Embed a pipeline mode in the template
+mosaicx template create \
+  --describe "chest CT report" --mode radiology
 
 # Save to custom location
-mosaicx schema generate \
-  --description "chest x-ray findings" \
-  --output /path/to/my_schemas/chest_xr.json
+mosaicx template create \
+  --describe "chest x-ray findings" \
+  --output /path/to/my_templates/chest_xr.yaml
 ```
 
 **What happens:**
 
-1. LLM analyzes your description and/or document
-2. Generates a Pydantic schema with appropriate field names, types, and descriptions
-3. Saves the schema to `~/.mosaicx/schemas/{name}.json`
-4. Displays the generated schema in the terminal
+1. LLM analyzes your description, document, or web content
+2. Generates a YAML template with sections, types, and descriptions
+3. Saves the template to `~/.mosaicx/templates/{name}.yaml`
+4. Displays a preview of the generated YAML
 
-You can now use the schema with:
+You can now use the template with:
 ```bash
-mosaicx extract --document new_echo.pdf --schema EchoReport
+mosaicx extract --document new_echo.pdf --template EchoReport
 ```
 
 ---
 
-## `mosaicx schema list`
+## `mosaicx template list`
 
-List all saved schemas in `~/.mosaicx/schemas/`.
+List available built-in and user-created templates.
+
+Built-in templates are pre-defined YAML schemas for common radiology exams. User templates are stored in `~/.mosaicx/templates/`.
 
 **Examples:**
 
 ```bash
-mosaicx schema list
+mosaicx template list
 ```
 
 **Output:**
 
-Shows a table with:
-- Schema name
-- Number of fields
-- Description (if available)
+Shows two tables:
+
+1. **Built-in Templates** -- with columns:
+   - Template name
+   - Mode (e.g., radiology)
+   - RDES (RadReport ID, if applicable)
+   - Description
+
+2. **User Templates** (if any exist) -- with columns:
+   - Template name
+   - Description
 
 ---
 
-## `mosaicx schema show`
+## `mosaicx template show`
 
-Display fields and types of a saved schema.
+Display details of a template (built-in, user-created, or legacy saved schema).
 
 **Usage:**
 
 ```bash
-mosaicx schema show <schema_name>
+mosaicx template show <name>
 ```
 
 **Examples:**
 
 ```bash
-# Show the EchoReport schema
-mosaicx schema show EchoReport
+# Show a built-in template
+mosaicx template show chest_ct
 
-# Show a custom schema
-mosaicx schema show CTLungNodule
+# Show a user-created template
+mosaicx template show EchoReport
+
+# Show a legacy saved schema
+mosaicx template show CTLungNodule
 ```
 
 **Output:**
 
-Displays a table with:
-- Field name
-- Type (str, int, float, List, etc.)
-- Required (yes/no)
+Displays:
+- Template name and source (built-in or user)
 - Description
+- Mode and RDES ID (if applicable)
+- Table of sections/fields with name, type, required status, and description
 
 ---
 
-## `mosaicx schema refine`
+## `mosaicx template refine`
 
-Modify an existing schema using natural language or explicit operations.
+Refine an existing template using LLM-powered natural-language instructions.
 
-You can refine schemas in two ways:
-1. **LLM-driven** (`--instruction`): Natural language changes
-2. **Manual** (`--add`, `--remove`, `--rename`): Direct field operations
+The current version is archived before saving the refined version, so you can revert if needed.
+
+**Usage:**
+
+```bash
+mosaicx template refine <name> --instruction "..."
+```
 
 **Options:**
 
 | Flag | Type | Required | Description |
 |------|------|----------|-------------|
-| `--schema` | TEXT | Yes | Name of the schema to refine |
-| `--instruction` | TEXT | No | Natural-language refinement instruction |
-| `--add` | TEXT | No | Add a field (`"field_name: type"`) |
-| `--optional` | flag | No | Make the added field optional (use with `--add`) |
-| `--description` | TEXT | No | Description for the added field (use with `--add`) |
-| `--remove` | TEXT | No | Remove a field by name |
-| `--rename` | TEXT | No | Rename a field (`"old_name=new_name"`) |
+| `--instruction` | TEXT | Yes | Natural-language refinement instruction |
+| `--output` | PATH | No | Save refined template to a different path |
 
 **Important:**
-- Must provide one of: `--instruction`, `--add`, `--remove`, or `--rename`
-- Changes are saved to the same schema file
-- Original version is archived to `~/.mosaicx/schemas/.archive/`
+- Works with both built-in and user templates
+- Refining a built-in template saves the result as a user template
+- Previous versions are archived in `~/.mosaicx/templates/.history/`
 
 **Examples:**
 
 ```bash
-# LLM-driven refinement
-mosaicx schema refine --schema EchoReport \
+# Add a field using natural language
+mosaicx template refine EchoReport \
   --instruction "add a field for tricuspid valve regurgitation severity"
 
-# Add a required field
-mosaicx schema refine --schema CTReport \
-  --add "lung_rads_score: int" \
-  --description "LUNG-RADS category (1-4)"
-
-# Add an optional field
-mosaicx schema refine --schema PathReport \
-  --add "her2_status: str" --optional \
-  --description "HER2/neu status if tested"
-
-# Remove a field
-mosaicx schema refine --schema EchoReport --remove chamber_dimensions
-
-# Rename a field
-mosaicx schema refine --schema CTReport --rename "findings=radiology_findings"
-
-# Multiple LLM-driven changes
-mosaicx schema refine --schema EchoReport \
+# Remove fields
+mosaicx template refine EchoReport \
   --instruction "remove wall_motion and add regional_wall_motion_abnormalities as a list"
+
+# Make structural changes
+mosaicx template refine CTReport \
+  --instruction "add a LUNG-RADS category field as an integer 1-4"
+
+# Save refined template to a custom location
+mosaicx template refine chest_ct \
+  --instruction "add fields for coronary calcification" \
+  --output /path/to/custom_chest_ct.yaml
 ```
 
 ---
 
-## `mosaicx schema history`
+## `mosaicx template migrate`
 
-Show version history of a schema.
+Convert legacy JSON schemas from `~/.mosaicx/schemas/` to YAML templates in `~/.mosaicx/templates/`.
 
-Every time you refine a schema, the previous version is archived. This command lists all archived versions.
+This is a one-time migration command for users upgrading from the old schema system to the unified template system.
+
+**Options:**
+
+| Flag | Type | Required | Description |
+|------|------|----------|-------------|
+| `--dry-run` | flag | No | Show what would be migrated without writing files |
+
+**Examples:**
+
+```bash
+# Preview what would be migrated
+mosaicx template migrate --dry-run
+
+# Perform the migration
+mosaicx template migrate
+```
+
+**What happens:**
+
+1. Scans `~/.mosaicx/schemas/` for JSON schema files
+2. Converts each to YAML template format
+3. Saves to `~/.mosaicx/templates/{name}.yaml`
+4. Skips any templates that already exist as YAML
+5. Reports migrated, skipped, and errored files
+
+---
+
+## `mosaicx template history`
+
+Show version history of a user template.
+
+Every time you refine a template, the previous version is archived. This command lists all archived versions.
 
 **Usage:**
 
 ```bash
-mosaicx schema history <schema_name>
+mosaicx template history <name>
 ```
 
 **Examples:**
 
 ```bash
-mosaicx schema history EchoReport
-mosaicx schema history CTLungNodule
+mosaicx template history EchoReport
+mosaicx template history CTLungNodule
 ```
 
 **Output:**
 
 Table showing:
 - Version number (v1, v2, v3, ...)
-- Number of fields
 - Date modified
+- Current version
+
+**Important:**
+- Only user templates have version history (not built-in templates)
+- History is stored in `~/.mosaicx/templates/.history/`
 
 ---
 
-## `mosaicx schema diff`
+## `mosaicx template diff`
 
-Compare current schema against a previous version.
+Compare the current version of a user template against a previous archived version.
 
 **Usage:**
 
 ```bash
-mosaicx schema diff <schema_name> --version <N>
+mosaicx template diff <name> --version <N>
 ```
 
 **Options:**
@@ -396,31 +467,31 @@ mosaicx schema diff <schema_name> --version <N>
 
 ```bash
 # Compare current EchoReport to version 2
-mosaicx schema diff EchoReport --version 2
+mosaicx template diff EchoReport --version 2
 
 # See what changed since version 1
-mosaicx schema diff PathReport --version 1
+mosaicx template diff CTReport --version 1
 ```
 
 **Output:**
 
 Shows:
-- Added fields (green `+`)
-- Removed fields (red `-`)
-- Modified fields (yellow `~`) with details of what changed
+- Added sections (green `+`)
+- Removed sections (red `-`)
+- Modified sections (yellow `~`) with details of what changed
 
 ---
 
-## `mosaicx schema revert`
+## `mosaicx template revert`
 
-Restore a schema to a previous version.
+Restore a user template to a previous version.
 
 The current version is archived before reverting.
 
 **Usage:**
 
 ```bash
-mosaicx schema revert <schema_name> --version <N>
+mosaicx template revert <name> --version <N>
 ```
 
 **Options:**
@@ -433,39 +504,17 @@ mosaicx schema revert <schema_name> --version <N>
 
 ```bash
 # Revert EchoReport to version 2
-mosaicx schema revert EchoReport --version 2
+mosaicx template revert EchoReport --version 2
 
 # Undo recent changes by reverting to version 1
-mosaicx schema revert PathReport --version 1
+mosaicx template revert CTReport --version 1
 ```
 
 **What happens:**
 
-1. Current schema is archived as the next version number
-2. Specified version becomes the current schema
-3. Displays a diff showing what changed
-
----
-
-## `mosaicx template list`
-
-List built-in radiology report templates.
-
-Templates are pre-defined YAML schemas for common radiology exams.
-
-**Examples:**
-
-```bash
-mosaicx template list
-```
-
-**Output:**
-
-Table showing:
-- Template name
-- Exam type (e.g., CT Chest, MRI Brain)
-- RadReport ID (if applicable)
-- Description
+1. Current template is archived as the next version number
+2. Specified version becomes the current template
+3. Confirmation message shows old and new version numbers
 
 ---
 
@@ -610,7 +659,7 @@ Displays the de-identified text in a formatted panel. If processing a directory,
 
 Optimize a DSPy pipeline using labeled examples.
 
-Optimization uses progressive strategies (BootstrapFewShot → MIPROv2 → GEPA) to improve pipeline performance on your specific data.
+Optimization uses progressive strategies (BootstrapFewShot -> MIPROv2 -> GEPA) to improve pipeline performance on your specific data.
 
 **Options:**
 
@@ -666,12 +715,12 @@ mosaicx optimize --pipeline schema \
 
 **Available pipelines:**
 
-- `radiology` — RadiologyReportStructurer
-- `pathology` — PathologyReportStructurer
-- `extract` — DocumentExtractor
-- `summarize` — ReportSummarizer
-- `deidentify` — Deidentifier
-- `schema` — SchemaGenerator
+- `radiology` -- RadiologyReportStructurer
+- `pathology` -- PathologyReportStructurer
+- `extract` -- DocumentExtractor
+- `summarize` -- ReportSummarizer
+- `deidentify` -- Deidentifier
+- `schema` -- SchemaGenerator
 
 **Training data format (JSONL):**
 
@@ -772,7 +821,7 @@ mosaicx pipeline new cardiology --description "Cardiology report structurer"
 # PascalCase and kebab-case are normalized automatically
 mosaicx pipeline new echo-report -d "Echocardiography report extraction"
 
-# Minimal — auto-generates a description
+# Minimal -- auto-generates a description
 mosaicx pipeline new dermatology
 ```
 
@@ -806,7 +855,7 @@ The MCP server exposes MOSAICX tools (extract, deidentify, schema generate, list
 **Examples:**
 
 ```bash
-# Start with stdio transport (default — for Claude Code / Claude Desktop)
+# Start with stdio transport (default -- for Claude Code / Claude Desktop)
 mosaicx mcp serve
 
 # Start with SSE transport on port 9000
@@ -842,36 +891,36 @@ mosaicx config show
 **Output sections:**
 
 1. **Language Models**
-   - `lm` — Main language model
-   - `lm_cheap` — Cheaper model for simple tasks
-   - `api_base` — API base URL
-   - `api_key` — Masked API key
+   - `lm` -- Main language model
+   - `lm_cheap` -- Cheaper model for simple tasks
+   - `api_base` -- API base URL
+   - `api_key` -- Masked API key
 
 2. **Processing**
-   - `default_template` — Default template name
-   - `completeness_threshold` — Minimum completeness score (0-1)
-   - `batch_workers` — Default parallel workers
-   - `checkpoint_every` — Checkpoint frequency
+   - `default_template` -- Default template name
+   - `completeness_threshold` -- Minimum completeness score (0-1)
+   - `batch_workers` -- Default parallel workers
+   - `checkpoint_every` -- Checkpoint frequency
 
 3. **Document OCR**
-   - `ocr_engine` — OCR engine (`both`, `surya`, `chandra`)
-   - `chandra_backend` — Chandra backend (`vllm`, `hf`, `auto`)
-   - `chandra_server_url` — Chandra server URL (if applicable)
-   - `quality_threshold` — Minimum OCR quality (0-1)
-   - `ocr_page_timeout` — Timeout per page (seconds)
-   - `force_ocr` — Always use OCR (even for text PDFs)
-   - `ocr_langs` — OCR languages
+   - `ocr_engine` -- OCR engine (`both`, `surya`, `chandra`)
+   - `chandra_backend` -- Chandra backend (`vllm`, `hf`, `auto`)
+   - `chandra_server_url` -- Chandra server URL (if applicable)
+   - `quality_threshold` -- Minimum OCR quality (0-1)
+   - `ocr_page_timeout` -- Timeout per page (seconds)
+   - `force_ocr` -- Always use OCR (even for text PDFs)
+   - `ocr_langs` -- OCR languages
 
 4. **Export & Privacy**
-   - `export_formats` — Default export formats
-   - `deidentify_mode` — Default de-identification mode
+   - `export_formats` -- Default export formats
+   - `deidentify_mode` -- Default de-identification mode
 
 5. **Paths**
-   - `home_dir` — MOSAICX home directory (`~/.mosaicx`)
-   - `schema_dir` — Schema directory
-   - `optimized_dir` — Optimized programs directory
-   - `checkpoint_dir` — Checkpoint directory
-   - `log_dir` — Log directory
+   - `home_dir` -- MOSAICX home directory (`~/.mosaicx`)
+   - `schema_dir` -- Schema directory
+   - `optimized_dir` -- Optimized programs directory
+   - `checkpoint_dir` -- Checkpoint directory
+   - `log_dir` -- Log directory
 
 ---
 
@@ -980,6 +1029,12 @@ export MOSAICX_OCR_LANGS='["en", "de", "es"]'
 mosaicx extract --document ct_chest.pdf --mode radiology -o output.json
 ```
 
+### Extract using a built-in template with completeness scoring
+
+```bash
+mosaicx extract --document ct_chest.pdf --template chest_ct --score -o output.json
+```
+
 ### Batch process 100 pathology reports with 4 workers
 
 ```bash
@@ -987,15 +1042,28 @@ mosaicx batch --input-dir ./biopsies --output-dir ./structured \
   --mode pathology --workers 4 --format jsonl --format parquet
 ```
 
-### Create a custom schema and use it
+### Create a custom template and use it
 
 ```bash
-# Generate schema from description
-mosaicx schema generate \
-  --description "echo report with LVEF, valve grades, and wall motion"
+# Generate template from description
+mosaicx template create \
+  --describe "echo report with LVEF, valve grades, and wall motion"
 
-# Use the schema (auto-named by LLM, e.g., "EchoReport")
-mosaicx extract --document echo.pdf --schema EchoReport -o result.json
+# Use the template (auto-named by LLM, e.g., "EchoReport")
+mosaicx extract --document echo.pdf --template EchoReport -o result.json
+```
+
+### Migrate legacy schemas to templates
+
+```bash
+# Preview what would be migrated
+mosaicx template migrate --dry-run
+
+# Perform the migration
+mosaicx template migrate
+
+# Use a migrated template
+mosaicx extract --document echo.pdf --template EchoReport
 ```
 
 ### Optimize a pipeline and evaluate it
@@ -1030,12 +1098,15 @@ MOSAICX stores data in `~/.mosaicx/` by default:
 
 ```
 ~/.mosaicx/
-├── schemas/              # Saved schemas (JSON)
+├── templates/            # User-created YAML templates
+│   ├── EchoReport.yaml
+│   ├── CTReport.yaml
+│   └── .history/         # Archived template versions
+│       ├── EchoReport_v1.yaml
+│       └── EchoReport_v2.yaml
+├── schemas/              # Legacy saved schemas (JSON)
 │   ├── EchoReport.json
-│   ├── CTReport.json
-│   └── .archive/         # Archived schema versions
-│       ├── EchoReport_v1.json
-│       └── EchoReport_v2.json
+│   └── CTReport.json
 ├── optimized/            # Optimized DSPy programs
 │   ├── radiology_optimized.json
 │   └── pathology_optimized.json
@@ -1058,21 +1129,25 @@ export MOSAICX_HOME_DIR=/path/to/custom/dir
 
 2. **Use built-in modes**: For radiology and pathology reports, use `--mode radiology` or `--mode pathology` for best results.
 
-3. **Save your output**: Always use `-o output.json` to save the full structured data. Terminal output is summarized.
+3. **Try built-in templates**: Run `mosaicx template list` to see pre-defined templates for common exam types.
 
-4. **Check available modes**: Run `mosaicx extract --list-modes` to see what's available.
+4. **Save your output**: Always use `-o output.json` to save the full structured data. Terminal output is summarized.
 
-5. **Create schemas for repeated use**: If you process the same report type often, create a schema with `mosaicx schema generate` and reuse it.
+5. **Check available modes**: Run `mosaicx extract --list-modes` to see what's available.
 
-6. **Use batch mode for large datasets**: Don't run `extract` 100 times manually — use `mosaicx batch` with `--workers` for parallelism.
+6. **Create templates for repeated use**: If you process the same report type often, create a template with `mosaicx template create` and reuse it.
 
-7. **Optimize for your data**: If you have labeled examples, use `mosaicx optimize` to improve accuracy on your specific reports.
+7. **Use batch mode for large datasets**: Don't run `extract` 100 times manually -- use `mosaicx batch` with `--workers` for parallelism.
 
-8. **Resume failed batches**: If a batch crashes, use `--resume` to pick up where you left off.
+8. **Optimize for your data**: If you have labeled examples, use `mosaicx optimize` to improve accuracy on your specific reports.
 
-9. **Check your config**: Run `mosaicx config show` to see what models and settings you're using.
+9. **Resume failed batches**: If a batch crashes, use `--resume` to pick up where you left off.
 
-10. **Use environment variables**: Create a `.env` file with `MOSAICX_*` variables to avoid typing API keys and settings repeatedly.
+10. **Migrate legacy schemas**: If you have JSON schemas from an older version, run `mosaicx template migrate` to convert them to YAML templates.
+
+11. **Check your config**: Run `mosaicx config show` to see what models and settings you're using.
+
+12. **Use environment variables**: Create a `.env` file with `MOSAICX_*` variables to avoid typing API keys and settings repeatedly.
 
 ---
 
@@ -1092,20 +1167,21 @@ MOSAICX_API_KEY=your-api-key-here
 
 ### "Document is empty"
 
-- Check if the PDF is scanned (image-based) — MOSAICX will use OCR automatically
+- Check if the PDF is scanned (image-based) -- MOSAICX will use OCR automatically
 - If OCR fails, try `--force-ocr` or adjust `MOSAICX_OCR_ENGINE`
 
 ### "Low OCR quality detected"
 
 - The document is low-resolution or poorly scanned
-- Results may be unreliable — check the extracted text
+- Results may be unreliable -- check the extracted text
 - Try adjusting `MOSAICX_QUALITY_THRESHOLD` (lower = more permissive)
 
-### "Schema not found"
+### "Template not found"
 
-- Check available schemas: `mosaicx schema list`
+- Check available templates: `mosaicx template list`
 - Verify the name matches exactly (case-sensitive)
-- Ensure the schema exists in `~/.mosaicx/schemas/`
+- Ensure the template exists in `~/.mosaicx/templates/` or as a built-in
+- For legacy schemas, the template resolution chain also checks `~/.mosaicx/schemas/`
 
 ### Batch processing is slow
 
@@ -1124,6 +1200,7 @@ MOSAICX_API_KEY=your-api-key-here
 
 - **Command help**: `mosaicx <command> --help`
 - **List modes**: `mosaicx extract --list-modes`
+- **List templates**: `mosaicx template list`
 - **List pipelines**: `mosaicx optimize --list-pipelines`
 - **Show config**: `mosaicx config show`
 - **Check version**: `mosaicx --version`

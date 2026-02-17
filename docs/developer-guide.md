@@ -735,7 +735,7 @@ print(summary)
 
 ### API Reference
 
-#### `extract(text, *, mode, schema_name, optimized) -> dict`
+#### `extract(text, *, template, mode, score, optimized) -> dict`
 
 Extract structured data from document text.
 
@@ -744,15 +744,15 @@ Extract structured data from document text.
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `text` | `str` | (required) | The document text to extract from. |
-| `mode` | `str` | `"auto"` | Extraction mode. `"auto"` lets the LLM infer the schema. `"radiology"` and `"pathology"` run specialized multi-step pipelines. Custom pipelines use their registered name. |
-| `schema_name` | `str \| None` | `None` | Name of a saved schema (from `~/.mosaicx/schemas/`). Mutually exclusive with `mode` other than `"auto"`. |
-| `optimized` | `str \| Path \| None` | `None` | Path to an optimized DSPy program. Only applicable for `mode="auto"` or schema-based extraction. |
+| `template` | `str \| Path \| None` | `None` | Template name (built-in or saved schema), or path to a YAML template file. Resolved via the unified template system. When provided, `mode` is ignored -- the template determines the extraction pipeline. |
+| `mode` | `str` | `"auto"` | Extraction mode. `"auto"` lets the LLM infer the schema. `"radiology"` and `"pathology"` run specialized multi-step pipelines. Custom pipelines use their registered name. Ignored when `template` is provided. |
+| `score` | `bool` | `False` | If `True`, compute completeness scoring against the template and include it in the output under `"completeness"`. |
+| `optimized` | `str \| Path \| None` | `None` | Path to an optimized DSPy program. Only applicable for `mode="auto"` or template-based extraction. |
 
-**Returns:** `dict` -- Structure depends on mode/schema. Mode-based extraction includes `_metrics` with timing data. Auto mode may include `inferred_schema`.
+**Returns:** `dict` -- Structure depends on mode/template. Mode-based extraction includes `_metrics` with timing data. Auto mode may include `inferred_schema`. When `score=True`, includes a `"completeness"` key with coverage metrics.
 
 **Raises:**
-- `ValueError` if `mode` and `schema_name` are both specified (when mode is not `"auto"`).
-- `FileNotFoundError` if `schema_name` refers to a nonexistent schema.
+- `ValueError` if conflicting parameters are provided, or if the template/mode is unknown.
 
 **Example:**
 
@@ -771,12 +771,21 @@ result = extract(
 print(result["exam_type"])    # "MRI Brain"
 print(result["findings"])     # [...]
 
-# Schema-based extraction
+# Template-based extraction
 result = extract(
     "Lab results: WBC 12.3, Hgb 10.1, Plt 245",
-    schema_name="lab_results",
+    template="lab_results",
 )
 print(result["extracted"])
+
+# Template-based extraction with completeness scoring
+result = extract(
+    "CT CHEST WITH CONTRAST\nFindings: 2.3cm RUL nodule...",
+    template="chest_ct",
+    score=True,
+)
+print(result["extracted"])
+print(result["completeness"])  # {"overall": 0.85, "missing_required": [...], ...}
 
 # With an optimized program
 result = extract(
@@ -784,6 +793,38 @@ result = extract(
     mode="auto",
     optimized="~/.mosaicx/optimized/extract_optimized.json",
 )
+```
+
+---
+
+#### `report(text, *, template, schema_name, describe, mode) -> dict` -- DEPRECATED
+
+> **Deprecated.** Use `extract(score=True)` instead. This function still works but emits a `DeprecationWarning`.
+
+Extract structured data and score completeness against a template. Internally delegates to `extract()` with `score=True`.
+
+**Parameters:**
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `text` | `str` | (required) | Document text to extract from. |
+| `template` | `str \| Path \| None` | `None` | Built-in RDES template name (e.g., `"chest_ct"`) or path to a YAML template file. |
+| `schema_name` | `str \| None` | `None` | *Deprecated* -- use `template` instead. |
+| `describe` | `str \| None` | `None` | No longer supported. Use `mosaicx template create --describe` to create a template first, then pass the template name. |
+| `mode` | `str \| None` | `None` | Explicit pipeline mode override. If `None`, auto-detected from the template. |
+
+**Returns:** `dict` with keys `"extracted"`, `"completeness"`, `"template_name"`, `"mode_used"`, `"metrics"`.
+
+**Migration example:**
+
+```python
+# Before (deprecated)
+from mosaicx.sdk import report
+result = report("CT Chest report text...", template="chest_ct")
+
+# After (preferred)
+from mosaicx.sdk import extract
+result = extract("CT Chest report text...", template="chest_ct", score=True)
 ```
 
 ---
@@ -866,7 +907,7 @@ print(result["events"])
 
 #### `generate_schema(description, *, name, example_text, save) -> dict`
 
-Generate a Pydantic schema from a plain-English description.
+Generate a Pydantic schema from a plain-English description. For most use cases, the CLI command `mosaicx template create` is the preferred way to create templates, since it integrates with the unified template system. This SDK function remains available for programmatic schema generation.
 
 **Parameters:**
 
@@ -977,13 +1018,15 @@ print(f"Optimized mean: {results['mean']:.3f}")
 
 Extract structured data from multiple documents. A convenience wrapper that calls `extract()` for each text.
 
+> **Note:** The `schema_name` parameter on `batch_extract()` still uses the legacy name. For template-based batch extraction, call `extract()` with the `template` parameter in a loop instead.
+
 **Parameters:**
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `texts` | `list[str]` | (required) | List of document texts. |
 | `mode` | `str` | `"auto"` | Extraction mode (same as `extract()`). |
-| `schema_name` | `str \| None` | `None` | Schema name (same as `extract()`). |
+| `schema_name` | `str \| None` | `None` | Name of a saved schema. For template-based extraction, use `extract()` with `template` directly. |
 
 **Returns:** `list[dict]` -- One result dict per input text. Failed extractions produce a dict with an `"error"` key.
 
@@ -1125,15 +1168,15 @@ except ValueError as e:
     print(f"Invalid pipeline: {e}")
 ```
 
-#### FileNotFoundError: Missing Schema or Dataset
+#### FileNotFoundError: Missing Template or Dataset
 
 ```python
 from mosaicx.sdk import extract, evaluate
 
 try:
-    result = extract("some text", schema_name="nonexistent_schema")
+    result = extract("some text", template="nonexistent_template")
 except FileNotFoundError as e:
-    print(f"Schema not found: {e}")
+    print(f"Template not found: {e}")
 
 try:
     result = evaluate("radiology", "nonexistent_file.jsonl")
@@ -1198,8 +1241,9 @@ app = FastAPI(title="MOSAICX API")
 
 class ExtractRequest(BaseModel):
     text: str
+    template: str | None = None
     mode: str = "auto"
-    schema_name: str | None = None
+    score: bool = False
 
 
 class DeidentifyRequest(BaseModel):
@@ -1217,8 +1261,9 @@ def run_extract(req: ExtractRequest):
     try:
         return extract(
             req.text,
+            template=req.template,
             mode=req.mode,
-            schema_name=req.schema_name,
+            score=req.score,
         )
     except (ValueError, FileNotFoundError) as e:
         raise HTTPException(status_code=400, detail=str(e))

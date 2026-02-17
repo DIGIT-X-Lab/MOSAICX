@@ -62,7 +62,7 @@ mosaicx extract --document report.pdf --mode radiology
 | Capability | Commands | Guide |
 |------------|----------|-------|
 | **Extract structured data** from clinical documents | `mosaicx extract`, `mosaicx batch` | [Pipelines](docs/pipelines.md) |
-| **Create and manage schemas** for custom extraction targets | `mosaicx schema generate / list / refine` | [Schemas & Templates](docs/schemas-and-templates.md) |
+| **Create and manage templates** for custom extraction targets | `mosaicx template create / list / refine` | [Schemas & Templates](docs/schemas-and-templates.md) |
 | **De-identify** reports (LLM + regex belt-and-suspenders) | `mosaicx deidentify` | [CLI Reference](docs/cli-reference.md) |
 | **Summarize patient timelines** across multiple reports | `mosaicx summarize` | [CLI Reference](docs/cli-reference.md) |
 | **Optimize pipelines** with labeled data (DSPy) | `mosaicx optimize`, `mosaicx eval` | [Optimization](docs/optimization.md) |
@@ -76,9 +76,9 @@ Run any command with `--help` for full options. Complete reference: [docs/cli-re
 # Radiology report -> structured JSON
 mosaicx extract --document ct_chest.pdf --mode radiology
 
-# Schema-driven extraction (define your own fields)
-mosaicx schema generate --description "echo report with LVEF, valve grades, impression"
-mosaicx extract --document echo.pdf --schema EchoReport
+# Template-driven extraction (define your own fields)
+mosaicx template create --describe "echo report with LVEF, valve grades, impression"
+mosaicx extract --document echo.pdf --template EchoReport
 
 # Batch-process a folder of reports
 mosaicx batch --input-dir ./reports --output-dir ./structured --mode radiology --format jsonl

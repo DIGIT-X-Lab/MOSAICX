@@ -262,94 +262,112 @@ mosaicx extract --list-modes
 
 This prints a table showing each mode name and its description.
 
-## Step 5: Schema-Based Extraction
+## Step 5: Template-Based Extraction
 
-Schemas let you define exactly what data you want to extract. Think of a schema as a template that tells MOSAICX what fields to look for and what data types to use.
+Templates let you define exactly what data you want to extract. Think of a template as a blueprint that tells MOSAICX what fields to look for and what data types to use.
 
-### Generate a schema
+MOSAICX ships with built-in templates for common exam types (e.g., `chest_ct`, `brain_mri`) and lets you create your own.
 
-Describe what you want to extract in plain English, and MOSAICX will create a schema for you:
+### List available templates
 
-```bash
-mosaicx schema generate --description "echocardiography report with LVEF, valve grades, and clinical impression"
-```
-
-MOSAICX will generate a schema (a Pydantic model) and save it to `~/.mosaicx/schemas/`. You should see output like:
-
-```
-✓ Schema generated — it's alive!
-Model: EchoReport
-Fields: lvef, valve_grades, clinical_impression
-Saved: /Users/yourusername/.mosaicx/schemas/EchoReport.json
-```
-
-You can give the schema a custom name:
+See all built-in and user-created templates:
 
 ```bash
-mosaicx schema generate \
-  --description "patient vitals including blood pressure, heart rate, temperature" \
+mosaicx template list
+```
+
+This prints a table of template names, associated modes, and descriptions.
+
+### Extract with a built-in template
+
+Use a built-in template to get consistent, exam-specific output:
+
+```bash
+mosaicx extract --document ct_report.pdf --template chest_ct
+```
+
+MOSAICX will extract only the fields defined in the `chest_ct` template, ensuring consistent output structure across multiple documents.
+
+### Score completeness
+
+Add the `--score` flag to measure how completely your document was extracted against the template:
+
+```bash
+mosaicx extract --document ct_report.pdf --template chest_ct --score
+```
+
+The output will include a completeness report showing overall coverage, required field coverage, and any missing fields.
+
+### Create a custom template
+
+Describe what you want to extract in plain English, and MOSAICX will create a YAML template for you:
+
+```bash
+mosaicx template create --describe "echocardiography report with LVEF, valve grades, and clinical impression"
+```
+
+MOSAICX will generate a YAML template and save it to `~/.mosaicx/templates/`. You should see output like:
+
+```
+ok Template created
+i  Name: EchoReport
+i  Fields: 3
+i  Saved: /Users/yourusername/.mosaicx/templates/EchoReport.yaml
+```
+
+You can give the template a custom name:
+
+```bash
+mosaicx template create \
+  --describe "patient vitals including blood pressure, heart rate, temperature" \
   --name PatientVitals
 ```
 
-### List your schemas
-
-See all saved schemas:
+You can also create a template from a sample document, a URL, or a RadReport ID:
 
 ```bash
-mosaicx schema list
+# From a sample document
+mosaicx template create --from-document sample_echo.pdf
+
+# From a RadReport template ID
+mosaicx template create --from-radreport RPT50890
 ```
 
-This prints a table of schema names, the number of fields, and descriptions.
+### Extract with a custom template
 
-### Extract with a schema
-
-Once you have generated a schema, use it to extract data from a document:
+Once you have created a template, use it by name:
 
 ```bash
-mosaicx extract --document echo_report.pdf --schema EchoReport
+mosaicx extract --document echo_report.pdf --template EchoReport
 ```
 
-MOSAICX will extract only the fields defined in the `EchoReport` schema, ensuring consistent output structure across multiple documents.
-
-### Refine a schema
-
-After using a schema, you may realize you need to add or remove fields. Use the `schema refine` command:
-
-**Add a required field:**
+You can also point directly at a YAML file:
 
 ```bash
-mosaicx schema refine --schema EchoReport --add "rvsp: float"
+mosaicx extract --document echo_report.pdf --template path/to/my_template.yaml
 ```
 
-**Add an optional field with a description:**
+### Refine a template
+
+After using a template, you may realize you need to add or remove fields. Use the `template refine` command with a natural-language instruction:
 
 ```bash
-mosaicx schema refine --schema EchoReport \
-  --add "hospital_name: str" \
-  --optional \
-  --description "Name of the treating hospital"
-```
-
-**Remove a field:**
-
-```bash
-mosaicx schema refine --schema EchoReport --remove clinical_impression
-```
-
-**Rename a field:**
-
-```bash
-mosaicx schema refine --schema EchoReport --rename "lvef=lvef_percent"
-```
-
-**Let the LLM refine the schema:**
-
-```bash
-mosaicx schema refine --schema EchoReport \
+mosaicx template refine EchoReport \
   --instruction "add a field for pericardial effusion severity as an enum with values mild, moderate, severe"
 ```
 
-Every time you refine a schema, MOSAICX automatically saves the old version to `.history/`, so you never lose your work.
+Every time you refine a template, MOSAICX automatically archives the previous version to `.history/`, so you never lose your work. You can view the history and revert if needed:
+
+```bash
+# View version history
+mosaicx template history EchoReport
+
+# Compare current version with an older one
+mosaicx template diff EchoReport --version 1
+
+# Revert to a previous version
+mosaicx template revert EchoReport --version 1
+```
 
 ## Step 6: Batch Processing
 
@@ -377,12 +395,12 @@ To use a specialized mode (e.g., radiology) for all documents:
 mosaicx batch --input-dir ./reports --output-dir ./structured --mode radiology
 ```
 
-### Batch with a schema
+### Batch with a template
 
-To extract using a specific schema:
+To extract using a specific template:
 
 ```bash
-mosaicx batch --input-dir ./reports --output-dir ./structured --schema EchoReport
+mosaicx batch --input-dir ./reports --output-dir ./structured --template chest_ct
 ```
 
 ### Resume after interruption
@@ -423,7 +441,7 @@ mosaicx batch --input-dir ./reports --output-dir ./structured \
 
 You have learned the basics of MOSAICX. Here are some advanced topics to explore:
 
-- **[Schemas and Templates](schemas-and-templates.md)** — Learn how to create custom schemas and use YAML templates for extraction
+- **[Templates](schemas-and-templates.md)** — Learn how to create, refine, and version YAML templates for extraction
 - **[Pipelines](pipelines.md)** — Deep dive into the radiology and pathology pipelines, and how to create your own
 - **[Optimization](optimization.md)** — Tune DSPy pipelines with labeled examples for better accuracy
 - **[Configuration](configuration.md)** — Customize MOSAICX settings, connect to different LLM backends, configure OCR engines
@@ -450,9 +468,15 @@ MOSAICX supports:
 - **Word:** `.docx`
 - **Images:** `.png`, `.jpg`, `.jpeg`, `.tif`, `.tiff` (OCR applied automatically)
 
-### Where are schemas saved?
+### Where are templates saved?
 
-Schemas are saved to `~/.mosaicx/schemas/` as JSON files. Each schema is named after its class (e.g., `EchoReport.json`).
+Templates are saved to `~/.mosaicx/templates/` as YAML files. Each template is named after its class (e.g., `EchoReport.yaml`). Built-in templates ship with MOSAICX and do not need to be downloaded separately.
+
+If you have legacy JSON schemas in `~/.mosaicx/schemas/`, you can migrate them to YAML templates with:
+
+```bash
+mosaicx template migrate
+```
 
 ### Can I use MOSAICX without Ollama?
 

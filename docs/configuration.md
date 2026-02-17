@@ -133,7 +133,7 @@ MOSAICX_DEFAULT_EXPORT_FORMATS=parquet,jsonl
 # ========================================
 # Paths
 # ========================================
-# Home directory for schemas, optimized programs, checkpoints, and logs
+# Home directory for templates, optimized programs, checkpoints, and logs
 # Default: ~/.mosaicx
 MOSAICX_HOME_DIR=/Users/yourusername/.mosaicx
 ```
@@ -182,7 +182,7 @@ Below is a complete reference of every MOSAICX configuration variable.
 | `MOSAICX_COMPLETENESS_THRESHOLD` | `0.7` | Minimum extraction quality score (0.0 to 1.0). Higher values enforce stricter extraction quality |
 | `MOSAICX_BATCH_WORKERS` | `1` | Number of parallel workers for batch processing. Increase for faster processing if you have sufficient RAM and CPU cores |
 | `MOSAICX_CHECKPOINT_EVERY` | `50` | Save a checkpoint every N documents in batch mode. Useful for resuming interrupted batch jobs |
-| `MOSAICX_HOME_DIR` | `~/.mosaicx` | Home directory for storing schemas, optimized programs, checkpoints, and logs |
+| `MOSAICX_HOME_DIR` | `~/.mosaicx` | Home directory for storing templates, optimized programs, checkpoints, and logs |
 | `MOSAICX_DEIDENTIFY_MODE` | `remove` | Default de-identification strategy. Options: `remove` (strip PHI), `pseudonymize` (replace with fake data), `dateshift` (shift dates consistently) |
 | `MOSAICX_DEFAULT_EXPORT_FORMATS` | `parquet,jsonl` | Default export formats for batch processing (comma-separated). Options: `parquet`, `jsonl` |
 | `MOSAICX_OCR_ENGINE` | `both` | OCR engine to use. Options: `both` (Surya + Chandra in parallel), `surya` (traditional OCR), `chandra` (VLM-based OCR) |
@@ -195,18 +195,18 @@ Below is a complete reference of every MOSAICX configuration variable.
 
 ## Directory Structure
 
-MOSAICX stores schemas, optimized programs, checkpoints, and logs in `~/.mosaicx/` by default. You can change this with `MOSAICX_HOME_DIR`.
+MOSAICX stores templates, optimized programs, checkpoints, and logs in `~/.mosaicx/` by default. You can change this with `MOSAICX_HOME_DIR`.
 
 Here is what the directory structure looks like:
 
 ```
 ~/.mosaicx/
-├── schemas/                # Saved Pydantic schemas (.json files)
-│   ├── EchoReport.json     # Example schema
-│   ├── PatientVitals.json  # Another schema
-│   └── .history/           # Auto-archived previous versions of schemas
-│       ├── EchoReport_v1_20260215_103000.json
-│       └── EchoReport_v2_20260215_104500.json
+├── templates/              # Saved extraction templates (.yaml files)
+│   ├── EchoReport.yaml     # Example template
+│   ├── PatientVitals.yaml  # Another template
+│   └── .history/           # Auto-archived previous versions of templates
+│       ├── EchoReport_v1_20260215_103000.yaml
+│       └── EchoReport_v2_20260215_104500.yaml
 ├── optimized/              # Optimized DSPy programs (.json files)
 │   ├── DocumentExtractor_optimized.json
 │   └── RadiologyClassifier_optimized.json
@@ -218,20 +218,20 @@ Here is what the directory structure looks like:
     └── mosaicx.log         # Debug and error logs
 ```
 
-### Schema Storage
+### Template Storage
 
-Schemas generated with `mosaicx schema generate` are saved as JSON files in `~/.mosaicx/schemas/`. Each schema is named after its class (e.g., `EchoReport.json`).
+Templates created with `mosaicx template create` are saved as YAML files in `~/.mosaicx/templates/`. Each template is named after its class (e.g., `EchoReport.yaml`).
 
-Whenever you refine a schema with `mosaicx schema refine`, the old version is automatically archived to `~/.mosaicx/schemas/.history/` with a timestamp. You can view version history with:
+Whenever you refine a template with `mosaicx template refine`, the old version is automatically archived to `~/.mosaicx/templates/.history/` with a timestamp. You can view version history with:
 
 ```bash
-mosaicx schema history EchoReport
+mosaicx template history EchoReport
 ```
 
 And revert to a previous version with:
 
 ```bash
-mosaicx schema revert EchoReport --version 1
+mosaicx template revert EchoReport --version 1
 ```
 
 ### Optimized Programs

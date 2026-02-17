@@ -1,202 +1,378 @@
-# Schemas and Templates
+# Templates
 
-This guide explains how to create, manage, and use schemas and YAML templates in MOSAICX. Whether you're extracting patient vitals from a clinical note or structured findings from a radiology report, schemas and templates give you precise control over what data gets extracted and how it's structured.
+This guide explains how to create, manage, and use templates in MOSAICX. Templates are YAML files that define exactly what data gets extracted from a clinical document and how it is structured. Whether you are extracting patient vitals from a clinical note or structured findings from a radiology report, a template gives you precise control over the output.
 
-## What are Schemas?
+## What is a Template?
 
-A schema defines WHAT you want to extract from a document. Instead of letting the LLM decide what to extract, you tell it exactly which fields to look for and what types they should be.
+A template defines WHAT you want to extract from a document. Instead of letting the LLM decide what to extract, you tell it exactly which fields to look for, what types they should be, and how they nest together.
 
-Think of a schema as a form template. When you read a document, you want to fill out specific fields: patient name (text), age (number), diagnosis (text), medications (list of medications). The schema tells the LLM exactly what information to find and how to structure it.
+Think of a template as a form. When you read a radiology report, you want to fill out specific sections: indication (text), nodules (a list, each with location, size, and morphology), and impression (text). The template tells the LLM exactly what information to find and how to structure it.
 
-**Example:** If you're extracting echocardiography reports, you might want:
-- `patient_name` (text)
-- `lvef` (number) - left ventricular ejection fraction
-- `valve_grades` (list of text) - assessment of each valve
-- `impression` (text) - the radiologist's conclusion
+Templates are written in YAML and live in one of three places:
 
-Schemas are saved as JSON files in `~/.mosaicx/schemas/` and can be reused across many documents.
+- **Built-in templates** -- 11 templates ship with MOSAICX, covering common radiology exams.
+- **User templates** -- Templates you create, stored in `~/.mosaicx/templates/`.
+- **Project templates** -- YAML files anywhere on disk, referenced by path.
 
-## Creating a Schema
+## YAML Template Format
 
-There are three ways to create a schema: from a description, from a document, or with example text.
+Every template is a YAML file with the following top-level keys:
+
+```yaml
+name: ChestCTReport
+description: "Structured chest CT radiology report"
+mode: radiology                # optional -- pipeline mode to use
+radreport_id: "RDES3"         # optional -- RadReport standard ID
+sections:
+  - name: indication
+    type: str
+    required: true
+    description: "Clinical indication for exam"
+  - name: nodules
+    type: list
+    required: false
+    description: "Pulmonary nodules"
+    item:
+      type: object
+      fields:
+        - name: location
+          type: str
+          description: "Anatomic location (lobe, segment)"
+        - name: size_mm
+          type: float
+          description: "Maximum diameter in millimeters"
+        - name: lung_rads
+          type: str
+          required: false
+          description: "Lung-RADS category"
+  - name: impression
+    type: str
+    required: true
+    description: "Summary impression with recommendations"
+```
+
+### Top-level Keys
+
+| Key | Required | Description |
+|-----|----------|-------------|
+| `name` | yes | Template name (used as the generated Pydantic class name) |
+| `description` | no | Human-readable description of what this template captures |
+| `mode` | no | Pipeline mode to use for extraction (e.g. `radiology`, `pathology`) |
+| `radreport_id` | no | RadReport.org standard ID, for built-in templates |
+| `sections` | yes | List of section definitions (the fields to extract) |
+
+### Section Definition
+
+Each entry in `sections` is a field definition:
+
+| Key | Required | Description |
+|-----|----------|-------------|
+| `name` | yes | Field identifier (must be a valid Python variable name) |
+| `type` | yes | Data type (see below) |
+| `required` | no | Whether the field must be present in output (default: `true` for top-level, inherits for nested) |
+| `description` | no | Human-readable explanation -- the LLM uses this to understand what to extract |
+| `values` | enum only | List of allowed values for `enum` type |
+| `item` | list only | Definition of list element type |
+| `fields` | object only | List of nested field definitions |
+
+### Supported Types
+
+| Type | Description | Example |
+|------|-------------|---------|
+| `str` | Text string | `"Left upper lobe consolidation"` |
+| `int` | Integer number | `72` |
+| `float` | Decimal number | `5.3` |
+| `bool` | True/false | `true` |
+| `enum` | One of a fixed set of values | Requires `values` list |
+| `list` | List of items | Requires `item` definition |
+| `object` | Nested structure with named fields | Requires `fields` list |
+
+### Nesting Examples
+
+**Enum field:**
+
+```yaml
+- name: breast_composition
+  type: enum
+  required: true
+  description: "ACR breast density category"
+  values: ["a", "b", "c", "d"]
+```
+
+**List of objects:**
+
+```yaml
+- name: lesions
+  type: list
+  required: false
+  description: "FDG-avid lesions"
+  item:
+    type: object
+    fields:
+      - name: location
+        type: str
+        description: "Anatomic location"
+      - name: suv_max
+        type: float
+        description: "Maximum standardized uptake value"
+      - name: size_mm
+        type: float
+        required: false
+        description: "Size in millimeters on CT"
+```
+
+**Deeply nested structures** (list of objects containing a nested list):
+
+```yaml
+- name: findings
+  type: list
+  item:
+    type: object
+    fields:
+      - name: anatomy
+        type: str
+      - name: measurements
+        type: list
+        item:
+          type: object
+          fields:
+            - name: dimension
+              type: str
+            - name: value
+              type: float
+            - name: unit
+              type: str
+```
+
+## Template Resolution
+
+When you pass `--template` to `extract` or `batch`, MOSAICX resolves the value through a chain of lookups. Understanding this chain helps you organize your templates.
+
+**Resolution order:**
+
+1. **File path** -- If the value ends in `.yaml` or `.yml` and the file exists on disk, it is compiled directly.
+2. **User templates** -- Looks for `~/.mosaicx/templates/<name>.yaml`.
+3. **Built-in templates** -- Looks in the package `schemas/radreport/templates/<name>.yaml` directory (the 11 built-in templates).
+4. **Legacy saved schema** -- Looks for `~/.mosaicx/schemas/<name>.json` (backward compatibility with older JSON schemas).
+5. **Error** -- If none of the above match, an error is raised with suggestions.
+
+This means you can override a built-in template by placing a file with the same name in `~/.mosaicx/templates/`. Your user template will take precedence.
+
+**Examples of how different values resolve:**
+
+```bash
+# 1. File path -- compiles the YAML file directly
+mosaicx extract --document scan.pdf --template ./my_templates/echo.yaml
+
+# 2. User template -- looks up ~/.mosaicx/templates/echo.yaml
+mosaicx extract --document scan.pdf --template echo
+
+# 3. Built-in template -- uses the packaged chest_ct.yaml
+mosaicx extract --document scan.pdf --template chest_ct
+
+# 4. Legacy schema -- loads ~/.mosaicx/schemas/EchoReport.json
+mosaicx extract --document scan.pdf --template EchoReport
+```
+
+## Built-in Templates
+
+MOSAICX ships with 11 built-in templates for common radiology exams. These are based on RadReport standards and can be used directly or as starting points for your own templates.
+
+| Name | Mode | RDES ID | Description |
+|------|------|---------|-------------|
+| `generic` | radiology | -- | Generic radiology report (indication, comparison, technique, findings, impression) |
+| `chest_ct` | radiology | RDES3 | Chest CT with lung parenchyma, nodules, airways, mediastinum, pleura, heart/vessels |
+| `chest_xr` | radiology | RDES2 | Chest X-ray report |
+| `brain_mri` | radiology | RDES28 | Brain MRI with parenchyma, ventricles, extra-axial spaces, posterior fossa, vessels |
+| `abdomen_ct` | radiology | RDES44 | Abdomen CT report |
+| `mammography` | radiology | RDES4 | Mammography with breast composition, masses, calcifications, BI-RADS |
+| `thyroid_us` | radiology | RDES72 | Thyroid ultrasound report |
+| `lung_ct` | radiology | RDES195 | Lung CT screening report |
+| `msk_mri` | radiology | -- | MSK MRI report |
+| `cardiac_mri` | radiology | RDES214 | Cardiac MRI report |
+| `pet_ct` | radiology | RDES76 | PET/CT with FDG-avid lesions, SUV measurements, response assessment |
+
+To view the full structure of any built-in template:
+
+```bash
+mosaicx template show chest_ct
+```
+
+To list all available templates (built-in and user):
+
+```bash
+mosaicx template list
+```
+
+## Creating Templates
+
+There are several ways to create a template: from a description, from a sample document, from a URL, from a RadReport ID, or by converting a legacy JSON schema.
 
 ### From a Description
 
-The simplest way is to describe what you want in plain English:
+Describe what you want in plain English and the LLM generates a YAML template:
 
 ```bash
-mosaicx schema generate --description "echocardiography report with LVEF, valve grades, and clinical impression"
+mosaicx template create --describe "echocardiography report with LVEF, valve grades, wall motion, and clinical impression"
 ```
 
-The LLM will create a schema with appropriate field names, types, and descriptions. It automatically chooses the best types for your fields.
-
-**Optionally name your schema:**
+Optionally name your template and set a pipeline mode:
 
 ```bash
-mosaicx schema generate \
-  --description "echocardiography report with LVEF, valve grades, and clinical impression" \
-  --name EchoReport
+mosaicx template create \
+  --describe "echocardiography report with LVEF, valve grades, and clinical impression" \
+  --name EchoReport \
+  --mode radiology
 ```
 
-If you don't provide a name, the LLM will choose one for you (usually something like "EchocardiographyReport").
+### From a Sample Document
 
-### From a Document
-
-If you have a sample document, the LLM can read it and infer what fields to extract:
+If you have a sample report, the LLM can read it and infer the template structure:
 
 ```bash
-mosaicx schema generate --from-document sample_report.pdf
+mosaicx template create --from-document sample_report.pdf
 ```
 
-This is useful when you have a complex document and want the LLM to figure out the structure for you.
-
-### With Example Text
-
-You can also provide example text to help the LLM understand what you're looking for:
+You can combine a document with a description for more control:
 
 ```bash
-mosaicx schema generate \
-  --description "patient vitals from nursing notes" \
-  --example-text "BP: 120/80, HR: 72, Temp: 98.6F, SpO2: 98%, Pain: 3/10"
+mosaicx template create \
+  --from-document sample_report.pdf \
+  --describe "focus on cardiac measurements and valve assessments"
 ```
 
-The example text helps ground the LLM's understanding of the format and terminology used in your documents.
+### From a URL
+
+Generate a template from web page content (useful for RadReport.org pages and similar references):
+
+```bash
+mosaicx template create --from-url https://radreport.org/home/50
+```
+
+### From a RadReport ID
+
+Fetch a RadReport template directly by ID and enrich it with LLM-inferred types:
+
+```bash
+mosaicx template create --from-radreport RPT50890
+```
+
+### From a Legacy JSON Schema
+
+Convert an existing JSON SchemaSpec file to a YAML template:
+
+```bash
+mosaicx template create --from-json ~/.mosaicx/schemas/EchoReport.json
+```
 
 ### Save to a Custom Location
 
-By default, schemas are saved to `~/.mosaicx/schemas/`. You can save to a different location:
+By default, templates are saved to `~/.mosaicx/templates/`. You can save to a different location:
 
 ```bash
-mosaicx schema generate \
-  --description "vital signs" \
-  --output ./my_schemas/vitals.json
+mosaicx template create \
+  --describe "vital signs" \
+  --output ./my_project/templates/vitals.yaml
 ```
 
-## Managing Schemas
+## Managing Templates
 
-### List All Schemas
+### List All Templates
 
-See all your saved schemas:
+See all available templates (built-in and user-created):
 
 ```bash
-mosaicx schema list
+mosaicx template list
+```
+
+### View a Template
+
+See the detailed structure of a template:
+
+```bash
+mosaicx template show chest_ct
 ```
 
 **Example output:**
 
 ```
-Saved Schemas
+ChestCTReport (built-in)
 
-Name                Fields  Description
-EchoReport          7       Echocardiography report with cardiac measurements
-PathologyReport     12      Surgical pathology report
-VitalSigns          6       Patient vital signs from nursing documentation
+Structured chest CT radiology report (RDES3)
 
-3 schema(s) saved in /Users/yourname/.mosaicx/schemas
+  Mode: radiology
+  RDES: RDES3
+  Source: .../schemas/radreport/templates/chest_ct.yaml
+
+  Section         Type           Req  Description
+  indication      str            yes  Clinical indication for chest CT
+  comparison      str            --   Prior comparison studies and dates
+  technique       str            --   CT technique, contrast, slice thickness
+  lungs           str            yes  Lung parenchyma findings
+  nodules         list[object]   --   Pulmonary nodules
+  airways         str            --   Trachea and bronchial tree findings
+  mediastinum     str            --   Mediastinal and hilar findings
+  lymph_nodes     str            --   Lymph node stations and measurements
+  pleura          str            --   Pleural findings including effusions
+  heart_and_vessels str          --   Cardiac and vascular findings
+  chest_wall      str            --   Chest wall and osseous findings
+  upper_abdomen   str            --   Included upper abdominal findings
+  impression      str            yes  Summary impression with recommendations
+
+  13 sections
 ```
 
-### View a Schema
+### Validate a Template
 
-See the detailed structure of a schema:
+Check if your YAML template is valid before using it:
 
 ```bash
-mosaicx schema show EchoReport
+mosaicx template validate --file ./templates/echo.yaml
 ```
 
-**Example output:**
+If there are errors (invalid field types, missing required attributes, etc.), you get a detailed error message.
 
-```
-EchoReport
+## Refining Templates
 
-Echocardiography report with cardiac measurements
-
-Field              Type           Req  Description
-patient_name       str            ✓    Patient's full name
-exam_date          str            ✓    Date of echocardiogram
-lvef               float          ✓    Left ventricular ejection fraction (percentage)
-valve_grades       list[str]      ✓    Assessment grades for each cardiac valve
-wall_motion        enum(...)      —    Wall motion abnormality severity
-pericardial_eff    enum(...)      —    Pericardial effusion severity
-impression         str            ✓    Clinical impression and recommendations
-
-7 fields
-```
-
-The **Req** column shows whether a field is required (✓) or optional (—).
-
-## Refining a Schema
-
-After creating a schema, you can modify it without starting from scratch. There are two approaches: command-line flags for simple changes, or LLM-driven refinement for complex changes.
-
-### Add a Field
-
-Add a new required field:
+After creating a template, you can modify it using LLM-powered natural language instructions:
 
 ```bash
-mosaicx schema refine --schema EchoReport --add "rvsp: float"
-```
-
-Add an optional field with a description:
-
-```bash
-mosaicx schema refine --schema EchoReport \
-  --add "hospital: str" \
-  --optional \
-  --description "Hospital name where exam was performed"
-```
-
-### Remove a Field
-
-Remove a field you no longer need:
-
-```bash
-mosaicx schema refine --schema EchoReport --remove clinical_impression
-```
-
-### Rename a Field
-
-Change a field's name (the type and other attributes stay the same):
-
-```bash
-mosaicx schema refine --schema EchoReport --rename "lvef=lvef_percent"
-```
-
-The format is `old_name=new_name`.
-
-### LLM-Driven Refinement
-
-For more complex changes, describe what you want in natural language:
-
-```bash
-mosaicx schema refine --schema EchoReport \
+mosaicx template refine EchoReport \
   --instruction "add a field for pericardial effusion severity as an enum with values none, trivial, small, moderate, large"
 ```
 
-The LLM will update the schema according to your instruction. This is useful when you want to:
-- Change field types
-- Add multiple fields at once
-- Reorganize the schema structure
-- Add complex nested fields
+The LLM updates the template according to your instruction. This is useful for:
 
-**Example output:**
+- Adding or removing fields
+- Changing field types
+- Adding complex nested structures
+- Reorganizing the template
 
+When refining a built-in template, the result is saved as a user template (the built-in is never modified). When refining a user template, the previous version is automatically archived.
+
+```bash
+mosaicx template refine chest_ct \
+  --instruction "add a covid_findings section for ground-glass opacities and consolidation patterns"
 ```
-Schema refined — evolution, not revolution
-+ pericardial_effusion (enum)
-Model: EchoReport
-Fields: patient_name, exam_date, lvef, valve_grades, wall_motion, pericardial_effusion, impression
+
+You can also save the refined template to a custom path:
+
+```bash
+mosaicx template refine chest_ct \
+  --instruction "simplify to just indication, findings, and impression" \
+  --output ./templates/chest_ct_simple.yaml
 ```
 
 ## Version History
 
-Every time you generate or refine a schema, MOSAICX automatically archives the previous version. This means you never lose your work and can always roll back if needed.
+Every time you refine a user template, MOSAICX automatically archives the previous version in `~/.mosaicx/templates/.history/`. This means you can always roll back if needed.
 
 ### View History
 
-See all archived versions of a schema:
+See all archived versions of a template:
 
 ```bash
-mosaicx schema history EchoReport
+mosaicx template history EchoReport
 ```
 
 **Example output:**
@@ -204,13 +380,12 @@ mosaicx schema history EchoReport
 ```
 EchoReport History
 
-Version  Fields  Date
-v1       5       2026-02-10 14:23
-v2       6       2026-02-11 09:15
-v3       7       2026-02-12 16:42
-current  7       2026-02-17 10:30
+  Version  Date
+  v1       2026-02-10 14:23
+  v2       2026-02-11 09:15
+  current  2026-02-17 10:30
 
-3 archived version(s) + current
+  2 archived version(s) + current
 ```
 
 ### Compare Versions
@@ -218,7 +393,7 @@ current  7       2026-02-17 10:30
 See what changed between a previous version and the current version:
 
 ```bash
-mosaicx schema diff EchoReport --version 1
+mosaicx template diff EchoReport --version 1
 ```
 
 **Example output:**
@@ -226,12 +401,12 @@ mosaicx schema diff EchoReport --version 1
 ```
 EchoReport: v1 vs current
 
-    Field                 Detail
-+   valve_grades          (list[str])
-+   pericardial_effusion  (enum)
-~   lvef                  type: int -> float
+      Section                Detail
+  +   pericardial_effusion   (enum)
+  +   wall_motion            (str)
+  ~   lvef                   type: str -> float
 
-1 added, 0 removed, 1 modified
+  2 added, 0 removed, 1 modified
 ```
 
 Legend:
@@ -241,400 +416,191 @@ Legend:
 
 ### Revert to a Previous Version
 
-If you made a mistake or want to go back to an earlier version:
+If you want to go back to an earlier version:
 
 ```bash
-mosaicx schema revert EchoReport --version 2
+mosaicx template revert EchoReport --version 1
 ```
 
-This archives your current version and restores version 2 as the active schema.
+This archives your current version and restores version 1 as the active template.
 
-**Example output:**
+## Using Templates for Extraction
 
-```
-Reverted EchoReport to v2 (archived current as v4)
-- pericardial_effusion
-~ lvef (changed)
-```
+### Single Document
 
-## Using Schemas for Extraction
-
-Once you have a schema, use it to extract structured data from documents.
-
-### Single Document Extraction
-
-Extract from one document:
+Extract structured data from a document using a template:
 
 ```bash
-mosaicx extract --document report.pdf --schema EchoReport
+# Built-in template
+mosaicx extract --document scan.pdf --template chest_ct
+
+# User template (by name)
+mosaicx extract --document report.pdf --template EchoReport
+
+# YAML file path
+mosaicx extract --document report.pdf --template ./templates/echo.yaml
+
+# With completeness scoring
+mosaicx extract --document scan.pdf --template chest_ct --score
+
+# Save output to file
+mosaicx extract --document scan.pdf --template chest_ct -o result.json
 ```
 
-The output will be structured exactly according to your schema.
+### Batch Processing
 
-### Batch Extraction
-
-Process multiple documents with the same schema:
+Process an entire directory of documents with the same template:
 
 ```bash
-mosaicx batch --input-dir ./reports --output-dir ./structured --schema EchoReport
+mosaicx batch --input-dir ./reports --output-dir ./structured --template chest_ct
 ```
 
-All documents in `./reports` will be processed using the `EchoReport` schema, and the structured output will be saved to `./structured`.
+All documents in `./reports` will be processed using the `chest_ct` template, and the structured output will be saved to `./structured`.
 
-## Schema JSON Format
+### Auto Extraction (No Template)
 
-Under the hood, schemas are stored as JSON files. Here's what they look like:
-
-```json
-{
-  "class_name": "EchoReport",
-  "description": "Echocardiography report with cardiac measurements",
-  "fields": [
-    {
-      "name": "patient_name",
-      "type": "str",
-      "description": "Patient's full name",
-      "required": true,
-      "enum_values": null
-    },
-    {
-      "name": "lvef",
-      "type": "float",
-      "description": "Left ventricular ejection fraction (percentage)",
-      "required": true,
-      "enum_values": null
-    },
-    {
-      "name": "valve_grades",
-      "type": "list[str]",
-      "description": "Assessment grades for each cardiac valve",
-      "required": true,
-      "enum_values": null
-    },
-    {
-      "name": "severity",
-      "type": "enum",
-      "description": "Overall severity assessment",
-      "required": false,
-      "enum_values": ["normal", "mild", "moderate", "severe"]
-    }
-  ]
-}
-```
-
-### Supported Field Types
-
-- `str` - Text string
-- `int` - Integer number
-- `float` - Decimal number
-- `bool` - True/false value
-- `list[X]` - List of items (where X is any type above, e.g., `list[str]`, `list[int]`)
-- `enum` - One of a fixed set of values (requires `enum_values`)
-
-Each field has:
-- `name` - The field identifier (must be a valid Python variable name)
-- `type` - The data type
-- `description` - Human-readable explanation
-- `required` - Whether the field must be present in extracted data
-- `enum_values` - For enum types, the list of allowed values
-
-You can manually edit these JSON files if needed, but it's usually easier to use the CLI commands.
-
-## YAML Templates
-
-Templates are an alternative to schemas. While schemas are JSON files dynamically generated by the LLM, templates are static YAML files you write yourself. Templates are useful when:
-
-- You want to version-control your extraction structure with your project
-- You need to share extraction definitions with colleagues
-- You want fine-grained control over nested structures
-- You're defining a standard format for your organization
-
-### YAML Template Format
-
-Templates use a YAML format with sections and fields:
-
-```yaml
-name: CTChestTemplate
-description: "Structured CT chest report"
-sections:
-  - name: exam_info
-    type: object
-    required: true
-    description: "Basic exam information"
-    fields:
-      - name: exam_type
-        type: str
-        required: true
-        description: "Type of imaging exam"
-      - name: exam_date
-        type: str
-        required: true
-        description: "Date exam was performed"
-      - name: protocol
-        type: str
-        required: false
-        description: "Imaging protocol used"
-
-  - name: findings
-    type: list
-    required: true
-    description: "List of imaging findings"
-    item:
-      type: object
-      fields:
-        - name: anatomy
-          type: str
-          required: true
-          description: "Anatomical location"
-        - name: observation
-          type: str
-          required: true
-          description: "What was observed"
-        - name: severity
-          type: enum
-          required: false
-          description: "Severity assessment"
-          values: ["mild", "moderate", "severe"]
-        - name: measurements
-          type: list
-          required: false
-          description: "Quantitative measurements"
-          item:
-            type: object
-            fields:
-              - name: dimension
-                type: str
-                required: true
-              - name: value
-                type: float
-                required: true
-              - name: unit
-                type: str
-                required: true
-
-  - name: impression
-    type: str
-    required: true
-    description: "Radiologist's clinical impression"
-```
-
-This template demonstrates:
-- **Simple fields** - `exam_type`, `exam_date`, `impression`
-- **Nested objects** - `exam_info` contains multiple fields
-- **Lists of objects** - `findings` is a list where each item has `anatomy`, `observation`, etc.
-- **Deeply nested structures** - `findings.measurements` is a list of measurement objects
-- **Enums** - `severity` must be one of the specified values
-
-### Using Templates
-
-Extract from a document using a template:
+If you run extraction without a template, the LLM infers the structure automatically:
 
 ```bash
-mosaicx extract --document report.pdf --template ./templates/ct_chest.yaml
+mosaicx extract --document report.pdf
 ```
 
-### Validating Templates
+This is useful for exploration, but for consistent, reproducible results, always use a template.
 
-Check if your YAML template is valid before using it:
+### SDK Usage
+
+Templates work the same way through the Python SDK:
+
+```python
+from mosaicx.sdk import extract
+
+# Built-in template
+result = extract(text, template="chest_ct")
+
+# YAML file path
+result = extract(text, template="./templates/echo.yaml")
+
+# User template
+result = extract(text, template="EchoReport")
+```
+
+## Migrating from Legacy JSON Schemas
+
+If you have JSON schemas from an earlier version of MOSAICX (stored in `~/.mosaicx/schemas/`), you can convert them all to YAML templates in one step:
 
 ```bash
-mosaicx template validate --file ./templates/ct_chest.yaml
+# Preview what will be migrated
+mosaicx template migrate --dry-run
+
+# Perform the migration
+mosaicx template migrate
 ```
 
-**Example output:**
+This converts `~/.mosaicx/schemas/*.json` to `~/.mosaicx/templates/*.yaml`. Existing YAML templates with the same name are not overwritten.
 
-```
-Template is valid — you shall pass
-Model: CTChestTemplate
-Fields: exam_info, findings, impression
-```
-
-If there are errors (invalid field types, missing required attributes, etc.), you'll get a detailed error message.
-
-### Built-in Templates
-
-MOSAICX includes built-in templates for common radiology reports:
+You can also convert individual schemas:
 
 ```bash
-mosaicx template list
+mosaicx template create --from-json ~/.mosaicx/schemas/EchoReport.json
 ```
 
-**Example output:**
+Legacy JSON schemas continue to work via the resolution chain (step 4), so there is no urgency to migrate. But YAML templates are the recommended format going forward.
 
-```
-Templates
+## Complete Example: Building a Pathology Template
 
-Name           Exam Type      RadReport ID  Description
-generic        generic        —             Generic radiology report
-chest_ct       chest_ct       RDES3         Chest CT report
-chest_xr       chest_xr       RDES2         Chest X-ray report
-brain_mri      brain_mri      RDES28        Brain MRI report
-abdomen_ct     abdomen_ct     RDES44        Abdomen CT report
-mammography    mammography    RDES4         Mammography report
-thyroid_us     thyroid_us     RDES72        Thyroid ultrasound report
-lung_ct        lung_ct        RDES195       Lung CT screening report
-msk_mri        msk_mri        —             MSK MRI report
-cardiac_mri    cardiac_mri    RDES214       Cardiac MRI report
-pet_ct         pet_ct         RDES76        PET/CT report
+Let's walk through a complete example of building a template for surgical pathology reports.
 
-11 template(s) registered
-```
-
-These templates are based on RadReport standards and can be used directly or as examples for creating your own templates.
-
-## Schema vs Template: When to Use Which
-
-Both schemas and templates define extraction structure, but they serve different purposes:
-
-| Aspect | Schema | Template |
-|--------|--------|----------|
-| **Format** | JSON | YAML |
-| **Creation** | LLM-generated from descriptions or documents | Manually written |
-| **Storage** | `~/.mosaicx/schemas/` (user directory) | Your project directory |
-| **Modification** | CLI commands (`schema refine`) or LLM instructions | Edit YAML file directly |
-| **Version Control** | Automatic history in `.history/` subdirectory | Standard git/version control |
-| **Sharing** | Copy JSON files | Commit YAML to repository |
-| **Best For** | Quick iteration, exploratory work, personal projects | Team projects, production systems, standards compliance |
-| **Dynamic Updates** | Easy - just refine with instructions | Manual - edit YAML |
-| **Nested Structures** | Supported (via LLM instructions) | Fully supported with clear syntax |
-| **Learning Curve** | Low - natural language descriptions | Medium - YAML syntax and structure |
-
-### Use Schemas When:
-
-- You're exploring what to extract from new document types
-- You want the LLM to help design the structure
-- You're working on personal or exploratory projects
-- You want to quickly iterate on the structure
-- You need simple, flat structures
-
-### Use Templates When:
-
-- You need complex nested data structures
-- You're working in a team and need version control
-- You want to define organization-wide standards
-- You need precise control over every field attribute
-- You're building production data pipelines
-- You want to share extraction definitions with non-MOSAICX users
-
-### Can I Convert Between Them?
-
-Yes! You can manually convert in either direction:
-
-**Schema to Template:** Export the schema JSON and rewrite it as YAML with the template format.
-
-**Template to Schema:** Save the template structure as a schema JSON file in `~/.mosaicx/schemas/`.
-
-In practice, start with schemas for exploration, then convert to templates when you're ready to standardize.
-
-## Complete Example: Building a Pathology Schema
-
-Let's walk through a complete example of building a schema for surgical pathology reports.
-
-### Step 1: Generate Initial Schema
+### Step 1: Generate an Initial Template
 
 Start with a description:
 
 ```bash
-mosaicx schema generate \
-  --description "surgical pathology report with specimen site, histologic type, tumor grade, margins, and staging" \
-  --name PathologyReport
+mosaicx template create \
+  --describe "surgical pathology report with specimen site, histologic type, tumor grade, margins, and TNM staging" \
+  --name PathologyReport \
+  --mode pathology
 ```
 
-### Step 2: Review the Schema
+### Step 2: Review the Template
 
 ```bash
-mosaicx schema show PathologyReport
+mosaicx template show PathologyReport
 ```
 
-Suppose the LLM created these fields:
-- specimen_site (str)
-- histologic_type (str)
-- tumor_grade (str)
-- margins (str)
-- staging (str)
+Suppose the LLM created sections for specimen_site, histologic_type, tumor_grade, margins, and staging -- all as `str` type.
 
-### Step 3: Refine the Schema
+### Step 3: Refine the Template
 
-The tumor grade should be an enum, not free text:
+The tumor grade should be an enum, and you need additional fields:
 
 ```bash
-mosaicx schema refine --schema PathologyReport \
-  --instruction "change tumor_grade to an enum with values well_differentiated, moderately_differentiated, poorly_differentiated, undifferentiated"
+mosaicx template refine PathologyReport \
+  --instruction "change tumor_grade to an enum with values well_differentiated, moderately_differentiated, poorly_differentiated, undifferentiated. Add tumor_size_cm as a required float field. Add lymph_nodes_positive and lymph_nodes_examined as optional int fields."
 ```
 
-Add a field for tumor size:
-
-```bash
-mosaicx schema refine --schema PathologyReport \
-  --add "tumor_size_cm: float" \
-  --description "Maximum tumor dimension in centimeters"
-```
-
-Add optional fields:
-
-```bash
-mosaicx schema refine --schema PathologyReport \
-  --add "lymph_nodes_positive: int" \
-  --optional \
-  --description "Number of lymph nodes with metastatic disease"
-
-mosaicx schema refine --schema PathologyReport \
-  --add "lymph_nodes_examined: int" \
-  --optional \
-  --description "Total number of lymph nodes examined"
-```
-
-### Step 4: Test the Schema
+### Step 4: Test the Template
 
 Extract from a sample report:
 
 ```bash
-mosaicx extract --document sample_path_report.pdf --schema PathologyReport --output result.json
+mosaicx extract --document sample_path_report.pdf --template PathologyReport -o result.json
 ```
 
 ### Step 5: Iterate
 
-If you need changes, refine the schema and re-run extraction. The version history keeps track of all your iterations:
+If the results need adjustment, refine and re-extract. Version history tracks every iteration:
 
 ```bash
-mosaicx schema history PathologyReport
+mosaicx template history PathologyReport
+mosaicx template diff PathologyReport --version 1
+```
+
+### Step 6: Share with Your Team
+
+Since templates are plain YAML files, you can commit them to version control:
+
+```bash
+cp ~/.mosaicx/templates/PathologyReport.yaml ./project/templates/
+git add ./project/templates/PathologyReport.yaml
+```
+
+Then anyone on the team can use it:
+
+```bash
+mosaicx extract --document report.pdf --template ./project/templates/PathologyReport.yaml
 ```
 
 ## Tips and Best Practices
 
-### For Schemas:
+1. **Start with a built-in template when possible.** If your use case is close to one of the 11 built-in templates, start there and refine rather than building from scratch.
 
-1. **Start broad, then refine** - Generate an initial schema and refine it based on real documents
-2. **Use enums for categorical data** - Instead of free text, use enums for standardized values (severity, laterality, modality)
-3. **Keep field names consistent** - Use snake_case and be consistent across schemas
-4. **Add good descriptions** - The LLM uses field descriptions to understand what to extract
-5. **Test on multiple documents** - One document might not reveal all edge cases
+2. **Use enums for categorical data.** Instead of free-text `str`, use `enum` with fixed values for standardized fields like severity, laterality, BI-RADS, Lung-RADS, and similar classifications.
 
-### For Templates:
+3. **Use lists of objects for repeating structures.** Nodules, lesions, masses, and similar findings that can appear multiple times are best modeled as `list` with an `item` of type `object`.
 
-1. **Use nested objects** - Group related fields together in objects
-2. **Make lists explicit** - Use `item` to define what each list element contains
-3. **Document with descriptions** - Every field should have a clear description
-4. **Validate early** - Run `template validate` before using in production
-5. **Follow naming conventions** - Match your organization's data standards
+4. **Write clear descriptions.** The LLM uses field descriptions to understand what to look for. A description like "Maximum diameter in millimeters" is far more useful than "Size".
 
-### General:
+5. **Mark fields as required judiciously.** Only mark a field as required if it is genuinely always present in the documents you are processing. Optional fields will be extracted when present and left null when absent.
 
-1. **Required vs optional** - Mark fields as required only if they're always present
-2. **Type carefully** - Choose the most specific type (enum > bool > str)
-3. **Version control** - Schemas have automatic versioning, templates need git
-4. **Test extraction** - Always test on real documents before batch processing
-5. **Iterate** - Extraction is rarely perfect on the first try
+6. **Choose specific types.** Prefer `float` over `str` for measurements, `enum` over `str` for categorical data, and `bool` over `str` for yes/no fields. Specific types produce cleaner, more usable output.
+
+7. **Test on multiple documents.** One document may not reveal all edge cases. Run extraction on a handful of representative documents before batch processing.
+
+8. **Use version control for project templates.** Store templates alongside your code in git. This gives you full history, diffs, and collaboration -- more robust than the built-in `.history/` versioning.
+
+9. **Validate before batch runs.** Run `mosaicx template validate --file template.yaml` before processing thousands of documents to catch syntax errors early.
+
+10. **Use `--score` for quality checks.** The `--score` flag on `extract` computes completeness metrics, showing you which fields were populated and which were missed.
 
 ## Troubleshooting
 
-### Schema not found
+### Template not found
 
 ```
-Error: Schema 'MySchema' not found in /Users/yourname/.mosaicx/schemas
+Error: Template 'MyTemplate' not found.
 ```
 
-**Solution:** Check the schema name with `mosaicx schema list`. Schema names are case-sensitive.
+**Solution:** Check the template name with `mosaicx template list`. Names are case-sensitive. If you are referencing a file path, make sure it ends in `.yaml` or `.yml` and the file exists.
 
 ### Template validation failed
 
@@ -642,35 +608,59 @@ Error: Schema 'MySchema' not found in /Users/yourname/.mosaicx/schemas
 Error: Template validation failed: Unsupported type 'datetime' in field 'exam_date'
 ```
 
-**Solution:** Templates only support basic types: str, int, float, bool, enum, list, object. Use `str` for dates and parse them later if needed.
+**Solution:** Templates only support these types: `str`, `int`, `float`, `bool`, `enum`, `list`, `object`. Use `str` for dates, timestamps, and similar values and parse them downstream if needed.
 
 ### Field not extracted
 
-If a field shows up as `null` or missing in extraction:
-- Check the field description is clear
-- Make sure the field name matches the terminology in the document
-- Verify the document actually contains that information
-- Try making the field optional if it's not always present
+If a field shows up as `null` or missing in extraction output:
 
-### Refinement not working
+- Check that the field description is clear and specific.
+- Make sure the field name matches the terminology used in the document.
+- Verify the document actually contains that information.
+- Try making the field optional if it is not always present.
 
-If `schema refine --instruction` doesn't work as expected:
-- Be more specific in your instruction
-- Try breaking complex changes into multiple refinement steps
-- Check `schema diff` to see what actually changed
-- Use CLI flags (`--add`, `--remove`, `--rename`) for simple changes instead
+### Refinement not producing expected results
+
+If `template refine` does not do what you expected:
+
+- Be more specific in your instruction.
+- Break complex changes into multiple refinement steps.
+- Use `template diff` to see exactly what changed.
+- For precise control, edit the YAML file directly in a text editor.
+
+## Schemas (Internal Detail)
+
+Under the hood, MOSAICX uses a JSON `SchemaSpec` format as an intermediate representation. When you create or refine a template via the CLI, the LLM generates a SchemaSpec internally, which is then converted to YAML. When you use a template for extraction, the YAML is compiled into a Pydantic model class at runtime.
+
+You do not need to interact with SchemaSpec directly. It exists for backward compatibility with older `~/.mosaicx/schemas/*.json` files and as a bridge between the LLM generation pipeline and the YAML template format. If you have legacy JSON schemas, use `mosaicx template migrate` to convert them.
+
+## CLI Command Reference
+
+| Command | Description |
+|---------|-------------|
+| `mosaicx template list` | List all available templates (built-in and user) |
+| `mosaicx template show <name>` | Display template structure and metadata |
+| `mosaicx template create --describe "..."` | Generate a template from a description |
+| `mosaicx template create --from-document report.pdf` | Generate a template from a sample document |
+| `mosaicx template create --from-url <url>` | Generate a template from web page content |
+| `mosaicx template create --from-radreport <id>` | Generate a template from a RadReport ID |
+| `mosaicx template create --from-json schema.json` | Convert a JSON schema to YAML |
+| `mosaicx template validate --file template.yaml` | Validate a template file |
+| `mosaicx template refine <name> --instruction "..."` | Refine a template with LLM instructions |
+| `mosaicx template migrate` | Convert all legacy JSON schemas to YAML |
+| `mosaicx template history <name>` | Show version history of a user template |
+| `mosaicx template diff <name> --version N` | Compare current template to version N |
+| `mosaicx template revert <name> --version N` | Revert a template to version N |
 
 ## Next Steps
 
-Now that you understand schemas and templates:
-
-1. Create a schema for your document type
-2. Test it on a few sample documents
-3. Refine based on results
-4. Use it for batch processing
-5. Convert to a template if you need to share or version control it
+1. Browse the built-in templates with `mosaicx template list` and `mosaicx template show`.
+2. Create a template for your document type.
+3. Test it on a few sample documents with `mosaicx extract --template ... --document ...`.
+4. Refine based on results.
+5. Use it for batch processing with `mosaicx batch --template ...`.
 
 For more information:
-- See `mosaicx extract --help` for extraction options
-- See `mosaicx batch --help` for batch processing
-- See the getting started guide for a complete workflow example
+- `mosaicx extract --help` for extraction options
+- `mosaicx batch --help` for batch processing options
+- `mosaicx template --help` for all template commands
