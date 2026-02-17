@@ -238,3 +238,38 @@ class TestListModes:
             assert isinstance(item, dict)
             assert "name" in item
             assert "description" in item
+
+
+class TestHealth:
+    """Test sdk.health() — no LLM needed."""
+
+    def test_returns_dict(self):
+        from mosaicx.sdk import health
+
+        result = health()
+        assert isinstance(result, dict)
+
+    def test_has_required_keys(self):
+        from mosaicx.sdk import health
+
+        result = health()
+        for key in ("version", "configured", "lm_model", "api_base", "available_modes", "available_templates", "ocr_engine"):
+            assert key in result, f"Missing key: {key}"
+
+    def test_version_is_string(self):
+        from mosaicx.sdk import health
+
+        result = health()
+        assert isinstance(result["version"], str)
+
+    def test_available_modes_is_list(self):
+        from mosaicx.sdk import health
+
+        result = health()
+        assert isinstance(result["available_modes"], list)
+
+    def test_available_templates_is_list(self):
+        from mosaicx.sdk import health
+
+        result = health()
+        assert isinstance(result["available_templates"], list)

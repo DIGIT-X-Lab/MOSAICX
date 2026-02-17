@@ -743,3 +743,62 @@ def batch_extract(
             result = {"error": str(exc), "document_index": i}
         results.append(result)
     return results
+
+
+# ---------------------------------------------------------------------------
+# health
+# ---------------------------------------------------------------------------
+
+
+def health() -> dict[str, Any]:
+    """Check MOSAICX configuration status and available capabilities.
+
+    Does NOT make an LLM call. Reads configuration and scans available
+    modes/templates to report what the system can do.
+
+    Returns
+    -------
+    dict
+        Keys: ``"version"``, ``"configured"``, ``"lm_model"``,
+        ``"api_base"``, ``"available_modes"``, ``"available_templates"``,
+        ``"ocr_engine"``.
+    """
+    from importlib.metadata import PackageNotFoundError
+    from importlib.metadata import version as _pkg_version
+
+    from .config import get_config
+
+    try:
+        version = _pkg_version("mosaicx")
+    except PackageNotFoundError:
+        version = "2.0.0a1"
+
+    cfg = get_config()
+
+    # Modes (no DSPy needed — just registry scan)
+    import mosaicx.pipelines.pathology  # noqa: F401
+    import mosaicx.pipelines.radiology  # noqa: F401
+
+    from .pipelines.modes import list_modes as _list_modes
+
+    modes = [name for name, _desc in _list_modes()]
+
+    # Templates (built-in + user)
+    from .schemas.radreport.registry import list_templates as _list_builtin
+
+    templates = [t.name for t in _list_builtin()]
+    if cfg.templates_dir.is_dir():
+        for f in sorted(cfg.templates_dir.glob("*.yaml")) + sorted(
+            cfg.templates_dir.glob("*.yml")
+        ):
+            templates.append(f.stem)
+
+    return {
+        "version": version,
+        "configured": bool(cfg.api_key),
+        "lm_model": cfg.lm,
+        "api_base": cfg.api_base,
+        "available_modes": modes,
+        "available_templates": templates,
+        "ocr_engine": cfg.ocr_engine,
+    }
