@@ -196,7 +196,7 @@ class TestTemplateValidate:
             cli, ["template", "validate", "--file", str(missing)]
         )
         assert result.exit_code != 0
-        assert "File not found" in result.output
+        assert "does not exist" in result.output
 
     def test_validate_requires_file_option(self, runner: CliRunner):
         result = runner.invoke(cli, ["template", "validate"])
@@ -303,7 +303,7 @@ class TestDeidentifyRegexOnly:
             ["deidentify", "--document", str(missing), "--regex-only"],
         )
         assert result.exit_code != 0
-        assert "Document not found" in result.output
+        assert "does not exist" in result.output
 
 
 # -------------------------------------------------------------------------
@@ -312,26 +312,22 @@ class TestDeidentifyRegexOnly:
 
 
 class TestOptimize:
-    def test_optimize_shows_config(self, runner: CliRunner):
+    def test_optimize_requires_pipeline(self, runner: CliRunner):
         result = runner.invoke(cli, ["optimize", "--budget", "light"])
-        assert result.exit_code == 0
-        assert "OPTIMIZATION" in result.output
-        assert "BootstrapFewShot" in result.output
+        assert result.exit_code != 0
+        assert "--pipeline is required" in result.output
 
-    def test_optimize_medium_budget(self, runner: CliRunner):
-        result = runner.invoke(cli, ["optimize", "--budget", "medium"])
-        assert result.exit_code == 0
-        assert "MIPROv2" in result.output
+    def test_optimize_requires_trainset(self, runner: CliRunner):
+        result = runner.invoke(
+            cli, ["optimize", "--pipeline", "extraction", "--budget", "light"]
+        )
+        assert result.exit_code != 0
+        assert "--trainset is required" in result.output
 
-    def test_optimize_heavy_budget(self, runner: CliRunner):
-        result = runner.invoke(cli, ["optimize", "--budget", "heavy"])
+    def test_optimize_list_pipelines(self, runner: CliRunner):
+        result = runner.invoke(cli, ["optimize", "--list-pipelines"])
         assert result.exit_code == 0
-        assert "GEPA" in result.output
-
-    def test_optimize_shows_note_without_datasets(self, runner: CliRunner):
-        result = runner.invoke(cli, ["optimize", "--budget", "light"])
-        assert result.exit_code == 0
-        assert "Specify --pipeline to run optimization" in result.output
+        assert "extraction" in result.output.lower()
 
 
 # -------------------------------------------------------------------------
@@ -365,7 +361,7 @@ class TestLLMCommandsGracefulFailure:
             cli, ["extract", "--document", str(missing)]
         )
         assert result.exit_code != 0
-        assert "not found" in result.output.lower()
+        assert "does not exist" in result.output
 
     def test_extract_list_modes(self, runner: CliRunner):
         result = runner.invoke(cli, ["extract", "--list-modes"])
@@ -656,7 +652,7 @@ class TestTemplateCreate:
             ["template", "create", "--from-json", str(missing)],
         )
         assert result.exit_code != 0
-        assert "not found" in result.output.lower()
+        assert "does not exist" in result.output
 
     def test_template_create_from_json_invalid_json(self, runner: CliRunner, tmp_path: Path):
         bad_json = tmp_path / "bad.json"

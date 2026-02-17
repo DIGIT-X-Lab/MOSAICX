@@ -240,11 +240,11 @@ def cli(ctx: click.Context) -> None:
 
 
 @cli.command()
-@click.option("--document", type=click.Path(exists=False, path_type=Path), default=None, help="Path to clinical document.")
+@click.option("--document", type=click.Path(exists=True, path_type=Path), default=None, help="Path to clinical document.")
 @click.option("--template", type=str, default=None, help="Template name, YAML file path, or saved template name.")
 @click.option("--mode", type=str, default=None, help="Extraction mode name (e.g., radiology, pathology).")
 @click.option("--score", is_flag=True, default=False, help="Score completeness of extracted data against the template.")
-@click.option("--optimized", type=click.Path(exists=False, path_type=Path), default=None, help="Path to optimized program.")
+@click.option("--optimized", type=click.Path(exists=True, path_type=Path), default=None, help="Path to optimized program.")
 @click.option("--output", "-o", type=click.Path(path_type=Path), default=None, help="Save output to file (.json or .yaml/.yml).")
 @click.option("--list-modes", is_flag=True, default=False, help="Print available modes and exit.")
 @click.pass_context
@@ -291,12 +291,15 @@ def extract(
         console.print(Padding(t, (0, 0, 0, 2)))
         console.print()
         console.print(theme.info(f"{len(_list_modes())} mode(s) available"))
+        console.print(theme.info("Use --template <name> for template-based extraction"))
         ctx.exit()
         return
 
     # Validate: --document is required for extraction
     if document is None:
-        raise click.ClickException("--document is required.")
+        raise click.ClickException(
+            "--document is required. Usage: mosaicx extract --document <file>"
+        )
 
     # Mutual exclusivity: --template and --mode
     if template is not None and mode is not None:
@@ -423,6 +426,11 @@ def extract(
 
     else:
         # Auto mode: no flags -- LLM infers schema
+        if score:
+            console.print(theme.warn(
+                "--score requires a --template or --mode to score against (ignored in auto mode)"
+            ))
+
         from .pipelines.extraction import DocumentExtractor
 
         _configure_dspy()
@@ -489,17 +497,12 @@ def extract(
 
 
 # ---------------------------------------------------------------------------
-# report
-# ---------------------------------------------------------------------------
-
-
-# ---------------------------------------------------------------------------
 # batch
 # ---------------------------------------------------------------------------
 
 
 @cli.command()
-@click.option("--input-dir", type=click.Path(exists=False, path_type=Path), help="Directory of input documents.")
+@click.option("--input-dir", type=click.Path(exists=True, file_okay=False, path_type=Path), help="Directory of input documents.")
 @click.option("--output-dir", type=click.Path(path_type=Path), help="Directory for output files.")
 @click.option("--template", type=str, default=None, help="Template name, YAML file path, or saved template name.")
 @click.option("--mode", type=str, default=None, help="Extraction mode name (e.g., radiology, pathology).")
@@ -520,8 +523,15 @@ def batch(
         raise click.ClickException("--input-dir is required.")
     if output_dir is None:
         raise click.ClickException("--output-dir is required.")
-    if not input_dir.is_dir():
-        raise click.ClickException(f"Input directory does not exist: {input_dir}")
+    # Validate mode name early (before configuring DSPy)
+    if mode is not None and template is None:
+        import mosaicx.pipelines.radiology  # noqa: F401
+        import mosaicx.pipelines.pathology  # noqa: F401
+        from .pipelines.modes import get_mode
+        try:
+            get_mode(mode)
+        except ValueError as exc:
+            raise click.ClickException(str(exc))
 
     from .batch import BatchProcessor
 
@@ -821,13 +831,10 @@ def template_list() -> None:
 
 
 @template.command("validate")
-@click.option("--file", "file_path", type=click.Path(exists=False, path_type=Path), required=True, help="Template YAML file to validate.")
+@click.option("--file", "file_path", type=click.Path(exists=True, path_type=Path), required=True, help="Template YAML file to validate.")
 def template_validate(file_path: Path) -> None:
     """Validate a template file."""
     from .schemas.template_compiler import compile_template_file
-
-    if not file_path.exists():
-        raise click.ClickException(f"File not found: {file_path}")
 
     try:
         model = compile_template_file(file_path)
@@ -840,10 +847,10 @@ def template_validate(file_path: Path) -> None:
 
 @template.command("create")
 @click.option("--describe", type=str, default=None, help="Natural-language description of the template.")
-@click.option("--from-document", "from_document", type=click.Path(exists=False, path_type=Path), default=None, help="Infer template from a sample document.")
+@click.option("--from-document", "from_document", type=click.Path(exists=True, path_type=Path), default=None, help="Infer template from a sample document.")
 @click.option("--from-url", "from_url", type=str, default=None, help="Infer template from a web page (e.g. RadReport URL).")
 @click.option("--from-radreport", "from_radreport", type=str, default=None, help="RadReport template ID (e.g. RPT50890 or 50890).")
-@click.option("--from-json", "from_json", type=click.Path(exists=False, path_type=Path), default=None, help="Convert a legacy JSON schema to YAML template.")
+@click.option("--from-json", "from_json", type=click.Path(exists=True, path_type=Path), default=None, help="Convert a legacy JSON schema to YAML template.")
 @click.option("--name", type=str, default=None, help="Template name (default: LLM-chosen).")
 @click.option("--mode", type=str, default=None, help="Pipeline mode to embed (e.g. radiology, pathology).")
 @click.option("--output", type=click.Path(path_type=Path), default=None, help="Save to this path instead of ~/.mosaicx/templates/.")
@@ -872,8 +879,6 @@ def template_create(
     if from_json is not None:
         from .pipelines.schema_gen import SchemaSpec
 
-        if not from_json.exists():
-            raise click.ClickException(f"File not found: {from_json}")
         try:
             spec = SchemaSpec.model_validate_json(
                 from_json.read_text(encoding="utf-8")
@@ -929,6 +934,8 @@ def template_create(
             rr_description = f"{rr_description} Additional instructions: {describe}"
 
         effective_mode = mode or "radiology"
+        if mode is None:
+            console.print(theme.info("Mode defaulting to 'radiology' (RadReport source). Use --mode to override."))
 
         _configure_dspy()
 
@@ -1020,8 +1027,10 @@ def template_create(
                 tag.decompose()
             page_text = soup.get_text(separator="\n", strip=True)
         except ImportError:
-            # Fall back to raw HTML -- LLM can handle it
-            pass
+            console.print(theme.warn(
+                "beautifulsoup4 not installed -- passing raw HTML to LLM. "
+                "Install with: pip install beautifulsoup4"
+            ))
 
         # Use page content as document context for the LLM
         if not description:
@@ -1359,6 +1368,8 @@ def template_migrate(dry_run: bool) -> None:
 
     if dry_run and migrated:
         console.print(theme.info("Run without --dry-run to perform the migration."))
+    elif migrated and not dry_run:
+        console.print(theme.info("Use 'mosaicx template list' to see all templates"))
 
 
 # ---------------------------------------------------------------------------
@@ -1418,6 +1429,7 @@ def template_history(name: str) -> None:
 
     if not versions:
         console.print(theme.info("No version history yet (only current version exists)"))
+        console.print(theme.info("History is created when you use 'template refine' or 'template revert'"))
         return
 
     from datetime import datetime
@@ -1474,6 +1486,7 @@ def template_revert(name: str, version_num: int) -> None:
     console.print(theme.ok(
         f"Reverted {name} to v{version_num} (archived current as v{archive_ver})"
     ))
+    console.print(theme.info(f"Use 'mosaicx template diff {name} --version {archive_ver}' to compare"))
 
 
 @template.command("diff")
@@ -1481,7 +1494,10 @@ def template_revert(name: str, version_num: int) -> None:
 @click.option("--version", "version_num", type=int, required=True, help="Version number to compare against current.")
 def template_diff(name: str, version_num: int) -> None:
     """Show differences between current template and a previous version."""
-    import yaml
+    try:
+        import yaml
+    except ImportError:
+        raise click.ClickException("PyYAML required for template diff: pip install pyyaml")
 
     from .report import _find_user_template_yaml
 
@@ -1573,8 +1589,8 @@ def template_diff(name: str, version_num: int) -> None:
 
 
 @cli.command()
-@click.option("--document", type=click.Path(exists=False, path_type=Path), default=None, help="Single document to summarize.")
-@click.option("--dir", "directory", type=click.Path(exists=False, path_type=Path), help="Directory of reports.")
+@click.option("--document", type=click.Path(exists=True, path_type=Path), default=None, help="Single document to summarize.")
+@click.option("--dir", "directory", type=click.Path(exists=True, file_okay=False, path_type=Path), default=None, help="Directory of reports.")
 @click.option("--patient", type=str, default=None, help="Patient identifier.")
 @click.option("--format", "formats", type=str, multiple=True, help="Output format(s).")
 def summarize(
@@ -1598,10 +1614,9 @@ def summarize(
             console.print(theme.warn("Low OCR quality detected \u2014 results may be unreliable"))
         report_texts.append(doc.text)
     elif directory is not None:
-        if not directory.is_dir():
-            raise click.ClickException(f"Directory not found: {directory}")
+        supported = (".txt", ".md", ".markdown", ".pdf")
         for p in sorted(directory.iterdir()):
-            if p.suffix.lower() in (".txt", ".md", ".markdown"):
+            if p.suffix.lower() in supported:
                 try:
                     doc = _load_doc_with_config(p)
                     if doc.quality_warning:
@@ -1615,7 +1630,9 @@ def summarize(
         raise click.ClickException("Provide --document or --dir.")
 
     if not report_texts:
-        raise click.ClickException("No reports found to summarize.")
+        raise click.ClickException(
+            "No reports found. --dir scans for .txt, .md, and .pdf files."
+        )
 
     console.print(theme.info(f"Loaded {len(report_texts)} report(s)"))
 
@@ -1656,8 +1673,8 @@ def summarize(
 
 
 @cli.command()
-@click.option("--document", type=click.Path(exists=False, path_type=Path), help="Single document to de-identify.")
-@click.option("--dir", "directory", type=click.Path(exists=False, path_type=Path), help="Directory of documents.")
+@click.option("--document", type=click.Path(exists=True, path_type=Path), help="Single document to de-identify.")
+@click.option("--dir", "directory", type=click.Path(exists=True, file_okay=False, path_type=Path), help="Directory of documents.")
 @click.option(
     "--mode",
     type=click.Choice(["remove", "pseudonymize", "dateshift"], case_sensitive=False),
@@ -1683,18 +1700,17 @@ def deidentify(
     # Collect file paths
     paths: list[Path] = []
     if document is not None:
-        if not document.exists():
-            raise click.ClickException(f"Document not found: {document}")
         paths.append(document)
     elif directory is not None:
-        if not directory.is_dir():
-            raise click.ClickException(f"Directory not found: {directory}")
+        supported = (".txt", ".md", ".markdown", ".pdf")
         for p in sorted(directory.iterdir()):
-            if p.suffix.lower() in (".txt", ".md", ".markdown"):
+            if p.suffix.lower() in supported:
                 paths.append(p)
 
     if not paths:
-        raise click.ClickException("No documents found to de-identify.")
+        raise click.ClickException(
+            "No documents found. --dir scans for .txt, .md, and .pdf files."
+        )
 
     console.print(theme.info(
         f"De-identifying {len(paths)} document(s) \u00b7 mode: {mode}"
@@ -1703,8 +1719,15 @@ def deidentify(
 
     if regex_only:
         # Regex-only mode: no LLM needed
+        from .documents.models import DocumentLoadError
+
         for p in paths:
-            text = p.read_text(encoding="utf-8")
+            try:
+                doc = _load_doc_with_config(p)
+                text = doc.text
+            except (FileNotFoundError, ValueError, DocumentLoadError) as exc:
+                console.print(theme.warn(f"Skipping {p.name}: {exc}"))
+                continue
             scrubbed = regex_scrub_phi(text)
             theme.section(p.name, console, uppercase=False)
             console.print(
@@ -1764,8 +1787,8 @@ def deidentify(
 
 @cli.command()
 @click.option("--pipeline", type=str, default=None, help="Pipeline to optimize.")
-@click.option("--trainset", type=click.Path(exists=False, path_type=Path), help="Training dataset path.")
-@click.option("--valset", type=click.Path(exists=False, path_type=Path), help="Validation dataset path.")
+@click.option("--trainset", type=click.Path(exists=True, path_type=Path), help="Training dataset path.")
+@click.option("--valset", type=click.Path(exists=True, path_type=Path), help="Validation dataset path.")
 @click.option(
     "--budget",
     type=click.Choice(["light", "medium", "heavy"], case_sensitive=False),
@@ -1799,6 +1822,15 @@ def optimize(
             console.print(f"  [#E87461]>[/#E87461] [#B5A89A]{name}[/#B5A89A]")
         return
 
+    # Validate required args early
+    if not pipeline:
+        raise click.ClickException(
+            "--pipeline is required. Use --list-pipelines to see available options."
+        )
+
+    if trainset is None:
+        raise click.ClickException("--trainset is required.")
+
     try:
         opt_config = get_optimizer_config(budget)
     except ValueError as exc:
@@ -1807,49 +1839,15 @@ def optimize(
     # 01 · Configuration display
     theme.section("Optimization", console, "01")
     t = theme.make_kv_table()
-    t.add_row("Pipeline", pipeline or "[dim]not specified[/dim]")
+    t.add_row("Pipeline", pipeline)
     t.add_row("Budget", theme.badge(budget.upper()))
     t.add_row("Strategy", opt_config.get("strategy", "N/A"))
     t.add_row("Max iterations", str(opt_config.get("max_iterations", "N/A")))
     t.add_row("Num candidates", str(opt_config.get("num_candidates", "N/A")))
-    t.add_row("Training set", str(trainset) if trainset else "[dim]not specified[/dim]")
+    t.add_row("Training set", str(trainset))
     t.add_row("Validation set", str(valset) if valset else "[dim]not specified[/dim]")
     t.add_row("Save path", str(save) if save else "[dim]not specified[/dim]")
     console.print(t)
-
-    # 02 · Progressive strategy
-    theme.section("Progressive Strategy", console, "02")
-    strat_table = theme.make_table()
-    strat_table.add_column("Stage", style="bold cyan", no_wrap=True)
-    strat_table.add_column("Cost", style="magenta")
-    strat_table.add_column("Time")
-    strat_table.add_column("Min Examples", style="dim")
-
-    for step in OPTIMIZATION_STRATEGY:
-        strat_table.add_row(
-            step["name"],
-            step["cost"],
-            step["time"],
-            str(step["min_examples"]),
-        )
-    console.print(strat_table)
-
-    # Validate required args
-    if not pipeline:
-        console.print()
-        console.print(theme.warn(
-            "Specify --pipeline to run optimization. "
-            "Use --list-pipelines to see available options."
-        ))
-        return
-
-    if not trainset:
-        console.print()
-        console.print(theme.warn(
-            "Provide --trainset to run optimization. "
-            "Requires MOSAICX_API_KEY."
-        ))
-        return
 
     # Validate pipeline name
     try:
@@ -2066,8 +2064,6 @@ def config_show() -> None:
     cfg = get_config()
     dump = cfg.model_dump()
 
-    theme.print_banner(_VERSION_NUMBER, console, lm=cfg.lm, lm_cheap=cfg.lm_cheap)
-
     # 01 · Language Models
     theme.section("Language Models", console, "01")
     t = theme.make_kv_table()
@@ -2129,12 +2125,16 @@ def config_show() -> None:
 @click.argument("key")
 @click.argument("value")
 def config_set(key: str, value: str) -> None:
-    """Set a configuration value."""
-    console.print(theme.info(f"config set {key}={value}"))
+    """Set a configuration value.
+
+    Not yet implemented -- use environment variables instead.
+    """
+    env_var = f"MOSAICX_{key.upper()}"
     console.print(theme.warn(
-        "Runtime config changes are not persisted yet. "
-        "Use environment variables (MOSAICX_*) or a .env file."
+        "Config persistence is not implemented yet. "
+        "Set values via environment variables or a .env file:"
     ))
+    console.print(theme.info(f"  export {env_var}={value}"))
 
 
 # ---------------------------------------------------------------------------
