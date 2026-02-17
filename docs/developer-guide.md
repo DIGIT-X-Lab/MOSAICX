@@ -694,6 +694,8 @@ The MOSAICX Python SDK lets you call extraction, de-identification, summarizatio
 - Configures DSPy automatically on first use.
 - Supports loading optimized DSPy programs.
 
+For web application integration, the SDK also provides file-based processing (`process_file`, `process_files`) that handles OCR and extraction in a single call, plus `health()` for service monitoring and `list_templates()` for template discovery.
+
 ### Installation
 
 ```bash
@@ -1047,6 +1049,187 @@ for i, result in enumerate(results):
         print(f"Document {i} failed: {result['error']}")
     else:
         print(f"Document {i}: {result['exam_type']}")
+```
+
+---
+
+#### `health() -> dict`
+
+Check MOSAICX configuration status and available capabilities. Does not make any LLM calls -- useful for service health endpoints.
+
+**Returns:** `dict` with keys:
+
+| Key | Type | Description |
+|-----|------|-------------|
+| `version` | `str` | Installed MOSAICX version. |
+| `configured` | `bool` | Whether an API key is set. |
+| `lm_model` | `str` | Configured language model identifier. |
+| `api_base` | `str` | LLM API base URL. |
+| `available_modes` | `list[str]` | Registered extraction modes (e.g., `["radiology", "pathology"]`). |
+| `available_templates` | `list[str]` | Available template names (built-in + user-created). |
+| `ocr_engine` | `str` | Configured OCR engine (`"both"`, `"surya"`, or `"chandra"`). |
+
+**Example:**
+
+```python
+from mosaicx.sdk import health
+
+status = health()
+print(f"MOSAICX v{status['version']}")
+print(f"LLM: {status['lm_model']} at {status['api_base']}")
+print(f"Modes: {status['available_modes']}")
+print(f"Templates: {status['available_templates']}")
+```
+
+---
+
+#### `list_templates() -> list[dict]`
+
+List all available extraction templates -- both built-in templates that ship with MOSAICX and user-created templates from `~/.mosaicx/templates/`.
+
+**Returns:** `list[dict]` -- Each dict has keys:
+
+| Key | Type | Description |
+|-----|------|-------------|
+| `name` | `str` | Template name (use with `extract(template=name)`). |
+| `description` | `str` | Human-readable description. |
+| `mode` | `str \| None` | Associated pipeline mode (e.g., `"radiology"`), or `None`. |
+| `source` | `str` | `"built-in"` or `"user"`. |
+
+**Example:**
+
+```python
+from mosaicx.sdk import list_templates
+
+for tpl in list_templates():
+    print(f"{tpl['name']:20s} [{tpl['source']}] {tpl['description']}")
+```
+
+---
+
+#### `process_file(file, *, filename, template, mode, score, ocr_engine, force_ocr) -> dict`
+
+Load a document and extract structured data in one call. Handles OCR for PDFs and images, then runs the extraction pipeline. Accepts a file path or raw bytes (e.g., from a web file upload).
+
+**Parameters:**
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `file` | `Path \| bytes` | (required) | Path to a document file, or raw file bytes. |
+| `filename` | `str \| None` | `None` | Original filename. Required when `file` is bytes (for format detection). |
+| `template` | `str \| None` | `None` | Template name or YAML file path. |
+| `mode` | `str` | `"auto"` | Extraction mode (`"auto"`, `"radiology"`, `"pathology"`). |
+| `score` | `bool` | `False` | Include completeness scoring. |
+| `ocr_engine` | `str \| None` | `None` | Override configured OCR engine. |
+| `force_ocr` | `bool` | `False` | Force OCR even on PDFs with native text. |
+
+**Returns:** `dict` -- Extraction result (same as `extract()`), plus a `"_document"` key with loading metadata:
+
+```python
+{
+    "extracted": {...},          # structured data
+    "_document": {
+        "format": "pdf",
+        "page_count": 3,
+        "ocr_engine_used": "surya",
+        "quality_warning": False,
+    }
+}
+```
+
+**Raises:**
+- `ValueError` if `file` is bytes and `filename` is not provided.
+- `FileNotFoundError` if `file` is a path that does not exist.
+
+**Example -- file path:**
+
+```python
+from pathlib import Path
+from mosaicx.sdk import process_file
+
+result = process_file(
+    Path("scan.pdf"),
+    template="chest_ct",
+    score=True,
+)
+print(result["extracted"])
+print(f"Pages: {result['_document']['page_count']}")
+```
+
+**Example -- bytes from a web upload:**
+
+```python
+from mosaicx.sdk import process_file
+
+# In a web handler (FastAPI, Flask, Django, etc.)
+content = uploaded_file.read()
+result = process_file(
+    content,
+    filename=uploaded_file.filename,  # needed for format detection
+    template="chest_ct",
+)
+```
+
+---
+
+#### `process_files(files, *, template, mode, score, workers, on_progress) -> dict`
+
+Process multiple documents with parallel extraction. Accepts a directory path (discovers all supported files) or an explicit list of file paths. Documents are loaded sequentially (OCR is not thread-safe), but extraction runs in parallel.
+
+**Parameters:**
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `files` | `list[Path] \| Path` | (required) | Directory path or list of file paths. |
+| `template` | `str \| None` | `None` | Template name for targeted extraction. |
+| `mode` | `str` | `"auto"` | Extraction mode. |
+| `score` | `bool` | `False` | Include completeness scoring. |
+| `workers` | `int` | `4` | Number of parallel extraction workers (max 32). |
+| `on_progress` | `Callable \| None` | `None` | Callback `(filename, success, result_or_none)` after each document. |
+
+**Returns:** `dict` with keys:
+
+| Key | Type | Description |
+|-----|------|-------------|
+| `total` | `int` | Total documents discovered. |
+| `succeeded` | `int` | Successfully extracted. |
+| `failed` | `int` | Failed (load error, extraction error, or empty text). |
+| `results` | `list[dict]` | Successful extraction results (each includes a `"file"` key). |
+| `errors` | `list[dict]` | Failed documents (each has `"file"` and `"error"` keys). |
+
+**Example -- directory:**
+
+```python
+from pathlib import Path
+from mosaicx.sdk import process_files
+
+results = process_files(
+    Path("reports/"),
+    template="chest_ct",
+    workers=8,
+)
+print(f"{results['succeeded']}/{results['total']} succeeded")
+for r in results["results"]:
+    print(f"  {r['file']}: {r.get('exam_type', 'auto')}")
+for e in results["errors"]:
+    print(f"  FAILED {e['file']}: {e['error']}")
+```
+
+**Example -- with progress callback (for web apps):**
+
+```python
+from mosaicx.sdk import process_files
+
+def on_progress(filename, success, result):
+    status = "done" if success else "FAILED"
+    print(f"[{status}] {filename}")
+    # In a web app, send this to a WebSocket or SSE stream
+
+results = process_files(
+    file_list,
+    template="chest_ct",
+    on_progress=on_progress,
+)
 ```
 
 ### Configuration
