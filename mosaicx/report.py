@@ -2,11 +2,12 @@
 """Structured reporting orchestrator.
 
 Wires together template resolution, extraction pipelines, and completeness
-scoring into a single ``run_report()`` call.  Used by both the CLI
-``mosaicx report`` command and the SDK ``mosaicx.sdk.report()`` function.
+scoring into a single ``run_report()`` call.  Used by the CLI
+``mosaicx extract --score`` command and the SDK ``mosaicx.sdk.extract()``
+function.
 
 Key functions:
-    - resolve_template: Unified template/schema/description resolution.
+    - resolve_template: Unified template resolution (YAML, built-in, legacy).
     - detect_mode: Auto-detect pipeline mode from a template name.
     - run_report: End-to-end structured report extraction + scoring.
 """

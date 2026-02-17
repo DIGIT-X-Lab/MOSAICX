@@ -3,14 +3,14 @@
 MOSAICX -- Medical Document Structuring Platform.
 
 Public API (text-based SDK):
-    - mosaicx.extract(text, mode="auto", schema_name=None, optimized=None)
+    - mosaicx.extract(text, template=None, mode="auto", score=False, optimized=None)
     - mosaicx.deidentify(text, mode="remove")
     - mosaicx.summarize(reports, patient_id="unknown", optimized=None)
     - mosaicx.generate_schema(description, name=None, example_text=None, save=False)
     - mosaicx.list_schemas()
     - mosaicx.list_modes()
     - mosaicx.evaluate(pipeline, testset_path, optimized=None)
-    - mosaicx.batch_extract(texts, mode="auto", schema_name=None)
+    - mosaicx.batch_extract(texts, mode="auto", template=None)
     - mosaicx.config.MosaicxConfig / get_config()
     - mosaicx.documents.load_document()
     - mosaicx.cli.cli (Click entry point)

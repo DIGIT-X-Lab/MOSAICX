@@ -766,7 +766,7 @@ class TestTemplateShow:
             result = runner.invoke(cli, ["template", "show", "OldSchema"])
             assert result.exit_code == 0
             assert "OLDSCHEMA" in result.output.upper()
-            assert "SAVED SCHEMA" in result.output.upper()
+            assert "LEGACY SCHEMA" in result.output.upper()
             assert "template create --from-json" in result.output
         finally:
             get_config.cache_clear()

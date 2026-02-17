@@ -136,7 +136,7 @@ class TestSDKSignatures:
         params = list(sig.parameters.keys())
         assert "texts" in params
         assert "mode" in params
-        assert "schema_name" in params
+        assert "template" in params
 
 
 class TestFileBasedSignatures:

@@ -13,10 +13,10 @@ Quick start::
 
     from mosaicx.sdk import extract, deidentify, summarize, generate_schema
 
-    result  = extract("Patient presents with chest pain...", mode="radiology")
-    clean   = deidentify("John Doe, SSN 123-45-6789")
-    summary = summarize(["Report 1 text...", "Report 2 text..."])
-    schema  = generate_schema("echo report with LVEF and valve grades")
+    result   = extract("Patient presents with chest pain...", template="chest_ct")
+    clean    = deidentify("John Doe, SSN 123-45-6789")
+    summary  = summarize(["Report 1 text...", "Report 2 text..."])
+    template = generate_schema("echo report with LVEF and valve grades")
 
 All heavy dependencies (DSPy, pipeline modules) are imported lazily so
 this module stays importable even in environments where DSPy is not
@@ -162,10 +162,10 @@ def extract(
     text:
         Document text to extract from.
     template:
-        Template name (built-in or saved schema), or path to a YAML
+        Template name (built-in or user-created), or path to a YAML
         template file.  Resolved via :func:`mosaicx.report.resolve_template`.
     mode:
-        Extraction mode. ``"auto"`` lets the LLM infer the schema.
+        Extraction mode. ``"auto"`` lets the LLM infer the structure.
         ``"radiology"`` and ``"pathology"`` run specialised multi-step
         pipelines.  Ignored when *template* is provided.
     score:
@@ -173,12 +173,12 @@ def extract(
         and include it in the output under ``"completeness"``.
     optimized:
         Path to an optimized DSPy program to load. Only applicable for
-        ``mode="auto"`` or schema-based extraction.
+        ``mode="auto"`` or template-based extraction.
 
     Returns
     -------
     dict
-        Extracted data.  Structure depends on mode / schema.  When
+        Extracted data.  Structure depends on mode / template.  When
         *score* is ``True``, includes a ``"completeness"`` key.
 
     Raises
@@ -245,7 +245,7 @@ def extract(
             return output
         else:
             raise ValueError(
-                f"Template {template!r} resolved but produced no extraction schema."
+                f"Template {template!r} resolved but produced no extraction template."
             )
 
     # --- Mode-based extraction (radiology, pathology, ...) ---
@@ -694,12 +694,12 @@ def batch_extract(
     texts: list[str],
     *,
     mode: str = "auto",
-    schema_name: str | None = None,
+    template: str | None = None,
 ) -> list[dict[str, Any]]:
     """Extract structured data from multiple documents.
 
     A convenience wrapper that calls :func:`extract` for each text in
-    *texts*.  All documents use the same mode / schema.
+    *texts*.  All documents use the same mode / template.
 
     Parameters
     ----------
@@ -707,8 +707,8 @@ def batch_extract(
         List of document texts.
     mode:
         Extraction mode (see :func:`extract`).
-    schema_name:
-        Schema name (see :func:`extract`).
+    template:
+        Template name or YAML file path (see :func:`extract`).
 
     Returns
     -------
@@ -719,7 +719,7 @@ def batch_extract(
     results: list[dict[str, Any]] = []
     for text in texts:
         try:
-            result = extract(text, mode=mode, schema_name=schema_name)
+            result = extract(text, mode=mode, template=template)
         except Exception as exc:
             logger.warning("batch_extract failed for one document: %s", exc)
             result = {"error": str(exc)}

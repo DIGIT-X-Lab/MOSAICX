@@ -7,8 +7,7 @@ Provides the ``mosaicx`` console entry-point declared in pyproject.toml as
 
 - extract:    DocumentExtractor (DSPy)
 - batch:      BatchProcessor
-- template:   radreport registry + template_compiler
-- schema:     SchemaGenerator (DSPy)
+- template:   template management (create, list, show, refine, migrate, etc.)
 - summarize:  ReportSummarizer (DSPy)
 - deidentify: Deidentifier (DSPy) or regex_scrub_phi (--regex-only)
 - optimize:   get_optimizer_config
@@ -242,7 +241,7 @@ def cli(ctx: click.Context) -> None:
 
 @cli.command()
 @click.option("--document", type=click.Path(exists=False, path_type=Path), default=None, help="Path to clinical document.")
-@click.option("--template", type=str, default=None, help="Template name, YAML file path, or saved schema name.")
+@click.option("--template", type=str, default=None, help="Template name, YAML file path, or saved template name.")
 @click.option("--mode", type=str, default=None, help="Extraction mode name (e.g., radiology, pathology).")
 @click.option("--score", is_flag=True, default=False, help="Score completeness of extracted data against the template.")
 @click.option("--optimized", type=click.Path(exists=False, path_type=Path), default=None, help="Path to optimized program.")
@@ -393,7 +392,7 @@ def extract(
         else:
             # Template resolved but no model and no mode -- shouldn't happen
             raise click.ClickException(
-                f"Template {template!r} resolved but produced no extraction schema."
+                f"Template {template!r} resolved but produced no extraction template."
             )
 
     elif mode is not None:
@@ -502,7 +501,7 @@ def extract(
 @cli.command()
 @click.option("--input-dir", type=click.Path(exists=False, path_type=Path), help="Directory of input documents.")
 @click.option("--output-dir", type=click.Path(path_type=Path), help="Directory for output files.")
-@click.option("--template", type=str, default=None, help="Template name, YAML file path, or saved schema name.")
+@click.option("--template", type=str, default=None, help="Template name, YAML file path, or saved template name.")
 @click.option("--mode", type=str, default=None, help="Extraction mode name (e.g., radiology, pathology).")
 @click.option("--format", "formats", type=str, multiple=True, help="Output format(s).")
 @click.option("--workers", type=int, default=1, show_default=True, help="Number of parallel workers.")
@@ -600,7 +599,7 @@ def batch(
                 return output
         else:
             raise click.ClickException(
-                f"Template {template!r} resolved but produced no extraction schema."
+                f"Template {template!r} resolved but produced no extraction template."
             )
     elif mode:
         import mosaicx.pipelines.radiology  # noqa: F401
@@ -844,7 +843,7 @@ def template_validate(file_path: Path) -> None:
 @click.option("--from-document", "from_document", type=click.Path(exists=False, path_type=Path), default=None, help="Infer template from a sample document.")
 @click.option("--from-url", "from_url", type=str, default=None, help="Infer template from a web page (e.g. RadReport URL).")
 @click.option("--from-radreport", "from_radreport", type=str, default=None, help="RadReport template ID (e.g. RPT50890 or 50890).")
-@click.option("--from-json", "from_json", type=click.Path(exists=False, path_type=Path), default=None, help="Convert a saved SchemaSpec JSON to YAML template.")
+@click.option("--from-json", "from_json", type=click.Path(exists=False, path_type=Path), default=None, help="Convert a legacy JSON schema to YAML template.")
 @click.option("--name", type=str, default=None, help="Template name (default: LLM-chosen).")
 @click.option("--mode", type=str, default=None, help="Pipeline mode to embed (e.g. radiology, pathology).")
 @click.option("--output", type=click.Path(path_type=Path), default=None, help="Save to this path instead of ~/.mosaicx/templates/.")
@@ -880,7 +879,7 @@ def template_create(
                 from_json.read_text(encoding="utf-8")
             )
         except Exception as exc:
-            raise click.ClickException(f"Invalid SchemaSpec JSON: {exc}")
+            raise click.ClickException(f"Invalid JSON schema: {exc}")
 
         if name:
             spec.class_name = name
@@ -1113,7 +1112,7 @@ def template_show(name: str) -> None:
             from .pipelines.schema_gen import load_schema
 
             spec = load_schema(name, cfg.schema_dir)
-            theme.section(f"{spec.class_name} (saved schema)", console)
+            theme.section(f"{spec.class_name} (legacy schema)", console)
             if spec.description:
                 console.print(Padding(
                     f"[{theme.MUTED}]{spec.description}[/{theme.MUTED}]",
@@ -2117,6 +2116,7 @@ def config_show() -> None:
     theme.section("Paths", console, "05")
     t = theme.make_kv_table()
     t.add_row("home_dir", str(dump["home_dir"]))
+    t.add_row("templates_dir", str(cfg.templates_dir))
     t.add_row("schema_dir", str(cfg.schema_dir))
     t.add_row("optimized_dir", str(cfg.optimized_dir))
     t.add_row("checkpoint_dir", str(cfg.checkpoint_dir))
@@ -2179,7 +2179,7 @@ def mcp_serve(transport: str, port: int) -> None:
     cfg = get_config()
     console.print(theme.info(f"Starting MOSAICX MCP server (transport: {transport})"))
     console.print(theme.info(f"Model: {cfg.lm}"))
-    console.print(theme.info("Tools: extract_document, deidentify_text, generate_schema, list_schemas, list_modes"))
+    console.print(theme.info("Tools: extract_document, deidentify_text, generate_template, list_templates, list_modes"))
 
     if transport == "sse":
         mcp_server.run(transport="sse", port=port)

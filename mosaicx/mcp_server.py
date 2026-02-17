@@ -3,7 +3,7 @@
 MOSAICX MCP Server -- Model Context Protocol interface for AI agents.
 
 Exposes MOSAICX pipelines as MCP tools so that Claude and other AI agents
-can extract data from documents, generate schemas, de-identify text, etc.
+can extract data from documents, generate templates, de-identify text, etc.
 without shelling out to the CLI.
 
 Run via:
@@ -103,19 +103,19 @@ def _json_result(data: Any) -> str:
 def extract_document(
     document_text: str,
     mode: str = "auto",
-    schema_name: str | None = None,
+    template: str | None = None,
 ) -> str:
     """Extract structured data from a medical document.
 
     Supports three extraction paths:
-    - auto (default): The LLM infers an appropriate schema from the document and extracts into it.
+    - auto (default): The LLM infers an appropriate structure from the document and extracts into it.
     - mode-based: Use a registered extraction mode (e.g. "radiology", "pathology") for domain-specific multi-step extraction.
-    - schema-based: Use a previously saved schema by name for targeted extraction.
+    - template-based: Use a template name for targeted extraction.
 
     Args:
         document_text: Full text of the clinical document to extract from.
-        mode: Extraction strategy -- "auto", "radiology", or "pathology". Ignored if schema_name is provided.
-        schema_name: Name of a saved schema (from ~/.mosaicx/schemas/). If provided, extraction uses this schema.
+        mode: Extraction strategy -- "auto", "radiology", or "pathology". Ignored if template is provided.
+        template: Template name (built-in or user-created) or YAML file path. If provided, extraction uses this template.
 
     Returns:
         JSON string containing the extracted structured data.
@@ -123,14 +123,39 @@ def extract_document(
     try:
         _ensure_dspy()
 
-        if schema_name is not None:
-            # Schema-based extraction
-            from .config import get_config
-            from .pipelines.extraction import extract_with_schema
+        if template is not None:
+            # Template-based extraction
+            from .report import detect_mode, resolve_template
 
-            cfg = get_config()
-            extracted = extract_with_schema(document_text, schema_name, cfg.schema_dir)
-            return _json_result({"extracted": extracted})
+            template_model, tpl_name = resolve_template(template=template)
+            effective_mode = detect_mode(tpl_name)
+
+            if effective_mode is not None and template_model is None:
+                # Mode pipeline
+                import mosaicx.pipelines.pathology  # noqa: F401
+                import mosaicx.pipelines.radiology  # noqa: F401
+                from .pipelines.extraction import extract_with_mode
+
+                output_data, metrics = extract_with_mode(document_text, effective_mode)
+                result: dict[str, Any] = dict(output_data)
+                if metrics is not None:
+                    result["_metrics"] = {
+                        "total_duration_s": metrics.total_duration_s,
+                        "total_tokens": metrics.total_tokens,
+                    }
+                return _json_result(result)
+            elif template_model is not None:
+                from .pipelines.extraction import DocumentExtractor
+
+                extractor = DocumentExtractor(output_schema=template_model)
+                prediction = extractor(document_text=document_text)
+                output: dict[str, Any] = {}
+                if hasattr(prediction, "extracted"):
+                    val = prediction.extracted
+                    output["extracted"] = val.model_dump() if hasattr(val, "model_dump") else val
+                return _json_result(output)
+            else:
+                return _json_result({"error": f"Template {template!r} resolved but produced no extraction template."})
 
         if mode and mode != "auto":
             # Mode-based extraction (radiology, pathology, etc.)
@@ -202,26 +227,30 @@ def deidentify_text(
 
 
 @mcp.tool()
-def generate_schema(
+def generate_template(
     description: str,
     name: str | None = None,
+    mode: str | None = None,
 ) -> str:
-    """Generate a Pydantic schema from a natural-language description.
+    """Generate a YAML template from a natural-language description.
 
-    The LLM will create a structured schema specification based on the
-    description. The schema can then be used for targeted extraction.
+    The LLM will create a structured template specification based on the
+    description. The template is saved to ~/.mosaicx/templates/ and can
+    be used for targeted extraction via the extract_document tool.
 
     Args:
-        description: Natural-language description of the document type to create a schema for (e.g. "chest CT radiology report with findings and impressions").
-        name: Optional class name for the generated schema. If not provided, the LLM chooses an appropriate name.
+        description: Natural-language description of the document type to create a template for (e.g. "chest CT radiology report with findings and impressions").
+        name: Optional name for the generated template. If not provided, the LLM chooses an appropriate name.
+        mode: Optional pipeline mode to embed in the template (e.g. "radiology", "pathology").
 
     Returns:
-        JSON string containing the generated SchemaSpec with class_name, description, and fields.
+        JSON string containing the generated template with name, description, and fields.
     """
     try:
         _ensure_dspy()
 
-        from .pipelines.schema_gen import SchemaGenerator, save_schema
+        from .pipelines.schema_gen import SchemaGenerator
+        from .schemas.template_compiler import schema_spec_to_template_yaml
 
         generator = SchemaGenerator()
         result = generator(description=description)
@@ -229,58 +258,78 @@ def generate_schema(
         if name:
             result.schema_spec.class_name = name
 
-        # Save the schema to the default schema directory
+        # Save as YAML template
         from .config import get_config
 
         cfg = get_config()
-        saved_path = save_schema(result.schema_spec, schema_dir=cfg.schema_dir)
+        yaml_str = schema_spec_to_template_yaml(result.schema_spec, mode=mode)
+        cfg.templates_dir.mkdir(parents=True, exist_ok=True)
+        dest = cfg.templates_dir / f"{result.schema_spec.class_name}.yaml"
+        dest.write_text(yaml_str, encoding="utf-8")
 
         spec_data = result.schema_spec.model_dump()
-        spec_data["_saved_to"] = str(saved_path)
+        spec_data["_saved_to"] = str(dest)
         return _json_result(spec_data)
 
     except Exception as exc:
-        logger.exception("generate_schema failed")
+        logger.exception("generate_template failed")
         return _json_result({"error": str(exc)})
 
 
 @mcp.tool()
-def list_schemas() -> str:
-    """List all saved extraction schemas.
+def list_templates() -> str:
+    """List available extraction templates.
 
-    Returns the schemas stored in ~/.mosaicx/schemas/ with their
-    class names, field counts, and descriptions.
+    Returns both built-in templates and user-created templates
+    from ~/.mosaicx/templates/.
 
     Returns:
-        JSON string containing a list of schema summaries.
+        JSON string containing template summaries.
     """
     try:
         from .config import get_config
-        from .pipelines.schema_gen import list_schemas as _list_schemas
+        from .schemas.radreport.registry import list_templates as _list_builtin
 
         cfg = get_config()
-        specs = _list_schemas(cfg.schema_dir)
+        templates = []
 
-        schemas = []
-        for spec in specs:
-            schemas.append({
-                "class_name": spec.class_name,
-                "description": spec.description,
-                "field_count": len(spec.fields),
-                "fields": [
-                    {"name": f.name, "type": f.type, "required": f.required}
-                    for f in spec.fields
-                ],
+        # Built-in templates
+        for tpl in _list_builtin():
+            templates.append({
+                "name": tpl.name,
+                "description": tpl.description,
+                "mode": tpl.mode,
+                "source": "built-in",
             })
 
+        # User templates
+        if cfg.templates_dir.is_dir():
+            from .schemas.template_compiler import parse_template
+
+            for f in sorted(cfg.templates_dir.glob("*.yaml")) + sorted(cfg.templates_dir.glob("*.yml")):
+                try:
+                    meta = parse_template(f.read_text(encoding="utf-8"))
+                    templates.append({
+                        "name": f.stem,
+                        "description": meta.description or "",
+                        "mode": meta.mode,
+                        "source": "user",
+                    })
+                except Exception:
+                    templates.append({
+                        "name": f.stem,
+                        "description": "(invalid YAML)",
+                        "mode": None,
+                        "source": "user",
+                    })
+
         return _json_result({
-            "schema_dir": str(cfg.schema_dir),
-            "count": len(schemas),
-            "schemas": schemas,
+            "count": len(templates),
+            "templates": templates,
         })
 
     except Exception as exc:
-        logger.exception("list_schemas failed")
+        logger.exception("list_templates failed")
         return _json_result({"error": str(exc)})
 
 
