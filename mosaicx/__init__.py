@@ -236,17 +236,18 @@ def summarize_files(
 # uses the SDK text-based functions directly.
 
 from mosaicx.sdk import (  # noqa: E402
-    extract,
-    deidentify,
-    summarize,
-    generate_schema,
-    list_schemas,
-    list_modes,
-    list_templates,
-    evaluate,
     batch_extract,
+    deidentify,
+    evaluate,
+    extract,
+    generate_schema,
+    health,
+    list_modes,
+    list_schemas,
+    list_templates,
     process_file,
     process_files,
+    summarize,
 )
 
 
@@ -262,6 +263,7 @@ __all__ = [
     "list_templates",
     "evaluate",
     "batch_extract",
+    "health",
     "process_file",
     "process_files",
     # File-based API (for document loading)

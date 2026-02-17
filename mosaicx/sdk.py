@@ -26,6 +26,7 @@ installed.
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -836,15 +837,8 @@ def health() -> dict[str, Any]:
 
     modes = [name for name, _desc in _list_modes()]
 
-    # Templates (built-in + user)
-    from .schemas.radreport.registry import list_templates as _list_builtin
-
-    templates = [t.name for t in _list_builtin()]
-    if cfg.templates_dir.is_dir():
-        for f in sorted(cfg.templates_dir.glob("*.yaml")) + sorted(
-            cfg.templates_dir.glob("*.yml")
-        ):
-            templates.append(f.stem)
+    # Templates (delegate to list_templates to avoid duplication)
+    templates = [t["name"] for t in list_templates()]
 
     return {
         "version": version,
@@ -978,7 +972,7 @@ def process_files(
     mode: str = "auto",
     score: bool = False,
     workers: int = 4,
-    on_progress: Any | None = None,
+    on_progress: Callable[[str, bool, dict[str, Any] | None], None] | None = None,
 ) -> dict[str, Any]:
     """Process multiple documents with parallel extraction.
 
@@ -1061,6 +1055,12 @@ def process_files(
                 on_progress(path.name, False, None)
         elif text:
             to_extract.append((path, text))
+        else:
+            # Document loaded but has no text (e.g., blank page)
+            failed += 1
+            errors.append({"file": path.name, "error": "Document loaded but contains no text."})
+            if on_progress:
+                on_progress(path.name, False, None)
 
     # Parallel extraction
     def _do_extract(path: Path, text: str) -> tuple[str, dict | None, str | None]:

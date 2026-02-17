@@ -72,7 +72,7 @@ def extract_text(req: ExtractRequest):
             req.text, template=req.template, mode=req.mode, score=req.score,
         )
     except Exception as exc:
-        raise HTTPException(status_code=422, detail=str(exc))
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 @app.post("/extract/file")
@@ -93,7 +93,7 @@ async def extract_file(
             score=score,
         )
     except Exception as exc:
-        raise HTTPException(status_code=422, detail=str(exc))
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 @app.post("/deidentify")
@@ -102,7 +102,7 @@ def deidentify(req: DeidentifyRequest):
     try:
         return sdk.deidentify(req.text, mode=req.mode)
     except Exception as exc:
-        raise HTTPException(status_code=422, detail=str(exc))
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 @app.post("/summarize")
@@ -111,7 +111,7 @@ def summarize(req: SummarizeRequest):
     try:
         return sdk.summarize(req.reports, patient_id=req.patient_id)
     except Exception as exc:
-        raise HTTPException(status_code=422, detail=str(exc))
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 @app.get("/templates")
