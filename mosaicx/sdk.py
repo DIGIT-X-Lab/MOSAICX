@@ -461,16 +461,21 @@ def report(
 
 
 def deidentify(
-    text: str,
+    text: str | None = None,
     *,
+    document: str | Path | None = None,
     mode: str = "remove",
 ) -> dict[str, Any]:
-    """Remove PHI from text.
+    """Remove PHI from text or a document file.
 
     Parameters
     ----------
     text:
-        Text containing Protected Health Information.
+        Text containing Protected Health Information.  Mutually
+        exclusive with *document*.
+    document:
+        Path to a document file (PDF, DOCX, image, etc.).  Loaded and
+        OCR'd automatically.  Mutually exclusive with *text*.
     mode:
         De-identification strategy:
         - ``"remove"``       -- Replace PHI with ``[REDACTED]``.
@@ -481,13 +486,51 @@ def deidentify(
     Returns
     -------
     dict
-        Keys: ``"redacted_text"`` (str).
+        Keys: ``"redacted_text"`` (str).  When *document* is used,
+        includes a ``"_document"`` key with loading metadata.
 
     Raises
     ------
     ValueError
-        If ``mode`` is not one of the supported values.
+        If both *text* and *document* are provided, if neither is
+        provided, or if ``mode`` is not one of the supported values.
+    FileNotFoundError
+        If *document* is a path that does not exist.
     """
+    if text is not None and document is not None:
+        raise ValueError("Provide either text or document, not both.")
+    if text is None and document is None:
+        raise ValueError("Provide text or document.")
+
+    doc_metadata: dict[str, Any] | None = None
+
+    if document is not None:
+        from .config import get_config
+        from .documents.loader import load_document
+
+        cfg = get_config()
+        doc_path = Path(document)
+        if not doc_path.exists():
+            raise FileNotFoundError(f"Document not found: {doc_path}")
+
+        doc = load_document(
+            doc_path,
+            ocr_engine=cfg.ocr_engine,
+            force_ocr=cfg.force_ocr,
+            ocr_langs=cfg.ocr_langs,
+            quality_threshold=cfg.quality_threshold,
+            page_timeout=cfg.ocr_page_timeout,
+        )
+        text = doc.text
+        doc_metadata = {
+            "format": doc.format,
+            "page_count": doc.page_count,
+            "ocr_engine_used": doc.ocr_engine_used,
+            "quality_warning": doc.quality_warning,
+        }
+
+    assert text is not None  # guaranteed by validation above
+
     valid_modes = {"remove", "pseudonymize", "dateshift", "regex"}
     if mode not in valid_modes:
         raise ValueError(
@@ -498,7 +541,10 @@ def deidentify(
     from .pipelines.deidentifier import regex_scrub_phi
 
     if mode == "regex":
-        return {"redacted_text": regex_scrub_phi(text)}
+        output: dict[str, Any] = {"redacted_text": regex_scrub_phi(text)}
+        if doc_metadata is not None:
+            output["_document"] = doc_metadata
+        return output
 
     _ensure_configured()
 
@@ -506,7 +552,10 @@ def deidentify(
 
     deid = Deidentifier()
     result = deid(document_text=text, mode=mode)
-    return {"redacted_text": result.redacted_text}
+    output = {"redacted_text": result.redacted_text}
+    if doc_metadata is not None:
+        output["_document"] = doc_metadata
+    return output
 
 
 # ---------------------------------------------------------------------------
@@ -515,8 +564,9 @@ def deidentify(
 
 
 def summarize(
-    reports: list[str],
+    reports: list[str] | None = None,
     *,
+    documents: list[str | Path] | str | Path | None = None,
     patient_id: str = "unknown",
     optimized: str | Path | None = None,
 ) -> dict[str, Any]:
@@ -525,7 +575,11 @@ def summarize(
     Parameters
     ----------
     reports:
-        List of report texts.
+        List of report texts.  Mutually exclusive with *documents*.
+    documents:
+        File paths to load reports from.  Accepts a list of paths,
+        a single path, or a directory (discovers all supported files).
+        Mutually exclusive with *reports*.
     patient_id:
         Patient identifier for the summary.
     optimized:
@@ -535,12 +589,72 @@ def summarize(
     -------
     dict
         Keys: ``"narrative"`` (str), ``"events"`` (list of event dicts).
+        When *documents* is used, includes ``"_documents"`` with a list
+        of loading metadata dicts.
 
     Raises
     ------
     ValueError
-        If *reports* is empty.
+        If both *reports* and *documents* are provided, or if neither
+        is provided, or if the resulting report list is empty.
+    FileNotFoundError
+        If any document path does not exist.
     """
+    if reports is not None and documents is not None:
+        raise ValueError("Provide either reports or documents, not both.")
+    if reports is None and documents is None:
+        raise ValueError("Provide reports or documents.")
+
+    doc_metadata_list: list[dict[str, Any]] | None = None
+
+    if documents is not None:
+        from .config import get_config
+        from .documents.engines.base import SUPPORTED_FORMATS
+        from .documents.loader import load_document
+
+        cfg = get_config()
+
+        # Resolve file list
+        if isinstance(documents, (str, Path)):
+            doc_path = Path(documents)
+            if doc_path.is_dir():
+                file_list = sorted(
+                    p for p in doc_path.iterdir()
+                    if p.is_file() and p.suffix.lower() in SUPPORTED_FORMATS
+                )
+            else:
+                file_list = [doc_path]
+        else:
+            file_list = [Path(p) for p in documents]
+
+        if not file_list:
+            raise ValueError("No supported documents found.")
+
+        reports = []
+        doc_metadata_list = []
+        for fp in file_list:
+            if not fp.exists():
+                raise FileNotFoundError(f"Document not found: {fp}")
+            doc = load_document(
+                fp,
+                ocr_engine=cfg.ocr_engine,
+                force_ocr=cfg.force_ocr,
+                ocr_langs=cfg.ocr_langs,
+                quality_threshold=cfg.quality_threshold,
+                page_timeout=cfg.ocr_page_timeout,
+            )
+            if doc.text:
+                reports.append(doc.text)
+                doc_metadata_list.append({
+                    "file": fp.name,
+                    "format": doc.format,
+                    "page_count": doc.page_count,
+                    "ocr_engine_used": doc.ocr_engine_used,
+                    "quality_warning": doc.quality_warning,
+                })
+
+    assert reports is not None  # guaranteed by validation above
+
     if not reports:
         raise ValueError("No reports provided to summarize.")
 
@@ -557,10 +671,13 @@ def summarize(
 
     result = summarizer(reports=reports, patient_id=patient_id)
 
-    return {
+    output: dict[str, Any] = {
         "events": [e.model_dump() for e in result.events],
         "narrative": result.narrative,
     }
+    if doc_metadata_list is not None:
+        output["_documents"] = doc_metadata_list
+    return output
 
 
 # ---------------------------------------------------------------------------
@@ -816,20 +933,25 @@ def evaluate(
 
 
 def batch_extract(
-    texts: list[str],
+    texts: list[str] | None = None,
     *,
+    documents: list[str | Path] | str | Path | None = None,
     mode: str = "auto",
     template: str | None = None,
 ) -> list[dict[str, Any]]:
     """Extract structured data from multiple documents.
 
-    A convenience wrapper that calls :func:`extract` for each text in
-    *texts*.  All documents use the same mode / template.
+    A convenience wrapper that calls :func:`extract` for each input.
+    All documents use the same mode / template.
 
     Parameters
     ----------
     texts:
-        List of document texts.
+        List of document texts.  Mutually exclusive with *documents*.
+    documents:
+        File paths to load documents from.  Accepts a list of paths,
+        a single path, or a directory (discovers all supported files).
+        Mutually exclusive with *texts*.
     mode:
         Extraction mode (see :func:`extract`).
     template:
@@ -838,10 +960,42 @@ def batch_extract(
     Returns
     -------
     list[dict]
-        One result dict per input text.  Failed extractions produce
+        One result dict per input.  Failed extractions produce
         a dict with an ``"error"`` key.
     """
-    results: list[dict[str, Any]] = []
+    if texts is not None and documents is not None:
+        raise ValueError("Provide either texts or documents, not both.")
+    if texts is None and documents is None:
+        raise ValueError("Provide texts or documents.")
+
+    if documents is not None:
+        from .documents.engines.base import SUPPORTED_FORMATS
+
+        # Resolve file list
+        if isinstance(documents, (str, Path)):
+            doc_path = Path(documents)
+            if doc_path.is_dir():
+                file_list = sorted(
+                    p for p in doc_path.iterdir()
+                    if p.is_file() and p.suffix.lower() in SUPPORTED_FORMATS
+                )
+            else:
+                file_list = [doc_path]
+        else:
+            file_list = [Path(p) for p in documents]
+
+        results: list[dict[str, Any]] = []
+        for i, fp in enumerate(file_list):
+            try:
+                result = extract(document=fp, mode=mode, template=template)
+            except Exception as exc:
+                logger.warning("batch_extract failed for %s: %s", fp.name, exc)
+                result = {"error": str(exc), "file": fp.name}
+            results.append(result)
+        return results
+
+    assert texts is not None
+    results = []
     for i, text in enumerate(texts):
         try:
             result = extract(text, mode=mode, template=template)

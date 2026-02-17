@@ -100,8 +100,11 @@ class TestSDKSignatures:
         sig = inspect.signature(summarize)
         params = list(sig.parameters.keys())
         assert "reports" in params
+        assert "documents" in params
         assert "patient_id" in params
         assert "optimized" in params
+        assert sig.parameters["reports"].default is None
+        assert sig.parameters["documents"].default is None
         assert sig.parameters["patient_id"].default == "unknown"
 
     def test_generate_schema_signature(self):
@@ -121,7 +124,10 @@ class TestSDKSignatures:
         sig = inspect.signature(deidentify)
         params = list(sig.parameters.keys())
         assert "text" in params
+        assert "document" in params
         assert "mode" in params
+        assert sig.parameters["text"].default is None
+        assert sig.parameters["document"].default is None
         assert sig.parameters["mode"].default == "remove"
 
     def test_evaluate_signature(self):
@@ -139,8 +145,11 @@ class TestSDKSignatures:
         sig = inspect.signature(batch_extract)
         params = list(sig.parameters.keys())
         assert "texts" in params
+        assert "documents" in params
         assert "mode" in params
         assert "template" in params
+        assert sig.parameters["texts"].default is None
+        assert sig.parameters["documents"].default is None
 
     def test_list_templates_signature(self):
         from mosaicx import list_templates
@@ -384,6 +393,208 @@ class TestExtractDocument:
 
         with pytest.raises(FileNotFoundError):
             extract(document=tmp_path / "nonexistent.pdf")
+
+
+class TestDeidentifyDocument:
+    """Test deidentify() with the document parameter."""
+
+    def test_deidentify_with_document_path(self, tmp_path):
+        """deidentify(document=path, mode='regex') should load and redact."""
+        from mosaicx.sdk import deidentify
+
+        txt = tmp_path / "record.txt"
+        txt.write_text("Patient SSN 123-45-6789 admitted today.")
+
+        result = deidentify(document=txt, mode="regex")
+        assert "redacted_text" in result
+        assert "123-45-6789" not in result["redacted_text"]
+        assert "_document" in result
+        assert result["_document"]["format"] == "txt"
+
+    def test_deidentify_text_still_works(self):
+        """deidentify(text) should still work without _document key."""
+        from mosaicx.sdk import deidentify
+
+        result = deidentify("Patient SSN 123-45-6789", mode="regex")
+        assert "redacted_text" in result
+        assert "_document" not in result
+
+    def test_deidentify_both_raises(self):
+        from mosaicx.sdk import deidentify
+
+        with pytest.raises(ValueError, match="not both"):
+            deidentify("text", document="/path.pdf", mode="regex")
+
+    def test_deidentify_neither_raises(self):
+        from mosaicx.sdk import deidentify
+
+        with pytest.raises(ValueError, match="text or document"):
+            deidentify(mode="regex")
+
+    def test_deidentify_nonexistent_raises(self, tmp_path):
+        from mosaicx.sdk import deidentify
+
+        with pytest.raises(FileNotFoundError):
+            deidentify(document=tmp_path / "nope.pdf", mode="regex")
+
+
+class TestSummarizeDocuments:
+    """Test summarize() with the documents parameter."""
+
+    def test_summarize_both_raises(self):
+        from mosaicx.sdk import summarize
+
+        with pytest.raises(ValueError, match="not both"):
+            summarize(["report text"], documents=["/a.txt"])
+
+    def test_summarize_neither_raises(self):
+        from mosaicx.sdk import summarize
+
+        with pytest.raises(ValueError, match="reports or documents"):
+            summarize()
+
+    def test_summarize_text_still_works(self, monkeypatch):
+        """summarize(reports=[...]) should still work."""
+        from mosaicx import sdk
+
+        monkeypatch.setattr(sdk, "_ensure_configured", lambda: None)
+
+        class FakeSummarizer:
+            def __init__(self):
+                pass
+
+            def __call__(self, **kw):
+                class Evt:
+                    def model_dump(self):
+                        return {"date": "2024-01-01", "description": "test"}
+
+                class R:
+                    events = [Evt()]
+                    narrative = "Test summary"
+
+                return R()
+
+        monkeypatch.setattr(
+            "mosaicx.pipelines.summarizer.ReportSummarizer", FakeSummarizer
+        )
+
+        result = sdk.summarize(["Report text here"])
+        assert "narrative" in result
+        assert "events" in result
+        assert "_documents" not in result
+
+    def test_summarize_with_documents(self, tmp_path, monkeypatch):
+        """summarize(documents=[paths]) should load files and summarize."""
+        from mosaicx import sdk
+
+        (tmp_path / "r1.txt").write_text("Report one findings")
+        (tmp_path / "r2.txt").write_text("Report two findings")
+
+        monkeypatch.setattr(sdk, "_ensure_configured", lambda: None)
+
+        class FakeSummarizer:
+            def __init__(self):
+                pass
+
+            def __call__(self, **kw):
+                class Evt:
+                    def model_dump(self):
+                        return {"date": "2024-01-01", "description": "test"}
+
+                class R:
+                    events = [Evt()]
+                    narrative = f"Summarized {len(kw['reports'])} reports"
+
+                return R()
+
+        monkeypatch.setattr(
+            "mosaicx.pipelines.summarizer.ReportSummarizer", FakeSummarizer
+        )
+
+        result = sdk.summarize(
+            documents=[tmp_path / "r1.txt", tmp_path / "r2.txt"]
+        )
+        assert "narrative" in result
+        assert "2 reports" in result["narrative"]
+        assert "_documents" in result
+        assert len(result["_documents"]) == 2
+
+    def test_summarize_with_directory(self, tmp_path, monkeypatch):
+        """summarize(documents=dir_path) should discover files."""
+        from mosaicx import sdk
+
+        (tmp_path / "a.txt").write_text("Report A")
+        (tmp_path / "b.txt").write_text("Report B")
+
+        monkeypatch.setattr(sdk, "_ensure_configured", lambda: None)
+
+        class FakeSummarizer:
+            def __init__(self):
+                pass
+
+            def __call__(self, **kw):
+                class Evt:
+                    def model_dump(self):
+                        return {"date": "2024-01-01", "description": "test"}
+
+                class R:
+                    events = [Evt()]
+                    narrative = f"Summarized {len(kw['reports'])} reports"
+
+                return R()
+
+        monkeypatch.setattr(
+            "mosaicx.pipelines.summarizer.ReportSummarizer", FakeSummarizer
+        )
+
+        result = sdk.summarize(documents=tmp_path)
+        assert "narrative" in result
+        assert "_documents" in result
+
+
+class TestBatchExtractDocuments:
+    """Test batch_extract() with the documents parameter."""
+
+    def test_batch_both_raises(self):
+        from mosaicx.sdk import batch_extract
+
+        with pytest.raises(ValueError, match="not both"):
+            batch_extract(["text"], documents=["/a.txt"])
+
+    def test_batch_neither_raises(self):
+        from mosaicx.sdk import batch_extract
+
+        with pytest.raises(ValueError, match="texts or documents"):
+            batch_extract()
+
+    def test_batch_with_documents(self, tmp_path, monkeypatch):
+        """batch_extract(documents=[paths]) should load and extract each."""
+        from mosaicx import sdk
+
+        (tmp_path / "a.txt").write_text("Report A content")
+        (tmp_path / "b.txt").write_text("Report B content")
+
+        monkeypatch.setattr(sdk, "_ensure_configured", lambda: None)
+
+        class FakeExtractor:
+            def __init__(self, **kw):
+                pass
+
+            def __call__(self, **kw):
+                class R:
+                    extracted = {"summary": kw["document_text"][:10]}
+
+                return R()
+
+        monkeypatch.setattr(
+            "mosaicx.pipelines.extraction.DocumentExtractor", FakeExtractor
+        )
+
+        results = sdk.batch_extract(
+            documents=[tmp_path / "a.txt", tmp_path / "b.txt"]
+        )
+        assert len(results) == 2
+        assert all("extracted" in r for r in results)
 
 
 class TestProcessFile:
