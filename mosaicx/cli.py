@@ -265,7 +265,7 @@ def extract(
     It resolves in order:
       1. YAML file path (if suffix is .yaml/.yml and file exists)
       2. Built-in template name (e.g. chest_ct, brain_mri)
-      3. Saved schema name (from ~/.mosaicx/schemas/)
+      3. Legacy saved schema (from ~/.mosaicx/schemas/)
 
     \b
     Examples:
@@ -710,7 +710,7 @@ def pipeline() -> None:
     help="One-line description of the pipeline.",
 )
 def pipeline_new(name: str, description: str) -> None:
-    """Scaffold a new extraction pipeline from a template.
+    """Scaffold a new extraction pipeline module.
 
     NAME is the pipeline name (e.g. cardiology, ophthalmology).
     A snake_case file and PascalCase DSPy Module will be generated

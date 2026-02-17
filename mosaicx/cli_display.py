@@ -4,7 +4,7 @@
 Renders extraction dicts as clean borderless tables instead of raw JSON.
 Dispatches on data shape: flat dicts → KV tables, lists of dicts → column
 tables, nested dicts → subsections.  Works for all extraction paths
-(radiology mode, schema mode, auto mode, template mode).
+(radiology mode, auto mode, template mode).
 """
 
 from __future__ import annotations
@@ -49,7 +49,7 @@ def render_extracted_data(data: dict[str, Any], console: Console) -> None:
 
     keys = set(data.keys())
 
-    # Unwrap schema / template mode: {"extracted": {flat dict}}
+    # Unwrap template mode: {"extracted": {flat dict}}
     if keys == {"extracted"} and isinstance(data["extracted"], dict):
         _render_dict_items(data["extracted"], console, depth=0)
         return
@@ -59,7 +59,7 @@ def render_extracted_data(data: dict[str, Any], console: Console) -> None:
         if isinstance(data["extracted"], dict):
             _render_dict_items(data["extracted"], console, depth=0)
         if isinstance(data["inferred_schema"], dict):
-            _render_subsection("Inferred Schema", data["inferred_schema"], console, depth=0)
+            _render_subsection("Inferred Template", data["inferred_schema"], console, depth=0)
         return
 
     # Mode output (radiology, pathology) — render top-level keys directly
