@@ -964,3 +964,132 @@ def process_file(
     }
 
     return result
+
+
+# ---------------------------------------------------------------------------
+# process_files
+# ---------------------------------------------------------------------------
+
+
+def process_files(
+    files: list[Path] | Path,
+    *,
+    template: str | None = None,
+    mode: str = "auto",
+    score: bool = False,
+    workers: int = 4,
+    on_progress: Any | None = None,
+) -> dict[str, Any]:
+    """Process multiple documents with parallel extraction.
+
+    Accepts a directory path (discovers all supported documents) or an
+    explicit list of file paths.
+
+    Parameters
+    ----------
+    files:
+        Directory path or list of file paths.
+    template:
+        Template name for targeted extraction.
+    mode:
+        Extraction mode (``"auto"``, ``"radiology"``, ``"pathology"``).
+    score:
+        Include completeness scoring.
+    workers:
+        Number of parallel extraction workers.
+    on_progress:
+        Optional callback ``(filename: str, success: bool, result: dict | None) -> None``
+        called after each document completes.
+
+    Returns
+    -------
+    dict
+        Keys: ``"total"``, ``"succeeded"``, ``"failed"``,
+        ``"results"`` (list of result dicts), ``"errors"`` (list of
+        error dicts with ``"file"`` and ``"error"`` keys).
+    """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    from .config import get_config
+    from .documents.engines.base import SUPPORTED_FORMATS
+    from .documents.loader import load_document
+
+    cfg = get_config()
+
+    # Resolve file list
+    if isinstance(files, Path) and files.is_dir():
+        file_list = sorted(
+            p for p in files.iterdir()
+            if p.is_file() and p.suffix.lower() in SUPPORTED_FORMATS
+        )
+    elif isinstance(files, Path):
+        file_list = [files]
+    else:
+        file_list = [Path(f) for f in files]
+
+    if not file_list:
+        return {"total": 0, "succeeded": 0, "failed": 0, "results": [], "errors": []}
+
+    # Load documents sequentially (pypdfium2 is not thread-safe)
+    loaded: list[tuple[Path, str | None, str | None]] = []
+    for path in file_list:
+        try:
+            doc = load_document(
+                path,
+                ocr_engine=cfg.ocr_engine,
+                force_ocr=cfg.force_ocr,
+                ocr_langs=cfg.ocr_langs,
+                quality_threshold=cfg.quality_threshold,
+                page_timeout=cfg.ocr_page_timeout,
+            )
+            loaded.append((path, doc.text, None))
+        except Exception as exc:
+            loaded.append((path, None, f"{type(exc).__name__}: {exc}"))
+
+    succeeded = 0
+    failed = 0
+    results: list[dict[str, Any]] = []
+    errors: list[dict[str, str]] = []
+
+    # Handle load failures
+    to_extract = []
+    for path, text, err in loaded:
+        if err is not None:
+            failed += 1
+            errors.append({"file": path.name, "error": err})
+            if on_progress:
+                on_progress(path.name, False, None)
+        elif text:
+            to_extract.append((path, text))
+
+    # Parallel extraction
+    def _do_extract(path: Path, text: str) -> tuple[str, dict | None, str | None]:
+        try:
+            result = extract(text, template=template, mode=mode, score=score)
+            return path.name, result, None
+        except Exception as exc:
+            return path.name, None, f"{type(exc).__name__}: {exc}"
+
+    max_w = min(max(1, workers), 32)
+    with ThreadPoolExecutor(max_workers=max_w) as pool:
+        futures = {pool.submit(_do_extract, p, t): p for p, t in to_extract}
+        for future in as_completed(futures):
+            name, result, error = future.result()
+            if error:
+                failed += 1
+                errors.append({"file": name, "error": error})
+                if on_progress:
+                    on_progress(name, False, None)
+            else:
+                succeeded += 1
+                results.append({"file": name, **(result or {})})
+                if on_progress:
+                    on_progress(name, True, result)
+
+    return {
+        "total": len(file_list),
+        "succeeded": succeeded,
+        "failed": failed,
+        "results": results,
+        "errors": errors,
+    }

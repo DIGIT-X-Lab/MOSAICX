@@ -63,7 +63,7 @@ class TestPublicAPI:
         for name in (
             "extract", "summarize", "generate_schema", "deidentify",
             "list_schemas", "list_modes", "list_templates", "evaluate",
-            "batch_extract", "process_file",
+            "batch_extract", "process_file", "process_files",
         ):
             assert name in mosaicx.__all__, f"{name!r} missing from __all__"
 
@@ -366,3 +366,110 @@ class TestProcessFile:
 
         with pytest.raises(FileNotFoundError):
             process_file(tmp_path / "nonexistent.txt")
+
+
+class TestProcessFiles:
+    """Test sdk.process_files() with real files but mocked extraction."""
+
+    def test_importable(self):
+        from mosaicx.sdk import process_files
+        assert callable(process_files)
+
+    def test_signature_has_expected_params(self):
+        from mosaicx.sdk import process_files
+
+        sig = inspect.signature(process_files)
+        params = list(sig.parameters.keys())
+        assert "files" in params
+        assert "template" in params
+        assert "mode" in params
+        assert "workers" in params
+        assert "on_progress" in params
+
+    def test_process_txt_directory(self, tmp_path, monkeypatch):
+        """Process a directory of .txt files with mocked extraction."""
+        from mosaicx import sdk
+
+        input_dir = tmp_path / "input"
+        input_dir.mkdir()
+        (input_dir / "doc1.txt").write_text("Report one content")
+        (input_dir / "doc2.txt").write_text("Report two content")
+
+        monkeypatch.setattr(sdk, "extract", lambda text, **kw: {"extracted": {"text": text[:10]}})
+        monkeypatch.setattr(sdk, "_ensure_configured", lambda: None)
+
+        result = sdk.process_files(input_dir)
+        assert result["total"] == 2
+        assert result["succeeded"] == 2
+        assert result["failed"] == 0
+        assert len(result["results"]) == 2
+
+    def test_process_file_list(self, tmp_path, monkeypatch):
+        """Process an explicit list of file paths."""
+        from mosaicx import sdk
+
+        f1 = tmp_path / "a.txt"
+        f2 = tmp_path / "b.txt"
+        f1.write_text("Report A")
+        f2.write_text("Report B")
+
+        monkeypatch.setattr(sdk, "extract", lambda text, **kw: {"extracted": "ok"})
+        monkeypatch.setattr(sdk, "_ensure_configured", lambda: None)
+
+        result = sdk.process_files([f1, f2])
+        assert result["total"] == 2
+        assert result["succeeded"] == 2
+
+    def test_progress_callback(self, tmp_path, monkeypatch):
+        """Verify on_progress is called for each document."""
+        from mosaicx import sdk
+
+        input_dir = tmp_path / "input"
+        input_dir.mkdir()
+        (input_dir / "doc1.txt").write_text("Report one")
+
+        monkeypatch.setattr(sdk, "extract", lambda text, **kw: {"extracted": "ok"})
+        monkeypatch.setattr(sdk, "_ensure_configured", lambda: None)
+
+        progress_calls = []
+        result = sdk.process_files(
+            input_dir,
+            on_progress=lambda name, ok, res: progress_calls.append((name, ok)),
+        )
+        assert len(progress_calls) == 1
+        assert progress_calls[0][1] is True  # success
+
+    def test_error_isolation(self, tmp_path, monkeypatch):
+        """One failing document should not stop the others."""
+        from mosaicx import sdk
+
+        input_dir = tmp_path / "input"
+        input_dir.mkdir()
+        (input_dir / "good.txt").write_text("Good report")
+        (input_dir / "bad.txt").write_text("Bad report")
+
+        def flaky_extract(text, **kw):
+            if "Bad" in text:
+                raise ValueError("Simulated failure")
+            return {"extracted": "ok"}
+
+        monkeypatch.setattr(sdk, "extract", flaky_extract)
+        monkeypatch.setattr(sdk, "_ensure_configured", lambda: None)
+
+        result = sdk.process_files(input_dir)
+        assert result["succeeded"] == 1
+        assert result["failed"] == 1
+        assert len(result["errors"]) == 1
+
+    def test_empty_directory(self, tmp_path, monkeypatch):
+        """Empty directory returns zero counts."""
+        from mosaicx import sdk
+
+        input_dir = tmp_path / "empty"
+        input_dir.mkdir()
+
+        monkeypatch.setattr(sdk, "_ensure_configured", lambda: None)
+
+        result = sdk.process_files(input_dir)
+        assert result["total"] == 0
+        assert result["succeeded"] == 0
