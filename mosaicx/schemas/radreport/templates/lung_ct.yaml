@@ -1,0 +1,51 @@
+name: LungCTScreeningReport
+description: Structured lung CT screening report (RDES195)
+radreport_id: RDES195
+mode: radiology
+sections:
+  - name: indication
+    type: str
+    required: true
+    description: Screening indication and risk factors
+  - name: comparison
+    type: str
+    required: false
+    description: Prior screening CT and dates
+  - name: technique
+    type: str
+    required: false
+    description: Low-dose CT technique parameters
+  - name: nodules
+    type: list
+    required: false
+    description: Pulmonary nodules
+    item:
+      type: object
+      fields:
+        - name: location
+          type: str
+          description: Lobe and segment
+        - name: size_mm
+          type: float
+          description: Average diameter in millimeters
+        - name: morphology
+          type: str
+          required: false
+          description: Solid, part-solid, or ground-glass
+        - name: lung_rads
+          type: str
+          required: false
+          description: Lung-RADS category
+  - name: other_findings
+    type: str
+    required: false
+    description: Significant incidental findings
+  - name: lung_rads_category
+    type: enum
+    required: true
+    description: Overall Lung-RADS assessment
+    values: ["0", "1", "2", "3", "4A", "4B", "4X"]
+  - name: impression
+    type: str
+    required: true
+    description: Summary with Lung-RADS and management recommendation

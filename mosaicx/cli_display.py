@@ -234,6 +234,77 @@ def _format_value(val: Any) -> str:
 # ---------------------------------------------------------------------------
 
 
+def render_completeness(completeness: dict[str, Any], console: Console) -> None:
+    """Render a completeness panel with score and missing fields.
+
+    Parameters
+    ----------
+    completeness:
+        Dict with keys from :class:`ReportCompleteness` (as produced by
+        ``dataclasses.asdict()``): ``overall``, ``required_coverage``,
+        ``optional_coverage``, ``field_coverage``, ``filled_fields``,
+        ``total_fields``, ``missing_required``.
+    console:
+        Rich console instance.
+    """
+    from rich.panel import Panel
+    from rich import box
+
+    overall = completeness.get("overall", 0.0)
+    pct = overall * 100
+
+    # Color based on score
+    if pct >= 80:
+        color = "green"
+    elif pct >= 60:
+        color = "yellow"
+    else:
+        color = "red"
+
+    filled = completeness.get("filled_fields", 0)
+    total = completeness.get("total_fields", 0)
+    req_cov = completeness.get("required_coverage", 0.0)
+    missing = completeness.get("missing_required", [])
+
+    # Count required vs optional from total
+    req_total = sum(
+        1 for f in completeness.get("fields", []) if f.get("required")
+    )
+    req_filled = sum(
+        1 for f in completeness.get("fields", [])
+        if f.get("required") and f.get("filled")
+    )
+
+    lines: list[str] = []
+    lines.append(
+        f"  [{color}]{pct:.0f}%[/{color}]"
+        f" [{theme.GREIGE}]overall completeness[/{theme.GREIGE}]"
+        f"  [{theme.MUTED}]({filled}/{total} fields filled)[/{theme.MUTED}]"
+    )
+    if req_total:
+        lines.append(
+            f"  [{theme.CORAL}]{req_filled}/{req_total}[/{theme.CORAL}]"
+            f" [{theme.GREIGE}]required fields filled[/{theme.GREIGE}]"
+        )
+    if missing:
+        lines.append("")
+        lines.append(f"  [{theme.MUTED}]Missing required:[/{theme.MUTED}]")
+        for name in missing:
+            lines.append(f"    [{color}]-[/{color}] {name}")
+
+    content = "\n".join(lines)
+
+    theme.section("Completeness", console)
+    console.print(
+        Panel(
+            content,
+            box=box.ROUNDED,
+            border_style=theme.GREIGE,
+            padding=(0, 1),
+        )
+    )
+
+
 def render_metrics(metrics: "PipelineMetrics", console: Console) -> None:
     """Render a compact single-line performance summary."""
     from .metrics import PipelineMetrics  # noqa: F811 — runtime guard

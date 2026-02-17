@@ -73,6 +73,8 @@ _SIMPLE_TYPE_MAP: dict[str, type] = {
     "number": float,
     "bool": bool,
     "boolean": bool,
+    "object": dict,
+    "dict": dict,
 }
 
 _LIST_RE = re.compile(r"^list\[(\w+)\]$", re.IGNORECASE)

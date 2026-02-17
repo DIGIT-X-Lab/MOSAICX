@@ -46,6 +46,10 @@ class MosaicxConfig(BaseSettings):
         return self.home_dir / "schemas"
 
     @property
+    def templates_dir(self) -> Path:
+        return self.home_dir / "templates"
+
+    @property
     def optimized_dir(self) -> Path:
         return self.home_dir / "optimized"
 

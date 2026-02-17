@@ -50,6 +50,20 @@ def extract_with_schema(document_text: str, schema_name: str, schema_dir: Path) 
     return val.model_dump() if hasattr(val, "model_dump") else val
 
 
+def _prediction_to_dict(prediction: Any) -> dict[str, Any]:
+    """Convert a dspy.Prediction to a plain dict, serialising Pydantic models."""
+    output: dict[str, Any] = {}
+    for key in prediction.keys():
+        val = getattr(prediction, key)
+        if hasattr(val, "model_dump"):
+            output[key] = val.model_dump()
+        elif isinstance(val, list):
+            output[key] = [v.model_dump() if hasattr(v, "model_dump") else v for v in val]
+        else:
+            output[key] = val
+    return output
+
+
 def extract_with_mode(document_text: str, mode_name: str) -> tuple[dict[str, Any], "PipelineMetrics | None"]:
     """Run a registered extraction mode pipeline.
 
@@ -65,18 +79,29 @@ def extract_with_mode(document_text: str, mode_name: str) -> tuple[dict[str, Any
     mode_cls = get_mode(mode_name)
     pipeline = mode_cls()
     result = pipeline(report_text=document_text)
-    # Convert dspy.Prediction to dict
-    output: dict[str, Any] = {}
-    for key in result.keys():
-        val = getattr(result, key)
-        if hasattr(val, "model_dump"):
-            output[key] = val.model_dump()
-        elif isinstance(val, list):
-            output[key] = [v.model_dump() if hasattr(v, "model_dump") else v for v in val]
-        else:
-            output[key] = val
+    output = _prediction_to_dict(result)
     metrics = getattr(pipeline, "_last_metrics", None)
     return output, metrics
+
+
+def extract_with_mode_raw(document_text: str, mode_name: str) -> tuple[dict[str, Any], "PipelineMetrics | None", Any]:
+    """Run a registered extraction mode pipeline, returning the raw prediction.
+
+    Like :func:`extract_with_mode` but also returns the raw ``dspy.Prediction``
+    so callers can inspect the Pydantic model instances it contains (e.g. for
+    completeness scoring).
+
+    Returns:
+        Tuple of (output dict, PipelineMetrics or None, raw dspy.Prediction).
+    """
+    from .modes import get_mode
+
+    mode_cls = get_mode(mode_name)
+    pipeline = mode_cls()
+    result = pipeline(report_text=document_text)
+    output = _prediction_to_dict(result)
+    metrics = getattr(pipeline, "_last_metrics", None)
+    return output, metrics, result
 
 
 # ---------------------------------------------------------------------------

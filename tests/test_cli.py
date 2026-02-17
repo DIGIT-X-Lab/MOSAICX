@@ -32,11 +32,11 @@ class TestCLISkeleton:
         result = runner.invoke(cli, ["template", "--help"])
         assert result.exit_code == 0
 
-    def test_schema_command_registered(self):
+    def test_schema_command_removed(self):
         from mosaicx.cli import cli
         runner = CliRunner()
         result = runner.invoke(cli, ["schema", "--help"])
-        assert result.exit_code == 0
+        assert result.exit_code != 0  # schema group removed in Phase 3
 
     def test_summarize_command_registered(self):
         from mosaicx.cli import cli

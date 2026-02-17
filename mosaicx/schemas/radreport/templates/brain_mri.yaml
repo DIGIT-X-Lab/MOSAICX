@@ -1,0 +1,49 @@
+name: BrainMRIReport
+description: Structured brain MRI radiology report (RDES28)
+radreport_id: RDES28
+mode: radiology
+sections:
+  - name: indication
+    type: str
+    required: true
+    description: Clinical indication for brain MRI
+  - name: comparison
+    type: str
+    required: false
+    description: Prior comparison studies and dates
+  - name: technique
+    type: str
+    required: false
+    description: MRI sequences, contrast agent, field strength
+  - name: brain_parenchyma
+    type: str
+    required: true
+    description: Brain parenchymal findings (gray/white matter)
+  - name: ventricles
+    type: str
+    required: false
+    description: Ventricular system and CSF spaces
+  - name: extra_axial
+    type: str
+    required: false
+    description: Extra-axial spaces and meninges
+  - name: posterior_fossa
+    type: str
+    required: false
+    description: Cerebellum and brainstem findings
+  - name: vessels
+    type: str
+    required: false
+    description: Intracranial vascular findings
+  - name: orbits_and_sinuses
+    type: str
+    required: false
+    description: Orbits, paranasal sinuses, mastoids
+  - name: calvarium
+    type: str
+    required: false
+    description: Calvarial and skull base findings
+  - name: impression
+    type: str
+    required: true
+    description: Summary impression with recommendations

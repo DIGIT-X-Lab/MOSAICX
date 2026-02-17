@@ -20,7 +20,6 @@ from __future__ import annotations
 import io
 import json
 import re
-from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
@@ -243,9 +242,9 @@ def cli(ctx: click.Context) -> None:
 
 @cli.command()
 @click.option("--document", type=click.Path(exists=False, path_type=Path), default=None, help="Path to clinical document.")
-@click.option("--schema", "schema_name", type=str, default=None, help="Name of a saved schema from ~/.mosaicx/schemas/.")
+@click.option("--template", type=str, default=None, help="Template name, YAML file path, or saved schema name.")
 @click.option("--mode", type=str, default=None, help="Extraction mode name (e.g., radiology, pathology).")
-@click.option("--template", type=click.Path(exists=False, path_type=Path), default=None, help="Path to a YAML template file.")
+@click.option("--score", is_flag=True, default=False, help="Score completeness of extracted data against the template.")
 @click.option("--optimized", type=click.Path(exists=False, path_type=Path), default=None, help="Path to optimized program.")
 @click.option("--output", "-o", type=click.Path(path_type=Path), default=None, help="Save output to file (.json or .yaml/.yml).")
 @click.option("--list-modes", is_flag=True, default=False, help="Print available modes and exit.")
@@ -253,14 +252,30 @@ def cli(ctx: click.Context) -> None:
 def extract(
     ctx: click.Context,
     document: Optional[Path],
-    schema_name: Optional[str],
+    template: Optional[str],
     mode: Optional[str],
-    template: Optional[Path],
+    score: bool,
     optimized: Optional[Path],
     output: Optional[Path],
     list_modes: bool,
 ) -> None:
-    """Extract structured data from a clinical document."""
+    """Extract structured data from a clinical document.
+
+    \b
+    The --template flag is the unified way to specify what to extract.
+    It resolves in order:
+      1. YAML file path (if suffix is .yaml/.yml and file exists)
+      2. Built-in template name (e.g. chest_ct, brain_mri)
+      3. Saved schema name (from ~/.mosaicx/schemas/)
+
+    \b
+    Examples:
+      mosaicx extract --document scan.pdf
+      mosaicx extract --document scan.pdf --template chest_ct
+      mosaicx extract --document scan.pdf --template echo.yaml
+      mosaicx extract --document scan.pdf --template EchoReport
+      mosaicx extract --document scan.pdf --template chest_ct --score
+    """
 
     # --list-modes: print available modes and exit (no document needed)
     if list_modes:
@@ -284,11 +299,10 @@ def extract(
     if document is None:
         raise click.ClickException("--document is required.")
 
-    # Mutual exclusivity: --schema, --mode, --template
-    exclusive_count = sum(x is not None for x in [schema_name, mode, template])
-    if exclusive_count > 1:
+    # Mutual exclusivity: --template and --mode
+    if template is not None and mode is not None:
         raise click.ClickException(
-            "--schema, --mode, and --template are mutually exclusive. Provide at most one."
+            "--template and --mode are mutually exclusive. Provide at most one."
         )
 
     # Load the document
@@ -316,23 +330,77 @@ def extract(
     # Determine extraction path
     output_data: dict = {}
     metrics = None  # PipelineMetrics, if available
+    _extract_model_instance = None  # Pydantic model for completeness scoring
 
-    if schema_name is not None:
-        # --schema X: load saved schema, compile, extract
-        from .pipelines.extraction import extract_with_schema
+    if template is not None:
+        # Unified template resolution
+        from .report import detect_mode, resolve_template
 
-        cfg = get_config()
-        _configure_dspy()
-        with theme.spinner("Extracting... patience you must have", console):
-            extracted = extract_with_schema(doc.text, schema_name, cfg.schema_dir)
-        output_data = {"extracted": extracted}
+        try:
+            template_model, tpl_name = resolve_template(template=template)
+        except (ValueError, FileNotFoundError) as exc:
+            raise click.ClickException(str(exc))
+
+        if tpl_name:
+            console.print(theme.info(f"Template: {tpl_name}"))
+
+        # Detect mode from template (for built-in templates)
+        effective_mode = detect_mode(tpl_name)
+
+        if effective_mode is not None and template_model is None:
+            # Built-in template with mode pipeline but no YAML schema
+            # (e.g. chest_ct without a .yaml file) -- use the mode pipeline
+            import mosaicx.pipelines.radiology  # noqa: F401
+            import mosaicx.pipelines.pathology  # noqa: F401
+
+            console.print(theme.info(f"Mode: {effective_mode}"))
+            _configure_dspy()
+
+            if score:
+                from .pipelines.extraction import extract_with_mode_raw
+                from .report import _find_primary_model
+
+                with theme.spinner("Extracting with mode... patience you must have", console):
+                    output_data, metrics, raw_pred = extract_with_mode_raw(
+                        doc.text, effective_mode
+                    )
+                _extract_model_instance = _find_primary_model(raw_pred)
+            else:
+                from .pipelines.extraction import extract_with_mode
+
+                with theme.spinner("Extracting with mode... patience you must have", console):
+                    output_data, metrics = extract_with_mode(doc.text, effective_mode)
+        elif template_model is not None:
+            # Template resolved to a Pydantic model -- use DocumentExtractor
+            from .pipelines.extraction import DocumentExtractor
+
+            _configure_dspy()
+            extractor = DocumentExtractor(output_schema=template_model)
+            if optimized is not None:
+                from .evaluation.optimize import load_optimized
+                extractor = load_optimized(type(extractor), optimized)
+            with theme.spinner("Extracting... patience you must have", console):
+                result = extractor(document_text=doc.text)
+            output_data = {}
+            if hasattr(result, "extracted"):
+                val = result.extracted
+                if hasattr(val, "model_dump"):
+                    _extract_model_instance = val
+                    output_data["extracted"] = val.model_dump()
+                else:
+                    output_data["extracted"] = val
+            metrics = getattr(extractor, "_last_metrics", None)
+        else:
+            # Template resolved but no model and no mode -- shouldn't happen
+            raise click.ClickException(
+                f"Template {template!r} resolved but produced no extraction schema."
+            )
 
     elif mode is not None:
         # --mode X: run registered mode pipeline
         import mosaicx.pipelines.radiology  # noqa: F401
         import mosaicx.pipelines.pathology  # noqa: F401
         from .pipelines.modes import get_mode
-        from .pipelines.extraction import extract_with_mode
 
         # Validate mode name early (before configuring DSPy)
         try:
@@ -341,36 +409,18 @@ def extract(
             raise click.ClickException(str(exc))
 
         _configure_dspy()
-        with theme.spinner("Extracting with mode... patience you must have", console):
-            output_data, metrics = extract_with_mode(doc.text, mode)
+        if score:
+            from .pipelines.extraction import extract_with_mode_raw
+            from .report import _find_primary_model
 
-    elif template is not None:
-        # --template file.yaml: compile YAML template, use as output_schema
-        template_path = Path(template)
-        if not template_path.exists():
-            raise click.ClickException(f"Template not found: {template_path}")
-        from .schemas.template_compiler import compile_template_file
+            with theme.spinner("Extracting with mode... patience you must have", console):
+                output_data, metrics, raw_pred = extract_with_mode_raw(doc.text, mode)
+            _extract_model_instance = _find_primary_model(raw_pred)
+        else:
+            from .pipelines.extraction import extract_with_mode
 
-        try:
-            output_schema = compile_template_file(template_path)
-            console.print(theme.info(f"Using template: {template_path.name}"))
-        except Exception as exc:
-            raise click.ClickException(f"Failed to compile template: {exc}")
-
-        from .pipelines.extraction import DocumentExtractor
-
-        _configure_dspy()
-        extractor = DocumentExtractor(output_schema=output_schema)
-        if optimized is not None:
-            from .evaluation.optimize import load_optimized
-            extractor = load_optimized(type(extractor), optimized)
-        with theme.spinner("Extracting... patience you must have", console):
-            result = extractor(document_text=doc.text)
-        output_data = {}
-        if hasattr(result, "extracted"):
-            val = result.extracted
-            output_data["extracted"] = val.model_dump() if hasattr(val, "model_dump") else val
-        metrics = getattr(extractor, "_last_metrics", None)
+            with theme.spinner("Extracting with mode... patience you must have", console):
+                output_data, metrics = extract_with_mode(doc.text, mode)
 
     else:
         # Auto mode: no flags -- LLM infers schema
@@ -386,7 +436,11 @@ def extract(
         output_data = {}
         if hasattr(result, "extracted"):
             val = result.extracted
-            output_data["extracted"] = val.model_dump() if hasattr(val, "model_dump") else val
+            if hasattr(val, "model_dump"):
+                _extract_model_instance = val
+                output_data["extracted"] = val.model_dump()
+            else:
+                output_data["extracted"] = val
         if hasattr(result, "inferred_schema"):
             output_data["inferred_schema"] = result.inferred_schema.model_dump()
         metrics = getattr(extractor, "_last_metrics", None)
@@ -412,16 +466,32 @@ def extract(
         console.print(theme.ok(f"Saved to {output}"))
 
     theme.section("Extracted Data", console)
-    from .cli_display import render_extracted_data, render_metrics
+    from .cli_display import render_completeness, render_extracted_data, render_metrics
 
     render_extracted_data(output_data, console)
 
     if metrics is not None:
         render_metrics(metrics, console)
 
+    # Completeness scoring (when --score flag is set)
+    if score and _extract_model_instance is not None:
+        from dataclasses import asdict
+
+        from .evaluation.completeness import compute_report_completeness
+
+        comp = compute_report_completeness(
+            _extract_model_instance, doc.text, type(_extract_model_instance)
+        )
+        render_completeness(asdict(comp), console)
+
     if output is None:
         console.print()
         console.print(theme.info("Use -o/--output file.json to save full structured data"))
+
+
+# ---------------------------------------------------------------------------
+# report
+# ---------------------------------------------------------------------------
 
 
 # ---------------------------------------------------------------------------
@@ -432,7 +502,7 @@ def extract(
 @cli.command()
 @click.option("--input-dir", type=click.Path(exists=False, path_type=Path), help="Directory of input documents.")
 @click.option("--output-dir", type=click.Path(path_type=Path), help="Directory for output files.")
-@click.option("--schema", "schema_name", type=str, default=None, help="Name of a saved schema from ~/.mosaicx/schemas/.")
+@click.option("--template", type=str, default=None, help="Template name, YAML file path, or saved schema name.")
 @click.option("--mode", type=str, default=None, help="Extraction mode name (e.g., radiology, pathology).")
 @click.option("--format", "formats", type=str, multiple=True, help="Output format(s).")
 @click.option("--workers", type=int, default=1, show_default=True, help="Number of parallel workers.")
@@ -440,7 +510,7 @@ def extract(
 def batch(
     input_dir: Optional[Path],
     output_dir: Optional[Path],
-    schema_name: Optional[str],
+    template: Optional[str],
     mode: Optional[str],
     formats: tuple[str, ...],
     workers: int,
@@ -471,8 +541,8 @@ def batch(
     t.add_column("Value")
     t.add_row("Input directory", str(input_dir))
     t.add_row("Output directory", str(output_dir))
-    if schema_name:
-        t.add_row("Schema", schema_name)
+    if template:
+        t.add_row("Template", template)
     if mode:
         t.add_row("Mode", mode)
     t.add_row("Export formats", ", ".join(effective_formats))
@@ -484,11 +554,54 @@ def batch(
     from .metrics import PipelineMetrics
     batch_metrics = PipelineMetrics()
 
-    if schema_name:
-        from mosaicx.pipelines.extraction import extract_with_schema
-        _configure_dspy()
-        def process_fn(text: str) -> dict:
-            return {"extracted": extract_with_schema(text, schema_name, cfg.schema_dir)}
+    if template:
+        # Resolve template once, then use for all documents
+        from .report import detect_mode, resolve_template
+
+        try:
+            template_model, tpl_name = resolve_template(template=template)
+        except (ValueError, FileNotFoundError) as exc:
+            raise click.ClickException(str(exc))
+
+        if tpl_name:
+            console.print(theme.info(f"Template: {tpl_name}"))
+
+        effective_mode = detect_mode(tpl_name)
+
+        if effective_mode is not None and template_model is None:
+            # Mode pipeline (no YAML schema)
+            import mosaicx.pipelines.radiology  # noqa: F401
+            import mosaicx.pipelines.pathology  # noqa: F401
+            from mosaicx.pipelines.extraction import extract_with_mode
+
+            console.print(theme.info(f"Mode: {effective_mode}"))
+            _configure_dspy()
+
+            def process_fn(text: str) -> dict:
+                output_data, metrics = extract_with_mode(text, effective_mode)
+                if metrics is not None:
+                    batch_metrics.steps.extend(metrics.steps)
+                return output_data
+        elif template_model is not None:
+            from mosaicx.pipelines.extraction import DocumentExtractor
+
+            _configure_dspy()
+            extractor = DocumentExtractor(output_schema=template_model)
+
+            def process_fn(text: str) -> dict:
+                result = extractor(document_text=text)
+                doc_metrics = getattr(extractor, "_last_metrics", None)
+                if doc_metrics is not None:
+                    batch_metrics.steps.extend(doc_metrics.steps)
+                output = {}
+                if hasattr(result, "extracted"):
+                    val = result.extracted
+                    output["extracted"] = val.model_dump() if hasattr(val, "model_dump") else val
+                return output
+        else:
+            raise click.ClickException(
+                f"Template {template!r} resolved but produced no extraction schema."
+            )
     elif mode:
         import mosaicx.pipelines.radiology  # noqa: F401
         import mosaicx.pipelines.pathology  # noqa: F401
@@ -651,29 +764,61 @@ def template() -> None:
 
 @template.command("list")
 def template_list() -> None:
-    """List available templates."""
+    """List available built-in and user-created templates."""
     from .schemas.radreport.registry import list_templates
 
     templates = list_templates()
 
-    theme.section("Templates", console)
+    theme.section("Built-in Templates", console)
 
-    t = theme.make_table()
-    t.add_column("Name", style="bold cyan", no_wrap=True)
-    t.add_column("Exam Type", style="magenta")
-    t.add_column("RadReport ID", style="dim")
-    t.add_column("Description")
+    t = theme.make_clean_table(width=len(theme.TAGLINE))
+    t.add_column("Name", style=f"bold {theme.CORAL}", no_wrap=True)
+    t.add_column("Mode", style=theme.GREIGE)
+    t.add_column("RDES", style="dim")
+    t.add_column("Description", style=theme.MUTED, ratio=1)
 
     for tpl in templates:
         t.add_row(
             tpl.name,
-            tpl.exam_type,
+            tpl.mode or "\u2014",
             tpl.radreport_id or "\u2014",
             tpl.description,
         )
 
-    console.print(t)
-    console.print(theme.info(f"{len(templates)} template(s) registered"))
+    console.print(Padding(t, (0, 0, 0, 2)))
+    console.print()
+    console.print(theme.info(f"{len(templates)} built-in template(s)"))
+
+    # User templates
+    cfg = get_config()
+    user_templates: list[tuple[str, str]] = []  # (name, description)
+    if cfg.templates_dir.is_dir():
+        from .schemas.template_compiler import parse_template
+
+        for f in sorted(cfg.templates_dir.glob("*.yaml")) + sorted(cfg.templates_dir.glob("*.yml")):
+            try:
+                meta = parse_template(f.read_text(encoding="utf-8"))
+                user_templates.append((f.stem, meta.description or "\u2014"))
+            except Exception:
+                user_templates.append((f.stem, "(invalid YAML)"))
+
+    if user_templates:
+        theme.section("User Templates", console)
+        ut = theme.make_clean_table(width=len(theme.TAGLINE))
+        ut.add_column("Name", style=f"bold {theme.CORAL}", no_wrap=True)
+        ut.add_column("Description", style=theme.MUTED, ratio=1)
+        for name, desc in user_templates:
+            ut.add_row(name, desc)
+        console.print(Padding(ut, (0, 0, 0, 2)))
+        console.print()
+        console.print(theme.info(
+            f"{len(user_templates)} user template(s) in {cfg.templates_dir}"
+        ))
+    else:
+        console.print()
+        console.print(theme.info(
+            f"No user templates yet. Create one with: mosaicx template create --describe \"...\""
+        ))
 
 
 @template.command("validate")
@@ -694,31 +839,146 @@ def template_validate(file_path: Path) -> None:
         raise click.ClickException(f"Template validation failed: {exc}")
 
 
-# ---------------------------------------------------------------------------
-# schema (group)
-# ---------------------------------------------------------------------------
+@template.command("create")
+@click.option("--describe", type=str, default=None, help="Natural-language description of the template.")
+@click.option("--from-document", "from_document", type=click.Path(exists=False, path_type=Path), default=None, help="Infer template from a sample document.")
+@click.option("--from-url", "from_url", type=str, default=None, help="Infer template from a web page (e.g. RadReport URL).")
+@click.option("--from-radreport", "from_radreport", type=str, default=None, help="RadReport template ID (e.g. RPT50890 or 50890).")
+@click.option("--from-json", "from_json", type=click.Path(exists=False, path_type=Path), default=None, help="Convert a saved SchemaSpec JSON to YAML template.")
+@click.option("--name", type=str, default=None, help="Template name (default: LLM-chosen).")
+@click.option("--mode", type=str, default=None, help="Pipeline mode to embed (e.g. radiology, pathology).")
+@click.option("--output", type=click.Path(path_type=Path), default=None, help="Save to this path instead of ~/.mosaicx/templates/.")
+def template_create(
+    describe: Optional[str],
+    from_document: Optional[Path],
+    from_url: Optional[str],
+    from_radreport: Optional[str],
+    from_json: Optional[Path],
+    name: Optional[str],
+    mode: Optional[str],
+    output: Optional[Path],
+) -> None:
+    """Create a new YAML template from a description, document, URL, or JSON schema."""
+    from .schemas.template_compiler import schema_spec_to_template_yaml
 
-
-@cli.group()
-def schema() -> None:
-    """Manage Pydantic schemas."""
-
-
-@schema.command("generate")
-@click.option("--description", type=str, default=None, help="Natural-language description of the schema.")
-@click.option("--from-document", "from_document", type=click.Path(exists=False, path_type=Path), default=None, help="Path to a document to infer schema from.")
-@click.option("--name", type=str, default=None, help="Schema class name (default: LLM-chosen).")
-@click.option("--example-text", type=str, default="", help="Optional example document text for grounding.")
-@click.option("--output", type=click.Path(path_type=Path), default=None, help="Save schema to this path (default: ~/.mosaicx/schemas/).")
-def schema_generate(description: Optional[str], from_document: Optional[Path], name: Optional[str], example_text: str, output: Optional[Path]) -> None:
-    """Generate a Pydantic schema from a description and/or document."""
-    if description is None and from_document is None:
+    sources = sum(x is not None for x in (describe, from_document, from_url, from_radreport, from_json))
+    if sources == 0:
         raise click.ClickException(
-            "Provide --description or --from-document (or both)."
+            "Provide --describe, --from-document, --from-url, --from-radreport, or --from-json."
         )
+    if sources > 1 and from_json is not None:
+        raise click.ClickException("--from-json cannot be combined with other sources.")
 
-    # Load document if provided
+    # --- Path 1: Convert existing JSON schema to YAML ---
+    if from_json is not None:
+        from .pipelines.schema_gen import SchemaSpec
+
+        if not from_json.exists():
+            raise click.ClickException(f"File not found: {from_json}")
+        try:
+            spec = SchemaSpec.model_validate_json(
+                from_json.read_text(encoding="utf-8")
+            )
+        except Exception as exc:
+            raise click.ClickException(f"Invalid SchemaSpec JSON: {exc}")
+
+        if name:
+            spec.class_name = name
+
+        yaml_str = schema_spec_to_template_yaml(spec, mode=mode)
+        dest = _save_template_yaml(spec.class_name, yaml_str, output)
+        console.print(theme.ok("Template created from JSON schema"))
+        console.print(theme.info(f"Name: {spec.class_name}"))
+        console.print(theme.info(f"Fields: {len(spec.fields)}"))
+        console.print(theme.info(f"Saved: {dest}"))
+        return
+
+    # --- Path 2: RadReport API (deterministic fetch + LLM enrichment) ---
+    if from_radreport is not None:
+        try:
+            import httpx  # noqa: F811
+        except ImportError:
+            raise click.ClickException(
+                "httpx is required for --from-radreport. Install with: pip install httpx"
+            )
+
+        from .schemas.radreport.fetcher import fetch_radreport
+
+        console.print(theme.info(f"Fetching RadReport template {from_radreport}"))
+        try:
+            rr_template = fetch_radreport(from_radreport)
+        except httpx.HTTPError as exc:
+            raise click.ClickException(f"Failed to fetch RadReport template: {exc}")
+        except ValueError as exc:
+            raise click.ClickException(str(exc))
+
+        console.print(theme.ok(f"Fetched: {rr_template.title}"))
+        if rr_template.specialty:
+            console.print(theme.info(f"Specialty: {', '.join(rr_template.specialty)}"))
+        console.print(theme.info(f"Sections: {len(rr_template.sections)}"))
+
+        # Build LLM context from parsed sections
+        llm_context = rr_template.to_llm_context()
+        rr_description = (
+            f"Create a structured extraction template for: {rr_template.title}. "
+            f"Infer rich types from the section content: use 'list[object]' for "
+            f"repeating structured data (e.g. level-by-level findings), 'enum' for "
+            f"categorical fields with fixed options (e.g. severity grades), 'float' "
+            f"for measurements, and 'str' for free text. Preserve all section names."
+        )
+        if describe:
+            rr_description = f"{rr_description} Additional instructions: {describe}"
+
+        effective_mode = mode or "radiology"
+
+        _configure_dspy()
+
+        from .pipelines.schema_gen import SchemaGenerator
+
+        generator = SchemaGenerator()
+        with theme.spinner("Enriching template with LLM... hold my beer", console):
+            result = generator(
+                description=rr_description,
+                example_text="",
+                document_text=llm_context,
+            )
+
+        spec = result.schema_spec
+        if name:
+            spec.class_name = name
+        elif not spec.class_name or spec.class_name == "Schema":
+            # Generate a sensible name from the RadReport title
+            spec.class_name = re.sub(r"[^a-zA-Z0-9]", "", rr_template.title.title())
+
+        yaml_str = schema_spec_to_template_yaml(spec, mode=effective_mode)
+        dest = _save_template_yaml(spec.class_name, yaml_str, output)
+
+        console.print(theme.ok("Template created from RadReport"))
+        console.print(theme.info(f"Name: {spec.class_name}"))
+        console.print(theme.info(f"Fields: {len(spec.fields)}"))
+        console.print(theme.info(f"Saved: {dest}"))
+
+        # Preview the YAML
+        theme.section("Template Preview", console)
+        from rich.syntax import Syntax
+
+        console.print(Padding(
+            Syntax(yaml_str, "yaml", theme="ansi_dark", line_numbers=False),
+            (0, 0, 0, 2),
+        ))
+
+        metrics = getattr(generator, "_last_metrics", None)
+        if metrics is not None:
+            from .cli_display import render_metrics
+
+            render_metrics(metrics, console)
+        return
+
+    # --- Path 3: LLM-powered generation (--describe / --from-document / --from-url) ---
+    description = describe or ""
     document_text = ""
+    example_text = ""
+
     if from_document is not None:
         from .documents.models import DocumentLoadError
 
@@ -726,56 +986,86 @@ def schema_generate(description: Optional[str], from_document: Optional[Path], n
             doc = _load_doc_with_config(from_document)
         except (FileNotFoundError, ValueError, DocumentLoadError) as exc:
             raise click.ClickException(str(exc))
-
         if doc.quality_warning:
             console.print(theme.warn("Low OCR quality detected \u2014 results may be unreliable"))
         if doc.is_empty:
             raise click.ClickException(f"Document is empty: {from_document}")
-
         parts = [f"{doc.format} document", f"{doc.char_count:,} chars"]
         if doc.ocr_engine_used:
             parts.append(f"OCR: {doc.ocr_engine_used}")
-        if doc.ocr_confidence:
-            parts.append(f"confidence: {doc.ocr_confidence:.0%}")
         console.print(theme.info(" \u00b7 ".join(parts)))
-
         document_text = doc.text
+
+    if from_url is not None:
+        try:
+            import httpx
+        except ImportError:
+            raise click.ClickException(
+                "httpx is required for --from-url. Install with: pip install httpx"
+            )
+        console.print(theme.info(f"Fetching {from_url}"))
+        try:
+            resp = httpx.get(from_url, follow_redirects=True, timeout=30)
+            resp.raise_for_status()
+        except httpx.HTTPError as exc:
+            raise click.ClickException(f"Failed to fetch URL: {exc}")
+
+        # Extract text from HTML
+        page_text = resp.text
+        try:
+            from bs4 import BeautifulSoup
+
+            soup = BeautifulSoup(page_text, "html.parser")
+            # Remove script and style elements
+            for tag in soup(["script", "style"]):
+                tag.decompose()
+            page_text = soup.get_text(separator="\n", strip=True)
+        except ImportError:
+            # Fall back to raw HTML -- LLM can handle it
+            pass
+
+        # Use page content as document context for the LLM
+        if not description:
+            description = f"Infer a structured template from this web page content"
+        document_text = page_text
+
+    if not description and not document_text:
+        raise click.ClickException(
+            "Provide --describe or --from-document (or both)."
+        )
 
     _configure_dspy()
 
-    from .pipelines.schema_gen import SchemaGenerator, save_schema
+    from .pipelines.schema_gen import SchemaGenerator
 
     generator = SchemaGenerator()
-    with theme.spinner("Generating schema... hold my beer", console):
+    with theme.spinner("Generating template... hold my beer", console):
         result = generator(
-            description=description or "",
+            description=description,
             example_text=example_text,
             document_text=document_text,
         )
 
-    # Override class_name if user specified --name
+    spec = result.schema_spec
     if name:
-        result.schema_spec.class_name = name
+        spec.class_name = name
 
-    # Save schema
-    cfg = get_config()
-    saved_path = save_schema(
-        result.schema_spec,
-        schema_dir=None if output else cfg.schema_dir,
-        output_path=output,
-    )
+    yaml_str = schema_spec_to_template_yaml(spec, mode=mode)
+    dest = _save_template_yaml(spec.class_name, yaml_str, output)
 
-    console.print(theme.ok("Schema generated \u2014 it's alive!"))
-    console.print(theme.info(f"Model: {result.compiled_model.__name__}"))
-    console.print(theme.info(
-        f"Fields: {', '.join(result.compiled_model.model_fields.keys())}"
+    console.print(theme.ok("Template created"))
+    console.print(theme.info(f"Name: {spec.class_name}"))
+    console.print(theme.info(f"Fields: {len(spec.fields)}"))
+    console.print(theme.info(f"Saved: {dest}"))
+
+    # Preview the YAML
+    theme.section("Template Preview", console)
+    from rich.syntax import Syntax
+
+    console.print(Padding(
+        Syntax(yaml_str, "yaml", theme="ansi_dark", line_numbers=False),
+        (0, 0, 0, 2),
     ))
-    console.print(theme.info(f"Saved: {saved_path}"))
-
-    theme.section("Schema Spec", console)
-    from rich.json import JSON
-
-    console.print(Padding(JSON(result.schema_spec.model_dump_json()), (0, 0, 0, 2)))
 
     metrics = getattr(generator, "_last_metrics", None)
     if metrics is not None:
@@ -784,348 +1074,498 @@ def schema_generate(description: Optional[str], from_document: Optional[Path], n
         render_metrics(metrics, console)
 
 
-@schema.command("list")
-def schema_list() -> None:
-    """List saved schemas."""
-    from .pipelines.schema_gen import list_schemas
+def _save_template_yaml(
+    template_name: str, yaml_str: str, output: Optional[Path]
+) -> Path:
+    """Save a YAML template string to the templates directory or a custom path."""
+    if output is not None:
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(yaml_str, encoding="utf-8")
+        return output
 
     cfg = get_config()
-    specs = list_schemas(cfg.schema_dir)
+    cfg.templates_dir.mkdir(parents=True, exist_ok=True)
+    dest = cfg.templates_dir / f"{template_name}.yaml"
+    dest.write_text(yaml_str, encoding="utf-8")
+    return dest
 
-    theme.section("Saved Schemas", console)
 
-    if not specs:
-        console.print(theme.info("0 schema(s) saved"))
-        return
+@template.command("show")
+@click.argument("name")
+def template_show(name: str) -> None:
+    """Show details of a template (built-in or user-created)."""
+    from .report import _find_builtin_template_yaml, _find_user_template_yaml
+    from .schemas.template_compiler import parse_template
 
-    t = theme.make_clean_table(width=len(theme.TAGLINE))
-    t.add_column("Name", style=f"bold {theme.CORAL}", no_wrap=True)
-    t.add_column("Fields", style=f"{theme.GREIGE}", justify="right")
-    t.add_column("Description", style=theme.MUTED, ratio=1)
+    # Try user template first, then built-in
+    path = _find_user_template_yaml(name)
+    source = "user"
+    if path is None:
+        path = _find_builtin_template_yaml(name)
+        source = "built-in"
 
-    for spec in specs:
-        t.add_row(
-            spec.class_name,
-            str(len(spec.fields)),
-            spec.description if spec.description else "\u2014",
+    if path is None:
+        # Try as a saved schema
+        cfg = get_config()
+        schema_path = cfg.schema_dir / f"{name}.json"
+        if schema_path.exists():
+            # Show as JSON schema instead
+            from .pipelines.schema_gen import load_schema
+
+            spec = load_schema(name, cfg.schema_dir)
+            theme.section(f"{spec.class_name} (saved schema)", console)
+            if spec.description:
+                console.print(Padding(
+                    f"[{theme.MUTED}]{spec.description}[/{theme.MUTED}]",
+                    (0, 0, 0, 2),
+                ))
+                console.print()
+            t = theme.make_clean_table()
+            t.add_column("Field", style=f"bold {theme.CORAL}", no_wrap=True)
+            t.add_column("Type", style=theme.GREIGE)
+            t.add_column("Req", justify="center", no_wrap=True)
+            t.add_column("Description", style=theme.MUTED)
+            for f in spec.fields:
+                type_label = f.type
+                if f.enum_values:
+                    type_label = f"enum({', '.join(f.enum_values)})"
+                t.add_row(
+                    f.name,
+                    type_label,
+                    "[green]\u2713[/green]" if f.required else "[dim]\u2014[/dim]",
+                    f.description or "\u2014",
+                )
+            console.print(Padding(t, (0, 0, 0, 2)))
+            console.print()
+            console.print(theme.info(f"{len(spec.fields)} fields"))
+            console.print(theme.info(
+                "Tip: Convert to YAML with: "
+                f"mosaicx template create --from-json {schema_path}"
+            ))
+            return
+
+        raise click.ClickException(
+            f"Template {name!r} not found. "
+            f"Use 'mosaicx template list' to see available templates."
         )
 
-    console.print(Padding(t, (0, 0, 0, 2)))
-    console.print()
-    console.print(theme.info(f"{len(specs)} schema(s) saved in {cfg.schema_dir}"))
+    yaml_content = path.read_text(encoding="utf-8")
+    meta = parse_template(yaml_content)
 
+    theme.section(f"{meta.name} ({source})", console)
 
-@schema.command("show")
-@click.argument("schema_name")
-def schema_show(schema_name: str) -> None:
-    """Show details of a saved schema."""
-    from .pipelines.schema_gen import load_schema
-
-    cfg = get_config()
-    try:
-        spec = load_schema(schema_name, cfg.schema_dir)
-    except FileNotFoundError:
-        raise click.ClickException(f"Schema {schema_name!r} not found in {cfg.schema_dir}")
-
-    theme.section(spec.class_name, console)
-
-    if spec.description:
-        console.print(Padding(f"[{theme.MUTED}]{spec.description}[/{theme.MUTED}]", (0, 0, 0, 2)))
+    if meta.description:
+        console.print(Padding(
+            f"[{theme.MUTED}]{meta.description}[/{theme.MUTED}]",
+            (0, 0, 0, 2),
+        ))
         console.print()
 
+    # Metadata row
+    meta_parts = []
+    if meta.mode:
+        meta_parts.append(f"Mode: {meta.mode}")
+    if meta.radreport_id:
+        meta_parts.append(f"RDES: {meta.radreport_id}")
+    meta_parts.append(f"Source: {path}")
+    for part in meta_parts:
+        console.print(theme.info(part))
+    console.print()
+
+    # Sections table
     t = theme.make_clean_table()
-    t.add_column("Field", style=f"bold {theme.CORAL}", no_wrap=True)
+    t.add_column("Section", style=f"bold {theme.CORAL}", no_wrap=True)
     t.add_column("Type", style=theme.GREIGE)
     t.add_column("Req", justify="center", no_wrap=True)
-    t.add_column("Description", style=theme.MUTED)
+    t.add_column("Description", style=theme.MUTED, ratio=1)
 
-    for f in spec.fields:
-        type_label = f.type
-        if f.enum_values:
-            type_label = f"enum({', '.join(f.enum_values)})"
+    for s in meta.sections:
+        type_label = s.type
+        if s.type == "enum" and s.values:
+            type_label = f"enum({', '.join(s.values)})"
+        elif s.type == "list" and s.item:
+            type_label = f"list[{s.item.type}]"
         t.add_row(
-            f.name,
+            s.name,
             type_label,
-            "[green]\u2713[/green]" if f.required else "[dim]\u2014[/dim]",
-            f.description or "\u2014",
+            "[green]\u2713[/green]" if s.required else "[dim]\u2014[/dim]",
+            s.description or "\u2014",
         )
 
     console.print(Padding(t, (0, 0, 0, 2)))
     console.print()
-    console.print(theme.info(f"{len(spec.fields)} fields"))
+    console.print(theme.info(f"{len(meta.sections)} sections"))
 
 
-@schema.command("refine")
-@click.option("--schema", "schema_name", type=str, required=True, help="Name of the schema to refine.")
-@click.option("--instruction", type=str, default=None, help="Natural-language refinement instruction (uses LLM).")
-@click.option("--add", "add_field_str", type=str, default=None, help="Add a field: 'field_name: type'.")
-@click.option("--optional", "is_optional", is_flag=True, default=False, help="Mark the added field as optional (used with --add).")
-@click.option("--description", "field_desc", type=str, default="", help="Description for the added field (used with --add).")
-@click.option("--remove", "remove_field_name", type=str, default=None, help="Remove a field by name.")
-@click.option("--rename", "rename_str", type=str, default=None, help="Rename a field: 'old_name=new_name'.")
-def schema_refine(
-    schema_name: str,
-    instruction: Optional[str],
-    add_field_str: Optional[str],
-    is_optional: bool,
-    field_desc: str,
-    remove_field_name: Optional[str],
-    rename_str: Optional[str],
-) -> None:
-    """Refine an existing schema."""
-    from .pipelines.schema_gen import (
-        load_schema, save_schema, compile_schema,
-        add_field, remove_field, rename_field,
-    )
+@template.command("refine")
+@click.argument("name")
+@click.option("--instruction", type=str, required=True, help="Natural-language refinement instruction.")
+@click.option("--output", type=click.Path(path_type=Path), default=None, help="Save refined template to a different path.")
+def template_refine(name: str, instruction: str, output: Optional[Path]) -> None:
+    """Refine an existing template using LLM-powered instructions."""
+    from .report import _find_builtin_template_yaml, _find_user_template_yaml
+    from .schemas.template_compiler import parse_template, schema_spec_to_template_yaml
 
-    cfg = get_config()
+    # Locate the template
+    path = _find_user_template_yaml(name)
+    if path is None:
+        path = _find_builtin_template_yaml(name)
 
-    try:
-        spec = load_schema(schema_name, cfg.schema_dir)
-    except FileNotFoundError:
-        raise click.ClickException(f"Schema not found: {schema_name}")
-
-    old_field_names = {f.name for f in spec.fields}
-
-    if instruction:
-        # LLM-driven refinement
-        _configure_dspy()
-        from .pipelines.schema_gen import SchemaRefiner
-
-        refiner = SchemaRefiner()
-        with theme.spinner("Refining schema... one does not simply edit a schema", console):
-            result = refiner(
-                current_schema=spec.model_dump_json(indent=2),
-                instruction=instruction,
-            )
-        spec = result.schema_spec
-
-    elif add_field_str:
-        # --add "field_name: type"
-        parts = add_field_str.split(":", 1)
-        if len(parts) != 2:
-            raise click.ClickException("--add format: 'field_name: type'")
-        fname, ftype = parts[0].strip(), parts[1].strip()
-        spec = add_field(spec, fname, ftype, description=field_desc, required=not is_optional)
-
-    elif remove_field_name:
-        try:
-            spec = remove_field(spec, remove_field_name)
-        except ValueError as exc:
-            raise click.ClickException(str(exc))
-
-    elif rename_str:
-        parts = rename_str.split("=", 1)
-        if len(parts) != 2:
-            raise click.ClickException("--rename format: 'old_name=new_name'")
-        old, new = parts[0].strip(), parts[1].strip()
-        try:
-            spec = rename_field(spec, old, new)
-        except ValueError as exc:
-            raise click.ClickException(str(exc))
-
-    else:
+    if path is None:
         raise click.ClickException(
-            "Provide --instruction, --add, --remove, or --rename"
+            f"Template {name!r} not found as a YAML template. "
+            f"Use 'mosaicx template list' to see available templates."
         )
 
-    # Verify the schema compiles
-    try:
-        compiled = compile_schema(spec)
-    except Exception as exc:
-        raise click.ClickException(f"Refined schema failed to compile: {exc}")
+    yaml_content = path.read_text(encoding="utf-8")
+    meta = parse_template(yaml_content)
 
-    # Save back
-    save_schema(spec, schema_dir=cfg.schema_dir)
+    # Convert to SchemaSpec for the refiner
+    from .pipelines.schema_gen import FieldSpec as GenFieldSpec
+    from .pipelines.schema_gen import SchemaSpec
 
-    # Show changes
-    new_field_names = {f.name for f in spec.fields}
-    added = new_field_names - old_field_names
-    removed = old_field_names - new_field_names
+    gen_fields = []
+    for s in meta.sections:
+        type_str = s.type
+        if s.type == "list" and s.item:
+            type_str = f"list[{s.item.type}]"
+        gen_fields.append(GenFieldSpec(
+            name=s.name,
+            type=type_str,
+            description=s.description or "",
+            required=s.required,
+            enum_values=list(s.values) if s.values else None,
+        ))
 
-    console.print(theme.ok("Schema refined \u2014 evolution, not revolution"))
+    spec = SchemaSpec(
+        class_name=meta.name,
+        description=meta.description or "",
+        fields=gen_fields,
+    )
 
+    _configure_dspy()
+
+    from .pipelines.schema_gen import SchemaRefiner
+
+    refiner = SchemaRefiner()
+    with theme.spinner("Refining template... one does not simply edit a template", console):
+        result = refiner(
+            current_schema=spec.model_dump_json(indent=2),
+            instruction=instruction,
+        )
+
+    refined_spec = result.schema_spec
+    yaml_str = schema_spec_to_template_yaml(refined_spec, mode=meta.mode)
+
+    # Archive current version before saving (if user template exists)
+    from .report import _find_user_template_yaml as _find_user_tpl
+    user_path = _find_user_tpl(name)
+    if user_path is not None and output is None:
+        _archive_template(name, user_path)
+
+    # Save: user templates always go to user dir (even if refining built-in)
+    dest = _save_template_yaml(refined_spec.class_name, yaml_str, output)
+
+    console.print(theme.ok("Template refined"))
+    console.print(theme.info(f"Name: {refined_spec.class_name}"))
+    console.print(theme.info(f"Fields: {len(refined_spec.fields)}"))
+    console.print(theme.info(f"Saved: {dest}"))
+
+    # Show diff
+    old_names = {s.name for s in meta.sections}
+    new_names = {f.name for f in refined_spec.fields}
+    added = new_names - old_names
+    removed = old_names - new_names
     if added:
-        for name in sorted(added):
-            f = next(f for f in spec.fields if f.name == name)
-            console.print(theme.info(f"+ {name} ({f.type})"))
+        for n in sorted(added):
+            console.print(theme.info(f"+ {n}"))
     if removed:
-        for name in sorted(removed):
-            console.print(theme.info(f"- {name} (removed)"))
+        for n in sorted(removed):
+            console.print(theme.info(f"- {n}"))
 
-    # Show renamed (detected by same position, different name)
-    if rename_str and "=" in rename_str:
-        old_n, new_n = rename_str.split("=", 1)
-        console.print(theme.info(f"~ {old_n.strip()} \u2192 {new_n.strip()}"))
+    metrics = getattr(refiner, "_last_metrics", None)
+    if metrics is not None:
+        from .cli_display import render_metrics
 
-    console.print(theme.info(f"Model: {compiled.__name__}"))
-    console.print(theme.info(
-        f"Fields: {', '.join(compiled.model_fields.keys())}"
-    ))
-
-    if instruction:
-        metrics = getattr(refiner, "_last_metrics", None)
-        if metrics is not None:
-            from .cli_display import render_metrics
-
-            render_metrics(metrics, console)
+        render_metrics(metrics, console)
 
 
-@schema.command("history")
-@click.argument("schema_name")
-def schema_history(schema_name: str) -> None:
-    """Show version history of a schema."""
-    from .pipelines.schema_gen import list_versions, load_schema
+@template.command("migrate")
+@click.option("--dry-run", is_flag=True, default=False, help="Show what would be migrated without writing files.")
+def template_migrate(dry_run: bool) -> None:
+    """Migrate legacy JSON schemas to YAML templates.
+
+    Converts ~/.mosaicx/schemas/*.json to ~/.mosaicx/templates/*.yaml.
+    """
+    from .pipelines.schema_gen import load_schema
+    from .schemas.template_compiler import schema_spec_to_template_yaml
 
     cfg = get_config()
+    schema_dir = cfg.schema_dir
+    templates_dir = cfg.templates_dir
 
-    # Verify schema exists
-    try:
-        current = load_schema(schema_name, cfg.schema_dir)
-    except FileNotFoundError:
-        raise click.ClickException(f"Schema {schema_name!r} not found in {cfg.schema_dir}")
+    if not schema_dir.is_dir():
+        console.print(theme.info("No schemas directory found. Nothing to migrate."))
+        return
 
-    versions = list_versions(schema_name, cfg.schema_dir)
+    json_files = sorted(schema_dir.glob("*.json"))
+    if not json_files:
+        console.print(theme.info("No JSON schemas found. Nothing to migrate."))
+        return
 
-    theme.section(f"{schema_name} History", console)
+    if not dry_run:
+        templates_dir.mkdir(parents=True, exist_ok=True)
+
+    theme.section("Template Migration", console)
+
+    migrated = 0
+    skipped = 0
+    errors = 0
+
+    for json_path in json_files:
+        name = json_path.stem
+        yaml_path = templates_dir / f"{name}.yaml"
+
+        # Skip if YAML already exists
+        if yaml_path.exists():
+            console.print(theme.info(f"  skip  {name} (YAML already exists)"))
+            skipped += 1
+            continue
+
+        try:
+            spec = load_schema(name, schema_dir)
+            yaml_text = schema_spec_to_template_yaml(spec)
+
+            if dry_run:
+                console.print(theme.info(f"  would migrate  {name}.json -> {name}.yaml"))
+            else:
+                yaml_path.write_text(yaml_text, encoding="utf-8")
+                console.print(theme.ok(f"  migrated  {name}.json -> {name}.yaml"))
+            migrated += 1
+        except Exception as exc:
+            console.print(theme.warn(f"  error  {name}: {exc}"))
+            errors += 1
+
+    console.print()
+    parts = []
+    if migrated:
+        parts.append(f"{migrated} migrated" if not dry_run else f"{migrated} would migrate")
+    if skipped:
+        parts.append(f"{skipped} skipped")
+    if errors:
+        parts.append(f"{errors} errors")
+    if not parts:
+        parts.append("nothing to do")
+    console.print(theme.info(", ".join(parts)))
+
+    if dry_run and migrated:
+        console.print(theme.info("Run without --dry-run to perform the migration."))
+
+
+# ---------------------------------------------------------------------------
+# Template versioning helpers
+# ---------------------------------------------------------------------------
+
+
+def _template_history_dir() -> Path:
+    """Return the template history directory, creating it if needed."""
+    cfg = get_config()
+    hdir = cfg.templates_dir / ".history"
+    hdir.mkdir(parents=True, exist_ok=True)
+    return hdir
+
+
+def _list_template_versions(name: str) -> list[tuple[int, Path]]:
+    """List archived versions of a user template, sorted by version number."""
+    hdir = get_config().templates_dir / ".history"
+    if not hdir.is_dir():
+        return []
+    results: list[tuple[int, Path]] = []
+    for p in sorted(hdir.glob(f"{name}_v*.yaml")):
+        m = re.match(rf"^{re.escape(name)}_v(\d+)\.yaml$", p.name)
+        if m:
+            results.append((int(m.group(1)), p))
+    return results
+
+
+def _archive_template(name: str, current_path: Path) -> int:
+    """Copy the current template YAML into .history/ and return the version number."""
+    hdir = _template_history_dir()
+    versions = _list_template_versions(name)
+    next_version = (versions[-1][0] + 1) if versions else 1
+    import shutil
+
+    dest = hdir / f"{name}_v{next_version}.yaml"
+    shutil.copy2(current_path, dest)
+    return next_version
+
+
+@template.command("history")
+@click.argument("name")
+def template_history(name: str) -> None:
+    """Show version history of a user template."""
+    from .report import _find_user_template_yaml
+
+    path = _find_user_template_yaml(name)
+    if path is None:
+        raise click.ClickException(
+            f"User template {name!r} not found in {get_config().templates_dir}. "
+            f"Only user templates have version history."
+        )
+
+    versions = _list_template_versions(name)
+
+    theme.section(f"{name} History", console)
 
     if not versions:
         console.print(theme.info("No version history yet (only current version exists)"))
-        console.print(theme.info(f"Current: {len(current.fields)} fields"))
         return
+
+    from datetime import datetime
 
     t = theme.make_clean_table(width=len(theme.TAGLINE))
     t.add_column("Version", style=f"bold {theme.CORAL}", no_wrap=True)
-    t.add_column("Fields", style=f"{theme.GREIGE}", justify="right")
     t.add_column("Date", style=theme.MUTED, ratio=1)
 
-    for v in versions:
-        t.add_row(
-            f"v{v.version}",
-            str(v.field_count),
-            v.modified.strftime("%Y-%m-%d %H:%M"),
-        )
+    for ver_num, ver_path in versions:
+        mtime = datetime.fromtimestamp(ver_path.stat().st_mtime)
+        t.add_row(f"v{ver_num}", mtime.strftime("%Y-%m-%d %H:%M"))
 
-    # Add current as the last row
-    current_path = cfg.schema_dir / f"{schema_name}.json"
-    current_mtime = datetime.fromtimestamp(current_path.stat().st_mtime)
-    t.add_row(
-        "current",
-        str(len(current.fields)),
-        current_mtime.strftime("%Y-%m-%d %H:%M"),
-    )
+    # Current
+    from datetime import datetime as _dt
+
+    current_mtime = _dt.fromtimestamp(path.stat().st_mtime)
+    t.add_row("current", current_mtime.strftime("%Y-%m-%d %H:%M"))
 
     console.print(Padding(t, (0, 0, 0, 2)))
     console.print()
     console.print(theme.info(f"{len(versions)} archived version(s) + current"))
 
 
-@schema.command("revert")
-@click.argument("schema_name")
+@template.command("revert")
+@click.argument("name")
 @click.option("--version", "version_num", type=int, required=True, help="Version number to revert to.")
-def schema_revert(schema_name: str, version_num: int) -> None:
-    """Revert a schema to a previous version."""
-    from .pipelines.schema_gen import diff_schemas, load_schema, load_version, revert_schema
+def template_revert(name: str, version_num: int) -> None:
+    """Revert a user template to a previous version."""
+    import shutil
 
-    cfg = get_config()
+    from .report import _find_user_template_yaml
 
-    try:
-        current = load_schema(schema_name, cfg.schema_dir)
-    except FileNotFoundError:
-        raise click.ClickException(f"Schema {schema_name!r} not found in {cfg.schema_dir}")
+    path = _find_user_template_yaml(name)
+    if path is None:
+        raise click.ClickException(
+            f"User template {name!r} not found."
+        )
 
-    try:
-        target = load_version(schema_name, version_num, cfg.schema_dir)
-    except FileNotFoundError:
-        raise click.ClickException(f"Version {version_num} not found for schema {schema_name!r}")
+    versions = _list_template_versions(name)
+    version_paths = {v: p for v, p in versions}
 
-    # Figure out what the archived version number will be
-    from .pipelines.schema_gen import list_versions
-    versions = list_versions(schema_name, cfg.schema_dir)
-    archive_version = len(versions) + 1
+    if version_num not in version_paths:
+        available = ", ".join(f"v{v}" for v, _ in versions) or "none"
+        raise click.ClickException(
+            f"Version {version_num} not found for {name!r}. Available: {available}"
+        )
 
-    revert_schema(schema_name, version_num, cfg.schema_dir)
+    # Archive current before reverting
+    archive_ver = _archive_template(name, path)
+
+    # Copy target version to current
+    shutil.copy2(version_paths[version_num], path)
 
     console.print(theme.ok(
-        f"Reverted {schema_name} to v{version_num} (archived current as v{archive_version})"
+        f"Reverted {name} to v{version_num} (archived current as v{archive_ver})"
     ))
 
-    # Show diff
-    added, removed, modified = diff_schemas(current, target)
-    if added:
-        for name in added:
-            f = next(f for f in target.fields if f.name == name)
-            console.print(theme.info(f"+ {name} ({f.type})"))
-    if removed:
-        for name in removed:
-            console.print(theme.info(f"- {name}"))
-    if modified:
-        for name in modified:
-            console.print(theme.info(f"~ {name} (changed)"))
-    if not added and not removed and not modified:
-        console.print(theme.info("No field differences"))
 
-
-@schema.command("diff")
-@click.argument("schema_name")
+@template.command("diff")
+@click.argument("name")
 @click.option("--version", "version_num", type=int, required=True, help="Version number to compare against current.")
-def schema_diff(schema_name: str, version_num: int) -> None:
-    """Show differences between current schema and a previous version."""
-    from .pipelines.schema_gen import diff_schemas, load_schema, load_version
+def template_diff(name: str, version_num: int) -> None:
+    """Show differences between current template and a previous version."""
+    import yaml
 
-    cfg = get_config()
+    from .report import _find_user_template_yaml
 
-    try:
-        current = load_schema(schema_name, cfg.schema_dir)
-    except FileNotFoundError:
-        raise click.ClickException(f"Schema {schema_name!r} not found in {cfg.schema_dir}")
+    path = _find_user_template_yaml(name)
+    if path is None:
+        raise click.ClickException(f"User template {name!r} not found.")
 
-    try:
-        old = load_version(schema_name, version_num, cfg.schema_dir)
-    except FileNotFoundError:
-        raise click.ClickException(f"Version {version_num} not found for schema {schema_name!r}")
+    versions = _list_template_versions(name)
+    version_paths = {v: p for v, p in versions}
 
-    added, removed, modified = diff_schemas(old, current)
+    if version_num not in version_paths:
+        available = ", ".join(f"v{v}" for v, _ in versions) or "none"
+        raise click.ClickException(
+            f"Version {version_num} not found for {name!r}. Available: {available}"
+        )
 
-    theme.section(f"{schema_name}: v{version_num} vs current", console)
+    # Load both versions
+    current_data = yaml.safe_load(path.read_text(encoding="utf-8"))
+    old_data = yaml.safe_load(
+        version_paths[version_num].read_text(encoding="utf-8")
+    )
+
+    current_sections = {
+        s["name"]: s for s in (current_data.get("sections") or [])
+    }
+    old_sections = {
+        s["name"]: s for s in (old_data.get("sections") or [])
+    }
+
+    added = [n for n in current_sections if n not in old_sections]
+    removed = [n for n in old_sections if n not in current_sections]
+    modified = []
+    for n in old_sections:
+        if n in current_sections and old_sections[n] != current_sections[n]:
+            modified.append(n)
+
+    theme.section(f"{name}: v{version_num} vs current", console)
 
     if not added and not removed and not modified:
-        console.print(theme.info("No differences"))
+        # Check top-level metadata changes
+        meta_changed = False
+        for key in ("name", "description", "mode"):
+            if current_data.get(key) != old_data.get(key):
+                meta_changed = True
+                console.print(theme.info(
+                    f"  {key}: {old_data.get(key)!r} -> {current_data.get(key)!r}"
+                ))
+        if not meta_changed:
+            console.print(theme.info("No differences"))
         return
 
     t = theme.make_clean_table()
     t.add_column("", no_wrap=True)
-    t.add_column("Field", style=f"bold {theme.CORAL}", no_wrap=True)
+    t.add_column("Section", style=f"bold {theme.CORAL}", no_wrap=True)
     t.add_column("Detail", style=theme.MUTED)
 
-    for name in added:
-        f = next(f for f in current.fields if f.name == name)
-        t.add_row("[green]+[/green]", name, f"({f.type})")
-    for name in removed:
-        f = next(f for f in old.fields if f.name == name)
-        t.add_row("[red]-[/red]", name, f"({f.type})")
-    for name in modified:
-        of = next(f for f in old.fields if f.name == name)
-        nf = next(f for f in current.fields if f.name == name)
+    for n in added:
+        s = current_sections[n]
+        t.add_row("[green]+[/green]", n, f"({s.get('type', '?')})")
+    for n in removed:
+        s = old_sections[n]
+        t.add_row("[red]-[/red]", n, f"({s.get('type', '?')})")
+    for n in modified:
         changes = []
-        if of.type != nf.type:
-            changes.append(f"type: {of.type} -> {nf.type}")
-        if of.required != nf.required:
-            changes.append(f"required: {of.required} -> {nf.required}")
-        if of.description != nf.description:
+        os, ns = old_sections[n], current_sections[n]
+        if os.get("type") != ns.get("type"):
+            changes.append(f"type: {os.get('type')} -> {ns.get('type')}")
+        if os.get("required") != ns.get("required"):
+            changes.append(f"required changed")
+        if os.get("description") != ns.get("description"):
             changes.append("description changed")
-        t.add_row("[yellow]~[/yellow]", name, "; ".join(changes))
+        t.add_row("[yellow]~[/yellow]", n, "; ".join(changes) or "content changed")
 
     console.print(Padding(t, (0, 0, 0, 2)))
     console.print()
-    summary_parts = []
+    parts = []
     if added:
-        summary_parts.append(f"{len(added)} added")
+        parts.append(f"{len(added)} added")
     if removed:
-        summary_parts.append(f"{len(removed)} removed")
+        parts.append(f"{len(removed)} removed")
     if modified:
-        summary_parts.append(f"{len(modified)} modified")
-    console.print(theme.info(", ".join(summary_parts)))
+        parts.append(f"{len(modified)} modified")
+    console.print(theme.info(", ".join(parts)))
 
 
 # ---------------------------------------------------------------------------

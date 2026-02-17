@@ -22,17 +22,20 @@ make typecheck                    # mypy
 make check                        # lint + typecheck + test
 
 # Run
-mosaicx extract --document report.pdf                    # auto extraction
-mosaicx extract --document report.pdf --mode radiology   # radiology mode
-mosaicx schema generate --description "..."              # generate schema
-mosaicx eval --pipeline radiology --testset test.jsonl   # evaluate
+mosaicx extract --document report.pdf                         # auto extraction
+mosaicx extract --document report.pdf --template chest_ct     # with template
+mosaicx extract --document report.pdf --mode radiology        # explicit mode
+mosaicx extract --document report.pdf --template echo --score # + completeness
+mosaicx template create --describe "echo with EF"            # create template
+mosaicx template list                                         # list templates
+mosaicx eval --pipeline radiology --testset test.jsonl        # evaluate
 ```
 
 ## Project Structure
 
 ```
 mosaicx/
-├── cli.py              # Click CLI (all commands: extract, batch, schema, optimize, eval, ...)
+├── cli.py              # Click CLI (extract, batch, template, optimize, eval, ...)
 ├── cli_display.py      # Rich display helpers for CLI output
 ├── cli_theme.py        # Theme colors: coral (#E87461), greige (#B5A89A)
 ├── config.py           # MosaicxConfig (pydantic-settings, MOSAICX_* env vars)
@@ -49,8 +52,11 @@ mosaicx/
 │   ├── deidentifier.py # PHI removal (LLM + regex)
 │   └── schema_gen.py   # Schema generation from description
 │
+├── report.py           # Structured report orchestrator (resolve_template, run_report)
+│
 ├── schemas/            # Pydantic models for structured output
 │   └── radreport/      # RadReportFinding, ImpressionItem, ReportSections, etc.
+│       └── templates/  # Built-in YAML templates (chest_ct.yaml, brain_mri.yaml, ...)
 │
 ├── evaluation/
 │   ├── dataset.py      # JSONL loader (load_jsonl) + PIPELINE_INPUT_FIELDS registry
@@ -176,7 +182,9 @@ When adding a new pipeline, register it in **three places**:
 
 ## File Locations
 
-- Schemas: `~/.mosaicx/schemas/`
+- Templates: `~/.mosaicx/templates/` (user-created YAML templates)
+- Template history: `~/.mosaicx/templates/.history/` (versioned backups)
+- Legacy schemas: `~/.mosaicx/schemas/` (migrate with `mosaicx template migrate`)
 - Optimized programs: `~/.mosaicx/optimized/`
 - Checkpoints: `~/.mosaicx/checkpoints/`
 - Logs: `~/.mosaicx/logs/`

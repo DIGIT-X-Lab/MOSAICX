@@ -1,0 +1,64 @@
+name: MammographyReport
+description: Structured mammography report (RDES4)
+radreport_id: RDES4
+mode: radiology
+sections:
+  - name: indication
+    type: str
+    required: true
+    description: Clinical indication (screening vs diagnostic)
+  - name: comparison
+    type: str
+    required: false
+    description: Prior mammograms and dates
+  - name: technique
+    type: str
+    required: false
+    description: Views obtained, tomosynthesis, contrast
+  - name: breast_composition
+    type: enum
+    required: true
+    description: ACR breast density category
+    values: ["a", "b", "c", "d"]
+  - name: findings
+    type: str
+    required: true
+    description: Mammographic findings
+  - name: masses
+    type: list
+    required: false
+    description: Identified masses
+    item:
+      type: object
+      fields:
+        - name: location
+          type: str
+          description: Clock position and depth
+        - name: size_mm
+          type: float
+          description: Size in millimeters
+        - name: shape
+          type: str
+          required: false
+          description: Round, oval, irregular
+        - name: margin
+          type: str
+          required: false
+          description: Circumscribed, obscured, microlobulated, indistinct, spiculated
+  - name: calcifications
+    type: str
+    required: false
+    description: Calcification morphology and distribution
+  - name: associated_features
+    type: str
+    required: false
+    description: Skin retraction, architectural distortion, etc.
+  - name: birads
+    type: enum
+    required: true
+    description: BI-RADS assessment category
+    values: ["0", "1", "2", "3", "4A", "4B", "4C", "5", "6"]
+  - name: impression
+    type: str
+    required: true
+    description: Summary impression with management recommendations

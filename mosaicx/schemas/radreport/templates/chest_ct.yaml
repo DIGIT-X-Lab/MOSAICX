@@ -1,0 +1,74 @@
+name: ChestCTReport
+description: Structured chest CT radiology report (RDES3)
+radreport_id: RDES3
+mode: radiology
+sections:
+  - name: indication
+    type: str
+    required: true
+    description: Clinical indication for chest CT
+  - name: comparison
+    type: str
+    required: false
+    description: Prior comparison studies and dates
+  - name: technique
+    type: str
+    required: false
+    description: CT technique, contrast, slice thickness
+  - name: lungs
+    type: str
+    required: true
+    description: Lung parenchyma findings
+  - name: nodules
+    type: list
+    required: false
+    description: Pulmonary nodules
+    item:
+      type: object
+      fields:
+        - name: location
+          type: str
+          description: Anatomic location (lobe, segment)
+        - name: size_mm
+          type: float
+          description: Maximum diameter in millimeters
+        - name: morphology
+          type: str
+          required: false
+          description: Solid, part-solid, or ground-glass
+        - name: lung_rads
+          type: str
+          required: false
+          description: Lung-RADS category
+  - name: airways
+    type: str
+    required: false
+    description: Trachea and bronchial tree findings
+  - name: mediastinum
+    type: str
+    required: false
+    description: Mediastinal and hilar findings
+  - name: lymph_nodes
+    type: str
+    required: false
+    description: Lymph node stations and measurements
+  - name: pleura
+    type: str
+    required: false
+    description: Pleural findings including effusions
+  - name: heart_and_vessels
+    type: str
+    required: false
+    description: Cardiac and vascular findings
+  - name: chest_wall
+    type: str
+    required: false
+    description: Chest wall and osseous findings
+  - name: upper_abdomen
+    type: str
+    required: false
+    description: Included upper abdominal findings
+  - name: impression
+    type: str
+    required: true
+    description: Summary impression with recommendations

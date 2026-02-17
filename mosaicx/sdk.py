@@ -113,6 +113,35 @@ def _prediction_to_dict(prediction: Any) -> dict[str, Any]:
     return output
 
 
+def _metrics_to_dict(metrics: Any) -> dict[str, Any]:
+    """Convert PipelineMetrics to a plain dict."""
+    return {
+        "total_duration_s": metrics.total_duration_s,
+        "total_tokens": metrics.total_tokens,
+        "steps": [
+            {
+                "name": s.name,
+                "duration_s": s.duration_s,
+                "input_tokens": s.input_tokens,
+                "output_tokens": s.output_tokens,
+            }
+            for s in metrics.steps
+        ],
+    }
+
+
+def _compute_completeness_dict(model_instance: Any, text: str) -> dict[str, Any]:
+    """Compute completeness scoring and return as a plain dict."""
+    from dataclasses import asdict
+
+    from .evaluation.completeness import compute_report_completeness
+
+    comp = compute_report_completeness(
+        model_instance, text, type(model_instance)
+    )
+    return asdict(comp)
+
+
 # ---------------------------------------------------------------------------
 # extract
 # ---------------------------------------------------------------------------
@@ -121,8 +150,9 @@ def _prediction_to_dict(prediction: Any) -> dict[str, Any]:
 def extract(
     text: str,
     *,
+    template: str | Path | None = None,
     mode: str = "auto",
-    schema_name: str | None = None,
+    score: bool = False,
     optimized: str | Path | None = None,
 ) -> dict[str, Any]:
     """Extract structured data from document text.
@@ -131,13 +161,16 @@ def extract(
     ----------
     text:
         Document text to extract from.
+    template:
+        Template name (built-in or saved schema), or path to a YAML
+        template file.  Resolved via :func:`mosaicx.report.resolve_template`.
     mode:
         Extraction mode. ``"auto"`` lets the LLM infer the schema.
         ``"radiology"`` and ``"pathology"`` run specialised multi-step
-        pipelines.
-    schema_name:
-        Name of a saved schema (from ``~/.mosaicx/schemas/``) to extract
-        into.  Mutually exclusive with ``mode`` other than ``"auto"``.
+        pipelines.  Ignored when *template* is provided.
+    score:
+        If ``True``, compute completeness scoring against the template
+        and include it in the output under ``"completeness"``.
     optimized:
         Path to an optimized DSPy program to load. Only applicable for
         ``mode="auto"`` or schema-based extraction.
@@ -145,55 +178,98 @@ def extract(
     Returns
     -------
     dict
-        Extracted data.  Structure depends on mode / schema.
+        Extracted data.  Structure depends on mode / schema.  When
+        *score* is ``True``, includes a ``"completeness"`` key.
 
     Raises
     ------
     ValueError
-        If ``mode`` and ``schema_name`` are both specified (and mode is
-        not ``"auto"``), or if the mode is unknown.
-    FileNotFoundError
-        If ``schema_name`` refers to a schema that does not exist.
+        If conflicting parameters are provided, or if the template/mode
+        is unknown.
     """
-    if schema_name is not None and mode not in ("auto",):
-        raise ValueError(
-            "schema_name and mode are mutually exclusive. "
-            "Use schema_name with mode='auto' (the default), or use mode alone."
-        )
-
     _ensure_configured()
 
-    # --- Schema-based extraction ---
-    if schema_name is not None:
-        from .config import get_config
-        from .pipelines.extraction import extract_with_schema
+    # --- Template-based extraction ---
+    if template is not None:
+        from .report import detect_mode, resolve_template
 
-        cfg = get_config()
-        extracted = extract_with_schema(text, schema_name, cfg.schema_dir)
-        return {"extracted": extracted}
+        template_str = str(template)
+        template_model, tpl_name = resolve_template(template=template_str)
+
+        effective_mode = detect_mode(tpl_name)
+
+        if effective_mode is not None and template_model is None:
+            # Built-in template with mode pipeline
+            import mosaicx.pipelines.radiology  # noqa: F401
+            import mosaicx.pipelines.pathology  # noqa: F401
+
+            if score:
+                from .pipelines.extraction import extract_with_mode_raw
+                from .report import _find_primary_model
+
+                output_data, metrics, raw_pred = extract_with_mode_raw(
+                    text, effective_mode
+                )
+                model_instance = _find_primary_model(raw_pred)
+                if model_instance is not None:
+                    output_data["completeness"] = _compute_completeness_dict(
+                        model_instance, text
+                    )
+            else:
+                from .pipelines.extraction import extract_with_mode
+
+                output_data, metrics = extract_with_mode(text, effective_mode)
+            if metrics is not None:
+                output_data["_metrics"] = _metrics_to_dict(metrics)
+            return output_data
+        elif template_model is not None:
+            from .pipelines.extraction import DocumentExtractor
+
+            extractor = DocumentExtractor(output_schema=template_model)
+            if optimized is not None:
+                from .evaluation.optimize import load_optimized
+
+                extractor = load_optimized(DocumentExtractor, Path(optimized))
+            result = extractor(document_text=text)
+            output: dict[str, Any] = {}
+            if hasattr(result, "extracted"):
+                val = result.extracted
+                if hasattr(val, "model_dump"):
+                    output["extracted"] = val.model_dump()
+                    if score:
+                        output["completeness"] = _compute_completeness_dict(
+                            val, text
+                        )
+                else:
+                    output["extracted"] = val
+            return output
+        else:
+            raise ValueError(
+                f"Template {template!r} resolved but produced no extraction schema."
+            )
 
     # --- Mode-based extraction (radiology, pathology, ...) ---
     if mode not in ("auto",):
         # Trigger lazy loading of mode pipeline modules
         import mosaicx.pipelines.radiology  # noqa: F401
         import mosaicx.pipelines.pathology  # noqa: F401
-        from .pipelines.extraction import extract_with_mode
 
-        output_data, metrics = extract_with_mode(text, mode)
+        if score:
+            from .pipelines.extraction import extract_with_mode_raw
+            from .report import _find_primary_model
+
+            output_data, metrics, raw_pred = extract_with_mode_raw(text, mode)
+            model_instance = _find_primary_model(raw_pred)
+            if model_instance is not None:
+                output_data["completeness"] = _compute_completeness_dict(
+                    model_instance, text
+                )
+        else:
+            from .pipelines.extraction import extract_with_mode
+
+            output_data, metrics = extract_with_mode(text, mode)
         if metrics is not None:
-            output_data["_metrics"] = {
-                "total_duration_s": metrics.total_duration_s,
-                "total_tokens": metrics.total_tokens,
-                "steps": [
-                    {
-                        "name": s.name,
-                        "duration_s": s.duration_s,
-                        "input_tokens": s.input_tokens,
-                        "output_tokens": s.output_tokens,
-                    }
-                    for s in metrics.steps
-                ],
-            }
+            output_data["_metrics"] = _metrics_to_dict(metrics)
         return output_data
 
     # --- Auto extraction (LLM infers schema) ---
@@ -216,6 +292,95 @@ def extract(
         output["inferred_schema"] = result.inferred_schema.model_dump()
 
     return output
+
+
+# ---------------------------------------------------------------------------
+# report
+# ---------------------------------------------------------------------------
+
+
+def report(
+    text: str,
+    *,
+    template: str | Path | None = None,
+    schema_name: str | None = None,
+    describe: str | None = None,
+    mode: str | None = None,
+) -> dict[str, Any]:
+    """Extract structured data and score completeness against a template.
+
+    .. deprecated::
+        Use :func:`extract` with ``score=True`` instead.
+
+    Parameters
+    ----------
+    text:
+        Document text to extract from.
+    template:
+        Built-in RDES template name (e.g. ``"chest_ct"``) or path to
+        a YAML template file, or a saved schema name.
+    schema_name:
+        *Deprecated* -- use *template* instead.
+    describe:
+        Plain-English description to AI-generate a template on the fly.
+    mode:
+        Explicit pipeline mode override.  If ``None``, auto-detected
+        from the template.
+
+    Returns
+    -------
+    dict
+        Keys: ``"extracted"`` (dict), ``"completeness"`` (dict with
+        ``overall``, ``required_coverage``, ``optional_coverage``,
+        ``missing_required``, etc.), ``"template_name"`` (str | None),
+        ``"mode_used"`` (str | None), ``"metrics"`` (dict | None).
+
+    Raises
+    ------
+    ValueError
+        If more than one of *template*, *schema_name*, *describe* is
+        provided, or if the template/schema cannot be resolved.
+    """
+    import warnings
+
+    warnings.warn(
+        "sdk.report() is deprecated. Use sdk.extract(score=True) instead.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+
+    # Map deprecated params to template
+    effective_template = template
+    if schema_name is not None:
+        if effective_template is not None:
+            raise ValueError(
+                "Provide at most one of template or schema_name."
+            )
+        effective_template = schema_name
+    if describe is not None:
+        raise ValueError(
+            "The 'describe' parameter is no longer supported in sdk.report(). "
+            "Use 'mosaicx template create --describe' to create a template first, "
+            "then pass the template name."
+        )
+
+    _ensure_configured()
+
+    from .report import resolve_template, run_report
+
+    template_str = str(effective_template) if effective_template is not None else None
+    template_model, tpl_name = resolve_template(template=template_str)
+
+    result = run_report(
+        document_text=text,
+        template_model=template_model,
+        template_name=tpl_name,
+        mode=mode,
+    )
+
+    from dataclasses import asdict
+
+    return asdict(result)
 
 
 # ---------------------------------------------------------------------------

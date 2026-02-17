@@ -1,0 +1,65 @@
+name: AbdomenCTReport
+description: Structured abdomen CT radiology report (RDES44)
+radreport_id: RDES44
+mode: radiology
+sections:
+  - name: indication
+    type: str
+    required: true
+    description: Clinical indication for abdomen CT
+  - name: comparison
+    type: str
+    required: false
+    description: Prior comparison studies and dates
+  - name: technique
+    type: str
+    required: false
+    description: CT technique, contrast phases, oral contrast
+  - name: liver
+    type: str
+    required: true
+    description: Hepatic findings
+  - name: gallbladder_and_biliary
+    type: str
+    required: false
+    description: Gallbladder and biliary system
+  - name: pancreas
+    type: str
+    required: false
+    description: Pancreatic findings
+  - name: spleen
+    type: str
+    required: false
+    description: Splenic findings
+  - name: adrenals
+    type: str
+    required: false
+    description: Adrenal gland findings
+  - name: kidneys_and_ureters
+    type: str
+    required: false
+    description: Renal and ureteral findings
+  - name: gi_tract
+    type: str
+    required: false
+    description: Gastrointestinal tract findings
+  - name: mesentery_and_peritoneum
+    type: str
+    required: false
+    description: Mesenteric, peritoneal, and retroperitoneal findings
+  - name: lymph_nodes
+    type: str
+    required: false
+    description: Abdominal and pelvic lymph nodes
+  - name: vasculature
+    type: str
+    required: false
+    description: Aorta and abdominal vascular findings
+  - name: osseous
+    type: str
+    required: false
+    description: Osseous findings
+  - name: impression
+    type: str
+    required: true
+    description: Summary impression with recommendations

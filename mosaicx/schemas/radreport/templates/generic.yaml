@@ -1,0 +1,24 @@
+name: GenericRadiologyReport
+description: Generic structured radiology report
+mode: radiology
+sections:
+  - name: indication
+    type: str
+    required: true
+    description: Clinical indication for the exam
+  - name: comparison
+    type: str
+    required: false
+    description: Prior comparison studies
+  - name: technique
+    type: str
+    required: false
+    description: Imaging technique and protocol
+  - name: findings
+    type: str
+    required: true
+    description: Detailed imaging findings
+  - name: impression
+    type: str
+    required: true
+    description: Summary impression and recommendations

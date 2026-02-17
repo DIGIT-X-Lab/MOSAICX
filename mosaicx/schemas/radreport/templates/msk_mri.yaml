@@ -1,0 +1,48 @@
+name: MSKMRIReport
+description: Structured musculoskeletal MRI report
+mode: radiology
+sections:
+  - name: indication
+    type: str
+    required: true
+    description: Clinical indication and anatomic region
+  - name: comparison
+    type: str
+    required: false
+    description: Prior comparison studies and dates
+  - name: technique
+    type: str
+    required: false
+    description: MRI sequences, coil, contrast, field strength
+  - name: bones
+    type: str
+    required: true
+    description: Osseous findings (marrow signal, fractures, lesions)
+  - name: joints
+    type: str
+    required: true
+    description: Articular findings (cartilage, alignment, effusion)
+  - name: ligaments
+    type: str
+    required: false
+    description: Ligamentous findings
+  - name: tendons
+    type: str
+    required: false
+    description: Tendon findings
+  - name: menisci
+    type: str
+    required: false
+    description: Meniscal findings (knee-specific)
+  - name: muscles
+    type: str
+    required: false
+    description: Muscular findings
+  - name: soft_tissues
+    type: str
+    required: false
+    description: Soft tissue and subcutaneous findings
+  - name: impression
+    type: str
+    required: true
+    description: Summary impression with recommendations

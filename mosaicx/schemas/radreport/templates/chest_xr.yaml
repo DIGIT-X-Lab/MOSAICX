@@ -1,0 +1,45 @@
+name: ChestXRReport
+description: Structured chest X-ray radiology report (RDES2)
+radreport_id: RDES2
+mode: radiology
+sections:
+  - name: indication
+    type: str
+    required: true
+    description: Clinical indication for chest X-ray
+  - name: comparison
+    type: str
+    required: false
+    description: Prior comparison studies and dates
+  - name: technique
+    type: str
+    required: false
+    description: Technique (PA/AP/lateral, portable vs upright)
+  - name: lungs
+    type: str
+    required: true
+    description: Lung field findings
+  - name: cardiac_silhouette
+    type: str
+    required: false
+    description: Heart size and contour
+  - name: mediastinum
+    type: str
+    required: false
+    description: Mediastinal contour and width
+  - name: pleura
+    type: str
+    required: false
+    description: Pleural findings and costophrenic angles
+  - name: osseous
+    type: str
+    required: false
+    description: Bony thorax findings
+  - name: lines_and_tubes
+    type: str
+    required: false
+    description: Support devices, lines, and tubes
+  - name: impression
+    type: str
+    required: true
+    description: Summary impression with recommendations

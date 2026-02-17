@@ -27,6 +27,7 @@ __all__ = [
     "parse_template",
     "compile_template",
     "compile_template_file",
+    "schema_spec_to_template_yaml",
 ]
 
 # ---------------------------------------------------------------------------
@@ -68,6 +69,7 @@ class TemplateMeta(BaseModel):
     name: str
     description: Optional[str] = None
     radreport_id: Optional[str] = None
+    mode: Optional[str] = None  # pipeline mode (e.g. "radiology", "pathology")
     sections: List[SectionSpec]
 
 
@@ -225,3 +227,89 @@ def compile_template_file(path: str | Path) -> type[BaseModel]:
     """
     content = Path(path).read_text(encoding="utf-8")
     return compile_template(content)
+
+
+# ---------------------------------------------------------------------------
+# SchemaSpec → YAML conversion
+# ---------------------------------------------------------------------------
+
+
+def schema_spec_to_template_yaml(
+    spec: Any,
+    *,
+    mode: str | None = None,
+) -> str:
+    """Convert a SchemaSpec (from ``schema_gen``) into YAML template format.
+
+    This bridges the two schema representations:
+
+    - **SchemaSpec** (``schema_gen.py``): flat fields with type strings like
+      ``"list[str]"``, ``"enum"``.
+    - **YAML template**: nested structure with ``type: list`` + ``item:``
+      blocks, ``type: enum`` + ``values:`` blocks.
+
+    Parameters
+    ----------
+    spec:
+        A ``SchemaSpec`` instance (from ``mosaicx.pipelines.schema_gen``).
+    mode:
+        Optional pipeline mode to embed (e.g. ``"radiology"``).
+
+    Returns
+    -------
+    str
+        YAML string conforming to the MOSAICX template format.
+    """
+    import re
+
+    sections: list[dict[str, Any]] = []
+    list_re = re.compile(r"^list\[(\w+)\]$", re.IGNORECASE)
+
+    for field in spec.fields:
+        section: dict[str, Any] = {"name": field.name}
+        type_str = field.type.strip().lower()
+
+        # Parse list[X] types
+        m = list_re.match(type_str)
+        if m:
+            section["type"] = "list"
+            inner = m.group(1).lower()
+            # Normalise aliases
+            inner_map = {
+                "string": "str", "integer": "int",
+                "number": "float", "boolean": "bool",
+            }
+            inner = inner_map.get(inner, inner)
+            section["item"] = {"type": inner}
+        elif type_str == "enum":
+            section["type"] = "enum"
+            if field.enum_values:
+                section["values"] = list(field.enum_values)
+        else:
+            # Normalise scalar aliases
+            alias_map = {
+                "string": "str", "integer": "int",
+                "number": "float", "boolean": "bool",
+            }
+            section["type"] = alias_map.get(type_str, type_str)
+
+        if not field.required:
+            section["required"] = False
+        if field.description:
+            section["description"] = field.description
+
+        sections.append(section)
+
+    template: dict[str, Any] = {"name": spec.class_name}
+    if spec.description:
+        template["description"] = spec.description
+    if mode:
+        template["mode"] = mode
+    template["sections"] = sections
+
+    return yaml.dump(
+        template,
+        default_flow_style=False,
+        sort_keys=False,
+        allow_unicode=True,
+    )

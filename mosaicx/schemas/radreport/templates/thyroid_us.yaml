@@ -1,0 +1,66 @@
+name: ThyroidUSReport
+description: Structured thyroid ultrasound report (RDES72)
+radreport_id: RDES72
+mode: radiology
+sections:
+  - name: indication
+    type: str
+    required: true
+    description: Clinical indication for thyroid ultrasound
+  - name: comparison
+    type: str
+    required: false
+    description: Prior comparison studies and dates
+  - name: technique
+    type: str
+    required: false
+    description: Ultrasound technique and transducer
+  - name: thyroid_size
+    type: str
+    required: true
+    description: Overall thyroid gland dimensions
+  - name: right_lobe
+    type: str
+    required: true
+    description: Right lobe findings
+  - name: left_lobe
+    type: str
+    required: true
+    description: Left lobe findings
+  - name: isthmus
+    type: str
+    required: false
+    description: Isthmus findings
+  - name: nodules
+    type: list
+    required: false
+    description: Thyroid nodules
+    item:
+      type: object
+      fields:
+        - name: location
+          type: str
+          description: Lobe and position
+        - name: size_mm
+          type: float
+          description: Maximum dimension in millimeters
+        - name: composition
+          type: str
+          required: false
+          description: Solid, cystic, mixed
+        - name: echogenicity
+          type: str
+          required: false
+          description: Hyperechoic, isoechoic, hypoechoic, very hypoechoic
+        - name: ti_rads
+          type: str
+          required: false
+          description: ACR TI-RADS category
+  - name: lymph_nodes
+    type: str
+    required: false
+    description: Cervical lymph node findings
+  - name: impression
+    type: str
+    required: true
+    description: Summary impression with TI-RADS and recommendations

@@ -150,7 +150,7 @@ class TestTemplateList:
         assert result.exit_code == 0
         # Table headers
         assert "Name" in result.output
-        assert "Exam Type" in result.output
+        assert "Mode" in result.output
         assert "Description" in result.output
 
 
@@ -404,13 +404,6 @@ class TestLLMCommandsGracefulFailure:
         assert result.exit_code != 0
         assert "API key" in result.output or "api_key" in result.output
 
-    def test_schema_generate_no_api_key(self, runner: CliRunner, _no_api_key):
-        result = runner.invoke(
-            cli,
-            ["schema", "generate", "--description", "A simple patient record"],
-        )
-        assert result.exit_code != 0
-        assert "API key" in result.output or "api_key" in result.output
 
 
 # -------------------------------------------------------------------------
@@ -480,135 +473,56 @@ class TestBatch:
 # -------------------------------------------------------------------------
 
 
-class TestSchemaManagement:
-    """Tests for schema save/load/list/refine CLI commands."""
+# -------------------------------------------------------------------------
+# Unified --template flag
+# -------------------------------------------------------------------------
 
-    def test_schema_list_empty(self, runner: CliRunner, tmp_path: Path, monkeypatch):
-        """schema list shows count when no schemas saved."""
-        monkeypatch.setenv("MOSAICX_HOME_DIR", str(tmp_path))
-        from mosaicx.config import get_config
 
-        get_config.cache_clear()
-        try:
-            result = runner.invoke(cli, ["schema", "list"])
-            assert result.exit_code == 0
-            assert "0 schema(s)" in result.output
-        finally:
-            get_config.cache_clear()
+class TestUnifiedTemplateFlag:
+    """Tests for the unified --template flag on extract and batch commands."""
 
-    def test_schema_list_shows_saved(self, runner: CliRunner, tmp_path: Path, monkeypatch):
-        """schema list shows saved schemas in a table."""
-        monkeypatch.setenv("MOSAICX_HOME_DIR", str(tmp_path))
-        from mosaicx.config import get_config
+    def test_extract_help_shows_template(self, runner: CliRunner):
+        result = runner.invoke(cli, ["extract", "--help"])
+        assert result.exit_code == 0
+        assert "--template" in result.output
 
-        get_config.cache_clear()
-        try:
-            schema_dir = tmp_path / "schemas"
-            schema_dir.mkdir()
-            (schema_dir / "TestModel.json").write_text(
-                '{"class_name":"TestModel","description":"A test","fields":[{"name":"x","type":"str","description":"x","required":true,"enum_values":null}]}'
-            )
-            result = runner.invoke(cli, ["schema", "list"])
-            assert result.exit_code == 0
-            assert "TestModel" in result.output
-            assert "1 schema(s)" in result.output
-        finally:
-            get_config.cache_clear()
+    def test_extract_help_shows_score(self, runner: CliRunner):
+        result = runner.invoke(cli, ["extract", "--help"])
+        assert result.exit_code == 0
+        assert "--score" in result.output
 
-    def test_schema_refine_add_field(self, runner: CliRunner, tmp_path: Path, monkeypatch):
-        """schema refine --add adds a field."""
-        monkeypatch.setenv("MOSAICX_HOME_DIR", str(tmp_path))
-        from mosaicx.config import get_config
+    def test_extract_template_and_mode_mutually_exclusive(
+        self, runner: CliRunner, tmp_text_file: Path
+    ):
+        """--template and --mode on extract are mutually exclusive."""
+        result = runner.invoke(
+            cli,
+            [
+                "extract",
+                "--document", str(tmp_text_file),
+                "--template", "chest_ct",
+                "--mode", "radiology",
+            ],
+        )
+        assert result.exit_code != 0
+        assert "mutually exclusive" in result.output
 
-        get_config.cache_clear()
-        try:
-            schema_dir = tmp_path / "schemas"
-            schema_dir.mkdir()
-            (schema_dir / "TestModel.json").write_text(
-                '{"class_name":"TestModel","description":"Test","fields":[{"name":"x","type":"str","description":"x","required":true,"enum_values":null}]}'
-            )
-            result = runner.invoke(
-                cli, ["schema", "refine", "--schema", "TestModel", "--add", "y: int"]
-            )
-            assert result.exit_code == 0
-            assert "y" in result.output
-        finally:
-            get_config.cache_clear()
+    def test_extract_unknown_template_shows_error(
+        self, runner: CliRunner, tmp_text_file: Path, _no_api_key
+    ):
+        """Unknown template name shows helpful error."""
+        result = runner.invoke(
+            cli,
+            ["extract", "--document", str(tmp_text_file), "--template", "nonexistent_xyz"],
+        )
+        assert result.exit_code != 0
+        assert "not found" in result.output.lower()
 
-    def test_schema_refine_remove_field(self, runner: CliRunner, tmp_path: Path, monkeypatch):
-        """schema refine --remove removes a field."""
-        monkeypatch.setenv("MOSAICX_HOME_DIR", str(tmp_path))
-        from mosaicx.config import get_config
+    def test_batch_help_shows_template(self, runner: CliRunner):
+        result = runner.invoke(cli, ["batch", "--help"])
+        assert result.exit_code == 0
+        assert "--template" in result.output
 
-        get_config.cache_clear()
-        try:
-            schema_dir = tmp_path / "schemas"
-            schema_dir.mkdir()
-            (schema_dir / "TestModel.json").write_text(
-                '{"class_name":"TestModel","description":"Test","fields":[{"name":"x","type":"str","description":"x","required":true,"enum_values":null},{"name":"y","type":"int","description":"y","required":true,"enum_values":null}]}'
-            )
-            result = runner.invoke(
-                cli, ["schema", "refine", "--schema", "TestModel", "--remove", "y"]
-            )
-            assert result.exit_code == 0
-            assert "removed" in result.output or "Removed" in result.output
-        finally:
-            get_config.cache_clear()
-
-    def test_schema_refine_rename_field(self, runner: CliRunner, tmp_path: Path, monkeypatch):
-        """schema refine --rename renames a field."""
-        monkeypatch.setenv("MOSAICX_HOME_DIR", str(tmp_path))
-        from mosaicx.config import get_config
-
-        get_config.cache_clear()
-        try:
-            schema_dir = tmp_path / "schemas"
-            schema_dir.mkdir()
-            (schema_dir / "TestModel.json").write_text(
-                '{"class_name":"TestModel","description":"Test","fields":[{"name":"x","type":"str","description":"x","required":true,"enum_values":null}]}'
-            )
-            result = runner.invoke(
-                cli, ["schema", "refine", "--schema", "TestModel", "--rename", "x=name"]
-            )
-            assert result.exit_code == 0
-            assert "name" in result.output
-        finally:
-            get_config.cache_clear()
-
-    def test_schema_refine_not_found(self, runner: CliRunner, tmp_path: Path, monkeypatch):
-        """schema refine with nonexistent schema shows error."""
-        monkeypatch.setenv("MOSAICX_HOME_DIR", str(tmp_path))
-        from mosaicx.config import get_config
-
-        get_config.cache_clear()
-        try:
-            result = runner.invoke(
-                cli, ["schema", "refine", "--schema", "Missing", "--add", "x: str"]
-            )
-            assert result.exit_code != 0
-            assert "not found" in result.output.lower()
-        finally:
-            get_config.cache_clear()
-
-    def test_schema_refine_no_operation(self, runner: CliRunner, tmp_path: Path, monkeypatch):
-        """schema refine without any operation flag shows error."""
-        monkeypatch.setenv("MOSAICX_HOME_DIR", str(tmp_path))
-        from mosaicx.config import get_config
-
-        get_config.cache_clear()
-        try:
-            schema_dir = tmp_path / "schemas"
-            schema_dir.mkdir()
-            (schema_dir / "TestModel.json").write_text(
-                '{"class_name":"TestModel","description":"Test","fields":[{"name":"x","type":"str","description":"x","required":true,"enum_values":null}]}'
-            )
-            result = runner.invoke(
-                cli, ["schema", "refine", "--schema", "TestModel"]
-            )
-            assert result.exit_code != 0
-            assert "Provide" in result.output
-        finally:
-            get_config.cache_clear()
 
 
 # -------------------------------------------------------------------------
@@ -639,17 +553,531 @@ class TestVersionAndHelp:
         assert "medium" in result.output
         assert "heavy" in result.output
 
-    def test_schema_generate_help_shows_description(self, runner: CliRunner):
-        result = runner.invoke(cli, ["schema", "generate", "--help"])
-        assert result.exit_code == 0
-        assert "--description" in result.output
-
-    def test_schema_generate_help_shows_output(self, runner: CliRunner):
-        result = runner.invoke(cli, ["schema", "generate", "--help"])
-        assert result.exit_code == 0
-        assert "--output" in result.output
-
     def test_template_validate_help_shows_file(self, runner: CliRunner):
         result = runner.invoke(cli, ["template", "validate", "--help"])
         assert result.exit_code == 0
         assert "--file" in result.output
+
+
+# -------------------------------------------------------------------------
+# Phase 2: template create / show / refine
+# -------------------------------------------------------------------------
+
+
+class TestTemplateCreate:
+    """Tests for the template create command."""
+
+    def test_template_create_help(self, runner: CliRunner):
+        result = runner.invoke(cli, ["template", "create", "--help"])
+        assert result.exit_code == 0
+        assert "--describe" in result.output
+        assert "--from-document" in result.output
+        assert "--from-url" in result.output
+        assert "--from-json" in result.output
+
+    def test_template_create_no_source_error(self, runner: CliRunner):
+        result = runner.invoke(cli, ["template", "create"])
+        assert result.exit_code != 0
+        assert "Provide" in result.output
+
+    def test_template_create_from_json(self, runner: CliRunner, tmp_path: Path, monkeypatch):
+        """--from-json converts a SchemaSpec JSON to YAML template."""
+        monkeypatch.setenv("MOSAICX_HOME_DIR", str(tmp_path))
+        from mosaicx.config import get_config
+
+        get_config.cache_clear()
+        try:
+            json_file = tmp_path / "MySchema.json"
+            json_file.write_text(
+                '{"class_name":"MySchema","description":"A test schema",'
+                '"fields":[{"name":"findings","type":"str","description":"findings","required":true,"enum_values":null},'
+                '{"name":"severity","type":"enum","description":"severity level","required":false,'
+                '"enum_values":["mild","moderate","severe"]}]}'
+            )
+            result = runner.invoke(
+                cli,
+                ["template", "create", "--from-json", str(json_file)],
+            )
+            assert result.exit_code == 0
+            assert "Template created" in result.output
+            assert "MySchema" in result.output
+
+            # Verify YAML file was created
+            yaml_path = tmp_path / "templates" / "MySchema.yaml"
+            assert yaml_path.exists()
+            content = yaml_path.read_text()
+            assert "findings" in content
+            assert "severity" in content
+        finally:
+            get_config.cache_clear()
+
+    def test_template_create_from_json_with_name(self, runner: CliRunner, tmp_path: Path, monkeypatch):
+        """--from-json with --name overrides the class name."""
+        monkeypatch.setenv("MOSAICX_HOME_DIR", str(tmp_path))
+        from mosaicx.config import get_config
+
+        get_config.cache_clear()
+        try:
+            json_file = tmp_path / "Original.json"
+            json_file.write_text(
+                '{"class_name":"Original","description":"test",'
+                '"fields":[{"name":"x","type":"str","description":"x","required":true,"enum_values":null}]}'
+            )
+            result = runner.invoke(
+                cli,
+                ["template", "create", "--from-json", str(json_file), "--name", "Renamed"],
+            )
+            assert result.exit_code == 0
+            assert "Renamed" in result.output
+            yaml_path = tmp_path / "templates" / "Renamed.yaml"
+            assert yaml_path.exists()
+        finally:
+            get_config.cache_clear()
+
+    def test_template_create_from_json_with_output(self, runner: CliRunner, tmp_path: Path):
+        """--from-json with --output saves to custom path."""
+        json_file = tmp_path / "Test.json"
+        json_file.write_text(
+            '{"class_name":"Test","description":"test",'
+            '"fields":[{"name":"x","type":"str","description":"x","required":true,"enum_values":null}]}'
+        )
+        output_path = tmp_path / "custom" / "out.yaml"
+        result = runner.invoke(
+            cli,
+            ["template", "create", "--from-json", str(json_file), "--output", str(output_path)],
+        )
+        assert result.exit_code == 0
+        assert output_path.exists()
+
+    def test_template_create_from_json_missing_file(self, runner: CliRunner, tmp_path: Path):
+        missing = tmp_path / "nonexistent.json"
+        result = runner.invoke(
+            cli,
+            ["template", "create", "--from-json", str(missing)],
+        )
+        assert result.exit_code != 0
+        assert "not found" in result.output.lower()
+
+    def test_template_create_from_json_invalid_json(self, runner: CliRunner, tmp_path: Path):
+        bad_json = tmp_path / "bad.json"
+        bad_json.write_text("not valid json at all")
+        result = runner.invoke(
+            cli,
+            ["template", "create", "--from-json", str(bad_json)],
+        )
+        assert result.exit_code != 0
+        assert "Invalid" in result.output
+
+    def test_template_create_from_json_with_mode(self, runner: CliRunner, tmp_path: Path, monkeypatch):
+        """--mode embeds pipeline mode in the YAML template."""
+        monkeypatch.setenv("MOSAICX_HOME_DIR", str(tmp_path))
+        from mosaicx.config import get_config
+
+        get_config.cache_clear()
+        try:
+            json_file = tmp_path / "Test.json"
+            json_file.write_text(
+                '{"class_name":"Test","description":"test",'
+                '"fields":[{"name":"x","type":"str","description":"x","required":true,"enum_values":null}]}'
+            )
+            result = runner.invoke(
+                cli,
+                ["template", "create", "--from-json", str(json_file), "--mode", "radiology"],
+            )
+            assert result.exit_code == 0
+            yaml_path = tmp_path / "templates" / "Test.yaml"
+            content = yaml_path.read_text()
+            assert "mode: radiology" in content
+        finally:
+            get_config.cache_clear()
+
+
+class TestTemplateCreateFromRadReport:
+    """Tests for the --from-radreport flag (no actual API calls)."""
+
+    def test_from_radreport_help(self, runner: CliRunner):
+        result = runner.invoke(cli, ["template", "create", "--help"])
+        assert "--from-radreport" in result.output
+
+    def test_from_radreport_no_source_includes_option(self, runner: CliRunner):
+        result = runner.invoke(cli, ["template", "create"])
+        assert result.exit_code != 0
+        assert "from-radreport" in result.output
+
+
+class TestTemplateShow:
+    """Tests for the template show command."""
+
+    def test_template_show_builtin(self, runner: CliRunner):
+        """template show works for built-in templates."""
+        result = runner.invoke(cli, ["template", "show", "chest_ct"])
+        assert result.exit_code == 0
+        # Section title is uppercased by Rich: "CHESTCTREPORT (BUILT-IN)"
+        assert "CHESTCTREPORT" in result.output.upper()
+        assert "BUILT-IN" in result.output.upper()
+
+    def test_template_show_builtin_sections(self, runner: CliRunner):
+        """template show shows sections for built-in templates."""
+        result = runner.invoke(cli, ["template", "show", "brain_mri"])
+        assert result.exit_code == 0
+        assert "indication" in result.output
+        assert "impression" in result.output
+
+    def test_template_show_user_template(self, runner: CliRunner, tmp_path: Path, monkeypatch):
+        """template show works for user-created templates."""
+        monkeypatch.setenv("MOSAICX_HOME_DIR", str(tmp_path))
+        from mosaicx.config import get_config
+
+        get_config.cache_clear()
+        try:
+            tpl_dir = tmp_path / "templates"
+            tpl_dir.mkdir()
+            (tpl_dir / "my_tpl.yaml").write_text(
+                "name: MyTemplate\n"
+                "description: Test template\n"
+                "mode: radiology\n"
+                "sections:\n"
+                "  - name: findings\n"
+                "    type: str\n"
+                "    required: true\n"
+                "    description: Clinical findings\n"
+            )
+            result = runner.invoke(cli, ["template", "show", "my_tpl"])
+            assert result.exit_code == 0
+            assert "MYTEMPLATE" in result.output.upper()
+            assert "USER" in result.output.upper()
+            assert "findings" in result.output
+        finally:
+            get_config.cache_clear()
+
+    def test_template_show_saved_schema_fallback(self, runner: CliRunner, tmp_path: Path, monkeypatch):
+        """template show falls back to saved schemas."""
+        monkeypatch.setenv("MOSAICX_HOME_DIR", str(tmp_path))
+        from mosaicx.config import get_config
+
+        get_config.cache_clear()
+        try:
+            schema_dir = tmp_path / "schemas"
+            schema_dir.mkdir()
+            (schema_dir / "OldSchema.json").write_text(
+                '{"class_name":"OldSchema","description":"Legacy schema",'
+                '"fields":[{"name":"x","type":"str","description":"x","required":true,"enum_values":null}]}'
+            )
+            result = runner.invoke(cli, ["template", "show", "OldSchema"])
+            assert result.exit_code == 0
+            assert "OLDSCHEMA" in result.output.upper()
+            assert "SAVED SCHEMA" in result.output.upper()
+            assert "template create --from-json" in result.output
+        finally:
+            get_config.cache_clear()
+
+    def test_template_show_not_found(self, runner: CliRunner, tmp_path: Path, monkeypatch):
+        """template show with unknown name shows error."""
+        monkeypatch.setenv("MOSAICX_HOME_DIR", str(tmp_path))
+        from mosaicx.config import get_config
+
+        get_config.cache_clear()
+        try:
+            result = runner.invoke(cli, ["template", "show", "nonexistent"])
+            assert result.exit_code != 0
+            assert "not found" in result.output.lower()
+        finally:
+            get_config.cache_clear()
+
+
+class TestTemplateRefineHelp:
+    """Tests for the template refine command (non-LLM tests only)."""
+
+    def test_template_refine_help(self, runner: CliRunner):
+        result = runner.invoke(cli, ["template", "refine", "--help"])
+        assert result.exit_code == 0
+        assert "--instruction" in result.output
+
+    def test_template_refine_not_found(self, runner: CliRunner, tmp_path: Path, monkeypatch):
+        monkeypatch.setenv("MOSAICX_HOME_DIR", str(tmp_path))
+        from mosaicx.config import get_config
+
+        get_config.cache_clear()
+        try:
+            result = runner.invoke(
+                cli,
+                ["template", "refine", "nonexistent", "--instruction", "add a field"],
+            )
+            assert result.exit_code != 0
+            assert "not found" in result.output.lower()
+        finally:
+            get_config.cache_clear()
+
+
+# -------------------------------------------------------------------------
+# template migrate
+# -------------------------------------------------------------------------
+
+
+class TestTemplateMigrate:
+    """Tests for the template migrate command."""
+
+    def test_migrate_help(self, runner: CliRunner):
+        result = runner.invoke(cli, ["template", "migrate", "--help"])
+        assert result.exit_code == 0
+        assert "--dry-run" in result.output
+
+    def test_migrate_no_schemas(self, runner: CliRunner, tmp_path: Path, monkeypatch):
+        """No schemas directory -- nothing to migrate."""
+        monkeypatch.setenv("MOSAICX_HOME_DIR", str(tmp_path))
+        from mosaicx.config import get_config
+
+        get_config.cache_clear()
+        try:
+            result = runner.invoke(cli, ["template", "migrate"])
+            assert result.exit_code == 0
+            assert "nothing to migrate" in result.output.lower()
+        finally:
+            get_config.cache_clear()
+
+    def test_migrate_empty_schemas_dir(self, runner: CliRunner, tmp_path: Path, monkeypatch):
+        """Empty schemas directory -- nothing to migrate."""
+        monkeypatch.setenv("MOSAICX_HOME_DIR", str(tmp_path))
+        from mosaicx.config import get_config
+
+        get_config.cache_clear()
+        try:
+            (tmp_path / "schemas").mkdir()
+            result = runner.invoke(cli, ["template", "migrate"])
+            assert result.exit_code == 0
+            assert "nothing to migrate" in result.output.lower()
+        finally:
+            get_config.cache_clear()
+
+    def test_migrate_dry_run(self, runner: CliRunner, tmp_path: Path, monkeypatch):
+        """Dry run shows what would be migrated without writing files."""
+        monkeypatch.setenv("MOSAICX_HOME_DIR", str(tmp_path))
+        from mosaicx.config import get_config
+
+        get_config.cache_clear()
+        try:
+            schema_dir = tmp_path / "schemas"
+            schema_dir.mkdir()
+            (schema_dir / "TestModel.json").write_text(
+                '{"class_name":"TestModel","description":"A test",'
+                '"fields":[{"name":"x","type":"str","description":"x",'
+                '"required":true,"enum_values":null}]}'
+            )
+            result = runner.invoke(cli, ["template", "migrate", "--dry-run"])
+            assert result.exit_code == 0
+            assert "would migrate" in result.output.lower()
+            # Should NOT create the YAML file
+            assert not (tmp_path / "templates" / "TestModel.yaml").exists()
+        finally:
+            get_config.cache_clear()
+
+    def test_migrate_creates_yaml(self, runner: CliRunner, tmp_path: Path, monkeypatch):
+        """Migration creates YAML files from JSON schemas."""
+        monkeypatch.setenv("MOSAICX_HOME_DIR", str(tmp_path))
+        from mosaicx.config import get_config
+
+        get_config.cache_clear()
+        try:
+            schema_dir = tmp_path / "schemas"
+            schema_dir.mkdir()
+            (schema_dir / "TestModel.json").write_text(
+                '{"class_name":"TestModel","description":"A test",'
+                '"fields":[{"name":"x","type":"str","description":"x",'
+                '"required":true,"enum_values":null}]}'
+            )
+            result = runner.invoke(cli, ["template", "migrate"])
+            assert result.exit_code == 0
+            assert "migrated" in result.output.lower()
+
+            yaml_path = tmp_path / "templates" / "TestModel.yaml"
+            assert yaml_path.exists()
+            content = yaml_path.read_text()
+            assert "TestModel" in content
+            assert "sections" in content
+        finally:
+            get_config.cache_clear()
+
+    def test_migrate_skips_existing_yaml(self, runner: CliRunner, tmp_path: Path, monkeypatch):
+        """Migration skips schemas that already have YAML templates."""
+        monkeypatch.setenv("MOSAICX_HOME_DIR", str(tmp_path))
+        from mosaicx.config import get_config
+
+        get_config.cache_clear()
+        try:
+            schema_dir = tmp_path / "schemas"
+            schema_dir.mkdir()
+            (schema_dir / "TestModel.json").write_text(
+                '{"class_name":"TestModel","description":"Test",'
+                '"fields":[{"name":"x","type":"str","description":"x",'
+                '"required":true,"enum_values":null}]}'
+            )
+            # Pre-create the YAML file
+            tpl_dir = tmp_path / "templates"
+            tpl_dir.mkdir()
+            (tpl_dir / "TestModel.yaml").write_text("existing content")
+
+            result = runner.invoke(cli, ["template", "migrate"])
+            assert result.exit_code == 0
+            assert "skip" in result.output.lower()
+            # Should NOT overwrite
+            assert (tpl_dir / "TestModel.yaml").read_text() == "existing content"
+        finally:
+            get_config.cache_clear()
+
+
+# -------------------------------------------------------------------------
+# template versioning (history, revert, diff)
+# -------------------------------------------------------------------------
+
+
+SAMPLE_TPL_V1 = (
+    "name: TestTpl\n"
+    "description: version 1\n"
+    "mode: radiology\n"
+    "sections:\n"
+    "  - name: finding_a\n"
+    "    type: str\n"
+    "    required: true\n"
+)
+
+SAMPLE_TPL_V2 = (
+    "name: TestTpl\n"
+    "description: version 2\n"
+    "mode: radiology\n"
+    "sections:\n"
+    "  - name: finding_a\n"
+    "    type: str\n"
+    "    required: true\n"
+    "  - name: finding_b\n"
+    "    type: str\n"
+    "    required: false\n"
+    "    description: New field in v2\n"
+)
+
+
+class TestTemplateVersioning:
+    """Tests for template history, revert, and diff commands."""
+
+    def _setup_versioned_template(self, tmp_path: Path):
+        """Create a user template with one archived version."""
+        tpl_dir = tmp_path / "templates"
+        tpl_dir.mkdir(parents=True)
+        (tpl_dir / "TestTpl.yaml").write_text(SAMPLE_TPL_V2)
+
+        # Create history
+        history_dir = tpl_dir / ".history"
+        history_dir.mkdir()
+        (history_dir / "TestTpl_v1.yaml").write_text(SAMPLE_TPL_V1)
+
+    def test_history_help(self, runner: CliRunner):
+        result = runner.invoke(cli, ["template", "history", "--help"])
+        assert result.exit_code == 0
+
+    def test_history_not_found(self, runner: CliRunner, tmp_path: Path, monkeypatch):
+        monkeypatch.setenv("MOSAICX_HOME_DIR", str(tmp_path))
+        from mosaicx.config import get_config
+
+        get_config.cache_clear()
+        try:
+            result = runner.invoke(cli, ["template", "history", "nonexistent"])
+            assert result.exit_code != 0
+            assert "not found" in result.output.lower()
+        finally:
+            get_config.cache_clear()
+
+    def test_history_shows_versions(self, runner: CliRunner, tmp_path: Path, monkeypatch):
+        monkeypatch.setenv("MOSAICX_HOME_DIR", str(tmp_path))
+        from mosaicx.config import get_config
+
+        get_config.cache_clear()
+        try:
+            self._setup_versioned_template(tmp_path)
+            result = runner.invoke(cli, ["template", "history", "TestTpl"])
+            assert result.exit_code == 0
+            assert "v1" in result.output
+            assert "current" in result.output.lower()
+        finally:
+            get_config.cache_clear()
+
+    def test_history_no_versions(self, runner: CliRunner, tmp_path: Path, monkeypatch):
+        monkeypatch.setenv("MOSAICX_HOME_DIR", str(tmp_path))
+        from mosaicx.config import get_config
+
+        get_config.cache_clear()
+        try:
+            tpl_dir = tmp_path / "templates"
+            tpl_dir.mkdir()
+            (tpl_dir / "Fresh.yaml").write_text(SAMPLE_TPL_V1)
+            result = runner.invoke(cli, ["template", "history", "Fresh"])
+            assert result.exit_code == 0
+            assert "no version history" in result.output.lower()
+        finally:
+            get_config.cache_clear()
+
+    def test_diff_shows_changes(self, runner: CliRunner, tmp_path: Path, monkeypatch):
+        monkeypatch.setenv("MOSAICX_HOME_DIR", str(tmp_path))
+        from mosaicx.config import get_config
+
+        get_config.cache_clear()
+        try:
+            self._setup_versioned_template(tmp_path)
+            result = runner.invoke(
+                cli, ["template", "diff", "TestTpl", "--version", "1"]
+            )
+            assert result.exit_code == 0
+            assert "finding_b" in result.output  # added in v2
+        finally:
+            get_config.cache_clear()
+
+    def test_diff_version_not_found(self, runner: CliRunner, tmp_path: Path, monkeypatch):
+        monkeypatch.setenv("MOSAICX_HOME_DIR", str(tmp_path))
+        from mosaicx.config import get_config
+
+        get_config.cache_clear()
+        try:
+            self._setup_versioned_template(tmp_path)
+            result = runner.invoke(
+                cli, ["template", "diff", "TestTpl", "--version", "99"]
+            )
+            assert result.exit_code != 0
+            assert "not found" in result.output.lower()
+        finally:
+            get_config.cache_clear()
+
+    def test_revert_restores_old_version(self, runner: CliRunner, tmp_path: Path, monkeypatch):
+        monkeypatch.setenv("MOSAICX_HOME_DIR", str(tmp_path))
+        from mosaicx.config import get_config
+
+        get_config.cache_clear()
+        try:
+            self._setup_versioned_template(tmp_path)
+            result = runner.invoke(
+                cli, ["template", "revert", "TestTpl", "--version", "1"]
+            )
+            assert result.exit_code == 0
+            assert "reverted" in result.output.lower()
+
+            # Current should now be v1 content
+            current = (tmp_path / "templates" / "TestTpl.yaml").read_text()
+            assert "version 1" in current
+            assert "finding_b" not in current
+
+            # Should have archived v2 as v2
+            assert (tmp_path / "templates" / ".history" / "TestTpl_v2.yaml").exists()
+        finally:
+            get_config.cache_clear()
+
+    def test_revert_version_not_found(self, runner: CliRunner, tmp_path: Path, monkeypatch):
+        monkeypatch.setenv("MOSAICX_HOME_DIR", str(tmp_path))
+        from mosaicx.config import get_config
+
+        get_config.cache_clear()
+        try:
+            self._setup_versioned_template(tmp_path)
+            result = runner.invoke(
+                cli, ["template", "revert", "TestTpl", "--version", "99"]
+            )
+            assert result.exit_code != 0
+            assert "not found" in result.output.lower()
+        finally:
+            get_config.cache_clear()

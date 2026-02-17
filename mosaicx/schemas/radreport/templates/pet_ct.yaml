@@ -1,0 +1,66 @@
+name: PETCTReport
+description: Structured PET/CT report (RDES76)
+radreport_id: RDES76
+mode: radiology
+sections:
+  - name: indication
+    type: str
+    required: true
+    description: Clinical indication and cancer type/stage
+  - name: comparison
+    type: str
+    required: false
+    description: Prior PET/CT and dates
+  - name: technique
+    type: str
+    required: false
+    description: Radiotracer, dose, uptake time, CT parameters
+  - name: fasting_glucose
+    type: str
+    required: false
+    description: Blood glucose level at time of injection
+  - name: head_and_neck
+    type: str
+    required: false
+    description: Head and neck FDG uptake and CT findings
+  - name: chest
+    type: str
+    required: false
+    description: Thoracic FDG uptake and CT findings
+  - name: abdomen_and_pelvis
+    type: str
+    required: false
+    description: Abdominal and pelvic FDG uptake and CT findings
+  - name: musculoskeletal
+    type: str
+    required: false
+    description: Osseous and soft tissue FDG uptake
+  - name: lymph_nodes
+    type: str
+    required: false
+    description: Lymph node stations with SUV measurements
+  - name: lesions
+    type: list
+    required: false
+    description: FDG-avid lesions
+    item:
+      type: object
+      fields:
+        - name: location
+          type: str
+          description: Anatomic location
+        - name: suv_max
+          type: float
+          description: Maximum standardized uptake value
+        - name: size_mm
+          type: float
+          required: false
+          description: Size in millimeters on CT
+        - name: change
+          type: str
+          required: false
+          description: Change from prior (new, increased, stable, decreased, resolved)
+  - name: impression
+    type: str
+    required: true
+    description: Summary impression with response assessment

@@ -84,10 +84,10 @@ class TestSDKSignatures:
         params = list(sig.parameters.keys())
         assert "text" in params
         assert "mode" in params
-        assert "schema_name" in params
+        assert "template" in params
         assert "optimized" in params
         assert sig.parameters["mode"].default == "auto"
-        assert sig.parameters["schema_name"].default is None
+        assert sig.parameters["template"].default is None
         assert sig.parameters["optimized"].default is None
 
     def test_summarize_signature(self):

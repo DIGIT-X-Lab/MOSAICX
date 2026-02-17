@@ -1,0 +1,53 @@
+name: CardiacMRIReport
+description: Structured cardiac MRI report (RDES214)
+radreport_id: RDES214
+mode: radiology
+sections:
+  - name: indication
+    type: str
+    required: true
+    description: Clinical indication for cardiac MRI
+  - name: comparison
+    type: str
+    required: false
+    description: Prior cardiac imaging and dates
+  - name: technique
+    type: str
+    required: false
+    description: MRI sequences, contrast, stress protocol
+  - name: left_ventricle
+    type: str
+    required: true
+    description: LV size, wall thickness, systolic function
+  - name: lv_ejection_fraction
+    type: float
+    required: true
+    description: Left ventricular ejection fraction (percentage)
+  - name: right_ventricle
+    type: str
+    required: true
+    description: RV size and systolic function
+  - name: atria
+    type: str
+    required: false
+    description: Left and right atrial findings
+  - name: valves
+    type: str
+    required: false
+    description: Valvular morphology and function
+  - name: myocardium
+    type: str
+    required: true
+    description: Myocardial tissue characterization (edema, fibrosis, LGE)
+  - name: pericardium
+    type: str
+    required: false
+    description: Pericardial findings
+  - name: great_vessels
+    type: str
+    required: false
+    description: Aorta and pulmonary artery findings
+  - name: impression
+    type: str
+    required: true
+    description: Summary impression with functional assessment
