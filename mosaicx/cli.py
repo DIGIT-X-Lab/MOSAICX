@@ -2642,6 +2642,62 @@ def config_set(key: str, value: str) -> None:
 
 
 # ---------------------------------------------------------------------------
+# query
+# ---------------------------------------------------------------------------
+
+
+@cli.command()
+@click.option(
+    "--source",
+    multiple=True,
+    type=click.Path(exists=True, path_type=Path),
+    help="Path to a data source (CSV, JSON, PDF, etc.). Repeatable.",
+)
+def query(source: tuple[Path, ...]) -> None:
+    """Open a query session over documents and data sources.
+
+    \b
+    Load one or more data files (CSV, JSON, Parquet, Excel, PDF, text)
+    into a query session for conversational Q&A.
+
+    \b
+    Examples:
+      mosaicx query --source data.csv
+      mosaicx query --source data.csv --source notes.pdf
+    """
+    from .sdk import query as sdk_query
+
+    if not source:
+        raise click.ClickException("At least one --source is required.")
+
+    sources = list(source)
+    session = sdk_query(sources=sources)
+
+    theme.section("Query Session", console)
+    console.print(theme.ok(f"Loaded {len(session.catalog)} source(s)"))
+
+    table = theme.make_table("Sources")
+    table.add_column("Name", style=f"bold {theme.CORAL}")
+    table.add_column("Format")
+    table.add_column("Type")
+    table.add_column("Size", justify="right")
+    for src in session.catalog:
+        table.add_row(src.name, src.format, src.source_type, f"{src.size:,} B")
+    console.print(table)
+
+    console.print()
+    console.print(theme.info(
+        "Interactive REPL is not yet available. "
+        "Use the Python SDK for programmatic access:"
+    ))
+    console.print(theme.info(
+        '  from mosaicx.sdk import query; s = query(sources=[...])'
+    ))
+
+    session.close()
+
+
+# ---------------------------------------------------------------------------
 # mcp (group)
 # ---------------------------------------------------------------------------
 

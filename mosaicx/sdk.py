@@ -1219,6 +1219,45 @@ def verify(
 
 
 # ---------------------------------------------------------------------------
+# query
+# ---------------------------------------------------------------------------
+
+
+def query(
+    sources: list[str | Path] | None = None,
+) -> Any:
+    """Create a query session for conversational Q&A over documents and data.
+
+    Parameters
+    ----------
+    sources:
+        List of file paths to load as data sources. Supports CSV, JSON,
+        Parquet, Excel, PDF, and plain text files.
+
+    Returns
+    -------
+    QuerySession
+        A stateful session that holds loaded data and conversation
+        history. The caller can then create a
+        :class:`~mosaicx.query.engine.QueryEngine` from the session
+        for LLM-powered Q&A.
+
+    Examples
+    --------
+    ::
+
+        from mosaicx.sdk import query
+
+        session = query(sources=["data.csv", "notes.txt"])
+        print(session.catalog)   # inspect loaded sources
+        session.close()          # release resources
+    """
+    from .query.session import QuerySession
+
+    return QuerySession(sources=sources)
+
+
+# ---------------------------------------------------------------------------
 # health
 # ---------------------------------------------------------------------------
 
