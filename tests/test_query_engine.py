@@ -208,15 +208,6 @@ class TestQueryEngineImport:
         assert hasattr(engine, "QueryEngine")
 
 
-def _dspy_lm_available() -> bool:
-    """Check if a DSPy LM is already configured."""
-    try:
-        import dspy
-        return dspy.settings.lm is not None
-    except Exception:
-        return False
-
-
 @pytest.fixture()
 def _configure_dspy_for_test():
     """Configure DSPy from MosaicxConfig for integration tests."""
@@ -238,11 +229,11 @@ def _configure_dspy_for_test():
 
 
 @pytest.mark.integration
-@pytest.mark.skipif(not _dspy_lm_available(), reason="No DSPy LM configured (run with MOSAICX_API_KEY set)")
 class TestQueryEngineIntegration:
     """Integration tests requiring a running LLM.
 
-    These are skipped unless DSPy is configured with an LM. Run manually:
+    These tests auto-configure DSPy from MosaicxConfig via fixture and are
+    skipped only when MOSAICX_API_KEY/LM config is missing. Run manually:
         MOSAICX_API_KEY=... pytest tests/test_query_engine.py -m integration
     """
 
