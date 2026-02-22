@@ -141,11 +141,40 @@ def _build_dspy_classes():
 
         def __init__(self) -> None:
             super().__init__()
+            from mosaicx.config import get_config
+
+            cfg = get_config()
+
             self.classify_exam = dspy.Predict(ClassifyExamType)
             self.parse_sections = dspy.Predict(ParseReportSections)
             self.extract_technique = dspy.Predict(ExtractTechnique)
-            self.extract_findings = dspy.ChainOfThought(ExtractRadFindings)
-            self.extract_impression = dspy.ChainOfThought(ExtractImpression)
+
+            if cfg.use_refine:
+                from mosaicx.pipelines.rewards import findings_reward as _fr
+
+                def _findings_reward_fn(args, pred):
+                    findings = pred.findings
+                    finding_dicts = [
+                        f.model_dump() if hasattr(f, "model_dump") else f
+                        for f in findings
+                    ]
+                    return _fr(findings=finding_dicts)
+
+                self.extract_findings = dspy.Refine(
+                    module=dspy.ChainOfThought(ExtractRadFindings),
+                    N=3,
+                    reward_fn=_findings_reward_fn,
+                    threshold=0.7,
+                )
+                self.extract_impression = dspy.Refine(
+                    module=dspy.ChainOfThought(ExtractImpression),
+                    N=3,
+                    reward_fn=lambda args, pred: 0.8 if pred.impressions else 0.0,
+                    threshold=0.5,
+                )
+            else:
+                self.extract_findings = dspy.ChainOfThought(ExtractRadFindings)
+                self.extract_impression = dspy.ChainOfThought(ExtractImpression)
 
         def forward(self, report_text: str, report_header: str = "") -> dspy.Prediction:
             """Run the full 5-step structuring pipeline.

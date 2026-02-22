@@ -32,6 +32,9 @@ class MosaicxConfig(BaseSettings):
     api_base: str = "http://localhost:11434/v1"
     lm_temperature: float = 0.0
 
+    # --- Self-healing ---
+    use_refine: bool = False
+
     # --- Processing ---
     default_template: str = "auto"
     completeness_threshold: float = 0.7
