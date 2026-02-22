@@ -1166,6 +1166,59 @@ def evaluate(
 
 
 # ---------------------------------------------------------------------------
+# Verify
+# ---------------------------------------------------------------------------
+
+
+def verify(
+    *,
+    extraction: dict[str, Any] | None = None,
+    claim: str | None = None,
+    source_text: str | None = None,
+    document: str | Path | None = None,
+    level: str = "quick",
+) -> dict[str, Any]:
+    """Verify an extraction or claim against source text.
+
+    Parameters
+    ----------
+    extraction:
+        Structured extraction dict to verify.
+    claim:
+        A single claim string to verify.
+    source_text:
+        Source document text to verify against. If *document* is provided
+        instead, text is loaded from the file.
+    document:
+        Path to source document file. Text is loaded automatically.
+    level:
+        Verification level: "quick", "standard", or "thorough".
+
+    Returns
+    -------
+    dict
+        Verification report with keys: verdict, confidence, level, issues.
+    """
+    if source_text is None and document is not None:
+        from .documents.loader import load_document
+
+        source_text = load_document(Path(document)).text
+
+    if source_text is None:
+        raise ValueError("Must provide either source_text or document")
+
+    from .verify.engine import verify as _verify
+
+    report = _verify(
+        extraction=extraction,
+        claim=claim,
+        source_text=source_text,
+        level=level,
+    )
+    return report.to_dict()
+
+
+# ---------------------------------------------------------------------------
 # health
 # ---------------------------------------------------------------------------
 

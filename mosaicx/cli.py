@@ -2164,6 +2164,89 @@ def deidentify(
 
 
 # ---------------------------------------------------------------------------
+# verify
+# ---------------------------------------------------------------------------
+
+
+@cli.command()
+@click.option("--claim", type=str, default=None, help="A claim to verify against the source.")
+@click.option("--source", type=click.Path(exists=True, path_type=Path), required=True, help="Source document to verify against.")
+@click.option("--extraction", type=click.Path(exists=True, path_type=Path), default=None, help="JSON file with extraction to verify.")
+@click.option(
+    "--level",
+    type=click.Choice(["quick", "standard", "thorough"], case_sensitive=False),
+    default="quick",
+    show_default=True,
+    help="Verification depth.",
+)
+@click.pass_context
+def verify(
+    ctx: click.Context,
+    claim: str | None,
+    source: Path,
+    extraction: Path | None,
+    level: str,
+) -> None:
+    """Verify an extraction or claim against a source document.
+
+    \b
+    Checks whether structured extractions or free-text claims are
+    supported by the original source document.
+
+    \b
+    Examples:
+      mosaicx verify --claim "BP was 120/80" --source note.pdf
+      mosaicx verify --extraction result.json --source note.pdf
+      mosaicx verify --extraction result.json --source note.pdf --level thorough
+    """
+    from .sdk import verify as sdk_verify
+
+    # Load source text
+    doc = _load_doc_with_config(source)
+    source_text = doc.text
+
+    # Load extraction if provided
+    extraction_data = None
+    if extraction:
+        extraction_data = json.loads(extraction.read_text(encoding="utf-8"))
+
+    if claim is None and extraction_data is None:
+        raise click.ClickException("Must provide either --claim or --extraction.")
+
+    result = sdk_verify(
+        extraction=extraction_data,
+        claim=claim,
+        source_text=source_text,
+        level=level,
+    )
+
+    # Display result
+    theme.section("Verification Result", console)
+    table = theme.make_kv_table()
+    table.add_row("Verdict", result["verdict"])
+    table.add_row("Confidence", f"{result['confidence']:.0%}")
+    table.add_row("Level", result["level"])
+    table.add_row("Issues", str(len(result["issues"])))
+    console.print(table)
+
+    if result["issues"]:
+        theme.section("Issues", console)
+        for issue in result["issues"]:
+            severity_color = {"info": "blue", "warning": "yellow", "critical": "red"}.get(
+                issue["severity"], "white"
+            )
+            console.print(
+                f"  [{severity_color}]{issue['severity'].upper()}[/] {issue['field']}: {issue['detail']}"
+            )
+
+    # Also output JSON
+    console.print()
+    from rich.syntax import Syntax
+
+    console.print(Syntax(json.dumps(result, indent=2), "json"))
+
+
+# ---------------------------------------------------------------------------
 # optimize
 # ---------------------------------------------------------------------------
 
