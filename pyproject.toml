@@ -44,7 +44,8 @@ dependencies = [
 [project.optional-dependencies]
 hf = ["datasets>=2.0"]
 mcp = ["mcp[cli]>=1.0.0"]
-all = ["mosaicx[hf]", "mosaicx[mcp]"]
+query = ["openpyxl>=3.1.0", "matplotlib>=3.7.0"]
+all = ["mosaicx[hf]", "mosaicx[mcp]", "mosaicx[query]"]
 dev = [
     "pytest>=8.0.0",
     "pytest-cov>=4.1.0",
@@ -110,10 +111,11 @@ addopts = "-ra -q --strict-markers --strict-config"
 testpaths = ["tests"]
 markers = [
     "unit: Unit tests",
-    "integration: Integration tests", 
+    "integration: Integration tests",
     "e2e: End-to-end tests",
     "contract: Contract tests",
     "slow: Slow running tests",
+    "rlm: Tests requiring Deno + RLM sandbox",
 ]
 
 [tool.coverage.run]
