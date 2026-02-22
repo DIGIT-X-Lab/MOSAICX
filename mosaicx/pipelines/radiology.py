@@ -150,15 +150,25 @@ def _build_dspy_classes():
             self.extract_technique = dspy.Predict(ExtractTechnique)
 
             if cfg.use_refine:
+                from typing import Any
                 from mosaicx.pipelines.rewards import findings_reward as _fr
+                from mosaicx.pipelines.rewards import impression_reward as _ir
 
-                def _findings_reward_fn(args, pred):
+                def _findings_reward_fn(args: Any, pred: dspy.Prediction) -> float:
                     findings = pred.findings
                     finding_dicts = [
                         f.model_dump() if hasattr(f, "model_dump") else f
                         for f in findings
                     ]
                     return _fr(findings=finding_dicts)
+
+                def _impression_reward_fn(args: Any, pred: dspy.Prediction) -> float:
+                    impressions = pred.impressions
+                    impression_dicts = [
+                        i.model_dump() if hasattr(i, "model_dump") else i
+                        for i in impressions
+                    ]
+                    return _ir(impressions=impression_dicts)
 
                 self.extract_findings = dspy.Refine(
                     module=dspy.ChainOfThought(ExtractRadFindings),
@@ -169,7 +179,7 @@ def _build_dspy_classes():
                 self.extract_impression = dspy.Refine(
                     module=dspy.ChainOfThought(ExtractImpression),
                     N=3,
-                    reward_fn=lambda args, pred: 0.8 if pred.impressions else 0.0,
+                    reward_fn=_impression_reward_fn,
                     threshold=0.5,
                 )
             else:
