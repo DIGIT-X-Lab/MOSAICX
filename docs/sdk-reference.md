@@ -395,6 +395,7 @@ def verify(
 | `decision` | `str` | Normalized final decision used for display and gating. |
 | `confidence` | `float` | Engine confidence score between 0 and 1. |
 | `support_score` | `float` | Claim-support score (claim mode) or confidence proxy (extraction mode). |
+| `claim_truth` | `bool \| None` | Claim mode convenience field: `True` (claim true), `False` (claim false), `None` (inconclusive). |
 | `verification_mode` | `str` | `"claim"` or `"extraction"`. |
 | `level` | `str` | The verification level that was used. |
 | `issues` | `list[dict]` | List of issue dicts, each with keys `severity`, `field`, and `detail`. Empty when fully verified. |

@@ -655,6 +655,7 @@ mosaicx verify --document ct_report.pdf --claim "normal chest CT" -o result.json
 
 Displays:
 - A decision-first adjudication block (`Decision`, `Requested`, `Effective`, fallback info)
+- Claim mode includes `Claim truth` (`true`, `false`, or `inconclusive`) for immediate developer gating
 - Claim mode: `Claim Comparison` with `Claimed`, `Source`, and `Evidence`
 - Extraction mode: optional field-level mismatch table
 - Machine-readable JSON/YAML includes `decision`, `support_score`, `verification_mode`, and fallback metadata

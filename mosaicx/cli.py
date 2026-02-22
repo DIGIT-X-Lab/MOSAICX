@@ -2506,6 +2506,13 @@ def verify(
     meta.add_row("Effective", method)
     meta.add_row("Decision", display_verdict)
     if is_claim_mode:
+        claim_truth = result.get("claim_truth")
+        claim_truth_label = (
+            "true" if claim_truth is True
+            else "false" if claim_truth is False
+            else "inconclusive"
+        )
+        meta.add_row("Claim truth", claim_truth_label)
         meta.add_row("Support score", f"{claim_score:.2f}")
         if "grounded" in result:
             meta.add_row("Grounded", "yes" if result["grounded"] else "no")

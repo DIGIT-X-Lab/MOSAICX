@@ -1547,6 +1547,7 @@ def verify(
         )
 
     decision = out.get("verdict")
+    out["claim_truth"] = None
     if verification_mode == "claim" and claim is not None:
         claim_comparison = _claim_comparison_from_report(
             claim=claim,
@@ -1568,6 +1569,10 @@ def verify(
             "contradicted": 0.0,
         }
         out["support_score"] = support_map.get(decision, out.get("confidence", 0.0))
+        if decision == "verified":
+            out["claim_truth"] = True
+        elif decision == "contradicted":
+            out["claim_truth"] = False
     else:
         out["support_score"] = out.get("confidence")
 
