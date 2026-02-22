@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import logging
 import sys
+import uuid
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -502,6 +503,136 @@ def list_modes() -> str:
 
     except Exception as exc:
         logger.exception("list_modes failed")
+        return _json_result({"error": str(exc)})
+
+
+# ---------------------------------------------------------------------------
+# Query session store
+# ---------------------------------------------------------------------------
+
+_sessions: dict[str, Any] = {}  # session_id -> QuerySession
+
+
+# ---------------------------------------------------------------------------
+# Query MCP Tools
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool()
+def query_start(source_texts: dict[str, str]) -> str:
+    """Create a new query session from in-memory text sources.
+
+    Accepts a dict mapping source names to their text content and creates
+    a stateful session for conversational Q&A. The session is stored
+    server-side and identified by a unique session_id.
+
+    Args:
+        source_texts: Mapping of source names to text content (e.g. {"report.txt": "Patient presents..."}).
+
+    Returns:
+        JSON string with "session_id" (str) and "catalog" (list of source metadata dicts).
+    """
+    try:
+        if not source_texts:
+            return _json_result({"error": "source_texts must not be empty."})
+
+        from .query.loaders import SourceMeta
+        from .query.session import QuerySession
+
+        session = QuerySession()
+
+        for name, text in source_texts.items():
+            meta = SourceMeta(
+                name=name,
+                format=name.rsplit(".", 1)[-1] if "." in name else "txt",
+                source_type="document",
+                size=len(text.encode("utf-8")),
+                preview=text[:200] if text else None,
+            )
+            session._catalog.append(meta)
+            session._data[name] = text
+
+        session_id = str(uuid.uuid4())
+        _sessions[session_id] = session
+
+        return _json_result({
+            "session_id": session_id,
+            "catalog": [m.model_dump() for m in session.catalog],
+        })
+
+    except Exception as exc:
+        logger.exception("query_start failed")
+        return _json_result({"error": str(exc)})
+
+
+@mcp.tool()
+def query_ask(session_id: str, question: str) -> str:
+    """Ask a question on an existing query session.
+
+    Uses the session's loaded documents and conversation history to answer
+    the question via the RLM-powered query engine.
+
+    Args:
+        session_id: The session identifier returned by query_start.
+        question: Natural language question about the loaded documents.
+
+    Returns:
+        JSON string with "answer" (str) and "session_id" (str).
+    """
+    try:
+        if session_id not in _sessions:
+            return _json_result({
+                "error": f"Unknown session_id: {session_id!r}. Start a session first with query_start."
+            })
+
+        session = _sessions[session_id]
+
+        _ensure_dspy()
+
+        from .query.engine import QueryEngine
+
+        engine = QueryEngine(session=session)
+        answer = engine.ask(question)
+
+        return _json_result({
+            "session_id": session_id,
+            "answer": answer,
+        })
+
+    except Exception as exc:
+        logger.exception("query_ask failed")
+        return _json_result({"error": str(exc)})
+
+
+@mcp.tool()
+def query_close(session_id: str) -> str:
+    """Close and remove a query session.
+
+    Releases all resources associated with the session and removes it
+    from the server's session store.
+
+    Args:
+        session_id: The session identifier returned by query_start.
+
+    Returns:
+        JSON string with "status" ("closed") and "session_id" (str).
+    """
+    try:
+        if session_id not in _sessions:
+            return _json_result({
+                "error": f"Unknown session_id: {session_id!r}. No active session with that ID."
+            })
+
+        session = _sessions.pop(session_id)
+        session.close()
+
+        return _json_result({
+            "status": "closed",
+            "session_id": session_id,
+        })
+
+    except Exception as exc:
+        logger.exception("query_close failed")
         return _json_result({"error": str(exc)})
 
 
