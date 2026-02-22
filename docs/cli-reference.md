@@ -601,6 +601,122 @@ Displays the de-identified text in a formatted panel. If processing a directory,
 
 ---
 
+## `mosaicx verify`
+
+Verify an extraction or claim against a source document.
+
+Checks whether structured extractions or free-text claims are supported by the original source document. Uses deterministic text analysis for the "quick" level (no LLM needed).
+
+**Options:**
+
+| Flag | Type | Required | Description |
+|------|------|----------|-------------|
+| `--document` | PATH | No | Single source document (legacy single-source option) |
+| `--sources` | PATH (repeatable) | No | One or more source documents to verify against |
+| `--claim` | TEXT | No | A free-text claim to verify against the document |
+| `--extraction` | PATH | No | JSON file with extraction output to verify |
+| `--level` | CHOICE | No | Verification depth: `quick` (default), `standard`, `thorough` |
+| `-o`, `--output` | PATH | No | Save verification result to JSON or YAML file |
+
+**Important:**
+- At least one of `--claim` or `--extraction` must be provided
+- At least one of `--document` or `--sources` must be provided
+- `quick` level uses deterministic checks (regex, text matching) -- no LLM needed, very fast
+- `standard` level adds LLM spot-check of high-risk fields (measurements, severity, staging)
+- `thorough` level runs a full LLM audit of all extracted fields
+- Supported document formats: PDF, TXT, DOCX, MD, PNG, JPG, JPEG, TIF, TIFF
+
+**Verdicts:**
+
+| Verdict | Meaning |
+|---------|---------|
+| `verified` | All claims/fields are supported by the source text |
+| `partially_supported` | Some fields supported, some could not be confirmed |
+| `contradicted` | Source text contradicts the claim or extraction |
+| `insufficient_evidence` | Source text does not contain enough information to judge |
+
+**Examples:**
+
+```bash
+# Verify a free-text claim against a document
+mosaicx verify --document ct_report.pdf --claim "2.3cm nodule in right upper lobe"
+
+# Verify extraction output against the source document
+mosaicx verify --document ct_report.pdf --extraction output.json
+
+# Verify with thorough checking
+mosaicx verify --document ct_report.pdf --extraction output.json --level thorough
+
+# Save verification result to file
+mosaicx verify --document ct_report.pdf --claim "normal chest CT" -o result.json
+```
+
+**Output:**
+
+Displays:
+- A decision-first adjudication block (`Decision`, `Requested`, `Effective`, fallback info)
+- Claim mode: `Claim Comparison` with `Claimed`, `Source`, and `Evidence`
+- Extraction mode: optional field-level mismatch table
+- Machine-readable JSON/YAML includes `decision`, `support_score`, `verification_mode`, and fallback metadata
+
+---
+
+## `mosaicx query`
+
+Query documents and data sources with natural language.
+
+Load one or more data files and ask a question. Uses RLM (Recursive Language Model) -- the model writes and executes Python code in a sandboxed environment to answer your question.
+
+**Options:**
+
+| Flag | Type | Required | Description |
+|------|------|----------|-------------|
+| `--document` | PATH (repeatable) | No | Path to a data source (legacy alias) |
+| `--sources` | TEXT (repeatable) | No | Paths, directories, or glob patterns (e.g. `"reports/*.txt"`) |
+| `-q`, `--question` | TEXT | No | Ask one question and print answer with evidence |
+| `--chat` | flag | No | Start a multi-turn query chat session |
+| `--citations` | INT | No | Maximum citations returned per turn (default: `3`) |
+| `-o`, `--output` | PATH | No | Save query turns/citations to JSON or YAML file |
+
+**Important:**
+- Requires [Deno](https://deno.land/) installed for the RLM code sandbox
+- Requires a model with strong structured output capability (120B+ recommended)
+- At least one `--document` or `--sources` input is required
+- `-q` runs one-shot query; `--chat` runs multi-turn session with conversation memory
+- Each answer includes evidence citations and grounding confidence
+- If RLM is unavailable, query falls back to retrieval-only evidence mode
+
+**Examples:**
+
+```bash
+# Ask a question about a CSV file
+mosaicx query --document patient_data.csv -q "What is the mean age?"
+
+# Query across multiple documents
+mosaicx query --document data.csv --document notes.pdf -q "Summarize the key findings"
+
+# Use glob-style source patterns
+mosaicx query --sources "reports/*.txt" -q "List all pulmonary nodules with sizes"
+
+# Multi-turn chat mode
+mosaicx query --document report.pdf --chat
+
+# Save the answer to a file
+mosaicx query --document report.pdf -q "List all medications mentioned" -o answer.json
+
+# Just load and inspect sources (no question)
+mosaicx query --document data.csv --document results.json
+```
+
+**Output:**
+
+Displays:
+- Source catalog table (name, format, type, size)
+- One-shot mode: answer + evidence citations + grounding confidence
+- Chat mode: multi-turn answers with citations per turn
+
+---
+
 ## `mosaicx optimize`
 
 Optimize a DSPy pipeline using labeled examples.
@@ -789,7 +905,7 @@ The command prints a wiring checklist of manual steps to complete the pipeline r
 
 Start the MOSAICX Model Context Protocol (MCP) server.
 
-The MCP server exposes MOSAICX tools (extract, deidentify, schema generate, list schemas, list modes) for AI agents like Claude Code, Claude Desktop, and other MCP-compatible clients.
+The MCP server exposes MOSAICX tools (extract, verify, query, deidentify, schema generate, list schemas, list modes) for AI agents like Claude Code, Claude Desktop, and other MCP-compatible clients.
 
 **Options:**
 
@@ -1034,6 +1150,30 @@ mosaicx deidentify --dir ./clinic_notes --mode remove --workers 4
 
 ```bash
 mosaicx summarize --dir ./patient_123 --patient "Patient 123"
+```
+
+### Extract and verify the output
+
+```bash
+# Extract structured data from a report
+mosaicx extract --document ct_chest.pdf --template chest_ct -o output.json
+
+# Verify the extraction against the source document
+mosaicx verify --document ct_chest.pdf --extraction output.json
+```
+
+### Extract and query for follow-up analysis
+
+```bash
+# Extract structured data and save to JSON
+mosaicx extract --document ct_chest.pdf --mode radiology -o structured.json
+
+# Query the extracted data for specific findings
+mosaicx query --document structured.json -q "Are there any critical findings?"
+
+# Query across the source document and extraction together
+mosaicx query --document ct_chest.pdf --document structured.json \
+  -q "Summarize the nodule measurements"
 ```
 
 ---

@@ -110,7 +110,15 @@ class TestMCPQueryTools:
 
         # Mock QueryEngine
         mock_engine = MagicMock()
-        mock_engine.ask.return_value = "The patient is stable."
+        mock_engine.ask_structured.return_value = {
+            "answer": "The patient is stable.",
+            "citations": [{"source": "doc.txt", "snippet": "The patient is stable.", "score": 2}],
+            "confidence": 0.8,
+            "sources_consulted": ["doc.txt"],
+            "turn_index": 1,
+            "fallback_used": False,
+            "fallback_reason": None,
+        }
 
         with patch("mosaicx.query.engine.QueryEngine", return_value=mock_engine):
             answer_result = json.loads(mcp_mod.query_ask(session_id=sid, question="How is the patient?"))
@@ -118,6 +126,7 @@ class TestMCPQueryTools:
         assert "answer" in answer_result
         assert answer_result["answer"] == "The patient is stable."
         assert answer_result["session_id"] == sid
+        assert "citations" in answer_result
 
         # Clean up
         _sessions[sid].close()

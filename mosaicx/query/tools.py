@@ -32,16 +32,31 @@ def search_documents(
         Matching results with keys: source, snippet, score.
     """
     query_lower = query.lower()
-    query_terms = query_lower.split()
+    raw_terms = [t for t in query_lower.split() if t.strip()]
+    stopwords = {
+        "the", "a", "an", "and", "or", "of", "in", "on", "to", "for", "with",
+        "is", "are", "was", "were", "be", "been", "being", "what", "which",
+        "who", "whom", "when", "where", "why", "how", "does", "do", "did",
+        "please", "show", "tell", "about",
+    }
+    query_terms = [t for t in raw_terms if len(t) >= 2 and t not in stopwords]
+    if not query_terms:
+        query_terms = raw_terms
     results: list[dict[str, Any]] = []
 
     for name, text in documents.items():
         text_lower = text.lower()
-        # Score by term frequency
-        score = sum(text_lower.count(term) for term in query_terms)
+        if not query_terms:
+            continue
+
+        term_counts = {term: text_lower.count(term) for term in query_terms}
+        score = sum(term_counts.values())
         if score > 0:
-            # Find best snippet
-            idx = text_lower.find(query_terms[0])
+            # Anchor snippet around strongest match term.
+            anchor = max(term_counts, key=term_counts.get)
+            idx = text_lower.find(anchor)
+            if idx < 0:
+                idx = 0
             start = max(0, idx - 50)
             end = min(len(text), idx + 200)
             snippet = text[start:end]

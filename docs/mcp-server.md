@@ -13,6 +13,8 @@ MOSAICX exposes its core features as MCP tools:
 - **Summarize clinical reports** into patient timelines with structured events
 - **Generate extraction templates** from natural-language descriptions or sample documents
 - **List saved templates** and available extraction modes
+- **Verify extraction results** or free-text claims against source documents
+- **Query documents** interactively with natural language using RLM-powered code generation
 
 This means you can say something like "extract the findings from this radiology report" in a Claude conversation, and Claude will call the MOSAICX extraction tool behind the scenes, returning structured JSON data without you ever touching the command line.
 
@@ -168,7 +170,7 @@ After saving the file, restart Claude Desktop for the changes to take effect. Yo
 
 ## Available Tools
 
-The MOSAICX MCP server exposes six tools. Each tool accepts parameters as JSON and returns a JSON string with the result.
+The MOSAICX MCP server exposes ten tools. Each tool accepts parameters as JSON and returns a JSON string with the result.
 
 ---
 
@@ -461,6 +463,244 @@ None.
 }
 ```
 
+---
+
+### verify_output
+
+Verify an extraction or claim against source text.
+
+Checks whether the data in an extraction output or a free-text claim is actually supported by the source document. The `"quick"` verification level uses deterministic analysis and does not require an LLM call. Higher levels (`"standard"`, `"thorough"`) use progressively deeper LLM-based analysis.
+
+At least one of `extraction` or `claim` must be provided.
+
+**Parameters:**
+
+| Name | Type | Default | Description |
+|------|------|---------|-------------|
+| `source_text` | `string` | (required) | The source document text to verify against. |
+| `extraction` | `string` | `null` | JSON string of the extraction output to verify. |
+| `claim` | `string` | `null` | Free-text claim to verify against the source. |
+| `level` | `string` | `"quick"` | Verification depth: `"quick"`, `"standard"`, `"thorough"`. |
+
+**Return value:**
+
+```json
+{
+  "verdict": "verified",
+  "decision": "verified",
+  "confidence": 1.0,
+  "support_score": 1.0,
+  "verification_mode": "claim",
+  "level": "deterministic",
+  "requested_level": "quick",
+  "effective_level": "deterministic",
+  "fallback_used": false,
+  "issues": [],
+  "field_verdicts": [],
+  "claim_comparison": {
+    "claimed": "4mm nodule in right lower lobe",
+    "source": "4mm",
+    "evidence": "Findings: 4mm nodule in the right lower lobe.",
+    "grounded": true
+  }
+}
+```
+
+Possible values for `verdict`: `"verified"`, `"partially_supported"`, `"contradicted"`, `"insufficient_evidence"`.
+
+If an error occurs, returns `{"error": "description of what went wrong"}`.
+
+**Example:**
+
+The AI assistant calls:
+
+```json
+{
+  "source_text": "CT CHEST WITHOUT CONTRAST\nFindings: 4mm nodule in the right lower lobe. No pleural effusion.\nImpression: Stable 4mm RLL nodule.",
+  "extraction": "{\"nodule_size_mm\": 4, \"nodule_location\": \"right lower lobe\", \"pleural_effusion\": \"none\"}",
+  "level": "quick"
+}
+```
+
+Returns:
+
+```json
+{
+  "verdict": "verified",
+  "confidence": 1.0,
+  "level": "deterministic",
+  "issues": [],
+  "field_verdicts": []
+}
+```
+
+---
+
+### query_start
+
+Create a query session from in-memory document texts.
+
+Accepts a dictionary of document names and their text content. Returns a session ID that is used for subsequent `query_ask` and `query_close` calls. The session holds the loaded documents in memory so that multiple questions can be asked without reloading.
+
+**Parameters:**
+
+| Name | Type | Default | Description |
+|------|------|---------|-------------|
+| `source_texts` | `object` | (required) | Dictionary mapping document names to their text content. Keys are filenames, values are the document text. |
+
+**Return value:**
+
+```json
+{
+  "session_id": "abc123-...",
+  "sources_loaded": 2,
+  "catalog": [
+    {"name": "report.txt", "format": "txt", "source_type": "document", "size": 1234}
+  ]
+}
+```
+
+If an error occurs, returns `{"error": "description of what went wrong"}`.
+
+**Example:**
+
+The AI assistant calls:
+
+```json
+{
+  "source_texts": {
+    "chest_ct_2026-01-10.txt": "CT CHEST WITH CONTRAST\nDate: 2026-01-10\nFindings: 6mm nodule in the RUL...",
+    "chest_ct_2026-02-15.txt": "CT CHEST WITH CONTRAST\nDate: 2026-02-15\nFindings: 6mm nodule in the RUL, unchanged..."
+  }
+}
+```
+
+Returns:
+
+```json
+{
+  "session_id": "a1b2c3d4-...",
+  "sources_loaded": 2,
+  "catalog": [
+    {"name": "chest_ct_2026-01-10.txt", "format": "txt", "source_type": "document", "size": 312},
+    {"name": "chest_ct_2026-02-15.txt", "format": "txt", "source_type": "document", "size": 347}
+  ]
+}
+```
+
+---
+
+### query_ask
+
+Ask a question within an existing query session.
+
+Uses RLM (Recursive Language Model) to write and execute code that answers the question based on the loaded documents. The session maintains conversation history, so follow-up questions can reference previous answers.
+
+**Parameters:**
+
+| Name | Type | Default | Description |
+|------|------|---------|-------------|
+| `session_id` | `string` | (required) | Session ID returned by `query_start`. |
+| `question` | `string` | (required) | The question to ask about the loaded documents. |
+
+**Return value:**
+
+```json
+{
+  "session_id": "abc123-...",
+  "answer": "The mean patient age is 67.3 years.",
+  "citations": [
+    {"source": "patients.csv", "snippet": "...,67,...", "score": 4}
+  ],
+  "confidence": 0.86,
+  "sources_consulted": ["patients.csv"],
+  "turn_index": 1,
+  "fallback_used": false,
+  "fallback_reason": null
+}
+```
+
+If an error occurs, returns `{"error": "description of what went wrong"}`.
+
+**Important notes:**
+
+- Requires [Deno](https://deno.land/) installed for the RLM sandbox.
+- Requires DSPy configured with a model that supports structured output.
+- The session maintains conversation history, so follow-up questions can build on previous answers without restating context.
+
+**Example:**
+
+The AI assistant calls:
+
+```json
+{
+  "session_id": "a1b2c3d4-...",
+  "question": "Did the nodule size change between the two scans?"
+}
+```
+
+Returns:
+
+```json
+{
+  "session_id": "a1b2c3d4-...",
+  "answer": "The nodule in the right upper lobe measured 6mm on both the 2026-01-10 and 2026-02-15 scans. There was no change in size.",
+  "citations": [
+    {"source": "chest_ct_2026-01-10.txt", "snippet": "...6mm nodule in the RUL...", "score": 3},
+    {"source": "chest_ct_2026-02-15.txt", "snippet": "...6mm nodule in the RUL, unchanged...", "score": 3}
+  ],
+  "confidence": 0.82,
+  "sources_consulted": ["chest_ct_2026-01-10.txt", "chest_ct_2026-02-15.txt"],
+  "turn_index": 2,
+  "fallback_used": false,
+  "fallback_reason": null
+}
+```
+
+---
+
+### query_close
+
+Close a query session and free resources.
+
+Releases the in-memory documents and conversation history associated with the session. After closing, the session ID can no longer be used with `query_ask`.
+
+**Parameters:**
+
+| Name | Type | Default | Description |
+|------|------|---------|-------------|
+| `session_id` | `string` | (required) | Session ID to close. |
+
+**Return value:**
+
+```json
+{
+  "status": "closed",
+  "session_id": "abc123-..."
+}
+```
+
+If an error occurs, returns `{"error": "description of what went wrong"}`.
+
+**Example:**
+
+The AI assistant calls:
+
+```json
+{
+  "session_id": "a1b2c3d4-..."
+}
+```
+
+Returns:
+
+```json
+{
+  "status": "closed",
+  "session_id": "a1b2c3d4-..."
+}
+```
+
 ## Transport Modes
 
 The MCP server supports two transport protocols for communication between the AI assistant and the server.
@@ -732,6 +972,77 @@ Claude calls the `list_modes` tool (no parameters needed).
 > 2. **pathology** -- Multi-step extraction pipeline for pathology reports. Includes specimen classification, section parsing, histology extraction, TNM staging, and biomarker extraction.
 >
 > You can also use `auto` mode, which lets the LLM infer an appropriate schema from any document type.
+
+### Scenario 5: Extract and verify
+
+**You say:**
+
+> Extract the findings from this chest CT report and then verify that the extraction is accurate:
+>
+> CT CHEST WITHOUT CONTRAST
+> Date: 2026-02-18
+> Findings: There is a 5mm ground-glass nodule in the left upper lobe. No pleural effusion. Heart size is normal.
+> Impression: 5mm GGN in the LUL. Recommend follow-up in 6 months.
+
+**What happens behind the scenes:**
+
+Claude first calls the `extract_document` tool to get the structured extraction. Then it calls the `verify_output` tool, passing the extraction JSON and the original report text. The verification tool checks that every extracted field is supported by the source document.
+
+**Claude responds with something like:**
+
+> I extracted the following data from the report:
+>
+> ```json
+> {
+>   "extracted": {
+>     "exam_type": "CT Chest",
+>     "contrast": "Without contrast",
+>     "exam_date": "2026-02-18",
+>     "findings": {
+>       "nodules": [{"location": "Left upper lobe", "size_mm": 5, "type": "Ground-glass"}],
+>       "pleural_effusion": "None",
+>       "heart_size": "Normal"
+>     },
+>     "impression": "5mm GGN in the LUL. Recommend follow-up in 6 months."
+>   }
+> }
+> ```
+>
+> I then verified the extraction against the source text. Verdict: **verified** with 100% confidence. All extracted fields are supported by the original report.
+
+### Scenario 6: Multi-turn document query
+
+**You say:**
+
+> I have two radiology reports I want to ask questions about. Here they are:
+>
+> Report 1 (chest_ct_jan.txt):
+> CT CHEST WITH CONTRAST. Date: 2026-01-05. Findings: 8mm spiculated nodule in RUL. Mild emphysema. Impression: Suspicious RUL nodule, recommend PET-CT.
+>
+> Report 2 (chest_ct_feb.txt):
+> CT CHEST WITH CONTRAST. Date: 2026-02-10. Findings: 10mm spiculated nodule in RUL, previously 8mm. Mild emphysema, stable. Impression: Growing RUL nodule, recommend biopsy.
+
+**What happens behind the scenes:**
+
+Claude calls `query_start` with both reports as a dictionary of source texts. It receives a session ID. Then, as you ask questions, Claude calls `query_ask` with the session ID and your question.
+
+**You ask:**
+
+> How much did the nodule grow between the two scans?
+
+Claude calls `query_ask` and responds:
+
+> The nodule in the right upper lobe grew from 8mm on 2026-01-05 to 10mm on 2026-02-10, an increase of 2mm over approximately 5 weeks.
+
+**You follow up:**
+
+> What was recommended after the second scan?
+
+Claude calls `query_ask` again (the session remembers the previous context) and responds:
+
+> After the second scan on 2026-02-10, the recommendation was biopsy due to the growing spiculated nodule in the right upper lobe.
+
+When you are done asking questions, Claude calls `query_close` to free the session resources.
 
 ## Troubleshooting
 

@@ -437,6 +437,124 @@ mosaicx extract --dir ./reports --output-dir ./structured \
 - **JSONL:** One JSON object per line, useful for streaming and log analysis
 - **Parquet:** Columnar format optimized for analytics (requires pandas + pyarrow)
 
+## Step 7: Verifying Results
+
+After extracting data, you may want to check whether the output actually matches the source document. The `verify` command compares claims or extraction results against one or more source documents and returns a clear adjudication (`Decision`) plus evidence details.
+
+### Verify a single claim
+
+If you want to spot-check a specific fact against a document:
+
+```bash
+mosaicx verify --document report.pdf --claim "2.3cm nodule in right upper lobe"
+```
+
+MOSAICX will read the document and return a verdict for the claim: `verified`, `partially_supported`, `contradicted`, or `insufficient_evidence`.
+
+In claim mode, the CLI also shows a `Claim Comparison` block:
+- `Claimed` (what you asserted)
+- `Source` (what was found in the source)
+- `Evidence` (supporting snippet)
+
+### Verify an entire extraction
+
+To verify all fields in a previously saved extraction output:
+
+```bash
+mosaicx verify --document report.pdf --extraction output.json
+```
+
+This checks each extracted value against the source document and reports a verdict for every field.
+
+### Verification levels
+
+By default, `verify` runs at the `quick` level, which uses deterministic text matching — no LLM is needed, and results come back in seconds. For deeper analysis, you can request a more thorough check:
+
+```bash
+mosaicx verify --document report.pdf --extraction output.json --level thorough
+```
+
+The available levels are:
+
+- **quick** — Fast, deterministic text matching. No LLM required.
+- **standard** — LLM-assisted verification for nuanced claims.
+- **thorough** — Multi-pass LLM verification with reasoning traces.
+
+> **Important:** The `standard` and `thorough` levels require a configured LLM (DSPy + API key). The `quick` level runs deterministic checks only and needs no LLM.
+
+### Save verification results
+
+To save the verification report to a file:
+
+```bash
+mosaicx verify --document report.pdf --extraction output.json -o verification.json
+```
+
+The output file includes machine-readable decision metadata such as:
+- `decision` (final normalized decision)
+- `support_score`
+- `requested_level` / `effective_level`
+- `fallback_used` / `fallback_reason` (when model fallback occurs)
+- `claim_comparison` (claim mode)
+
+## Step 8: Querying Documents
+
+Sometimes you do not need structured extraction — you just want to ask a question about a document. The `query` command lets you ask natural-language questions and get answers backed by document evidence with citations.
+
+### Ask a question
+
+```bash
+mosaicx query --document data.csv -q "What is the mean age?"
+```
+
+MOSAICX will read the document and return an answer. Under the hood, `query` uses RLM (Recursive Language Model), which means the model can write and execute code in a sandboxed environment to compute answers. This is especially useful for tabular data, statistics, and questions that require calculation.
+
+### Multi-turn query chat
+
+```bash
+mosaicx query --document report.pdf --chat
+```
+
+Use `/exit` to end the session. Conversation history is retained during the session, so follow-up questions are context-aware.
+
+### Query multiple documents
+
+You can load more than one document at a time:
+
+```bash
+mosaicx query --document report.pdf --document notes.txt -q "Summarize the key findings"
+```
+
+MOSAICX will consider all loaded documents when answering your question.
+
+### Save the answer
+
+To save the query result to a file:
+
+```bash
+mosaicx query --document data.csv -q "What is the mean age?" -o answer.json
+```
+
+Saved query output includes a `turns` list where each turn has:
+- `answer`
+- `citations` (source snippets + scores)
+- `confidence`
+- fallback metadata when RLM is unavailable
+
+### Prerequisites for query
+
+The `query` command has two additional requirements beyond what you set up in Steps 1 and 2:
+
+1. **Deno** — a JavaScript runtime used to sandbox code execution. Install it with:
+
+```bash
+curl -fsSL https://deno.land/install.sh | sh
+```
+
+2. **A large model** — Because the model needs to generate structured output and executable code, a 120B+ parameter model is recommended (e.g., `gpt-oss:120b`). Smaller models may produce unreliable results.
+
+> **Important:** Deno is only required for the `query` command. You do not need it for `extract`, `verify`, or any other MOSAICX command.
+
 ## What's Next?
 
 You have learned the basics of MOSAICX. Here are some advanced topics to explore:
@@ -445,6 +563,7 @@ You have learned the basics of MOSAICX. Here are some advanced topics to explore
 - **[Pipelines](pipelines.md)** — Deep dive into the radiology and pathology pipelines, and how to create your own
 - **[Optimization](optimization.md)** — Tune DSPy pipelines with labeled examples for better accuracy
 - **[Configuration](configuration.md)** — Customize MOSAICX settings, connect to different LLM backends, configure OCR engines
+- **[CLI Reference](cli-reference.md)** — Full reference for `verify`, `query`, and all other commands
 
 ## Common Questions
 
@@ -489,6 +608,14 @@ Yes. MOSAICX can connect to any OpenAI-compatible LLM endpoint, including:
 - **vLLM-MLX** (Apple Silicon optimized)
 
 See the [Configuration guide](configuration.md) for details on switching backends.
+
+### What is RLM?
+
+RLM stands for Recursive Language Model. It is the approach used by the `query` command, where the model can write code, execute it in a sandboxed environment, inspect the results, and iterate — all within a single query. This allows MOSAICX to answer questions that require computation (e.g., calculating averages from a CSV) rather than just text lookup.
+
+### Do I need Deno?
+
+Only if you plan to use the `query` command. Deno provides the sandboxed runtime that RLM uses to execute code safely. All other MOSAICX commands (`extract`, `verify`, `template`, `batch`, etc.) work without Deno.
 
 ### How do I update MOSAICX?
 

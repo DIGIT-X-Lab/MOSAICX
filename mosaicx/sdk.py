@@ -33,6 +33,7 @@ installed.
 from __future__ import annotations
 
 import logging
+import re
 import tempfile
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -70,6 +71,10 @@ def _ensure_configured() -> None:
     global _configured
     if _configured:
         return
+
+    from .runtime_env import ensure_runtime_env
+
+    ensure_runtime_env()
 
     from .config import get_config
 
@@ -161,6 +166,9 @@ def _attach_envelope(
     pipeline: str,
     template: str | None = None,
     metrics: Any = None,
+    provenance: bool = False,
+    verification: dict[str, Any] | None = None,
+    document: dict[str, Any] | list[dict[str, Any]] | None = None,
 ) -> None:
     """Attach a ``_mosaicx`` metadata envelope to *output* in-place.
 
@@ -191,7 +199,29 @@ def _attach_envelope(
         template=template,
         duration_s=duration,
         tokens=tokens,
+        provenance=provenance,
+        verification=verification,
+        document=document,
     )
+
+
+def _set_envelope_fields(
+    output: dict[str, Any],
+    *,
+    document: dict[str, Any] | list[dict[str, Any]] | None = None,
+    provenance: bool | None = None,
+    verification: dict[str, Any] | None = None,
+) -> None:
+    """Patch selected ``_mosaicx`` subfields after the envelope is attached."""
+    env = output.get("_mosaicx")
+    if not isinstance(env, dict):
+        return
+    if document is not None:
+        env["document"] = document
+    if provenance is not None:
+        env["provenance"] = provenance
+    if verification is not None:
+        env["verification"] = verification
 
 
 # ---------------------------------------------------------------------------
@@ -346,6 +376,201 @@ def _resolve_documents(
     )
 
 
+def _resolve_verification_sources(
+    *,
+    source_text: str | None,
+    sources: list[str | Path] | None,
+    document: str | Path | None,
+) -> tuple[str, list[str]]:
+    """Resolve verification sources into one combined source text."""
+    chunks: list[tuple[str, str]] = []
+
+    if source_text:
+        chunks.append(("source_text", source_text))
+
+    if sources:
+        for item in sources:
+            p = Path(item)
+            if p.exists():
+                if p.is_dir():
+                    for name, text, _meta in _resolve_documents(p):
+                        chunks.append((name, text))
+                else:
+                    doc = _load_doc_with_config(p)
+                    chunks.append((p.name, doc.text))
+            else:
+                # Allow direct raw-text sources in the list.
+                raw = str(item).strip()
+                if raw:
+                    chunks.append(("source_text", raw))
+
+    if document is not None:
+        p = Path(document)
+        doc = _load_doc_with_config(p)
+        chunks.append((p.name, doc.text))
+
+    if not chunks:
+        raise ValueError("Must provide either source_text or document (or sources)")
+
+    source_names = [name for name, _ in chunks]
+    if len(chunks) == 1:
+        return chunks[0][1], source_names
+
+    combined = "\n\n".join(
+        f"[SOURCE: {name}]\n{text}" for name, text in chunks
+    )
+    return combined, source_names
+
+
+def _compact_text(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = " ".join(str(value).split())
+    return text or None
+
+
+def _source_snippet_for(source_text: str, needle: str) -> tuple[str, str] | None:
+    if not source_text.strip() or not needle.strip():
+        return None
+
+    needle_norm = " ".join(needle.split())
+    pattern = re.escape(needle_norm).replace(r"\ ", r"\s+")
+    if "/" in needle_norm:
+        pattern = pattern.replace("/", r"\s*/\s*")
+
+    match = re.search(pattern, source_text, flags=re.IGNORECASE)
+    if match is None:
+        return None
+
+    radius = 80
+    start = max(0, match.start() - radius)
+    end = min(len(source_text), match.end() + radius)
+    matched = " ".join(source_text[match.start():match.end()].split())
+    snippet = " ".join(source_text[start:end].split())
+    return matched, snippet
+
+
+def _claim_comparison_from_report(
+    *,
+    claim: str,
+    source_text: str,
+    report: dict[str, Any],
+) -> dict[str, Any]:
+    """Build a normalized claim grounding payload from verify report output."""
+    field_verdicts = report.get("field_verdicts", [])
+    issues = report.get("issues", [])
+    evidence_items = report.get("evidence", [])
+
+    claimed_val: str | None = None
+    source_val: str | None = None
+    evidence_val: str | None = None
+
+    claim_rows: list[dict[str, Any]] = []
+    for fv in field_verdicts:
+        if not isinstance(fv, dict):
+            continue
+        fp = str(fv.get("field_path") or "").lower().strip()
+        if fp in ("", "claim"):
+            claim_rows.append(fv)
+
+    if not claim_rows and len(field_verdicts) == 1 and isinstance(field_verdicts[0], dict):
+        claim_rows = [field_verdicts[0]]
+
+    preferred_rows = (
+        [fv for fv in claim_rows if fv.get("status") in ("mismatch", "unsupported")]
+        + [fv for fv in claim_rows if fv.get("status") == "verified"]
+        + [fv for fv in claim_rows if fv.get("status") not in ("mismatch", "unsupported", "verified")]
+    )
+    for fv in preferred_rows:
+        if claimed_val is None:
+            claimed_val = _compact_text(fv.get("claimed_value"))
+        if source_val is None:
+            source_val = _compact_text(fv.get("source_value"))
+        if evidence_val is None:
+            evidence_val = _compact_text(fv.get("evidence_excerpt"))
+
+    # Parse natural-language issue descriptions when model emits prose only.
+    for issue in issues:
+        if not isinstance(issue, dict):
+            continue
+        detail = str(issue.get("detail") or "")
+        if not detail:
+            continue
+        if evidence_val is None:
+            evidence_val = _compact_text(detail)
+
+        m = re.search(
+            r"(?i)(?:claim(?:ed| states?)\s+)(.+?)(?:,?\s+but\s+source(?:\s+\w+)?\s+|"
+            r"\s+does not match source\s+)(.+?)(?:[.]|$)",
+            detail,
+        )
+        if m:
+            if claimed_val is None:
+                claimed_val = _compact_text(m.group(1))
+            if source_val is None:
+                source_val = _compact_text(m.group(2))
+            break
+
+    if (source_val is None or evidence_val is None) and isinstance(evidence_items, list):
+        for ev in evidence_items:
+            if not isinstance(ev, dict):
+                continue
+            if source_val is None:
+                source_val = _compact_text(ev.get("excerpt"))
+            if evidence_val is None:
+                evidence_val = _compact_text(
+                    ev.get("supports")
+                    or ev.get("contradicts")
+                    or ev.get("excerpt")
+                )
+            if source_val is not None and evidence_val is not None:
+                break
+
+    if source_val is None and evidence_val:
+        bp = re.search(r"\b\d{2,3}\s*/\s*\d{2,3}\b", evidence_val)
+        if bp:
+            source_val = bp.group(0)
+
+    if source_val is None:
+        seed = claimed_val or claim
+        candidates: list[str] = []
+        bp = re.search(r"\b\d{2,3}\s*/\s*\d{2,3}\b", seed)
+        if bp:
+            candidates.append(bp.group(0))
+        candidates.extend(re.findall(r"\d+(?:\.\d+)?", seed))
+        terms = [
+            t for t in re.findall(r"[A-Za-z]{4,}", seed)
+            if t.lower() not in {"with", "from", "that", "this", "patient", "claim", "states"}
+        ]
+        candidates.extend(terms[:3])
+
+        for cand in candidates:
+            result = _source_snippet_for(source_text, cand)
+            if result is not None:
+                matched, snippet = result
+                source_val = matched
+                if evidence_val is None:
+                    evidence_val = snippet
+                break
+
+    if evidence_val is None and source_val is not None:
+        result = _source_snippet_for(source_text, source_val)
+        if result is not None:
+            _matched, snippet = result
+            evidence_val = snippet
+
+    if claimed_val is None:
+        claimed_val = claim
+
+    grounded = bool((source_val and source_val.strip()) or (evidence_val and evidence_val.strip()))
+    return {
+        "claimed": claimed_val,
+        "source": source_val,
+        "evidence": evidence_val,
+        "grounded": grounded,
+    }
+
+
 # ---------------------------------------------------------------------------
 # extract
 # ---------------------------------------------------------------------------
@@ -358,6 +583,9 @@ def _extract_single_text(
     mode: str,
     score: bool,
     optimized: str | Path | None,
+    verify: bool,
+    verify_level: str,
+    provenance: bool,
 ) -> dict[str, Any]:
     """Core extraction logic for a single text input.
 
@@ -378,6 +606,46 @@ def _extract_single_text(
             )
 
     _ensure_configured()
+
+    def _finalize_output(
+        output: dict[str, Any],
+        *,
+        pipeline: str,
+        template_name: str | None,
+        metrics: Any = None,
+    ) -> dict[str, Any]:
+        verification_summary: dict[str, Any] | None = None
+
+        if provenance:
+            from .provenance.resolve import build_provenance
+
+            output["_provenance"] = build_provenance(output, text)
+
+        if verify:
+            from .verify.engine import verify as _verify
+
+            report = _verify(
+                extraction=output,
+                source_text=text,
+                level=verify_level,
+            ).to_dict()
+            output["_verification"] = report
+            verification_summary = {
+                "verdict": report.get("verdict"),
+                "confidence": report.get("confidence"),
+                "level": report.get("level"),
+                "issues": len(report.get("issues", [])),
+            }
+
+        _attach_envelope(
+            output,
+            pipeline=pipeline,
+            template=template_name,
+            metrics=metrics,
+            provenance=provenance,
+            verification=verification_summary,
+        )
+        return output
 
     # --- Template-based extraction ---
     if template is not None:
@@ -411,13 +679,12 @@ def _extract_single_text(
                 output_data, metrics = extract_with_mode(text, effective_mode)
             if metrics is not None:
                 output_data["_metrics"] = _metrics_to_dict(metrics)
-            _attach_envelope(
+            return _finalize_output(
                 output_data,
                 pipeline=effective_mode,
-                template=tpl_name,
+                template_name=tpl_name,
                 metrics=metrics,
             )
-            return output_data
         elif template_model is not None:
             from .pipelines.extraction import DocumentExtractor
 
@@ -438,13 +705,12 @@ def _extract_single_text(
                         )
                 else:
                     output["extracted"] = val
-            _attach_envelope(
+            return _finalize_output(
                 output,
                 pipeline="extraction",
-                template=tpl_name,
+                template_name=tpl_name,
                 metrics=getattr(extractor, "_last_metrics", None),
             )
-            return output
         else:
             raise ValueError(
                 f"Template {template!r} resolved but produced no extraction template."
@@ -472,10 +738,12 @@ def _extract_single_text(
             output_data, metrics = extract_with_mode(text, mode)
         if metrics is not None:
             output_data["_metrics"] = _metrics_to_dict(metrics)
-        _attach_envelope(
-            output_data, pipeline=mode, metrics=metrics,
+        return _finalize_output(
+            output_data,
+            pipeline=mode,
+            template_name=None,
+            metrics=metrics,
         )
-        return output_data
 
     # --- Auto extraction (LLM infers schema) ---
     if score:
@@ -502,12 +770,12 @@ def _extract_single_text(
     if hasattr(result, "inferred_schema"):
         output["inferred_schema"] = result.inferred_schema.model_dump()
 
-    _attach_envelope(
+    return _finalize_output(
         output,
         pipeline="extraction",
+        template_name=None,
         metrics=getattr(extractor, "_last_metrics", None),
     )
-    return output
 
 
 def extract(
@@ -519,6 +787,9 @@ def extract(
     mode: str = "auto",
     score: bool = False,
     optimized: str | Path | None = None,
+    verify: bool = False,
+    verify_level: str = "quick",
+    provenance: bool = False,
     workers: int = 1,
     on_progress: Callable[[str, bool, dict[str, Any] | None], None] | None = None,
 ) -> dict[str, Any] | list[dict[str, Any]]:
@@ -555,6 +826,15 @@ def extract(
     optimized:
         Path to an optimized DSPy program to load. Only applicable for
         ``mode="auto"`` or template-based extraction.
+    verify:
+        If ``True``, run post-extraction verification and include
+        ``"_verification"`` in each result.
+    verify_level:
+        Verification depth used when ``verify=True``. One of
+        ``"quick"``, ``"standard"``, ``"thorough"``.
+    provenance:
+        If ``True``, attach deterministic field-level provenance under
+        ``"_provenance"``.
     workers:
         Number of parallel extraction workers for multi-file processing.
         Document loading is always sequential (pypdfium2 is not
@@ -587,7 +867,14 @@ def extract(
     # --- Text-only path (single result) ---
     if text is not None:
         return _extract_single_text(
-            text, template=template, mode=mode, score=score, optimized=optimized,
+            text,
+            template=template,
+            mode=mode,
+            score=score,
+            optimized=optimized,
+            verify=verify,
+            verify_level=verify_level,
+            provenance=provenance,
         )
 
     # --- Document-based path ---
@@ -613,8 +900,12 @@ def extract(
                 mode=mode,
                 score=score,
                 optimized=optimized,
+                verify=verify,
+                verify_level=verify_level,
+                provenance=provenance,
             )
             result["_document"] = doc_meta
+            _set_envelope_fields(result, document=doc_meta, provenance=provenance)
             return name, result, None
         except Exception as exc:
             return name, None, f"{type(exc).__name__}: {exc}"
@@ -1178,6 +1469,7 @@ def verify(
     extraction: dict[str, Any] | None = None,
     claim: str | None = None,
     source_text: str | None = None,
+    sources: list[str | Path] | None = None,
     document: str | Path | None = None,
     level: str = "quick",
 ) -> dict[str, Any]:
@@ -1192,6 +1484,10 @@ def verify(
     source_text:
         Source document text to verify against. If *document* is provided
         instead, text is loaded from the file.
+    sources:
+        One or more source files or text strings to verify against.
+        When multiple are provided, they are combined into a single source
+        context.
     document:
         Path to source document file. Text is loaded automatically.
     level:
@@ -1202,23 +1498,125 @@ def verify(
     dict
         Verification report with keys: verdict, confidence, level, issues.
     """
-    if source_text is None and document is not None:
-        from .documents.loader import load_document
+    combined_source_text, _source_names = _resolve_verification_sources(
+        source_text=source_text,
+        sources=sources,
+        document=document,
+    )
 
-        source_text = load_document(Path(document)).text
-
-    if source_text is None:
-        raise ValueError("Must provide either source_text or document")
+    if level in ("standard", "thorough"):
+        _ensure_configured()
 
     from .verify.engine import verify as _verify
 
     report = _verify(
         extraction=extraction,
         claim=claim,
-        source_text=source_text,
+        source_text=combined_source_text,
         level=level,
     )
-    return report.to_dict()
+    out = report.to_dict()
+
+    expected_effective = {
+        "quick": "deterministic",
+        "standard": "spot_check",
+        "thorough": "audit",
+    }.get(level)
+    effective_level = out.get("level")
+    fallback_used = bool(expected_effective and effective_level != expected_effective)
+
+    out["requested_level"] = level
+    out["effective_level"] = effective_level
+    out["fallback_used"] = fallback_used
+    verification_mode = "claim" if claim is not None and extraction is None else "extraction"
+    out["verification_mode"] = verification_mode
+    out["confidence_score"] = out.get("confidence")
+
+    if fallback_used:
+        fallback_issue = next(
+            (
+                i for i in out.get("issues", [])
+                if i.get("type") in {"llm_unavailable", "rlm_unavailable"}
+            ),
+            None,
+        )
+        out["fallback_reason"] = (
+            fallback_issue.get("detail")
+                if fallback_issue is not None
+                else f"Requested {level} but executed {effective_level}"
+        )
+
+    decision = out.get("verdict")
+    if verification_mode == "claim" and claim is not None:
+        claim_comparison = _claim_comparison_from_report(
+            claim=claim,
+            source_text=combined_source_text,
+            report=out,
+        )
+        out["claim_comparison"] = claim_comparison
+        grounded = bool(claim_comparison.get("grounded"))
+        out["grounded"] = grounded
+
+        # Avoid hard pass/fail labels when we have no source-grounding payload.
+        if decision in {"verified", "contradicted"} and not grounded:
+            decision = "insufficient_evidence"
+
+        support_map = {
+            "verified": 1.0,
+            "partially_supported": 0.5,
+            "insufficient_evidence": 0.25,
+            "contradicted": 0.0,
+        }
+        out["support_score"] = support_map.get(decision, out.get("confidence", 0.0))
+    else:
+        out["support_score"] = out.get("confidence")
+
+    out["decision"] = decision
+
+    return out
+
+
+def verify_batch(
+    *,
+    claims: list[str] | None = None,
+    extractions: list[dict[str, Any]] | None = None,
+    source_text: str | None = None,
+    sources: list[str | Path] | None = None,
+    document: str | Path | None = None,
+    level: str = "quick",
+) -> list[dict[str, Any]]:
+    """Batch verify multiple claims or extractions against source(s)."""
+    if not claims and not extractions:
+        raise ValueError("Provide claims or extractions for batch verification.")
+
+    if claims and extractions:
+        raise ValueError("Provide claims or extractions, not both.")
+
+    results: list[dict[str, Any]] = []
+    if claims:
+        for claim in claims:
+            results.append(
+                verify(
+                    claim=claim,
+                    source_text=source_text,
+                    sources=sources,
+                    document=document,
+                    level=level,
+                )
+            )
+    else:
+        assert extractions is not None
+        for extraction in extractions:
+            results.append(
+                verify(
+                    extraction=extraction,
+                    source_text=source_text,
+                    sources=sources,
+                    document=document,
+                    level=level,
+                )
+            )
+    return results
 
 
 # ---------------------------------------------------------------------------
@@ -1228,6 +1626,8 @@ def verify(
 
 def query(
     sources: list[str | Path] | None = None,
+    template: str | None = None,
+    sub_lm: str | None = None,
 ) -> QuerySession:
     """Create a query session for conversational Q&A over documents and data.
 
@@ -1236,6 +1636,10 @@ def query(
     sources:
         List of file paths to load as data sources. Supports CSV, JSON,
         Parquet, Excel, PDF, and plain text files.
+    template:
+        Optional extraction template hint for future query steps.
+    sub_lm:
+        Optional lightweight model override for sub-queries.
 
     Returns
     -------
@@ -1260,7 +1664,7 @@ def query(
 
     from .query.session import QuerySession as _QuerySession
 
-    return _QuerySession(sources=sources)
+    return _QuerySession(sources=sources, template=template, sub_lm=sub_lm)
 
 
 # ---------------------------------------------------------------------------

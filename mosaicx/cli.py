@@ -27,6 +27,7 @@ from rich.console import Console
 from rich.markup import escape as _esc
 from rich.padding import Padding
 from rich.panel import Panel
+from rich.prompt import Prompt
 from rich.table import Table
 
 from . import cli_theme as theme
@@ -72,6 +73,10 @@ def _configure_dspy() -> None:
     Raises ``click.ClickException`` if DSPy cannot be imported or the
     API key is missing.
     """
+    from .runtime_env import ensure_runtime_env
+
+    ensure_runtime_env()
+
     cfg = get_config()
     if not cfg.api_key:
         raise click.ClickException(
@@ -483,6 +488,15 @@ def _extract_batch(
 @click.option("--template", type=str, default=None, help="Template name, YAML file path, or saved template name.")
 @click.option("--mode", type=str, default=None, help="Extraction mode name (e.g., radiology, pathology).")
 @click.option("--score", is_flag=True, default=False, help="Score completeness of extracted data against the template.")
+@click.option("--verify", "do_verify", is_flag=True, default=False, help="Verify extracted output against the source document.")
+@click.option(
+    "--verify-level",
+    type=click.Choice(["quick", "standard", "thorough"], case_sensitive=False),
+    default="quick",
+    show_default=True,
+    help="Verification depth used with --verify.",
+)
+@click.option("--provenance", is_flag=True, default=False, help="Attach deterministic field-level provenance.")
 @click.option("--optimized", type=click.Path(exists=True, path_type=Path), default=None, help="Path to optimized program.")
 @click.option("--output", "-o", type=click.Path(path_type=Path), default=None, help="Save output to file (.json or .yaml/.yml) for single-file extraction.")
 @click.option("--output-dir", type=click.Path(path_type=Path), default=None, help="Output directory for batch results (used with --dir).")
@@ -498,6 +512,9 @@ def extract(
     template: Optional[str],
     mode: Optional[str],
     score: bool,
+    do_verify: bool,
+    verify_level: str,
+    provenance: bool,
     optimized: Optional[Path],
     output: Optional[Path],
     output_dir: Optional[Path],
@@ -753,6 +770,23 @@ def extract(
         if hasattr(result, "inferred_schema"):
             output_data["inferred_schema"] = result.inferred_schema.model_dump()
         metrics = getattr(extractor, "_last_metrics", None)
+
+    if provenance:
+        from .provenance.resolve import build_provenance
+
+        output_data["_provenance"] = build_provenance(output_data, doc.text)
+
+    if do_verify:
+        from .sdk import verify as sdk_verify
+
+        verify_target = output_data.get("extracted", output_data)
+        with theme.spinner("Verifying extracted output...", console):
+            verification = sdk_verify(
+                extraction=verify_target,
+                source_text=doc.text,
+                level=verify_level,
+            )
+        output_data["_verification"] = verification
 
     console.print(theme.ok("Extracted \u2014 this is the way"))
 
@@ -1866,11 +1900,11 @@ def summarize(
 
     if result.events:
         theme.section("Timeline Events", console)
-        t = Table(box=box.SIMPLE_HEAD, border_style=theme.GREIGE, padding=(0, 1))
+        t = theme.make_clean_table()
         t.add_column("Date", style=f"bold {theme.CORAL}", no_wrap=True)
-        t.add_column("Exam", style=f"bold")
+        t.add_column("Exam", style="bold")
         t.add_column("Key Finding")
-        t.add_column("Change from Prior", style=f"{theme.MUTED}")
+        t.add_column("Change from Prior", style=theme.MUTED)
         for ev in result.events:
             t.add_row(
                 ev.date,
@@ -2169,8 +2203,20 @@ def deidentify(
 
 
 @cli.command()
-@click.option("--claim", type=str, default=None, help="A claim to verify against the source.")
-@click.option("--source", type=click.Path(exists=True, path_type=Path), required=True, help="Source document to verify against.")
+@click.option(
+    "--document",
+    type=click.Path(exists=True, path_type=Path),
+    default=None,
+    help="Source document to verify against (legacy single-source option).",
+)
+@click.option(
+    "--sources",
+    multiple=True,
+    type=click.Path(exists=True, path_type=Path),
+    default=(),
+    help="Source document(s) to verify against. Repeatable.",
+)
+@click.option("--claim", type=str, default=None, help="A claim to verify against the document.")
 @click.option("--extraction", type=click.Path(exists=True, path_type=Path), default=None, help="JSON file with extraction to verify.")
 @click.option(
     "--level",
@@ -2179,13 +2225,14 @@ def deidentify(
     show_default=True,
     help="Verification depth.",
 )
-@click.pass_context
+@click.option("--output", "-o", type=click.Path(path_type=Path), default=None, help="Save output to file (.json or .yaml/.yml).")
 def verify(
-    ctx: click.Context,
+    document: Optional[Path],
+    sources: tuple[Path, ...],
     claim: str | None,
-    source: Path,
     extraction: Path | None,
     level: str,
+    output: Optional[Path],
 ) -> None:
     """Verify an extraction or claim against a source document.
 
@@ -2195,55 +2242,376 @@ def verify(
 
     \b
     Examples:
-      mosaicx verify --claim "BP was 120/80" --source note.pdf
-      mosaicx verify --extraction result.json --source note.pdf
-      mosaicx verify --extraction result.json --source note.pdf --level thorough
+      mosaicx verify --document note.pdf --claim "BP was 120/80"
+      mosaicx verify --sources note.pdf --claim "BP was 120/80"
+      mosaicx verify --sources note_a.pdf --sources note_b.pdf --claim "BP was 120/80"
+      mosaicx verify --document note.pdf --extraction result.json
+      mosaicx verify --document note.pdf --extraction result.json --level thorough
+      mosaicx verify --document note.pdf --claim "nodule" -o result.json
     """
+    from .documents.models import DocumentLoadError
     from .sdk import verify as sdk_verify
 
-    # Load source text
-    doc = _load_doc_with_config(source)
-    source_text = doc.text
+    if claim is None and extraction is None:
+        raise click.ClickException("Provide --claim or --extraction (or both).")
+
+    source_paths: list[Path] = list(sources)
+    if document is not None:
+        source_paths.insert(0, document)
+    if not source_paths:
+        raise click.ClickException("Provide --document or --sources.")
+
+    source_labels: list[str] = []
+    source_texts: list[str] = []
+    for source_path in source_paths:
+        try:
+            doc = _load_doc_with_config(source_path)
+        except (FileNotFoundError, ValueError, DocumentLoadError) as exc:
+            raise click.ClickException(str(exc))
+        source_labels.append(source_path.name)
+        if doc.text:
+            source_texts.append(doc.text)
+        if doc.quality_warning:
+            console.print(
+                theme.warn(
+                    f"Low OCR quality detected in {source_path.name} -- results may be unreliable"
+                )
+            )
+
+    source_label = source_labels[0]
+    if len(source_labels) > 1:
+        source_label = f"{source_labels[0]} +{len(source_labels) - 1} more"
+    source_text_for_display = "\n".join(source_texts)
 
     # Load extraction if provided
     extraction_data = None
     if extraction:
-        extraction_data = json.loads(extraction.read_text(encoding="utf-8"))
+        try:
+            extraction_data = json.loads(extraction.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError) as exc:
+            raise click.ClickException(f"Cannot read extraction file: {exc}")
 
-    if claim is None and extraction_data is None:
-        raise click.ClickException("Must provide either --claim or --extraction.")
+    # Standard and thorough levels need DSPy for LLM-based verification
+    if level in ("standard", "thorough"):
+        _check_api_key()
+        _configure_dspy()
 
-    result = sdk_verify(
-        extraction=extraction_data,
-        claim=claim,
-        source_text=source_text,
-        level=level,
-    )
+    _LEVEL_HINT = {"quick": "Text Matching", "standard": "LLM Spot-Check", "thorough": "Full LLM Audit"}
+    console.print(theme.info(f"Verifying against {source_label} -- {_LEVEL_HINT.get(level, level)}"))
 
-    # Display result
-    theme.section("Verification Result", console)
-    table = theme.make_kv_table()
-    table.add_row("Verdict", result["verdict"])
-    table.add_row("Confidence", f"{result['confidence']:.0%}")
-    table.add_row("Level", result["level"])
-    table.add_row("Issues", str(len(result["issues"])))
-    console.print(table)
+    with theme.spinner("Verifying... trust but verify", console):
+        result = sdk_verify(
+            extraction=extraction_data,
+            claim=claim,
+            sources=source_paths,
+            level=level,
+        )
 
-    if result["issues"]:
-        theme.section("Issues", console)
-        for issue in result["issues"]:
+    # -- Human-friendly display --
+    verdict = result["verdict"]
+    decision = result.get("decision", verdict)
+    non_llm_issues = [i for i in result["issues"] if i["type"] != "llm_unavailable"]
+    n_problems = len(non_llm_issues)
+    field_verdicts = result.get("field_verdicts", [])
+    mismatches = [fv for fv in field_verdicts if fv.get("status") in ("mismatch", "unsupported")]
+    is_claim_mode = claim is not None and extraction_data is None
+    subject = "Claim" if claim is not None and extraction_data is None else "Extraction"
+
+    def _compact_text(value: Any, *, max_len: int = 100) -> str:
+        if value is None:
+            return "—"
+        text = " ".join(str(value).split())
+        if len(text) <= max_len:
+            return text
+        return text[: max_len - 1] + "…"
+
+    def _extract_claim_comparison() -> tuple[str | None, str | None, str | None]:
+        claimed_val: str | None = None
+        source_val: str | None = None
+        evidence_val: str | None = None
+
+        def _snippet_for(needle: str) -> tuple[str, str] | None:
+            if not source_text_for_display.strip() or not needle.strip():
+                return None
+
+            needle_norm = " ".join(needle.split())
+            pattern = re.escape(needle_norm).replace(r"\ ", r"\s+")
+            if "/" in needle_norm:
+                pattern = pattern.replace("/", r"\s*/\s*")
+
+            match = re.search(pattern, source_text_for_display, flags=re.IGNORECASE)
+            if match is None:
+                return None
+            radius = 60
+            start = max(0, match.start() - radius)
+            end = min(len(source_text_for_display), match.end() + radius)
+            matched = " ".join(source_text_for_display[match.start():match.end()].split())
+            snippet = " ".join(source_text_for_display[start:end].split())
+            return matched, snippet
+
+        # Prefer structured claim verdict payload first.
+        claim_rows = []
+        for fv in field_verdicts:
+            fp = (fv.get("field_path") or "").lower()
+            if fp in ("", "claim"):
+                claim_rows.append(fv)
+        if not claim_rows and len(field_verdicts) == 1:
+            claim_rows = list(field_verdicts)
+
+        preferred_rows = (
+            [fv for fv in claim_rows if fv.get("status") in ("mismatch", "unsupported")]
+            + [fv for fv in claim_rows if fv.get("status") == "verified"]
+            + [fv for fv in claim_rows if fv.get("status") not in ("mismatch", "unsupported", "verified")]
+        )
+        for fv in preferred_rows:
+            if claimed_val is None and fv.get("claimed_value"):
+                claimed_val = str(fv.get("claimed_value"))
+            if source_val is None and fv.get("source_value"):
+                source_val = str(fv.get("source_value"))
+            if evidence_val is None and fv.get("evidence_excerpt"):
+                evidence_val = str(fv.get("evidence_excerpt"))
+
+        # Fall back to issue detail parsing when the model only emits prose.
+        for issue in non_llm_issues:
+            detail = str(issue.get("detail") or "")
+            if not detail:
+                continue
+            if evidence_val is None:
+                evidence_val = detail
+
+            m = re.search(
+                r"(?i)(?:claim(?:ed| states?)\s+)(.+?)(?:,?\s+but\s+source(?:\s+\w+)?\s+|"
+                r"\s+does not match source\s+)(.+?)(?:[.]|$)",
+                detail,
+            )
+            if m:
+                if claimed_val is None:
+                    claimed_val = m.group(1).strip()
+                if source_val is None:
+                    source_val = m.group(2).strip()
+                break
+
+        if (source_val is None or evidence_val is None) and isinstance(result.get("evidence"), list):
+            for ev in result["evidence"]:
+                if not isinstance(ev, dict):
+                    continue
+                if source_val is None and ev.get("excerpt"):
+                    source_val = str(ev.get("excerpt"))
+                if evidence_val is None:
+                    evidence_val = str(
+                        ev.get("supports")
+                        or ev.get("contradicts")
+                        or ev.get("excerpt")
+                        or ""
+                    ) or None
+                if source_val is not None and evidence_val is not None:
+                    break
+
+        # Last resort: infer BP-style value from evidence snippets.
+        if source_val is None and evidence_val:
+            bp = re.search(r"\b\d{2,3}\s*/\s*\d{2,3}\b", evidence_val)
+            if bp:
+                source_val = bp.group(0)
+
+        # Backfill from loaded source text so verified claims can still show grounding.
+        if source_val is None and source_text_for_display:
+            seed_text = claimed_val or claim or ""
+            candidate_needle = None
+            bp = re.search(r"\b\d{2,3}\s*/\s*\d{2,3}\b", seed_text)
+            if bp:
+                candidate_needle = bp.group(0)
+            else:
+                nums = re.findall(r"\d+(?:\.\d+)?", seed_text)
+                if nums:
+                    candidate_needle = nums[0]
+
+            if candidate_needle:
+                match_result = _snippet_for(candidate_needle)
+                if match_result:
+                    matched_source, source_snippet = match_result
+                    source_val = matched_source
+                    if evidence_val is None:
+                        evidence_val = source_snippet
+
+        if evidence_val is None and source_val is not None:
+            match_result = _snippet_for(source_val)
+            if match_result:
+                _matched_source, source_snippet = match_result
+                evidence_val = source_snippet
+
+        if claimed_val is None and claim:
+            claimed_val = claim
+
+        return claimed_val, source_val, evidence_val
+
+    claim_claimed, claim_source, claim_evidence = (None, None, None)
+    if is_claim_mode:
+        claim_comparison = result.get("claim_comparison")
+        if isinstance(claim_comparison, dict):
+            claim_claimed = claim_comparison.get("claimed")
+            claim_source = claim_comparison.get("source")
+            claim_evidence = claim_comparison.get("evidence")
+        if not any((claim_claimed, claim_source, claim_evidence)):
+            claim_claimed, claim_source, claim_evidence = _extract_claim_comparison()
+
+    display_verdict = decision
+    if is_claim_mode and "decision" not in result and verdict == "contradicted":
+        # Do not present contradiction unless there is grounded source-side evidence.
+        grounded = bool((claim_source and claim_source.strip()) or (claim_evidence and claim_evidence.strip()))
+        if not grounded:
+            display_verdict = "insufficient_evidence"
+
+    # Warn if LLM was requested but unavailable
+    llm_failed = any(i["type"] == "llm_unavailable" for i in result["issues"])
+    if llm_failed:
+        console.print(theme.warn("LLM unavailable -- used text matching only"))
+
+    # -- Big verdict line: the one thing the user needs to see --
+    console.print()
+    claim_score = float(result.get("support_score", result["confidence"]))
+    if display_verdict == "verified" and n_problems == 0:
+        if is_claim_mode:
+            console.print(f"  [bold green]PASS[/bold green]  {subject} looks correct  [{theme.MUTED}](support {claim_score:.2f})[/{theme.MUTED}]")
+        else:
+            console.print(f"  [bold green]PASS[/bold green]  {subject} looks correct  [{theme.MUTED}]({result['confidence']:.0%} confidence)[/{theme.MUTED}]")
+    elif display_verdict == "contradicted":
+        console.print(f"  [bold red]FAIL[/bold red]  {subject} contradicts the source document")
+    elif display_verdict == "partially_supported":
+        console.print(f"  [bold yellow]WARN[/bold yellow]  {n_problems} value{'s' if n_problems != 1 else ''} could not be confirmed in the source")
+    elif display_verdict == "insufficient_evidence":
+        if verdict == "contradicted" and is_claim_mode:
+            console.print("  [bold yellow]WARN[/bold yellow]  Could not ground contradiction in source")
+        else:
+            console.print(f"  [bold yellow]WARN[/bold yellow]  Not enough overlap between claim and source to verify")
+    else:
+        console.print(f"  [{theme.MUTED}]{display_verdict}[/{theme.MUTED}]")
+
+    # -- Compact metadata table --
+    _LEVEL_DISPLAY = {
+        "deterministic": "Text Matching",
+        "spot_check": "LLM Spot-Check",
+        "audit": "Full LLM Audit",
+    }
+    method = _LEVEL_DISPLAY.get(result["level"], result["level"])
+    n_checked = len(field_verdicts)
+    n_ok = sum(1 for fv in field_verdicts if fv.get("status") == "verified")
+
+    console.print()
+    console.print(f"  [bold {theme.CORAL}]Adjudication[/bold {theme.CORAL}]")
+    meta = theme.make_clean_table(show_header=False)
+    meta.add_column("Key", style=f"bold {theme.CORAL}", no_wrap=True)
+    meta.add_column("Value", style=theme.MUTED)
+    meta.add_row("Source", source_label)
+    meta.add_row("Requested", _LEVEL_HINT.get(level, level))
+    meta.add_row("Effective", method)
+    meta.add_row("Decision", display_verdict)
+    if is_claim_mode:
+        meta.add_row("Support score", f"{claim_score:.2f}")
+        if "grounded" in result:
+            meta.add_row("Grounded", "yes" if result["grounded"] else "no")
+    else:
+        meta.add_row("Confidence", f"{result['confidence']:.0%}")
+    if n_checked and not is_claim_mode:
+        meta.add_row("Field checks", f"{n_ok}/{n_checked} verified")
+    console.print(Padding(meta, (0, 0, 0, 2)))
+
+    if is_claim_mode:
+        console.print()
+        console.print(f"  [bold {theme.CORAL}]Claim Comparison[/bold {theme.CORAL}]")
+        comparison = theme.make_clean_table(show_header=False)
+        comparison.add_column("Key", style=f"bold {theme.CORAL}", no_wrap=True)
+        comparison.add_column("Value")
+        comparison.add_row("Claimed", _esc(_compact_text(claim_claimed or claim or "—", max_len=96)))
+        comparison.add_row("Source", _esc(_compact_text(claim_source or "(not available)", max_len=96)))
+        comparison.add_row("Evidence", _esc(_compact_text(claim_evidence or "(not available)", max_len=140)))
+        console.print(Padding(comparison, (0, 0, 0, 2)))
+
+    # -- Problems: the stuff that actually matters --
+    if non_llm_issues:
+        console.print()
+        if is_claim_mode:
+            console.print(f"  [bold {theme.CORAL}]Why[/bold {theme.CORAL}]")
+        for issue in non_llm_issues:
             severity_color = {"info": "blue", "warning": "yellow", "critical": "red"}.get(
                 issue["severity"], "white"
             )
-            console.print(
-                f"  [{severity_color}]{issue['severity'].upper()}[/] {issue['field']}: {issue['detail']}"
+            # Make the detail more readable
+            detail = _compact_text(issue["detail"], max_len=160)
+            field = issue["field"]
+            if field and field != "claim":
+                console.print(f"  [{severity_color}]x[/{severity_color}] [{theme.CORAL}]{_esc(field)}[/{theme.CORAL}]: {_esc(detail)}")
+            else:
+                console.print(f"  [{severity_color}]x[/{severity_color}] {_esc(detail)}")
+
+    # -- Field-level detail table (extraction mode only) --
+    if mismatches and extraction_data is not None:
+        console.print()
+        console.print(f"  [{theme.MUTED}]LLM field checks:[/{theme.MUTED}]")
+        table = theme.make_clean_table()
+        table.add_column("Field", style=f"bold {theme.CORAL}", no_wrap=True)
+        table.add_column("Status", no_wrap=True)
+        table.add_column("Claimed")
+        table.add_column("Evidence")
+        for fv in mismatches[:10]:
+            status = fv.get("status")
+            status_label = "[red]Mismatch[/red]" if status == "mismatch" else "[yellow]Not found[/yellow]"
+            field = _compact_text(fv.get("field_path") or "—", max_len=36)
+            claimed = _compact_text(fv.get("claimed_value"), max_len=44)
+            evidence = _compact_text(
+                fv.get("source_value") or fv.get("evidence_excerpt"),
+                max_len=64,
             )
+            table.add_row(_esc(field), status_label, _esc(claimed), _esc(evidence))
+        console.print(Padding(table, (0, 0, 0, 2)))
+        if len(mismatches) > 10:
+            console.print(theme.info(f"Showing 10 of {len(mismatches)} field mismatches"))
 
-    # Also output JSON
     console.print()
-    from rich.syntax import Syntax
+    console.print(f"  [bold {theme.CORAL}]Diagnostics[/bold {theme.CORAL}]")
+    diagnostics = theme.make_clean_table(show_header=False)
+    diagnostics.add_column("Key", style=f"bold {theme.CORAL}", no_wrap=True)
+    diagnostics.add_column("Value", style=theme.MUTED)
+    model_name = get_config().lm.split("/", 1)[-1] if "/" in get_config().lm else get_config().lm
+    diagnostics.add_row("Model", model_name)
+    expected_effective = {
+        "quick": "deterministic",
+        "standard": "spot_check",
+        "thorough": "audit",
+    }.get(level)
+    if expected_effective and result["level"] != expected_effective:
+        diagnostics.add_row(
+            "Fallback",
+            f"{_LEVEL_HINT.get(level, level)} -> {_LEVEL_DISPLAY.get(result['level'], result['level'])}",
+        )
+        fallback_issue = next(
+            (
+                i for i in result.get("issues", [])
+                if i.get("type") in {"llm_unavailable", "rlm_unavailable"}
+            ),
+            None,
+        )
+        if fallback_issue is not None:
+            diagnostics.add_row("Fallback why", _compact_text(fallback_issue.get("detail"), max_len=120))
+    else:
+        diagnostics.add_row("Fallback", "none")
+    console.print(Padding(diagnostics, (0, 0, 0, 2)))
 
-    console.print(Syntax(json.dumps(result, indent=2), "json"))
+    # Save to file if --output specified
+    if output is not None:
+        suffix = output.suffix.lower()
+        if suffix in (".yaml", ".yml"):
+            try:
+                import yaml
+            except ImportError:
+                raise click.ClickException("PyYAML required for YAML output: pip install pyyaml")
+            output.parent.mkdir(parents=True, exist_ok=True)
+            output.write_text(yaml.dump(result, default_flow_style=False, sort_keys=False, allow_unicode=True), encoding="utf-8")
+        else:
+            if not suffix:
+                output = output.with_suffix(".json")
+            output.parent.mkdir(parents=True, exist_ok=True)
+            output.write_text(json.dumps(result, indent=2, default=str, ensure_ascii=False), encoding="utf-8")
+        console.print(theme.ok(f"Saved to {output}"))
 
 
 # ---------------------------------------------------------------------------
@@ -2507,8 +2875,8 @@ def eval_cmd(
     max_count = max(bin_counts) if bin_counts else 1
     bar_width = 30
     hist_table = theme.make_table()
-    hist_table.add_column("Range", style="bold cyan", no_wrap=True)
-    hist_table.add_column("Count", style="magenta", justify="right")
+    hist_table.add_column("Range", style=f"bold {theme.CORAL}", no_wrap=True)
+    hist_table.add_column("Count", style=theme.GREIGE, justify="right")
     hist_table.add_column("Distribution")
 
     for j in range(len(bins) - 1):
@@ -2516,7 +2884,7 @@ def eval_cmd(
         count = bin_counts[j]
         bar_len = int((count / max_count) * bar_width) if max_count > 0 else 0
         bar = "\u2588" * bar_len
-        hist_table.add_row(label, str(count), f"[cyan]{bar}[/cyan]")
+        hist_table.add_row(label, str(count), f"[{theme.CORAL}]{bar}[/{theme.CORAL}]")
     console.print(hist_table)
 
     # Save detailed results
@@ -2620,9 +2988,10 @@ def config_show() -> None:
 @click.argument("key")
 @click.argument("value")
 def config_set(key: str, value: str) -> None:
-    """Set a configuration value.
+    """Set a configuration value persistently.
 
-    Not yet implemented -- use environment variables instead.
+    Writes to ~/.mosaicx/.env which is loaded on startup.
+    Also sets the value in the current process environment.
 
     \b
     KEY is the config key (e.g. lm, api_base, lm_temperature).
@@ -2633,12 +3002,47 @@ def config_set(key: str, value: str) -> None:
       mosaicx config set lm ollama_chat/llama3.1
       mosaicx config set api_base http://localhost:11434
     """
+    from .config import get_config
+
+    cfg = get_config()
     env_var = f"MOSAICX_{key.upper()}"
-    console.print(theme.warn(
-        "Config persistence is not implemented yet. "
-        "Set values via environment variables or a .env file:"
-    ))
-    console.print(theme.info(f"  export {env_var}={value}"))
+
+    # Validate that the key is a known config field
+    known_fields = set(cfg.model_fields.keys())
+    if key.lower() not in known_fields:
+        raise click.ClickException(
+            f"Unknown config key {key!r}. Known keys: {', '.join(sorted(known_fields))}"
+        )
+
+    # Write to persistent .env file at ~/.mosaicx/.env
+    env_file = cfg.home_dir / ".env"
+    cfg.home_dir.mkdir(parents=True, exist_ok=True)
+
+    # Read existing entries
+    existing: dict[str, str] = {}
+    if env_file.exists():
+        for line in env_file.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if line and not line.startswith("#") and "=" in line:
+                k, _, v = line.partition("=")
+                existing[k.strip()] = v.strip()
+
+    # Update
+    existing[env_var] = value
+
+    # Write back
+    lines = [f"{k}={v}" for k, v in sorted(existing.items())]
+    env_file.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    # Also set in current process
+    import os
+    os.environ[env_var] = value
+
+    # Clear config cache so next get_config() picks up changes
+    get_config.cache_clear()
+
+    console.print(theme.ok(f"Set {key} = {value}"))
+    console.print(theme.info(f"Saved to {env_file}"))
 
 
 # ---------------------------------------------------------------------------
@@ -2648,54 +3052,165 @@ def config_set(key: str, value: str) -> None:
 
 @cli.command()
 @click.option(
-    "--source",
+    "--document",
     multiple=True,
     type=click.Path(exists=True, path_type=Path),
-    help="Path to a data source (CSV, JSON, PDF, etc.). Repeatable.",
+    help="Path to a data source (CSV, JSON, PDF, etc.). Repeatable. Legacy alias for --sources.",
 )
-def query(source: tuple[Path, ...]) -> None:
-    """Open a query session over documents and data sources.
+@click.option(
+    "--sources",
+    multiple=True,
+    type=str,
+    help="Path(s), directory path(s), or glob patterns for sources. Repeatable.",
+)
+@click.option("--question", "-q", type=str, default=None, help="Ask a single question (non-interactive).")
+@click.option("--chat", is_flag=True, default=False, help="Start a multi-turn query chat session.")
+@click.option("--citations", type=int, default=3, show_default=True, help="Maximum citations to return per answer.")
+@click.option("--output", "-o", type=click.Path(path_type=Path), default=None, help="Save output to file (.json or .yaml/.yml).")
+def query(
+    document: tuple[Path, ...],
+    sources: tuple[str, ...],
+    question: Optional[str],
+    chat: bool,
+    citations: int,
+    output: Optional[Path],
+) -> None:
+    """Query documents and data sources with natural language.
 
     \b
     Load one or more data files (CSV, JSON, Parquet, Excel, PDF, text)
-    into a query session for conversational Q&A.
+    into a query session for conversational Q&A powered by RLM.
 
     \b
     Examples:
-      mosaicx query --source data.csv
-      mosaicx query --source data.csv --source notes.pdf
+      mosaicx query --sources data.csv -q "What is the mean age?"
+      mosaicx query --sources "reports/*.txt" -q "List nodules by size"
+      mosaicx query --document data.csv -q "What is the mean age?"
+      mosaicx query --document data.csv --document notes.pdf
+      mosaicx query --document report.pdf -q "Summarize findings" -o answer.json
     """
     from .sdk import query as sdk_query
 
-    if not source:
-        raise click.ClickException("At least one --source is required.")
+    if not document and not sources:
+        raise click.ClickException("At least one --sources or --document input is required.")
 
-    sources = list(source)
+    source_inputs: list[str | Path] = [*document, *sources]
     try:
-        session = sdk_query(sources=sources)
+        session = sdk_query(sources=source_inputs)
     except Exception as exc:
         raise click.ClickException(str(exc))
 
-    theme.section("Query Session", console)
-    console.print(theme.ok(f"Loaded {len(session.catalog)} source(s)"))
+    theme.section("Query Session", console, "01")
+    console.print(theme.info(f"Loaded {len(session.catalog)} source(s)"))
 
-    table = theme.make_table("Sources")
-    table.add_column("Name", style=f"bold {theme.CORAL}")
+    table = theme.make_clean_table()
+    table.add_column("Name", style=f"bold {theme.CORAL}", no_wrap=True)
     table.add_column("Format")
     table.add_column("Type")
     table.add_column("Size", justify="right")
     for src in session.catalog:
         table.add_row(src.name, src.format, src.source_type, f"{src.size:,} B")
-    console.print(table)
+    console.print(Padding(table, (0, 0, 0, 2)))
 
-    console.print()
-    console.print(theme.info(
-        "Interactive REPL is not yet available. "
-        "Use the Python SDK for programmatic access:"
-    ))
-    console.print(theme.info(
-        '  from mosaicx.sdk import query; s = query(sources=[...])'
-    ))
+    def _compact_query_text(value: Any, *, max_len: int = 180) -> str:
+        text = " ".join(str(value).split())
+        if len(text) <= max_len:
+            return text
+        return text[: max_len - 1] + "…"
+
+    def _render_query_payload(payload: dict[str, Any]) -> None:
+        if payload.get("fallback_used"):
+            reason = str(payload.get("fallback_reason") or "unknown")
+            console.print(theme.warn(f"LLM fallback active -- { _compact_query_text(reason, max_len=140) }"))
+
+        answer = str(payload.get("answer") or "").strip()
+        if answer:
+            console.print(Padding(answer, (1, 2, 0, 4)))
+
+        citations_payload = payload.get("citations") or []
+        if citations_payload:
+            console.print()
+            console.print(f"  [bold {theme.CORAL}]Evidence[/bold {theme.CORAL}]")
+            ctab = theme.make_clean_table()
+            ctab.add_column("Source", style=f"bold {theme.CORAL}", no_wrap=True)
+            ctab.add_column("Snippet")
+            ctab.add_column("Score", justify="right", no_wrap=True)
+            for c in citations_payload:
+                ctab.add_row(
+                    _esc(_compact_query_text(c.get("source"), max_len=40)),
+                    _esc(_compact_query_text(c.get("snippet"), max_len=160)),
+                    str(c.get("score", 0)),
+                )
+            console.print(Padding(ctab, (0, 0, 0, 2)))
+
+        conf = payload.get("confidence")
+        if isinstance(conf, (int, float)):
+            console.print(theme.info(f"Grounding confidence: {float(conf):.2f}"))
+
+    # Question/chat modes
+    if question is not None or chat:
+        _check_api_key()
+        _configure_dspy()
+
+        theme.section("Answer", console, "02")
+        output_data: dict[str, Any] = {
+            "catalog": [m.model_dump() for m in session.catalog],
+            "turns": [],
+        }
+
+        def _ask_once(q: str) -> dict[str, Any]:
+            with theme.spinner("Querying... thinking with code", console):
+                return session.ask_structured(q, top_k_citations=max(1, citations))
+
+        if question is not None:
+            payload = _ask_once(question)
+            _render_query_payload(payload)
+            output_data["turns"].append(payload)
+
+        if chat:
+            console.print()
+            console.print(theme.info("Chat mode active. Type /exit to finish."))
+            while True:
+                try:
+                    prompt_text = Prompt.ask(f"[bold {theme.CORAL}]You[/bold {theme.CORAL}]")
+                except (EOFError, KeyboardInterrupt):
+                    console.print()
+                    break
+
+                q = prompt_text.strip()
+                if not q:
+                    continue
+                if q.lower() in {"/exit", "exit", "quit", ":q"}:
+                    break
+
+                payload = _ask_once(q)
+                _render_query_payload(payload)
+                output_data["turns"].append(payload)
+
+        # Save if --output
+        if output is not None:
+            suffix = output.suffix.lower()
+            if suffix in (".yaml", ".yml"):
+                try:
+                    import yaml
+                except ImportError:
+                    raise click.ClickException("PyYAML required for YAML output: pip install pyyaml")
+                output.parent.mkdir(parents=True, exist_ok=True)
+                output.write_text(yaml.dump(output_data, default_flow_style=False, sort_keys=False, allow_unicode=True), encoding="utf-8")
+            else:
+                if not suffix:
+                    output = output.with_suffix(".json")
+                output.parent.mkdir(parents=True, exist_ok=True)
+                output.write_text(json.dumps(output_data, indent=2, default=str, ensure_ascii=False), encoding="utf-8")
+            console.print(theme.ok(f"Saved to {output}"))
+    else:
+        console.print()
+        console.print(theme.info(
+            "No --question provided. Use -q for one-shot, --chat for multi-turn, or use the Python SDK:"
+        ))
+        console.print(theme.info(
+            "  from mosaicx.sdk import query; s = query(sources=[...])"
+        ))
 
     session.close()
 

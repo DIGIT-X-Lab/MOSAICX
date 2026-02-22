@@ -12,6 +12,10 @@ import mosaicx
 result = mosaicx.extract("CT CHEST: 2.3cm RUL nodule...", mode="radiology")
 print(result["exam_type"])       # "CT Chest"
 print(result["findings"])        # [{"structure": "RUL", ...}]
+
+# Verify the extraction
+check = mosaicx.verify(extraction=result, source_text="CT CHEST: 2.3cm RUL nodule...")
+print(check["verdict"])       # "verified"
 ```
 
 Install with `pip install mosaicx`. Configure your LLM backend with environment variables (see [Configuration](#configuration) below).
@@ -355,6 +359,166 @@ result = mosaicx.summarize(
     optimized="~/.mosaicx/optimized/summarize_optimized.json",
 )
 ```
+
+---
+
+### `verify()`
+
+Verify extractions or free-text claims against source text. Useful as a post-extraction quality gate to catch hallucinated or misattributed fields before downstream consumption.
+
+```python
+def verify(
+    *,
+    extraction: dict[str, Any] | None = None,
+    claim: str | None = None,
+    source_text: str | None = None,
+    document: str | Path | None = None,
+    level: str = "quick",
+) -> dict[str, Any]
+```
+
+**Parameters:**
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `extraction` | `dict[str, Any] \| None` | `None` | Extraction output dict to verify against the source. |
+| `claim` | `str \| None` | `None` | Free-text claim to verify. At least one of `extraction` or `claim` must be provided. |
+| `source_text` | `str \| None` | `None` | Source document text. Mutually exclusive with `document`. |
+| `document` | `str \| Path \| None` | `None` | Path to a source document file. Mutually exclusive with `source_text`. |
+| `level` | `str` | `"quick"` | Verification depth: `"quick"` (deterministic), `"standard"`, `"thorough"`. |
+
+**Returns:** `dict[str, Any]` with the following keys:
+
+| Key | Type | Description |
+|-----|------|-------------|
+| `verdict` | `str` | Raw engine verdict (`verified`, `partially_supported`, `contradicted`, `insufficient_evidence`). |
+| `decision` | `str` | Normalized final decision used for display and gating. |
+| `confidence` | `float` | Engine confidence score between 0 and 1. |
+| `support_score` | `float` | Claim-support score (claim mode) or confidence proxy (extraction mode). |
+| `verification_mode` | `str` | `"claim"` or `"extraction"`. |
+| `level` | `str` | The verification level that was used. |
+| `issues` | `list[dict]` | List of issue dicts, each with keys `severity`, `field`, and `detail`. Empty when fully verified. |
+| `field_verdicts` | `list[dict]` | Per-field verification results. |
+| `requested_level` | `str` | Requested level (`quick`/`standard`/`thorough`). |
+| `effective_level` | `str` | Actually executed level (`deterministic`/`spot_check`/`audit`). |
+| `fallback_used` | `bool` | Whether verification fell back due model/tool unavailability. |
+| `fallback_reason` | `str` | Present when fallback occurred. |
+| `claim_comparison` | `dict` | Claim mode only: `claimed`, `source`, `evidence`, `grounded`. |
+
+**Raises:**
+
+- `ValueError` -- if neither `extraction` nor `claim` is provided, or if neither `source_text` nor `document` is provided.
+
+#### Examples
+
+**Verify a claim against text:**
+
+```python
+import mosaicx
+
+result = mosaicx.verify(
+    claim="2.3cm nodule in right upper lobe",
+    source_text="FINDINGS: 2.3 cm spiculated nodule in the RUL.",
+)
+print(result["verdict"])      # "verified"
+print(result["confidence"])   # 1.0
+```
+
+**Verify an extraction against a document file:**
+
+```python
+import mosaicx
+
+extraction = {"exam_type": "CT Chest", "findings": [{"anatomy": "RUL", "observation": "nodule"}]}
+result = mosaicx.verify(
+    extraction=extraction,
+    document="ct_report.pdf",
+)
+if result["verdict"] != "verified":
+    for issue in result["issues"]:
+        print(f"  {issue['severity']}: {issue['field']} - {issue['detail']}")
+```
+
+!!! tip
+    Use `level="quick"` (the default) for fast deterministic checks during development. Switch to `level="thorough"` for production validation where accuracy matters more than speed.
+
+---
+
+### `query()`
+
+Open a query session over one or more documents for RLM-powered natural-language Q&A. The session loads and indexes the provided sources, then exposes an `ask()` method for iterative questioning.
+
+```python
+def query(
+    sources: list[str | Path] | None = None,
+) -> QuerySession
+```
+
+**Parameters:**
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `sources` | `list[str \| Path] \| None` | `None` | List of file paths to load into the query session. Supports CSV, JSON, Parquet, Excel, PDF, text files. |
+
+**Returns:** `QuerySession` object with the following interface:
+
+| Member | Type | Description |
+|--------|------|-------------|
+| `catalog` | `list` | List of source metadata objects (each has `name`, `format`, `size`). |
+| `data` | `dict` | Dict of loaded data keyed by source name. |
+| `ask(question)` | method | Ask a natural-language question; returns an answer string. |
+| `ask_structured(question)` | method | Ask and return answer metadata: `answer`, `citations`, `confidence`, fallback flags. |
+| `close()` | method | Release resources held by the session. |
+
+**Raises:**
+
+- `ValueError` -- if `sources` is empty or `None`.
+
+#### Examples
+
+**Open a query session and inspect sources:**
+
+```python
+import mosaicx
+
+session = mosaicx.query(sources=["patient_data.csv", "notes.pdf"])
+
+for src in session.catalog:
+    print(f"{src.name}: {src.format} ({src.size:,} bytes)")
+
+session.close()
+```
+
+**Ask questions with the query engine:**
+
+```python
+import mosaicx
+from mosaicx.query.engine import QueryEngine
+
+session = mosaicx.query(sources=["patient_data.csv", "notes.pdf"])
+engine = QueryEngine(session=session)
+answer = engine.ask("What is the mean patient age?")
+print(answer)
+
+session.close()
+```
+
+**Structured query response with citations:**
+
+```python
+import mosaicx
+
+session = mosaicx.query(sources=["patient_data.csv", "notes.pdf"])
+payload = session.ask_structured("What are the highest-risk findings?")
+print(payload["answer"])
+for c in payload["citations"]:
+    print(c["source"], c["score"], c["snippet"][:120])
+print("confidence:", payload["confidence"])
+session.close()
+```
+
+!!! note
+    The `ask()` method requires DSPy and Deno to be available for the RLM sandbox. See [Configuration](configuration.md) for setup details.
 
 ---
 
@@ -719,6 +883,26 @@ for r in results:
 ---
 
 ## Integration Examples
+
+### Verify After Extract
+
+```python
+import mosaicx
+
+report_text = "CT CHEST: 2.3 cm spiculated RUL nodule. Impression: Suspicious for malignancy."
+
+# Step 1: Extract
+result = mosaicx.extract(report_text, mode="radiology")
+
+# Step 2: Verify
+check = mosaicx.verify(extraction=result, source_text=report_text)
+if check["verdict"] == "verified":
+    print("Extraction verified against source")
+else:
+    print(f"Issues found: {len(check['issues'])}")
+    for issue in check["issues"]:
+        print(f"  {issue['severity']}: {issue['detail']}")
+```
 
 ### pandas DataFrame
 

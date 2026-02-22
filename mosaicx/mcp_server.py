@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import json
 import logging
-import sys
 import uuid
 from typing import Any
 
@@ -28,15 +27,40 @@ logger = logging.getLogger(__name__)
 try:
     from mcp.server.fastmcp import FastMCP
 except ImportError:
-    print(
-        "ERROR: The 'mcp' package is required for the MOSAICX MCP server.\n"
-        "Install it with:\n\n"
-        "    pip install 'mosaicx[mcp]'\n"
-        "    # or directly:\n"
-        "    pip install 'mcp[cli]>=1.0.0'\n",
-        file=sys.stderr,
+    logger.warning(
+        "mcp package not installed; using lightweight fallback FastMCP. "
+        "Install extras with: pip install 'mosaicx[mcp]'"
     )
-    raise SystemExit(1)
+
+    class _FallbackToolManager:
+        def __init__(self) -> None:
+            self._tools: list[Any] = []
+
+        def register(self, func: Any) -> None:
+            from types import SimpleNamespace
+
+            self._tools.append(SimpleNamespace(name=getattr(func, "__name__", "unknown"), fn=func))
+
+        def list_tools(self) -> list[Any]:
+            return list(self._tools)
+
+    class FastMCP:  # type: ignore[override]
+        def __init__(self, name: str) -> None:
+            self.name = name
+            self._tool_manager = _FallbackToolManager()
+
+        def tool(self):
+            def _decorator(func):
+                self._tool_manager.register(func)
+                return func
+
+            return _decorator
+
+        def run(self, *args: Any, **kwargs: Any) -> None:
+            raise RuntimeError(
+                "MCP runtime unavailable because dependency 'mcp' is not installed. "
+                "Install with: pip install 'mosaicx[mcp]'"
+            )
 
 # ---------------------------------------------------------------------------
 # Server instance
@@ -60,6 +84,10 @@ def _ensure_dspy() -> None:
     global _dspy_configured
     if _dspy_configured:
         return
+
+    from .runtime_env import ensure_runtime_env
+
+    ensure_runtime_env()
 
     from .config import get_config
 
@@ -519,7 +547,11 @@ _sessions: dict[str, Any] = {}  # session_id -> QuerySession
 
 
 @mcp.tool()
-def query_start(source_texts: dict[str, str]) -> str:
+def query_start(
+    source_texts: dict[str, str] | None = None,
+    sources: list[str] | None = None,
+    template: str | None = None,
+) -> str:
     """Create a new query session from in-memory text sources.
 
     Accepts a dict mapping source names to their text content and creates
@@ -527,21 +559,26 @@ def query_start(source_texts: dict[str, str]) -> str:
     server-side and identified by a unique session_id.
 
     Args:
-        source_texts: Mapping of source names to text content (e.g. {"report.txt": "Patient presents..."}).
+        source_texts: Optional mapping of source names to text content
+            (e.g. {"report.txt": "Patient presents..."}).
+        sources: Optional list of file-system sources to load into the query
+            session.
+        template: Optional template hint for downstream query workflows.
 
     Returns:
         JSON string with "session_id" (str) and "catalog" (list of source metadata dicts).
     """
     try:
-        if not source_texts:
-            return _json_result({"error": "source_texts must not be empty."})
+        if not source_texts and not sources:
+            return _json_result({"error": "Provide source_texts or sources."})
 
         from .query.session import QuerySession
 
-        session = QuerySession()
+        session = QuerySession(sources=sources, template=template)
 
-        for name, text in source_texts.items():
-            session.add_text_source(name, text)
+        if source_texts:
+            for name, text in source_texts.items():
+                session.add_text_source(name, text)
 
         session_id = str(uuid.uuid4())
         _sessions[session_id] = session
@@ -568,7 +605,8 @@ def query_ask(session_id: str, question: str) -> str:
         question: Natural language question about the loaded documents.
 
     Returns:
-        JSON string with "answer" (str) and "session_id" (str).
+        JSON string with "answer" (str), "citations" (list), confidence/fallback
+        metadata, and "session_id" (str).
     """
     try:
         if session_id not in _sessions:
@@ -583,12 +621,9 @@ def query_ask(session_id: str, question: str) -> str:
         from .query.engine import QueryEngine
 
         engine = QueryEngine(session=session)
-        answer = engine.ask(question)
-
-        return _json_result({
-            "session_id": session_id,
-            "answer": answer,
-        })
+        payload = engine.ask_structured(question)
+        payload["session_id"] = session_id
+        return _json_result(payload)
 
     except Exception as exc:
         logger.exception("query_ask failed")
@@ -665,6 +700,14 @@ def verify_output(
                 extraction_dict = json.loads(extraction)
             except (json.JSONDecodeError, TypeError) as exc:
                 return _json_result({"error": f"Invalid extraction JSON: {exc}"})
+
+        # Standard and thorough levels need DSPy for LLM-based verification.
+        # If DSPy setup fails, the engine will fall back to deterministic.
+        if level in ("standard", "thorough"):
+            try:
+                _ensure_dspy()
+            except Exception:
+                logger.warning("DSPy setup failed for %s verify; engine will fall back", level)
 
         from .verify.engine import verify
 
