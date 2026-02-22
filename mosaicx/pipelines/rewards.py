@@ -10,7 +10,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
-_MEASUREMENT_RE = re.compile(r"\d+\s*(mm|cm|m|cc|ml|mg|g|kg)", re.IGNORECASE)
+_MEASUREMENT_RE = re.compile(r"\d+(?:\.\d+)?\s*(mm|cm|cc|ml|mg|g|kg)\b", re.IGNORECASE)
 
 
 def findings_reward(findings: list[dict[str, Any]]) -> float:

@@ -1,8 +1,6 @@
 # tests/test_pipeline_rewards.py
 from __future__ import annotations
 
-import pytest
-
 
 class TestFindingsReward:
     def test_empty_findings_scores_low(self):
