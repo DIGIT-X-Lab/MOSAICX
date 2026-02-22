@@ -152,6 +152,45 @@ def _compute_completeness_dict(model_instance: Any, text: str) -> dict[str, Any]
     return asdict(comp)
 
 
+def _attach_envelope(
+    output: dict[str, Any],
+    *,
+    pipeline: str,
+    template: str | None = None,
+    metrics: Any = None,
+) -> None:
+    """Attach a ``_mosaicx`` metadata envelope to *output* in-place.
+
+    Parameters
+    ----------
+    output:
+        The result dict to modify.
+    pipeline:
+        Pipeline name (e.g. ``"radiology"``, ``"deidentify"``).
+    template:
+        Template name, or ``None`` if no template was used.
+    metrics:
+        A ``PipelineMetrics`` instance, or ``None``.
+    """
+    from .envelope import build_envelope
+
+    duration: float | None = None
+    tokens: dict[str, int] | None = None
+    if metrics is not None:
+        duration = metrics.total_duration_s
+        tokens = {
+            "input": metrics.total_input_tokens,
+            "output": metrics.total_output_tokens,
+        }
+
+    output["_mosaicx"] = build_envelope(
+        pipeline=pipeline,
+        template=template,
+        duration_s=duration,
+        tokens=tokens,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Document resolution helpers
 # ---------------------------------------------------------------------------
@@ -369,6 +408,12 @@ def _extract_single_text(
                 output_data, metrics = extract_with_mode(text, effective_mode)
             if metrics is not None:
                 output_data["_metrics"] = _metrics_to_dict(metrics)
+            _attach_envelope(
+                output_data,
+                pipeline=effective_mode,
+                template=tpl_name,
+                metrics=metrics,
+            )
             return output_data
         elif template_model is not None:
             from .pipelines.extraction import DocumentExtractor
@@ -390,6 +435,12 @@ def _extract_single_text(
                         )
                 else:
                     output["extracted"] = val
+            _attach_envelope(
+                output,
+                pipeline="extraction",
+                template=tpl_name,
+                metrics=getattr(extractor, "_last_metrics", None),
+            )
             return output
         else:
             raise ValueError(
@@ -418,6 +469,9 @@ def _extract_single_text(
             output_data, metrics = extract_with_mode(text, mode)
         if metrics is not None:
             output_data["_metrics"] = _metrics_to_dict(metrics)
+        _attach_envelope(
+            output_data, pipeline=mode, metrics=metrics,
+        )
         return output_data
 
     # --- Auto extraction (LLM infers schema) ---
@@ -445,6 +499,11 @@ def _extract_single_text(
     if hasattr(result, "inferred_schema"):
         output["inferred_schema"] = result.inferred_schema.model_dump()
 
+    _attach_envelope(
+        output,
+        pipeline="extraction",
+        metrics=getattr(extractor, "_last_metrics", None),
+    )
     return output
 
 
@@ -624,7 +683,9 @@ def _deidentify_single_text(
     from .pipelines.deidentifier import regex_scrub_phi
 
     if mode == "regex":
-        return {"redacted_text": regex_scrub_phi(text)}
+        output: dict[str, Any] = {"redacted_text": regex_scrub_phi(text)}
+        _attach_envelope(output, pipeline="deidentify")
+        return output
 
     _ensure_configured()
 
@@ -632,7 +693,13 @@ def _deidentify_single_text(
 
     deid = Deidentifier()
     result = deid(document_text=text, mode=mode)
-    return {"redacted_text": result.redacted_text}
+    output = {"redacted_text": result.redacted_text}
+    _attach_envelope(
+        output,
+        pipeline="deidentify",
+        metrics=getattr(deid, "_last_metrics", None),
+    )
+    return output
 
 
 def deidentify(
@@ -843,6 +910,11 @@ def summarize(
     }
     if doc_metadata_list is not None:
         output["_document"] = doc_metadata_list
+    _attach_envelope(
+        output,
+        pipeline="summarize",
+        metrics=getattr(summarizer, "_last_metrics", None),
+    )
     return output
 
 
