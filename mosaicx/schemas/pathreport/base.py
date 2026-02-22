@@ -11,6 +11,8 @@ from typing import List, Optional
 
 from pydantic import BaseModel, Field
 
+from mosaicx.schemas.radreport.base import CaseInsensitiveModel
+
 __all__ = [
     "PathSections",
     "PathFinding",
@@ -19,7 +21,7 @@ __all__ = [
 ]
 
 
-class PathSections(BaseModel):
+class PathSections(CaseInsensitiveModel):
     """Top-level sections parsed from a pathology report."""
 
     clinical_history: str = Field(
@@ -42,7 +44,7 @@ class PathSections(BaseModel):
     )
 
 
-class PathFinding(BaseModel):
+class PathFinding(CaseInsensitiveModel):
     """A single microscopic finding from a pathology report."""
 
     description: str = Field(
@@ -65,7 +67,7 @@ class PathFinding(BaseModel):
     )
 
 
-class Biomarker(BaseModel):
+class Biomarker(CaseInsensitiveModel):
     """A single biomarker result (IHC, molecular, etc.)."""
 
     name: str = Field(
@@ -79,7 +81,7 @@ class Biomarker(BaseModel):
     )
 
 
-class PathDiagnosis(BaseModel):
+class PathDiagnosis(CaseInsensitiveModel):
     """A final pathologic diagnosis with staging and biomarker data."""
 
     diagnosis: str = Field(

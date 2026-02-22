@@ -12,10 +12,11 @@ from __future__ import annotations
 
 from typing import List, Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 __all__ = [
+    "CaseInsensitiveModel",
     "Measurement",
     "ChangeType",
     "RadReportFinding",
@@ -24,11 +25,26 @@ __all__ = [
 ]
 
 
+class CaseInsensitiveModel(BaseModel):
+    """Base model that accepts keys in any case (e.g., 'Findings' -> 'findings').
+
+    LLMs sometimes return title-cased or upper-cased JSON keys. This validator
+    normalises incoming dict keys to lowercase before Pydantic field matching.
+    """
+
+    @model_validator(mode="before")
+    @classmethod
+    def _lowercase_keys(cls, data: dict) -> dict:  # type: ignore[override]
+        if isinstance(data, dict):
+            return {k.lower(): v for k, v in data.items()}
+        return data
+
+
 # ---------------------------------------------------------------------------
 # Measurement
 # ---------------------------------------------------------------------------
 
-class Measurement(BaseModel):
+class Measurement(CaseInsensitiveModel):
     """A single quantitative measurement (e.g., lesion diameter)."""
 
     value: float = Field(..., description="Numeric measurement value")
@@ -45,7 +61,7 @@ class Measurement(BaseModel):
 # ChangeType
 # ---------------------------------------------------------------------------
 
-class ChangeType(BaseModel):
+class ChangeType(CaseInsensitiveModel):
     """Describes change relative to a prior study."""
 
     status: Literal["new", "stable", "increased", "decreased", "resolved"] = Field(
@@ -63,7 +79,7 @@ class ChangeType(BaseModel):
 # RadReportFinding
 # ---------------------------------------------------------------------------
 
-class RadReportFinding(BaseModel):
+class RadReportFinding(CaseInsensitiveModel):
     """A single radiology finding extracted from a report."""
 
     anatomy: str = Field(..., description="Anatomical location of the finding")
@@ -95,7 +111,7 @@ class RadReportFinding(BaseModel):
 # ImpressionItem
 # ---------------------------------------------------------------------------
 
-class ImpressionItem(BaseModel):
+class ImpressionItem(CaseInsensitiveModel):
     """A single item from the report's impression / conclusion section."""
 
     statement: str = Field(
@@ -122,7 +138,7 @@ class ImpressionItem(BaseModel):
 # ReportSections
 # ---------------------------------------------------------------------------
 
-class ReportSections(BaseModel):
+class ReportSections(CaseInsensitiveModel):
     """Top-level sections parsed from a radiology report."""
 
     indication: str = Field(
