@@ -69,11 +69,49 @@ def _build_dspy_classes():
 
         def __init__(self) -> None:
             super().__init__()
+            from mosaicx.config import get_config
+            cfg = get_config()
+
             self.classify_specimen = dspy.Predict(ClassifySpecimenType)
             self.parse_sections = dspy.Predict(ParsePathSections)
             self.extract_specimen_details = dspy.Predict(ExtractSpecimenDetails)
-            self.extract_findings = dspy.ChainOfThought(ExtractMicroscopicFindings)
-            self.extract_diagnosis = dspy.ChainOfThought(ExtractPathDiagnosis)
+
+            if cfg.use_refine:
+                from typing import Any
+                from mosaicx.pipelines.rewards import findings_reward as _fr
+                from mosaicx.pipelines.rewards import diagnosis_reward as _dr
+
+                def _findings_reward_fn(args: Any, pred: dspy.Prediction) -> float:
+                    findings = pred.findings
+                    finding_dicts = [
+                        f.model_dump() if hasattr(f, "model_dump") else f
+                        for f in findings
+                    ]
+                    return _fr(findings=finding_dicts)
+
+                def _diagnosis_reward_fn(args: Any, pred: dspy.Prediction) -> float:
+                    diagnoses = pred.diagnoses
+                    dx_dicts = [
+                        d.model_dump() if hasattr(d, "model_dump") else d
+                        for d in diagnoses
+                    ]
+                    return _dr(diagnoses=dx_dicts)
+
+                self.extract_findings = dspy.Refine(
+                    module=dspy.ChainOfThought(ExtractMicroscopicFindings),
+                    N=3,
+                    reward_fn=_findings_reward_fn,
+                    threshold=0.7,
+                )
+                self.extract_diagnosis = dspy.Refine(
+                    module=dspy.ChainOfThought(ExtractPathDiagnosis),
+                    N=3,
+                    reward_fn=_diagnosis_reward_fn,
+                    threshold=0.7,
+                )
+            else:
+                self.extract_findings = dspy.ChainOfThought(ExtractMicroscopicFindings)
+                self.extract_diagnosis = dspy.ChainOfThought(ExtractPathDiagnosis)
 
         def forward(self, report_text: str, report_header: str = "") -> dspy.Prediction:
             from mosaicx.metrics import PipelineMetrics, get_tracker, track_step
