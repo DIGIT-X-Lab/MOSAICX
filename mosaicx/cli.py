@@ -2671,7 +2671,10 @@ def query(source: tuple[Path, ...]) -> None:
         raise click.ClickException("At least one --source is required.")
 
     sources = list(source)
-    session = sdk_query(sources=sources)
+    try:
+        session = sdk_query(sources=sources)
+    except Exception as exc:
+        raise click.ClickException(str(exc))
 
     theme.section("Query Session", console)
     console.print(theme.ok(f"Loaded {len(session.catalog)} source(s)"))

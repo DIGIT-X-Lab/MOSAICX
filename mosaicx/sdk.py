@@ -37,7 +37,10 @@ import tempfile
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from mosaicx.query.session import QuerySession
 
 logger = logging.getLogger(__name__)
 
@@ -1225,7 +1228,7 @@ def verify(
 
 def query(
     sources: list[str | Path] | None = None,
-) -> Any:
+) -> QuerySession:
     """Create a query session for conversational Q&A over documents and data.
 
     Parameters
@@ -1252,9 +1255,12 @@ def query(
         print(session.catalog)   # inspect loaded sources
         session.close()          # release resources
     """
-    from .query.session import QuerySession
+    if not sources:
+        raise ValueError("At least one source path is required.")
 
-    return QuerySession(sources=sources)
+    from .query.session import QuerySession as _QuerySession
+
+    return _QuerySession(sources=sources)
 
 
 # ---------------------------------------------------------------------------
