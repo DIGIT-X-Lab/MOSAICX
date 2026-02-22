@@ -49,6 +49,18 @@ class QuerySession:
         """Access loaded data by source name."""
         return dict(self._data)
 
+    def add_turn(self, role: str, content: str) -> None:
+        """Append a conversation turn.
+
+        Parameters
+        ----------
+        role:
+            Speaker role (e.g. "user", "assistant").
+        content:
+            Message content.
+        """
+        self._conversation.append({"role": role, "content": content})
+
     def close(self) -> None:
         """Close the session and release resources."""
         self._closed = True

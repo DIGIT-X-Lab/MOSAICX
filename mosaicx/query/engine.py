@@ -5,14 +5,17 @@ Uses ``dspy.RLM`` to let a language model programmatically explore loaded
 documents via MOSAICX tools (search, retrieve, save).  The engine wraps
 session management, document preparation, and conversation tracking.
 
-DSPy-dependent classes are lazily imported via module-level ``__getattr__``
-so that the module can be imported even when dspy is not installed.
+DSPy is imported lazily inside ``ask()`` so that the module can be imported
+even when dspy is not fully configured.
 """
 
 from __future__ import annotations
 
 import json
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from mosaicx.query.session import QuerySession
 
 
 def _text_for_data(value: Any) -> str:
@@ -36,7 +39,7 @@ def _text_for_data(value: Any) -> str:
         import pandas as pd
 
         if isinstance(value, pd.DataFrame):
-            return value.to_string(max_rows=200)
+            return str(value.to_string(max_rows=200))
     except ImportError:
         pass
 
@@ -66,7 +69,7 @@ class QueryEngine:
     def __init__(
         self,
         *,
-        session: Any,
+        session: QuerySession,
         max_iterations: int = 20,
         verbose: bool = False,
     ) -> None:
@@ -94,7 +97,7 @@ class QueryEngine:
     # ------------------------------------------------------------------
 
     @property
-    def session(self) -> Any:
+    def session(self) -> QuerySession:
         """The underlying :class:`~mosaicx.query.session.QuerySession`."""
         return self._session
 
@@ -198,11 +201,7 @@ class QueryEngine:
         answer = str(prediction.answer)
 
         # Track conversation
-        self._session._conversation.append(
-            {"role": "user", "content": question.strip()}
-        )
-        self._session._conversation.append(
-            {"role": "assistant", "content": answer}
-        )
+        self._session.add_turn("user", question.strip())
+        self._session.add_turn("assistant", answer)
 
         return answer

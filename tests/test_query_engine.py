@@ -151,12 +151,11 @@ class TestQueryEngineConfig:
         assert engine.verbose is True
 
 
-class TestQueryEngineLazyLoading:
-    def test_module_lazy_loads_engine(self):
-        """QueryEngine should be accessible via module-level __getattr__."""
+class TestQueryEngineImport:
+    def test_module_importable_without_dspy_configured(self):
+        """Module imports without DSPy being fully configured."""
         from mosaicx.query import engine
 
-        # The module itself should import fine without DSPy being fully configured
         assert hasattr(engine, "QueryEngine")
 
 
