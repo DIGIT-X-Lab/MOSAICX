@@ -49,6 +49,32 @@ class QuerySession:
         """Access loaded data by source name."""
         return dict(self._data)
 
+    def add_text_source(self, name: str, text: str) -> SourceMeta:
+        """Add an in-memory text source to the session.
+
+        Parameters
+        ----------
+        name:
+            Source name (e.g. filename).
+        text:
+            Full text content.
+
+        Returns
+        -------
+        SourceMeta
+            Metadata for the added source.
+        """
+        meta = SourceMeta(
+            name=name,
+            format="txt",
+            source_type="document",
+            size=len(text.encode("utf-8")),
+            preview=text[:200],
+        )
+        self._catalog.append(meta)
+        self._data[name] = text
+        return meta
+
     def add_turn(self, role: str, content: str) -> None:
         """Append a conversation turn.
 

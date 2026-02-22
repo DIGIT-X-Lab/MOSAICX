@@ -536,21 +536,12 @@ def query_start(source_texts: dict[str, str]) -> str:
         if not source_texts:
             return _json_result({"error": "source_texts must not be empty."})
 
-        from .query.loaders import SourceMeta
         from .query.session import QuerySession
 
         session = QuerySession()
 
         for name, text in source_texts.items():
-            meta = SourceMeta(
-                name=name,
-                format=name.rsplit(".", 1)[-1] if "." in name else "txt",
-                source_type="document",
-                size=len(text.encode("utf-8")),
-                preview=text[:200] if text else None,
-            )
-            session._catalog.append(meta)
-            session._data[name] = text
+            session.add_text_source(name, text)
 
         session_id = str(uuid.uuid4())
         _sessions[session_id] = session

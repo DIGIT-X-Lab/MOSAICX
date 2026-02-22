@@ -1,8 +1,7 @@
 from __future__ import annotations
 
 import json
-
-import pytest
+from unittest.mock import MagicMock, patch
 
 
 class TestMCPQueryTools:
@@ -96,3 +95,30 @@ class TestMCPQueryTools:
 
         result = json.loads(query_ask(session_id="nonexistent-id", question="Hello?"))
         assert "error" in result
+
+    def test_query_ask_returns_answer(self, monkeypatch):
+        """query_ask should return an answer from the engine."""
+        import mosaicx.mcp_server as mcp_mod
+        from mosaicx.mcp_server import _sessions, query_start
+
+        # Create a session
+        result = json.loads(query_start(source_texts={"doc.txt": "The patient is stable."}))
+        sid = result["session_id"]
+
+        # Mock DSPy configuration
+        monkeypatch.setattr(mcp_mod, "_dspy_configured", True)
+
+        # Mock QueryEngine
+        mock_engine = MagicMock()
+        mock_engine.ask.return_value = "The patient is stable."
+
+        with patch("mosaicx.query.engine.QueryEngine", return_value=mock_engine):
+            answer_result = json.loads(mcp_mod.query_ask(session_id=sid, question="How is the patient?"))
+
+        assert "answer" in answer_result
+        assert answer_result["answer"] == "The patient is stable."
+        assert answer_result["session_id"] == sid
+
+        # Clean up
+        _sessions[sid].close()
+        del _sessions[sid]
