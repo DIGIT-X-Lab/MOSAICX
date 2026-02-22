@@ -628,6 +628,61 @@ def query_close(session_id: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Verify MCP Tool
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool()
+def verify_output(
+    source_text: str,
+    extraction: str | None = None,
+    claim: str | None = None,
+    level: str = "quick",
+) -> str:
+    """Verify an extraction or claim against the original source document.
+
+    Checks whether extracted fields or a textual claim are supported by the
+    source text.  Three verification levels are available:
+    - "quick" (default): deterministic checks only, no LLM call (< 1s).
+    - "standard": deterministic + LLM spot-check (3-10s).
+    - "thorough": deterministic + spot-check + full RLM audit (30-90s).
+
+    Exactly one of ``extraction`` or ``claim`` must be provided.
+
+    Args:
+        source_text: The original document text to verify against.
+        extraction: JSON string of the structured extraction dict to verify. Mutually exclusive with claim.
+        claim: A single textual claim to verify. Mutually exclusive with extraction.
+        level: Verification depth -- "quick", "standard", or "thorough".
+
+    Returns:
+        JSON string with verdict, confidence, level, issues, and field_verdicts.
+    """
+    try:
+        extraction_dict: dict | None = None
+        if extraction is not None:
+            try:
+                extraction_dict = json.loads(extraction)
+            except (json.JSONDecodeError, TypeError) as exc:
+                return _json_result({"error": f"Invalid extraction JSON: {exc}"})
+
+        from .verify.engine import verify
+
+        report = verify(
+            extraction=extraction_dict,
+            claim=claim,
+            source_text=source_text,
+            level=level,
+        )
+
+        return _json_result(report.to_dict())
+
+    except Exception as exc:
+        logger.exception("verify_output failed")
+        return _json_result({"error": str(exc)})
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
