@@ -10,13 +10,13 @@ logger = logging.getLogger(__name__)
 
 OPTIMIZATION_STRATEGY: list[dict[str, Any]] = [
     {"name": "BootstrapFewShot", "cost": "~$0.50", "time": "~5 min", "min_examples": 10},
-    {"name": "MIPROv2", "cost": "~$3", "time": "~20 min", "min_examples": 10},
+    {"name": "SIMBA", "cost": "~$3", "time": "~20 min", "min_examples": 10},
     {"name": "GEPA", "cost": "~$10", "time": "~45 min", "min_examples": 10},
 ]
 
 _BUDGET_PRESETS: dict[str, dict[str, Any]] = {
     "light": {"max_iterations": 10, "strategy": "BootstrapFewShot", "num_candidates": 5},
-    "medium": {"max_iterations": 50, "strategy": "MIPROv2", "num_candidates": 10},
+    "medium": {"max_iterations": 50, "strategy": "SIMBA", "num_candidates": 10},
     "heavy": {"max_iterations": 150, "strategy": "GEPA", "num_candidates": 20,
               "reflection_lm": None, "candidate_selection_strategy": "pareto", "use_merge": True},
 }
@@ -106,6 +106,30 @@ def _build_optimizer(strategy: str, config: dict[str, Any], metric: Callable) ->
             max_bootstrapped_demos=config.get("num_candidates", 5),
             max_rounds=max_rounds,
         )
+
+    if strategy == "SIMBA":
+        simba_cls = getattr(dspy, "SIMBA", None)
+        if simba_cls is None:
+            logger.warning("SIMBA unavailable, falling back to BootstrapFewShot")
+            return dspy.BootstrapFewShot(
+                metric=metric,
+                max_bootstrapped_demos=config.get("num_candidates", 5),
+                max_rounds=max_rounds,
+            )
+        try:
+            return simba_cls(
+                metric=metric,
+                num_candidates=config.get("num_candidates", 10),
+                max_bootstrapped_demos=4,
+                max_labeled_demos=4,
+            )
+        except (AttributeError, TypeError):
+            logger.warning("SIMBA init failed, falling back to BootstrapFewShot")
+            return dspy.BootstrapFewShot(
+                metric=metric,
+                max_bootstrapped_demos=config.get("num_candidates", 5),
+                max_rounds=max_rounds,
+            )
 
     if strategy == "MIPROv2":
         try:

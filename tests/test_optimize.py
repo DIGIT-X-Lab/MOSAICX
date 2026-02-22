@@ -16,7 +16,7 @@ class TestOptimizationConfig:
         assert len(OPTIMIZATION_STRATEGY) == 3
         names = [s["name"] for s in OPTIMIZATION_STRATEGY]
         assert "BootstrapFewShot" in names
-        assert "MIPROv2" in names
+        assert "SIMBA" in names
         assert "GEPA" in names
 
     def test_budget_presets_have_required_keys(self):
