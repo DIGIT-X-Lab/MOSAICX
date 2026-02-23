@@ -825,6 +825,45 @@ class TestQueryEngineConversation:
         assert any(c.get("evidence_type") == "table_stat" for c in citations)
         assert any("mean of BMI" in c["snippet"] for c in citations)
 
+    def test_build_citations_includes_chunk_level_evidence(self, tmp_path: Path, monkeypatch):
+        """Long-document retrieval should preserve chunk-level evidence in citations."""
+        from mosaicx.query.engine import QueryEngine
+        from mosaicx.query.session import QuerySession
+
+        f = tmp_path / "report.txt"
+        f.write_text("placeholder")
+        session = QuerySession(sources=[f])
+        engine = QueryEngine(session=session)
+
+        monkeypatch.setattr("mosaicx.query.tools.search_documents", lambda *args, **kwargs: [])
+        monkeypatch.setattr("mosaicx.query.tools.search_tables", lambda *args, **kwargs: [])
+        monkeypatch.setattr("mosaicx.query.tools.analyze_table_question", lambda *args, **kwargs: [])
+        monkeypatch.setattr("mosaicx.query.tools.suggest_table_columns", lambda *args, **kwargs: [])
+        monkeypatch.setattr(
+            "mosaicx.query.tools.search_document_chunks",
+            lambda *args, **kwargs: [
+                {
+                    "source": "long_report.pdf",
+                    "snippet": "Findings: Right external iliac node increased to 16 mm short-axis.",
+                    "score": 11,
+                    "evidence_type": "text_chunk",
+                    "chunk_id": 7,
+                    "start": 4200,
+                    "end": 5900,
+                }
+            ],
+        )
+
+        citations = engine._build_citations(
+            question="how much did the lesion size change",
+            answer="Lesion increased to 16 mm.",
+            seed_hits=[],
+            top_k=3,
+        )
+        assert len(citations) >= 1
+        assert citations[0]["evidence_type"] == "text_chunk"
+        assert citations[0]["chunk_id"] == 7
+
 
 class TestQueryEngineConfig:
     def test_engine_has_configurable_max_iterations(self, tmp_path: Path):

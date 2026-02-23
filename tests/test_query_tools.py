@@ -66,6 +66,63 @@ class TestSearchDocuments:
         assert len(results) >= 1
         assert "carcinoma" in results[0]["snippet"].lower()
 
+    def test_build_document_chunks_splits_long_documents(self):
+        from mosaicx.query.tools import build_document_chunks
+
+        long_text = ("intro " * 480) + "Study Date: 2025-09-10. Key finding: lesion grew to 16 mm."
+        docs = {"long_report.txt": long_text}
+        chunk_index = build_document_chunks(
+            docs,
+            chunk_chars=700,
+            overlap_chars=120,
+            max_chunks_per_document=50,
+        )
+        assert "long_report.txt" in chunk_index
+        assert len(chunk_index["long_report.txt"]) >= 3
+        assert chunk_index["long_report.txt"][0]["chunk_id"] == 0
+
+    def test_search_document_chunks_finds_deep_match(self):
+        from mosaicx.query.tools import build_document_chunks
+        from mosaicx.query.tools import search_document_chunks
+
+        long_text = ("intro " * 480) + "Study Date: 2025-09-10. Key finding: lesion grew to 16 mm."
+        docs = {"long_report.txt": long_text}
+        chunk_index = build_document_chunks(docs, chunk_chars=700, overlap_chars=120)
+        results = search_document_chunks(
+            "lesion grew 16 mm on 2025-09-10",
+            documents=docs,
+            top_k=3,
+            chunk_index=chunk_index,
+        )
+        assert len(results) >= 1
+        assert results[0]["evidence_type"] == "text_chunk"
+        assert "16 mm" in results[0]["snippet"]
+
+    def test_get_document_chunk_by_id_and_missing(self):
+        from mosaicx.query.tools import build_document_chunks
+        from mosaicx.query.tools import get_document_chunk
+        from mosaicx.query.tools import search_document_chunks
+
+        long_text = ("intro " * 480) + "Study Date: 2025-09-10. Key finding: lesion grew to 16 mm."
+        docs = {"long_report.txt": long_text}
+        chunk_index = build_document_chunks(docs, chunk_chars=700, overlap_chars=120)
+        hits = search_document_chunks(
+            "lesion grew 16 mm",
+            documents=docs,
+            top_k=1,
+            chunk_index=chunk_index,
+        )
+        assert hits
+        chunk = get_document_chunk(
+            "long_report.txt",
+            int(hits[0]["chunk_id"]),
+            chunk_index=chunk_index,
+        )
+        assert "16 mm" in chunk["text"]
+
+        missing = get_document_chunk("long_report.txt", 99999, chunk_index=chunk_index)
+        assert missing["error"] == "chunk_not_found"
+
 
 class TestTabularTools:
     def test_compute_table_stat_mean(self):

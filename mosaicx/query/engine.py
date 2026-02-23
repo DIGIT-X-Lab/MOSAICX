@@ -213,6 +213,7 @@ class QueryEngine:
             name: _text_for_data(data)
             for name, data in self._session.data.items()
         }
+        self._document_chunk_index: dict[str, list[dict[str, Any]]] | None = None
         self._intent_router = IntentRouter()
         self._react_planner = ReActTabularPlanner()
         self._programmatic_analyst = ProgrammaticTableAnalyst()
@@ -275,20 +276,52 @@ class QueryEngine:
                 break
         return merged
 
+    def _ensure_document_chunk_index(self) -> dict[str, list[dict[str, Any]]]:
+        if self._document_chunk_index is not None:
+            return self._document_chunk_index
+        try:
+            from mosaicx.query.tools import build_document_chunks
+        except Exception:
+            self._document_chunk_index = {}
+            return self._document_chunk_index
+
+        long_docs = {
+            name: text
+            for name, text in self._documents.items()
+            if len(str(text or "")) >= 1200
+        }
+        if not long_docs:
+            self._document_chunk_index = {}
+            return self._document_chunk_index
+
+        try:
+            self._document_chunk_index = build_document_chunks(
+                long_docs,
+                chunk_chars=1800,
+                overlap_chars=220,
+                max_chunks_per_document=500,
+            )
+        except Exception:
+            self._document_chunk_index = {}
+        return self._document_chunk_index
+
     def _run_query_once(self, question: str) -> tuple[str, list[dict[str, Any]]]:
         import dspy
 
         from mosaicx.query.tools import (
             analyze_table_question,
+            get_document_chunk,
             compute_table_stat,
             get_document,
             get_table_schema,
+            list_document_chunks,
             list_distinct_values,
             list_tables,
             profile_table,
             run_table_sql,
             sample_table_rows,
             save_artifact,
+            search_document_chunks,
             search_documents,
             search_tables,
             suggest_table_columns,
@@ -309,10 +342,36 @@ class QueryEngine:
         # Bind documents into tool closures so RLM tools have access
         docs = self._documents
         data = self._session.data
+        chunk_index = self._ensure_document_chunk_index()
 
         def _search(query: str, top_k: int = 5) -> list[dict[str, Any]]:
             """Search loaded documents by keyword. Returns matching snippets."""
             return search_documents(query, documents=docs, top_k=top_k)
+
+        def _search_chunks(query: str, top_k: int = 8) -> list[dict[str, Any]]:
+            """Search long documents at chunk granularity for deep evidence."""
+            return search_document_chunks(
+                query,
+                documents=docs,
+                top_k=top_k,
+                chunk_index=chunk_index,
+            )
+
+        def _list_chunks(source: str = "", limit: int = 200) -> list[dict[str, Any]]:
+            """List available long-document chunks with chunk ids and ranges."""
+            return list_document_chunks(
+                chunk_index=chunk_index,
+                source=source,
+                limit=limit,
+            )
+
+        def _get_chunk(source: str, chunk_id: int) -> dict[str, Any]:
+            """Retrieve one long-document chunk by source name and chunk id."""
+            return get_document_chunk(
+                source,
+                chunk_id,
+                chunk_index=chunk_index,
+            )
 
         def _search_tables(query: str, top_k: int = 5) -> list[dict[str, Any]]:
             """Search tabular sources and return row-level evidence snippets."""
@@ -412,6 +471,9 @@ class QueryEngine:
 
         tools = [
             dspy.Tool(_search, name="search_documents", desc="Search loaded documents by keyword."),
+            dspy.Tool(_search_chunks, name="search_document_chunks", desc="Search long documents at chunk-level for deeper evidence."),
+            dspy.Tool(_list_chunks, name="list_document_chunks", desc="List long-document chunks with chunk ids and ranges."),
+            dspy.Tool(_get_chunk, name="get_document_chunk", desc="Retrieve one long-document chunk by source and chunk id."),
             dspy.Tool(_search_tables, name="search_tables", desc="Search tabular sources and return row-level evidence."),
             dspy.Tool(_list_tables, name="list_tables", desc="List loaded tabular sources with row/column counts."),
             dspy.Tool(_table_schema, name="get_table_schema", desc="Get detailed schema for a table source."),
@@ -428,11 +490,17 @@ class QueryEngine:
 
         # Seed retrieval to help the RLM start from concrete evidence.
         text_hits = search_documents(question.strip(), documents=docs, top_k=6)
+        chunk_hits = search_document_chunks(
+            question.strip(),
+            documents=docs,
+            top_k=8,
+            chunk_index=chunk_index,
+        )
         table_hits = search_tables(question.strip(), data=data, top_k=6)
         computed_hits = analyze_table_question(question.strip(), data=data, top_k=4)
         column_hits = suggest_table_columns(question.strip(), data=data, top_k=6)
         seed_hits = self._merge_hits(
-            [*computed_hits, *column_hits, *table_hits, *text_hits],
+            [*computed_hits, *column_hits, *table_hits, *chunk_hits, *text_hits],
             max_hits=12,
         )
         retrieval_lines = []
@@ -475,6 +543,7 @@ class QueryEngine:
             "For complex cohort questions, use run_table_sql and cite computed outputs. "
             "For subject/patient counts, use deterministic distinct counts (nunique), not sampled rows. "
             "Never estimate numeric cohort statistics from memory; compute them. "
+            "For long documents, use search_document_chunks then get_document_chunk for precise evidence. "
             "For timeline/date questions, return concise chronological bullets. "
             "Avoid repeating headings."
         )
@@ -505,6 +574,7 @@ class QueryEngine:
     ) -> list[dict[str, Any]]:
         from mosaicx.query.tools import (
             analyze_table_question,
+            search_document_chunks,
             search_documents,
             search_tables,
             suggest_table_columns,
@@ -562,14 +632,25 @@ class QueryEngine:
                 rank += 22
             elif evidence_type == "table_column":
                 rank += 18
+            elif evidence_type == "text_chunk":
+                rank += 16
             return rank
 
         query = " ".join([question.strip(), answer.strip()]).strip()
         text_hits = search_documents(query, documents=docs, top_k=max(top_k, 6))
+        chunk_hits = search_document_chunks(
+            query,
+            documents=docs,
+            top_k=max(top_k, 8),
+            chunk_index=self._ensure_document_chunk_index(),
+        )
         table_hits = search_tables(query, data=data, top_k=max(top_k, 8))
         computed_hits = analyze_table_question(question.strip(), data=data, top_k=max(top_k, 5))
         column_hits = suggest_table_columns(question.strip(), data=data, top_k=max(top_k, 6))
-        hits = self._merge_hits([*computed_hits, *column_hits, *table_hits, *text_hits], max_hits=max(top_k, 12))
+        hits = self._merge_hits(
+            [*computed_hits, *column_hits, *table_hits, *chunk_hits, *text_hits],
+            max_hits=max(top_k, 14),
+        )
         combined = []
         seen = set()
         for h in [*seed_hits, *hits]:
@@ -589,13 +670,28 @@ class QueryEngine:
                 if rank < 0:
                     continue
             seen.add(key)
-            combined.append({
+            item: dict[str, Any] = {
                 "source": source,
                 "snippet": snippet,
                 "score": score,
                 "rank": rank,
                 "evidence_type": evidence_type,
-            })
+            }
+            for extra_key in (
+                "chunk_id",
+                "start",
+                "end",
+                "column",
+                "value",
+                "count",
+                "operation",
+                "backend",
+                "sql",
+                "row_count",
+            ):
+                if extra_key in h:
+                    item[extra_key] = h.get(extra_key)
+            combined.append(item)
 
         combined.sort(key=lambda x: (x.get("rank", 0), x.get("score", 0)), reverse=True)
 
@@ -628,6 +724,14 @@ class QueryEngine:
                 )
                 if count_item is not None:
                     _add_selected(count_item)
+
+        # Keep at least one chunk-level citation when available for long-document grounding.
+        chunk_item = next(
+            (item for item in combined if str(item.get("evidence_type") or "") == "text_chunk"),
+            None,
+        )
+        if chunk_item is not None and len(selected) < top_k:
+            _add_selected(chunk_item)
 
         # First pass: maximize source diversity.
         seen_sources: set[str] = {str(item.get("source") or "") for item in selected}
@@ -1951,6 +2055,7 @@ class QueryEngine:
                 if run_error is not None:
                     from mosaicx.query.tools import (
                         analyze_table_question,
+                        search_document_chunks,
                         search_documents,
                         search_tables,
                         suggest_table_columns,
@@ -1963,6 +2068,12 @@ class QueryEngine:
                         resolved_question,
                         documents=self._documents,
                         top_k=max(3, effective_top_k),
+                    )
+                    chunk_hits = search_document_chunks(
+                        resolved_question,
+                        documents=self._documents,
+                        top_k=max(4, effective_top_k + 1),
+                        chunk_index=self._ensure_document_chunk_index(),
                     )
                     table_hits = search_tables(
                         resolved_question,
@@ -1980,7 +2091,7 @@ class QueryEngine:
                         top_k=max(3, effective_top_k),
                     )
                     seed_hits = self._merge_hits(
-                        [*computed_hits, *column_hits, *table_hits, *text_hits],
+                        [*computed_hits, *column_hits, *table_hits, *chunk_hits, *text_hits],
                         max_hits=max(4, effective_top_k * 2),
                     )
                     if seed_hits:

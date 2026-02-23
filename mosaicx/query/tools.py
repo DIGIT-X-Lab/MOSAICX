@@ -1376,6 +1376,173 @@ def search_tables(
     return out[: max(1, top_k)]
 
 
+def _chunk_text(
+    text: str,
+    *,
+    chunk_chars: int = 1800,
+    overlap_chars: int = 220,
+    max_chunks: int = 400,
+) -> list[dict[str, Any]]:
+    """Split text into overlapping chunks for long-document retrieval."""
+    if chunk_chars < 200:
+        chunk_chars = 200
+    overlap_chars = max(0, min(overlap_chars, chunk_chars - 1))
+    content = str(text or "")
+    if not content:
+        return []
+    n_chars = len(content)
+    chunks: list[dict[str, Any]] = []
+    start = 0
+    chunk_id = 0
+    step = max(1, chunk_chars - overlap_chars)
+    while start < n_chars and chunk_id < max_chunks:
+        end = min(n_chars, start + chunk_chars)
+        chunk_text = content[start:end]
+        chunks.append(
+            {
+                "chunk_id": chunk_id,
+                "start": start,
+                "end": end,
+                "char_count": len(chunk_text),
+                "text": chunk_text,
+            }
+        )
+        if end >= n_chars:
+            break
+        start += step
+        chunk_id += 1
+    return chunks
+
+
+def build_document_chunks(
+    documents: dict[str, str],
+    *,
+    chunk_chars: int = 1800,
+    overlap_chars: int = 220,
+    max_chunks_per_document: int = 400,
+) -> dict[str, list[dict[str, Any]]]:
+    """Build chunk index for all text documents."""
+    out: dict[str, list[dict[str, Any]]] = {}
+    for source, text in documents.items():
+        out[str(source)] = _chunk_text(
+            str(text or ""),
+            chunk_chars=chunk_chars,
+            overlap_chars=overlap_chars,
+            max_chunks=max_chunks_per_document,
+        )
+    return out
+
+
+def list_document_chunks(
+    *,
+    chunk_index: dict[str, list[dict[str, Any]]],
+    source: str = "",
+    limit: int = 200,
+) -> list[dict[str, Any]]:
+    """List available document chunks with ids/ranges."""
+    rows: list[dict[str, Any]] = []
+    sources = [source] if source and source in chunk_index else list(chunk_index.keys())
+    for src in sources:
+        for chunk in chunk_index.get(src, []):
+            preview = " ".join(str(chunk.get("text") or "").split())[:120]
+            rows.append(
+                {
+                    "source": src,
+                    "chunk_id": int(chunk.get("chunk_id") or 0),
+                    "start": int(chunk.get("start") or 0),
+                    "end": int(chunk.get("end") or 0),
+                    "char_count": int(chunk.get("char_count") or 0),
+                    "preview": preview,
+                }
+            )
+            if len(rows) >= max(1, int(limit)):
+                return rows
+    return rows
+
+
+def get_document_chunk(
+    source: str,
+    chunk_id: int,
+    *,
+    chunk_index: dict[str, list[dict[str, Any]]],
+) -> dict[str, Any]:
+    """Fetch one document chunk by source and chunk id."""
+    src = str(source)
+    chunks = chunk_index.get(src, [])
+    for chunk in chunks:
+        cid = int(chunk.get("chunk_id") or 0)
+        if cid != int(chunk_id):
+            continue
+        return {
+            "source": src,
+            "chunk_id": cid,
+            "start": int(chunk.get("start") or 0),
+            "end": int(chunk.get("end") or 0),
+            "char_count": int(chunk.get("char_count") or 0),
+            "text": str(chunk.get("text") or ""),
+        }
+    return {
+        "source": src,
+        "chunk_id": int(chunk_id),
+        "error": "chunk_not_found",
+    }
+
+
+def search_document_chunks(
+    query: str,
+    *,
+    documents: dict[str, str],
+    top_k: int = 8,
+    chunk_index: dict[str, list[dict[str, Any]]] | None = None,
+) -> list[dict[str, Any]]:
+    """Search long documents at chunk granularity for deep evidence."""
+    raw_terms = _extract_terms(query)
+    query_terms = [t for t in raw_terms if len(t) >= 2 and t not in _DEFAULT_STOPWORDS]
+    if not query_terms:
+        query_terms = raw_terms
+    query_terms = _expand_terms(query_terms)
+    if not query_terms:
+        return []
+
+    index = chunk_index or build_document_chunks(documents)
+    results: list[dict[str, Any]] = []
+    for source, chunks in index.items():
+        for chunk in chunks:
+            chunk_text = str(chunk.get("text") or "")
+            if not chunk_text:
+                continue
+            tokens = _extract_terms(chunk_text)
+            counts = Counter(tokens)
+            term_counts = {term: counts.get(term, 0) for term in query_terms}
+            score = sum(term_counts.values())
+            if score <= 0:
+                continue
+
+            anchor = max(term_counts, key=term_counts.get)
+            anchor_re = re.compile(rf"\b{re.escape(anchor)}s?\b", flags=re.IGNORECASE)
+            match = anchor_re.search(chunk_text)
+            if match:
+                start = max(0, match.start() - 140)
+                end = min(len(chunk_text), match.end() + 280)
+                snippet = " ".join(chunk_text[start:end].split())
+            else:
+                snippet = " ".join(chunk_text[:360].split())
+            results.append(
+                {
+                    "source": str(source),
+                    "snippet": snippet,
+                    "score": int(score),
+                    "evidence_type": "text_chunk",
+                    "chunk_id": int(chunk.get("chunk_id") or 0),
+                    "start": int(chunk.get("start") or 0),
+                    "end": int(chunk.get("end") or 0),
+                }
+            )
+
+    results.sort(key=lambda r: int(r.get("score") or 0), reverse=True)
+    return results[: max(1, int(top_k))]
+
+
 def search_documents(
     query: str,
     *,
