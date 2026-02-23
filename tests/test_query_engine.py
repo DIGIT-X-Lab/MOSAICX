@@ -491,6 +491,115 @@ class TestQueryEngineConversation:
         assert payload["deterministic_used"] is True
         assert payload["deterministic_intent"] in {"count_values", "count_distinct"}
 
+    def test_deterministic_count_values_not_overwritten_by_reconciler(self, tmp_path: Path, monkeypatch):
+        """Deterministic table answers should not be degraded by reconciler rewrites."""
+        from mosaicx.query.engine import QueryEngine
+        from mosaicx.query.session import QuerySession
+
+        f = tmp_path / "cohort.csv"
+        f.write_text("Subject,Ethnicity\nS1,Japanese\nS2,Japanese\nS3,German\n")
+        session = QuerySession(sources=[f])
+        engine = QueryEngine(session=session)
+
+        monkeypatch.setattr(engine, "_should_try_programmatic_first", lambda **kwargs: False)
+        monkeypatch.setattr(
+            engine,
+            "_plan_tabular_question_with_llm",
+            lambda _q: {
+                "intent": "count_distinct",
+                "source": "cohort.csv",
+                "column": "Ethnicity",
+                "operation": None,
+                "include_values": True,
+            },
+        )
+        monkeypatch.setattr(
+            engine,
+            "_reconcile_answer_with_evidence",
+            lambda **kwargs: "The specific ethnicity categories are not disclosed in the evidence.",
+        )
+
+        payload = engine.ask_structured("how many ethnicities are there and what are they?")
+        answer = str(payload["answer"])
+        assert "Japanese" in answer
+        assert "German" in answer
+        assert payload.get("rescue_reason") != "evidence_reconciler"
+
+    def test_build_citations_count_values_prefers_focused_value_rows(self, tmp_path: Path, monkeypatch):
+        """Count+values citations should keep multiple value rows for the focused column."""
+        from mosaicx.query.engine import QueryEngine
+        from mosaicx.query.session import QuerySession
+
+        f = tmp_path / "cohort.csv"
+        f.write_text("Subject,Ethnicity,Sex\nS1,Japanese,M\nS2,Japanese,F\nS3,German,M\n")
+        session = QuerySession(sources=[f])
+        engine = QueryEngine(session=session)
+
+        monkeypatch.setattr("mosaicx.query.tools.search_documents", lambda *args, **kwargs: [])
+        monkeypatch.setattr("mosaicx.query.tools.search_document_chunks", lambda *args, **kwargs: [])
+        monkeypatch.setattr("mosaicx.query.tools.search_tables", lambda *args, **kwargs: [])
+        monkeypatch.setattr("mosaicx.query.tools.analyze_table_question", lambda *args, **kwargs: [])
+        monkeypatch.setattr("mosaicx.query.tools.suggest_table_columns", lambda *args, **kwargs: [])
+
+        seed_hits = [
+            {
+                "source": "cohort.csv",
+                "snippet": "Computed unique_count of Ethnicity from 3 rows: 2 (engine=duckdb)",
+                "score": 90,
+                "evidence_type": "table_stat",
+                "operation": "nunique",
+                "column": "Ethnicity",
+                "value": 2,
+                "backend": "duckdb",
+            },
+            {
+                "source": "cohort.csv",
+                "snippet": "Distinct Ethnicity: Japanese (count=2, engine=duckdb)",
+                "score": 88,
+                "evidence_type": "table_value",
+                "operation": "distinct_values",
+                "column": "Ethnicity",
+                "value": "Japanese",
+                "count": 2,
+                "backend": "duckdb",
+            },
+            {
+                "source": "cohort.csv",
+                "snippet": "Distinct Ethnicity: German (count=1, engine=duckdb)",
+                "score": 88,
+                "evidence_type": "table_value",
+                "operation": "distinct_values",
+                "column": "Ethnicity",
+                "value": "German",
+                "count": 1,
+                "backend": "duckdb",
+            },
+            {
+                "source": "cohort.csv",
+                "snippet": "Computed unique_count of Subject from 3 rows: 3 (engine=duckdb)",
+                "score": 70,
+                "evidence_type": "table_stat",
+                "operation": "nunique",
+                "column": "Subject",
+                "value": 3,
+                "backend": "duckdb",
+            },
+        ]
+
+        citations = engine._build_citations(
+            question="how many ethnicities are there and what are they?",
+            answer="There are 2 distinct Ethnicity values: Japanese, German.",
+            seed_hits=seed_hits,
+            top_k=6,
+        )
+        focused_values = [
+            c for c in citations
+            if c.get("evidence_type") == "table_value" and c.get("column") == "Ethnicity"
+        ]
+        assert len(focused_values) >= 2
+        assert any(c.get("value") == "Japanese" for c in focused_values)
+        assert any(c.get("value") == "German" for c in focused_values)
+
     def test_ask_structured_count_values_accepts_table_value_computed_evidence(self, tmp_path: Path, monkeypatch):
         """For count+values questions, value-count evidence should satisfy computed guard."""
         from mosaicx.query.engine import QueryEngine

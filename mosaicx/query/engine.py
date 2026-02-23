@@ -594,6 +594,31 @@ class QueryEngine:
             or ("number of" in question.lower())
             or ("count" in question.lower())
         )
+        tabular_evidence_types = {
+            "table_row",
+            "table_stat",
+            "table_sql",
+            "table_value",
+            "table_schema",
+            "table_column",
+        }
+
+        focus_source = ""
+        focus_column = ""
+        for hit in seed_hits:
+            source = str(hit.get("source") or "").strip()
+            column = str(hit.get("column") or "").strip()
+            evidence_type = str(hit.get("evidence_type") or "").strip().lower()
+            if source and evidence_type in tabular_evidence_types and not focus_source:
+                focus_source = source
+            if column and evidence_type in {"table_stat", "table_value", "table_column"}:
+                focus_column = column
+            if focus_source and focus_column:
+                break
+        if not focus_source:
+            focus_source = str(self._session.get_state("last_tabular_source", "")).strip()
+        if not focus_column:
+            focus_column = str(self._session.get_state("last_tabular_column", "")).strip()
 
         def _citation_rank(snippet: str, base_score: int, evidence_type: str) -> int:
             snip = " ".join(str(snippet).split())
@@ -658,12 +683,24 @@ class QueryEngine:
             snippet = " ".join(str(h.get("snippet") or "").split())
             score = int(h.get("score") or 0)
             evidence_type = str(h.get("evidence_type") or "text")
+            evidence_type_lc = evidence_type.strip().lower()
             key = (source, snippet[:120])
             if not source or not snippet or key in seen:
                 continue
             rank = _citation_rank(snippet, score, evidence_type)
             if rank < 0:
                 continue
+            column = str(h.get("column") or "").strip()
+            if focus_source and evidence_type_lc in tabular_evidence_types:
+                if source == focus_source:
+                    rank += 10
+                else:
+                    rank -= 18
+            if focus_column and evidence_type_lc in {"table_stat", "table_value", "table_column"}:
+                if column == focus_column:
+                    rank += 22
+                elif column:
+                    rank -= 35
             if is_delta_question and not re.search(r"\b\d+(?:\.\d+)?\s*mm\b", snippet.lower()):
                 # For size-change questions, prefer explicit measurements.
                 rank -= 25
@@ -707,21 +744,48 @@ class QueryEngine:
             selected_keys.add(key)
 
         if is_count_plus_values:
-            value_item = next(
-                (item for item in combined if str(item.get("evidence_type") or "") == "table_value"),
-                None,
-            )
-            if value_item is not None:
+            focused_value_items = [
+                item
+                for item in combined
+                if (
+                    str(item.get("evidence_type") or "") == "table_value"
+                    and (not focus_source or str(item.get("source") or "") == focus_source)
+                    and (not focus_column or str(item.get("column") or "") == focus_column)
+                )
+            ]
+            fallback_value_items = [
+                item
+                for item in combined
+                if str(item.get("evidence_type") or "") == "table_value"
+            ]
+            for value_item in (focused_value_items or fallback_value_items)[:4]:
                 _add_selected(value_item)
             if needs_count_evidence:
                 count_item = next(
                     (
                         item
                         for item in combined
-                        if str(item.get("evidence_type") or "") in {"table_stat", "table_sql"}
+                        if (
+                            str(item.get("evidence_type") or "") in {"table_stat", "table_sql"}
+                            and (not focus_source or str(item.get("source") or "") == focus_source)
+                            and (
+                                str(item.get("evidence_type") or "") == "table_sql"
+                                or not focus_column
+                                or str(item.get("column") or "") == focus_column
+                            )
+                        )
                     ),
                     None,
                 )
+                if count_item is None:
+                    count_item = next(
+                        (
+                            item
+                            for item in combined
+                            if str(item.get("evidence_type") or "") in {"table_stat", "table_sql"}
+                        ),
+                        None,
+                    )
                 if count_item is not None:
                     _add_selected(count_item)
 
@@ -2103,6 +2167,16 @@ class QueryEngine:
             for c in citations
         )
 
+    def _is_reconciler_sensitive_deterministic_intent(self, intent: str | None) -> bool:
+        return str(intent or "").strip().lower() in {
+            "count_rows",
+            "count_distinct",
+            "count_values",
+            "list_values",
+            "aggregate",
+            "sql_analytic",
+        }
+
     def _reconcile_answer_with_evidence(
         self,
         *,
@@ -2392,7 +2466,13 @@ class QueryEngine:
             seed_hits=seed_hits,
             top_k=effective_top_k,
         )
-        if citations and deterministic_intent != "schema":
+        skip_reconcile_for_deterministic = bool(
+            deterministic_used
+            and self._is_reconciler_sensitive_deterministic_intent(deterministic_intent)
+            and self._has_computed_citations(citations)
+            and not self._looks_like_non_answer(answer)
+        )
+        if citations and deterministic_intent != "schema" and not skip_reconcile_for_deterministic:
             reconciled = self._reconcile_answer_with_evidence(
                 question=resolved_question,
                 draft_answer=answer,
@@ -2448,15 +2528,22 @@ class QueryEngine:
                     seed_hits=[*computed_hits, *seed_hits],
                     top_k=effective_top_k,
                 )
-                reconciled = self._reconcile_answer_with_evidence(
-                    question=resolved_question,
-                    draft_answer=answer,
-                    citations=citations,
+                skip_reconcile_for_deterministic = bool(
+                    deterministic_used
+                    and self._is_reconciler_sensitive_deterministic_intent(deterministic_intent)
+                    and self._has_computed_citations(citations)
+                    and not self._looks_like_non_answer(answer)
                 )
-                if reconciled and reconciled.strip() != answer.strip():
-                    answer = reconciled.strip()
-                    rescue_used = True
-                    rescue_reason = "analytic_reconciler"
+                if not skip_reconcile_for_deterministic:
+                    reconciled = self._reconcile_answer_with_evidence(
+                        question=resolved_question,
+                        draft_answer=answer,
+                        citations=citations,
+                    )
+                    if reconciled and reconciled.strip() != answer.strip():
+                        answer = reconciled.strip()
+                        rescue_used = True
+                        rescue_reason = "analytic_reconciler"
 
             if not self._has_computed_citations(
                 citations,
@@ -2507,15 +2594,22 @@ class QueryEngine:
                     seed_hits=[*value_hits, *seed_hits],
                     top_k=max(effective_top_k, 6),
                 )
-                reconciled = self._reconcile_answer_with_evidence(
-                    question=resolved_question,
-                    draft_answer=answer,
-                    citations=citations,
+                skip_reconcile_for_deterministic = bool(
+                    deterministic_used
+                    and self._is_reconciler_sensitive_deterministic_intent(deterministic_intent)
+                    and self._has_computed_citations(citations)
+                    and not self._looks_like_non_answer(answer)
                 )
-                if reconciled and reconciled.strip() != answer.strip():
-                    answer = reconciled.strip()
-                    rescue_used = True
-                    rescue_reason = "value_evidence_reconciler"
+                if not skip_reconcile_for_deterministic:
+                    reconciled = self._reconcile_answer_with_evidence(
+                        question=resolved_question,
+                        draft_answer=answer,
+                        citations=citations,
+                    )
+                    if reconciled and reconciled.strip() != answer.strip():
+                        answer = reconciled.strip()
+                        rescue_used = True
+                        rescue_reason = "value_evidence_reconciler"
             if not self._has_value_citations(citations):
                 answer = (
                     "I can confirm the distinct count, but I cannot reliably list the "

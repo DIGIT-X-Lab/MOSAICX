@@ -63,3 +63,23 @@ Result: `31 passed`
 - [x] `G2` Commit + push phase-2 improvements
 Status: `done`
 Commit: `4512c35`
+
+## Phase 3 (Completed)
+- [x] `Q4` Focus-aware tabular citation ranking/selection (source+column bias to avoid mismatched evidence in count/value questions)
+Status: `done (local)`
+
+- [x] `Q5` Protect deterministic tabular answers from unnecessary reconciler rewrites
+Status: `done (local)`
+
+- [x] `T3` Add regressions for deterministic overwrite prevention + focused value evidence selection
+Status: `done (local)`
+
+- [x] `R3` Run focused query suites after phase-3 changes
+Status: `done`
+Run command: `.venv/bin/pytest -q tests/test_query_engine.py -m 'not integration'`
+Result: `44 passed, 2 deselected`
+Run command: `.venv/bin/pytest -q tests/test_query_control_plane.py tests/test_query_tools.py -m 'not integration'`
+Result: `33 passed`
+
+- [ ] `G3` Commit + push phase-3 improvements
+Status: `pending`
