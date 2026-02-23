@@ -121,5 +121,6 @@ Status: `done`
 Run command: `.venv/bin/pytest -q tests/test_sdk_verify.py tests/test_cli_verify.py tests/test_verify_engine.py -m 'not integration'`
 Result: `62 passed`
 
-- [ ] `G5` Commit + push phase-5 improvements
-Status: `pending`
+- [x] `G5` Commit + push phase-5 improvements
+Status: `done`
+Commit: `3d2a029`
