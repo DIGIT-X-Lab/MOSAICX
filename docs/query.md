@@ -26,6 +26,9 @@ Save output:
 
 ```bash
 mosaicx query --sources "reports/*.pdf" -q "Summarize progression" -o answer.json
+
+# Runtime preflight (Deno sandbox)
+mosaicx runtime check
 ```
 
 ## Key Runtime Controls
@@ -76,6 +79,12 @@ Evidence display order in CLI:
 - Use smaller `--max-iterations` for quick triage.
 - Increase `--max-iterations` for cross-document reasoning.
 - Keep sources scoped to relevant files to reduce latency.
+
+## Runtime Notes
+
+- `query` uses DSPy RLM with a Deno-backed sandbox for tool/code execution.
+- On first run, MOSAICX can prompt to install Deno if missing.
+- In automation/CI, set `MOSAICX_AUTO_INSTALL_RUNTIME=1` to allow non-interactive runtime install attempts.
 
 ## Common Pitfalls
 

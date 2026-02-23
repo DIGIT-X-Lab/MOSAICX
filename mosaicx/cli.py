@@ -17,7 +17,9 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import re
+import sys
 from pathlib import Path
 from typing import Any, Optional
 
@@ -118,6 +120,47 @@ def _configure_dspy() -> None:
     set_tracker(tracker)
     dspy.settings.usage_tracker = tracker
     dspy.settings.track_usage = True
+
+
+def _auto_install_runtime_enabled() -> bool:
+    raw = os.environ.get("MOSAICX_AUTO_INSTALL_RUNTIME", "").strip().lower()
+    return raw in {"1", "true", "yes", "on"}
+
+
+def _ensure_deno_runtime(*, command: str, allow_prompt: bool = True) -> None:
+    from .runtime_env import (
+        deno_install_instructions,
+        get_deno_runtime_status,
+        install_deno,
+    )
+
+    status = get_deno_runtime_status()
+    if status.ok:
+        return
+
+    auto_install = _auto_install_runtime_enabled()
+    should_install = auto_install
+    if not should_install and allow_prompt and sys.stdin.isatty() and sys.stdout.isatty():
+        console.print(theme.warn(f"Deno runtime is required for `{command}`."))
+        console.print(theme.info(deno_install_instructions()))
+        should_install = click.confirm("Install Deno runtime now?", default=True)
+
+    if should_install:
+        with theme.spinner("Installing Deno runtime...", console):
+            try:
+                status = install_deno(non_interactive=auto_install)
+            except Exception as exc:
+                raise click.ClickException(f"Failed to install Deno runtime: {exc}")
+        if status.ok:
+            console.print(theme.ok(f"Deno runtime ready ({status.deno_version or 'version unknown'})"))
+            return
+
+    issues = "; ".join(status.issues) if status.issues else "Deno runtime check failed."
+    raise click.ClickException(
+        f"Deno runtime is required for `{command}` but is not ready: {issues}\n"
+        f"{deno_install_instructions()}\n"
+        "Run `mosaicx runtime install --yes` or set `MOSAICX_AUTO_INSTALL_RUNTIME=1`."
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -2310,6 +2353,8 @@ def verify(
     # Standard and thorough levels need DSPy for LLM-based verification
     if level in ("standard", "thorough"):
         _check_api_key()
+        if level == "thorough":
+            _ensure_deno_runtime(command="verify --level thorough")
         _configure_dspy()
 
     _LEVEL_HINT = {"quick": "Text Matching", "standard": "LLM Spot-Check", "thorough": "Full LLM Audit"}
@@ -3069,6 +3114,75 @@ def config_set(key: str, value: str) -> None:
 
 
 # ---------------------------------------------------------------------------
+# runtime (group)
+# ---------------------------------------------------------------------------
+
+
+@cli.group()
+def runtime() -> None:
+    """Inspect and install local runtime dependencies."""
+
+
+@runtime.command("check")
+@click.option("--json-output", "json_output", is_flag=True, default=False, help="Print machine-readable runtime status.")
+def runtime_check(json_output: bool) -> None:
+    """Check Deno sandbox readiness used by RLM query/audit flows."""
+    from .runtime_env import deno_install_instructions, get_deno_runtime_status
+
+    status = get_deno_runtime_status()
+    payload = status.to_dict()
+
+    if json_output:
+        console.print(json.dumps(payload, indent=2, ensure_ascii=False))
+    else:
+        theme.section("Runtime", console, "01")
+        t = theme.make_kv_table()
+        t.add_row("Deno available", "yes" if status.available else "no")
+        t.add_row("Deno path", status.deno_path or "not found")
+        t.add_row("Deno version", status.deno_version or "unknown")
+        t.add_row("DENO_DIR", status.deno_dir)
+        t.add_row("DENO_DIR writable", "yes" if status.deno_dir_writable else "no")
+        console.print(t)
+        if status.issues:
+            console.print()
+            for issue in status.issues:
+                console.print(theme.warn(issue))
+            console.print(theme.info(deno_install_instructions()))
+            console.print(theme.info("Install with: mosaicx runtime install --yes"))
+
+    if not status.ok:
+        raise click.exceptions.Exit(1)
+
+
+@runtime.command("install")
+@click.option("--yes", "assume_yes", is_flag=True, default=False, help="Install without confirmation prompt.")
+@click.option("--force", is_flag=True, default=False, help="Run installer even when Deno is already available.")
+def runtime_install(assume_yes: bool, force: bool) -> None:
+    """Install Deno runtime for DSPy RLM code sandbox."""
+    from .runtime_env import deno_install_instructions, get_deno_runtime_status, install_deno
+
+    status = get_deno_runtime_status()
+    if status.ok and not force:
+        console.print(theme.ok(f"Deno runtime already ready ({status.deno_version or status.deno_path or 'installed'})"))
+        return
+
+    if not assume_yes:
+        console.print(theme.info(deno_install_instructions()))
+        proceed = click.confirm("Install Deno runtime now?", default=True)
+        if not proceed:
+            raise click.ClickException("Installation cancelled by user.")
+
+    with theme.spinner("Installing Deno runtime...", console):
+        try:
+            status = install_deno(force=force, non_interactive=assume_yes)
+        except Exception as exc:
+            raise click.ClickException(str(exc))
+
+    console.print(theme.ok(f"Deno runtime ready ({status.deno_version or 'version unknown'})"))
+    console.print(theme.info(f"DENO_DIR: {status.deno_dir}"))
+
+
+# ---------------------------------------------------------------------------
 # query
 # ---------------------------------------------------------------------------
 
@@ -3275,6 +3389,7 @@ def query(
 
     # Question/chat modes
     if question is not None or chat:
+        _ensure_deno_runtime(command="query")
         _check_api_key()
         _configure_dspy()
 

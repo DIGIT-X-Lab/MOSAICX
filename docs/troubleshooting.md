@@ -86,6 +86,18 @@ Fix:
 1. Ensure Deno is installed and on `PATH`.
 2. Set `DENO_DIR` to a writable directory if needed.
 3. Restart your shell after installation.
+4. Use MOSAICX runtime helpers:
+
+```bash
+mosaicx runtime check
+mosaicx runtime install --yes
+```
+
+5. For non-interactive environments, enable runtime auto-install:
+
+```bash
+export MOSAICX_AUTO_INSTALL_RUNTIME=1
+```
 
 ## OCR Quality Warnings
 
