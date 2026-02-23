@@ -166,6 +166,45 @@ class TestQueryEngineConversation:
         assert isinstance(payload["citations"], list)
         assert len(session.conversation) == 2
 
+    def test_fallback_prefers_evidence_recovery_over_llm_unavailable_banner(self, tmp_path: Path, monkeypatch):
+        """When LLM fails but evidence exists, fallback should recover an actual grounded answer."""
+        from mosaicx.query.engine import QueryEngine
+        from mosaicx.query.session import QuerySession
+
+        f = tmp_path / "report.txt"
+        f.write_text("Study Date: 2025-08-01. Indication: Known prostate carcinoma.")
+        session = QuerySession(sources=[f])
+        engine = QueryEngine(session=session)
+
+        monkeypatch.setattr(engine, "_run_query_once", lambda _q: (_ for _ in ()).throw(RuntimeError("LM offline")))
+        monkeypatch.setattr(
+            "mosaicx.query.tools.search_documents",
+            lambda *args, **kwargs: [
+                {
+                    "source": "report.txt",
+                    "snippet": "Indication: Known prostate carcinoma.",
+                    "score": 6,
+                    "evidence_type": "text",
+                }
+            ],
+        )
+        monkeypatch.setattr("mosaicx.query.tools.search_document_chunks", lambda *args, **kwargs: [])
+        monkeypatch.setattr("mosaicx.query.tools.search_tables", lambda *args, **kwargs: [])
+        monkeypatch.setattr("mosaicx.query.tools.analyze_table_question", lambda *args, **kwargs: [])
+        monkeypatch.setattr("mosaicx.query.tools.suggest_table_columns", lambda *args, **kwargs: [])
+        monkeypatch.setattr(
+            engine,
+            "_rescue_answer_with_evidence",
+            lambda **kwargs: "The report indicates known prostate carcinoma.",
+        )
+
+        payload = engine.ask_structured("what cancer did the patient have?")
+        assert payload["fallback_used"] is True
+        assert payload["rescue_used"] is True
+        assert payload["rescue_reason"] == "fallback_evidence_recovery"
+        assert "prostate carcinoma" in str(payload["answer"]).lower()
+        assert "LLM unavailable" not in str(payload["answer"])
+
     def test_ask_structured_rescues_non_answer_when_evidence_exists(self, tmp_path: Path, monkeypatch):
         """If RLM returns a non-answer but citations exist, engine should rescue."""
         from mosaicx.query.engine import QueryEngine
@@ -1007,6 +1046,88 @@ class TestQueryEngineConversation:
         assert len(citations) >= 1
         assert citations[0]["evidence_type"] == "text_chunk"
         assert citations[0]["chunk_id"] == 7
+
+    def test_ask_structured_upgrades_to_chunk_grounding_for_long_docs(self, tmp_path: Path, monkeypatch):
+        """Long-document text QA should add chunk citations when initial evidence lacks chunk grounding."""
+        from mosaicx.query.engine import QueryEngine
+        from mosaicx.query.session import QuerySession
+
+        long_text = (
+            "Header.\n" * 120
+            + "Indication: Known prostate carcinoma.\n"
+            + "Findings: no visceral metastases.\n"
+            + "Footer.\n" * 80
+        )
+        f = tmp_path / "long_report.txt"
+        f.write_text(long_text)
+        session = QuerySession(sources=[f])
+        engine = QueryEngine(session=session)
+
+        monkeypatch.setattr(
+            engine,
+            "_run_query_once",
+            lambda _q: (
+                "The patient had prostate carcinoma.",
+                [
+                    {
+                        "source": "long_report.txt",
+                        "snippet": "Indication: Known prostate carcinoma.",
+                        "score": 4,
+                        "evidence_type": "text",
+                    }
+                ],
+            ),
+        )
+
+        build_calls = {"n": 0}
+
+        def _build_citations(**kwargs):
+            build_calls["n"] += 1
+            seed_hits = kwargs.get("seed_hits", [])
+            has_chunk = any(str(h.get("evidence_type") or "") == "text_chunk" for h in seed_hits)
+            if has_chunk:
+                return [
+                    {
+                        "source": "long_report.txt",
+                        "snippet": "Indication: Known prostate carcinoma.",
+                        "score": 9,
+                        "evidence_type": "text_chunk",
+                        "chunk_id": 3,
+                        "start": 1400,
+                        "end": 1460,
+                    }
+                ]
+            return [
+                {
+                    "source": "long_report.txt",
+                    "snippet": "Indication: Known prostate carcinoma.",
+                    "score": 4,
+                    "evidence_type": "text",
+                }
+            ]
+
+        monkeypatch.setattr(engine, "_build_citations", _build_citations)
+        monkeypatch.setattr(
+            "mosaicx.query.tools.search_document_chunks",
+            lambda *args, **kwargs: [
+                {
+                    "source": "long_report.txt",
+                    "snippet": "Indication: Known prostate carcinoma.",
+                    "score": 8,
+                    "evidence_type": "text_chunk",
+                    "chunk_id": 3,
+                    "start": 1400,
+                    "end": 1460,
+                }
+            ],
+        )
+        monkeypatch.setattr(engine, "_reconcile_answer_with_evidence", lambda **kwargs: None)
+
+        payload = engine.ask_structured("what cancer did the patient have?")
+        assert build_calls["n"] >= 2
+        assert payload["rescue_used"] is True
+        assert payload["rescue_reason"] in {"longdoc_chunk_grounding", "longdoc_chunk_recovery"}
+        assert any(c.get("evidence_type") == "text_chunk" for c in payload["citations"])
 
 
 class TestQueryEngineConfig:

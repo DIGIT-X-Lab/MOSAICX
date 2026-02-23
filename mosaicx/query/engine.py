@@ -2167,6 +2167,50 @@ class QueryEngine:
             for c in citations
         )
 
+    def _has_chunk_citations(self, citations: list[dict[str, Any]]) -> bool:
+        return any(
+            str(c.get("evidence_type") or "").strip().lower() == "text_chunk"
+            for c in citations
+        )
+
+    def _has_long_documents(self) -> bool:
+        for meta in self._session.catalog:
+            if str(getattr(meta, "source_type", "")).strip().lower() != "document":
+                continue
+            name = str(getattr(meta, "name", "") or "").strip()
+            if not name:
+                continue
+            text = str(self._documents.get(name, "") or "")
+            if len(text) >= 1200:
+                return True
+        return False
+
+    def _needs_longdoc_chunk_grounding(
+        self,
+        *,
+        question: str,
+        route: IntentDecision,
+        deterministic_intent: str | None,
+    ) -> bool:
+        if not self._has_long_documents():
+            return False
+        if self._is_schema_question(question):
+            return False
+        if self._has_tabular_sources() and (
+            route.intent in {"count", "count_values", "aggregate"}
+            or self._requires_computed_evidence(question)
+            or deterministic_intent in {
+                "count_rows",
+                "count_distinct",
+                "count_values",
+                "list_values",
+                "aggregate",
+                "sql_analytic",
+            }
+        ):
+            return False
+        return True
+
     def _is_reconciler_sensitive_deterministic_intent(self, intent: str | None) -> bool:
         return str(intent or "").strip().lower() in {
             "count_rows",
@@ -2449,12 +2493,21 @@ class QueryEngine:
                         max_hits=max(4, effective_top_k * 2),
                     )
                     if seed_hits:
-                        top = seed_hits[0]
-                        snippet = " ".join(str(top.get("snippet") or "").split())
-                        answer = (
-                            f"LLM unavailable. Best matching evidence is from "
-                            f"{top.get('source', 'unknown')}: {snippet[:220]}"
+                        rescued = self._rescue_answer_with_evidence(
+                            question=resolved_question,
+                            citations=seed_hits,
                         )
+                        if rescued:
+                            answer = rescued
+                            rescue_used = True
+                            rescue_reason = "fallback_evidence_recovery"
+                        else:
+                            top = seed_hits[0]
+                            snippet = " ".join(str(top.get("snippet") or "").split())
+                            answer = (
+                                f"LLM unavailable. Best matching evidence is from "
+                                f"{top.get('source', 'unknown')}: {snippet[:220]}"
+                            )
                     else:
                         answer = (
                             "LLM unavailable. Could not compute a full answer; use the evidence table below."
@@ -2617,6 +2670,39 @@ class QueryEngine:
                 )
                 rescue_used = True
                 rescue_reason = "missing_value_evidence"
+
+        needs_longdoc_chunk_grounding = self._needs_longdoc_chunk_grounding(
+            question=resolved_question,
+            route=route,
+            deterministic_intent=deterministic_intent,
+        )
+        if needs_longdoc_chunk_grounding and not self._has_chunk_citations(citations):
+            from mosaicx.query.tools import search_document_chunks
+
+            chunk_query = " ".join([resolved_question, answer]).strip()
+            chunk_hits = search_document_chunks(
+                chunk_query,
+                documents=self._documents,
+                top_k=max(4, effective_top_k + 1),
+                chunk_index=self._ensure_document_chunk_index(),
+            )
+            if chunk_hits:
+                citations = self._build_citations(
+                    question=resolved_question,
+                    answer=answer,
+                    seed_hits=[*chunk_hits, *seed_hits],
+                    top_k=max(effective_top_k, 4),
+                )
+                rescue_used = True
+                rescue_reason = rescue_reason or "longdoc_chunk_grounding"
+                if self._looks_like_non_answer(answer):
+                    rescued = self._rescue_answer_with_evidence(
+                        question=question.strip(),
+                        citations=citations,
+                    )
+                    if rescued:
+                        answer = rescued
+                        rescue_reason = "longdoc_chunk_recovery"
 
         confidence = self._citation_confidence(resolved_question, answer, citations)
 

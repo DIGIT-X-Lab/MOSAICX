@@ -84,3 +84,23 @@ Result: `33 passed`
 - [x] `G3` Commit + push phase-3 improvements
 Status: `done`
 Commit: `33762c0`
+
+## Phase 4 (In Progress)
+- [x] `Q6` Fallback evidence recovery for LLM errors (prefer grounded answer synthesis over generic "LLM unavailable")
+Status: `done (local)`
+
+- [x] `Q7` Long-document chunk grounding guard in query finalization path
+Status: `done (local)`
+
+- [x] `T4` Add regressions for fallback evidence recovery + long-doc chunk grounding upgrades
+Status: `done (local)`
+
+- [ ] `R4` Run focused query tests and fix regressions
+Status: `done`
+Run command: `.venv/bin/pytest -q tests/test_query_engine.py -m 'not integration'`
+Result: `46 passed, 2 deselected`
+Run command: `.venv/bin/pytest -q tests/test_query_control_plane.py tests/test_query_tools.py -m 'not integration'`
+Result: `33 passed`
+
+- [ ] `G4` Commit + push phase-4 improvements
+Status: `pending`
