@@ -1166,6 +1166,49 @@ class TestQueryEngineConversation:
         assert payload["rescue_reason"] in {"longdoc_chunk_grounding", "longdoc_chunk_recovery"}
         assert any(c.get("evidence_type") == "text_chunk" for c in payload["citations"])
 
+    def test_longdoc_literal_guard_recovers_unsupported_modality_answer(self, tmp_path: Path, monkeypatch):
+        """Long-doc answers with unsupported literals should be replaced from grounded evidence."""
+        from mosaicx.query.engine import QueryEngine
+        from mosaicx.query.session import QuerySession
+
+        long_text = (
+            "Header.\n" * 140
+            + "Modality: CT\n"
+            + "Study Date: 2025-08-01\n"
+            + "Footer.\n" * 100
+        )
+        f = tmp_path / "long_report.txt"
+        f.write_text(long_text)
+        session = QuerySession(sources=[f])
+        engine = QueryEngine(session=session)
+
+        seed_hits = [
+            {
+                "source": "long_report.txt",
+                "snippet": "Modality: CT",
+                "score": 9,
+                "evidence_type": "text_chunk",
+                "chunk_id": 11,
+                "start": 1800,
+                "end": 1820,
+            }
+        ]
+        monkeypatch.setattr(
+            engine,
+            "_run_query_once",
+            lambda _q: ("MRI", seed_hits),
+        )
+        monkeypatch.setattr(engine, "_build_citations", lambda **kwargs: kwargs.get("seed_hits", []))
+        monkeypatch.setattr(engine, "_reconcile_answer_with_evidence", lambda **kwargs: None)
+        monkeypatch.setattr(engine, "_rescue_answer_with_evidence", lambda **kwargs: "CT")
+
+        payload = engine.ask_structured("what imaging modality was used?")
+        assert str(payload["answer"]).strip() == "CT"
+        assert payload["rescue_used"] is True
+        assert payload["rescue_reason"] == "longdoc_literal_guard"
+        assert payload["longdoc_literal_support"] == pytest.approx(1.0, abs=1e-6)
+        assert any(c.get("evidence_type") == "text_chunk" for c in payload["citations"])
+
 
 class TestQueryEngineConfig:
     def test_engine_has_configurable_max_iterations(self, tmp_path: Path):

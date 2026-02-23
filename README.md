@@ -57,6 +57,26 @@ export MOSAICX_API_BASE=http://localhost:8000/v1
 mosaicx extract --document report.pdf --mode radiology
 ```
 
+### Developer Fast Loop (Mac + vLLM-MLX, 120B)
+
+```bash
+# 1) serve your local model (already downloaded)
+vllm-mlx serve mlx-community/gpt-oss-120b-4bit --port 8000
+
+# 2) point MOSAICX to that server
+export MOSAICX_LM=openai/mlx-community/gpt-oss-120b-4bit
+export MOSAICX_API_BASE=http://127.0.0.1:8000/v1
+export MOSAICX_API_KEY=dummy
+
+# 3) verify the endpoint
+curl -sS --max-time 5 http://127.0.0.1:8000/v1/models
+
+# 4) run extraction + claim verify + query
+mosaicx extract --document report.pdf --mode radiology -o output.json
+mosaicx verify --document report.pdf --claim "patient BP is 128/82" --level thorough
+mosaicx query --document report.pdf --chat --trace
+```
+
 > [!TIP]
 > **Not on Apple Silicon?** Use [Ollama](https://ollama.com), [vLLM](https://docs.vllm.ai), or any OpenAI-compatible server. See the [Getting Started guide](docs/getting-started.md) for all backend options.
 

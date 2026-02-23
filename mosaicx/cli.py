@@ -3666,6 +3666,9 @@ def query(
             trace_table.add_row("fallback_used", str(bool(payload.get("fallback_used"))).lower())
             trace_table.add_row("rescue_used", str(bool(payload.get("rescue_used"))).lower())
             trace_table.add_row("deterministic_used", str(bool(payload.get("deterministic_used"))).lower())
+            literal_support = payload.get("longdoc_literal_support")
+            if isinstance(literal_support, (int, float)):
+                trace_table.add_row("longdoc_literal_support", f"{float(literal_support):.2f}")
             if payload.get("rescue_reason"):
                 trace_table.add_row("rescue_reason", _esc(_compact_query_text(payload.get("rescue_reason"), max_len=80)))
             computed_count = sum(

@@ -2109,6 +2109,25 @@ class QueryEngine:
 
         return max(0.0, min(1.0, confidence))
 
+    def _chunk_literal_support(
+        self,
+        *,
+        answer: str,
+        citations: list[dict[str, Any]],
+    ) -> float | None:
+        literals = self._extract_answer_values(answer)
+        if not literals:
+            return None
+        chunk_blob = " ".join(
+            " ".join(str(c.get("snippet") or "").split()).lower()
+            for c in citations
+            if str(c.get("evidence_type") or "").strip().lower() == "text_chunk"
+        )
+        if not chunk_blob:
+            return None
+        supported = sum(1 for lit in literals if lit in chunk_blob)
+        return supported / len(literals)
+
     def _is_delta_question(self, question: str) -> bool:
         q = " ".join(question.lower().split())
         return any(marker in q for marker in _DELTA_QUESTION_MARKERS)
@@ -2388,6 +2407,7 @@ class QueryEngine:
         rescue_reason: str | None = None
         deterministic_used = False
         deterministic_intent: str | None = None
+        longdoc_literal_support: float | None = None
 
         resolved_question = self._resolve_followup_question(question.strip())
         route = self._intent_router.route(
@@ -2702,6 +2722,35 @@ class QueryEngine:
                         answer = rescued
                         rescue_reason = "longdoc_chunk_recovery"
 
+        if needs_longdoc_chunk_grounding and self._has_chunk_citations(citations):
+            longdoc_literal_support = self._chunk_literal_support(
+                answer=answer,
+                citations=citations,
+            )
+            if (
+                longdoc_literal_support is not None
+                and longdoc_literal_support < 0.5
+                and not self._looks_like_non_answer(answer)
+            ):
+                rescued = self._rescue_answer_with_evidence(
+                    question=question.strip(),
+                    citations=citations,
+                )
+                if rescued and rescued.strip() != answer.strip():
+                    answer = rescued.strip()
+                    rescue_used = True
+                    rescue_reason = "longdoc_literal_guard"
+                    citations = self._build_citations(
+                        question=resolved_question,
+                        answer=answer,
+                        seed_hits=seed_hits,
+                        top_k=max(effective_top_k, 4),
+                    )
+                    longdoc_literal_support = self._chunk_literal_support(
+                        answer=answer,
+                        citations=citations,
+                    )
+
         confidence = self._citation_confidence(resolved_question, answer, citations)
 
         self._session.add_turn("user", question.strip())
@@ -2738,6 +2787,7 @@ class QueryEngine:
             "deterministic_intent": deterministic_intent,
             "intent": effective_intent,
             "route_intent": route.intent,
+            "longdoc_literal_support": longdoc_literal_support,
         }
 
     def ask(self, question: str) -> str:

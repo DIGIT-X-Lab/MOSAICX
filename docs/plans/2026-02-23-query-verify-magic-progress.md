@@ -143,3 +143,24 @@ Result: `80 passed, 2 deselected`
 - [x] `G6` Commit + push phase-6 improvements
 Status: `done`
 Commit: `2dbd8ee`
+
+## Phase 7 (In Progress)
+- [x] `Q10` Add long-document literal guard to prevent unsupported modality/date/measurement answers when chunk evidence is available
+Status: `done (local)`
+
+- [x] `Q11` Surface `longdoc_literal_support` in query trace payload
+Status: `done (local)`
+
+- [x] `D1` Add README "Developer Fast Loop" (Mac + vLLM-MLX 120B) for first-run success
+Status: `done (local)`
+
+- [x] `T7` Add regression for long-doc literal guard recovery behavior
+Status: `done (local)`
+
+- [x] `R7` Run focused query suites after phase-7 changes
+Status: `done`
+Run command: `.venv/bin/pytest -q tests/test_query_engine.py tests/test_query_control_plane.py tests/test_query_tools.py -m 'not integration'`
+Result: `81 passed, 2 deselected`
+
+- [ ] `G7` Commit + push phase-7 improvements
+Status: `pending`
