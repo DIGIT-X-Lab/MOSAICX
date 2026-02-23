@@ -102,5 +102,6 @@ Result: `46 passed, 2 deselected`
 Run command: `.venv/bin/pytest -q tests/test_query_control_plane.py tests/test_query_tools.py -m 'not integration'`
 Result: `33 passed`
 
-- [ ] `G4` Commit + push phase-4 improvements
-Status: `pending`
+- [x] `G4` Commit + push phase-4 improvements
+Status: `done`
+Commit: `4d37fee`
