@@ -140,5 +140,6 @@ Status: `done`
 Run command: `.venv/bin/pytest -q tests/test_query_engine.py tests/test_query_control_plane.py tests/test_query_tools.py -m 'not integration'`
 Result: `80 passed, 2 deselected`
 
-- [ ] `G6` Commit + push phase-6 improvements
-Status: `pending`
+- [x] `G6` Commit + push phase-6 improvements
+Status: `done`
+Commit: `2dbd8ee`
