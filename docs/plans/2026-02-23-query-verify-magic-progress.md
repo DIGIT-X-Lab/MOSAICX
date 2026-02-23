@@ -144,7 +144,7 @@ Result: `80 passed, 2 deselected`
 Status: `done`
 Commit: `2dbd8ee`
 
-## Phase 7 (In Progress)
+## Phase 7 (Completed)
 - [x] `Q10` Add long-document literal guard to prevent unsupported modality/date/measurement answers when chunk evidence is available
 Status: `done (local)`
 
