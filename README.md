@@ -42,6 +42,7 @@ MOSAICX ships with specialized pipelines for **radiology** and **pathology** rep
 # Install MOSAICX
 pip install mosaicx               # core
 pip install 'mosaicx[mcp]'       # + MCP server for AI agents
+pip install 'mosaicx[query]'     # + fast tabular query stack (duckdb + polars)
 pip install 'mosaicx[all]'       # everything
 
 # Start a local LLM (Apple Silicon via vLLM-MLX)
@@ -59,12 +60,17 @@ mosaicx extract --document report.pdf --mode radiology
 > [!TIP]
 > **Not on Apple Silicon?** Use [Ollama](https://ollama.com), [vLLM](https://docs.vllm.ai), or any OpenAI-compatible server. See the [Getting Started guide](docs/getting-started.md) for all backend options.
 
+> [!TIP]
+> **Want the fastest first success?** Follow [docs/quickstart.md](docs/quickstart.md) to run `extract`, `verify`, and `query` end-to-end in ~10 minutes.
+
 ## What You Can Do
 
 | Capability | Commands | Guide |
 |------------|----------|-------|
-| **Extract structured data** from clinical documents | `mosaicx extract`, `mosaicx batch` | [Pipelines](docs/pipelines.md) |
+| **Extract structured data** from clinical documents | `mosaicx extract` | [Pipelines](docs/pipelines.md) |
 | **Create and manage templates** for custom extraction targets | `mosaicx template create / list / refine` | [Schemas & Templates](docs/schemas-and-templates.md) |
+| **Verify claims and outputs** against source evidence | `mosaicx verify` | [CLI Reference](docs/cli-reference.md) |
+| **Query sources conversationally** with citations | `mosaicx query` | [CLI Reference](docs/cli-reference.md) |
 | **De-identify** reports (LLM + regex belt-and-suspenders) | `mosaicx deidentify` | [CLI Reference](docs/cli-reference.md) |
 | **Summarize patient timelines** across multiple reports | `mosaicx summarize` | [CLI Reference](docs/cli-reference.md) |
 | **Optimize pipelines** with labeled data (DSPy) | `mosaicx optimize`, `mosaicx eval` | [Optimization](docs/optimization.md) |
@@ -83,7 +89,7 @@ mosaicx template create --describe "echo report with LVEF, valve grades, impress
 mosaicx extract --document echo.pdf --template EchoReport
 
 # Batch-process a folder of reports
-mosaicx batch --input-dir ./reports --output-dir ./structured --mode radiology --format jsonl
+mosaicx extract --dir ./reports --output-dir ./structured --mode radiology --format jsonl
 
 # De-identify a clinical note
 mosaicx deidentify --document note.txt
@@ -146,7 +152,12 @@ Full variable reference, `.env` file setup, and backend scenarios: [docs/configu
 
 | Guide | Description |
 |-------|-------------|
+| [Quickstart](docs/quickstart.md) | Fast setup and first successful run in ~10 minutes |
 | [Getting Started](docs/getting-started.md) | Install, first extraction, basics |
+| [Verify Guide](docs/verify.md) | Truth/adjudication workflows for claims and extraction output |
+| [Query Guide](docs/query.md) | Grounded multi-turn querying with evidence and confidence |
+| [Troubleshooting](docs/troubleshooting.md) | Debug slow query, wrong stats, fallback, and runtime issues |
+| [Production Checklist](docs/production-checklist.md) | Deploy with reproducibility, gating, and auditability controls |
 | [CLI Reference](docs/cli-reference.md) | Every command, every flag, examples |
 | [Pipelines](docs/pipelines.md) | Pipeline inputs/outputs, JSONL formats |
 | [Schemas & Templates](docs/schemas-and-templates.md) | Create and manage extraction schemas |

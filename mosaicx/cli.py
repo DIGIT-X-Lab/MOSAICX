@@ -3171,16 +3171,6 @@ def query(
             return sentences[0]
         return _compact_query_text(text, max_len=max_len)
 
-    def _relevance_label(score: int, max_score: int) -> str:
-        if max_score <= 0:
-            return "low"
-        ratio = score / max_score
-        if ratio >= 0.67:
-            return "high"
-        if ratio >= 0.34:
-            return "medium"
-        return "low"
-
     def _render_query_payload(payload: dict[str, Any]) -> None:
         if payload.get("fallback_used"):
             reason = str(payload.get("fallback_reason") or "unknown")
@@ -3204,21 +3194,73 @@ def query(
 
         citations_payload = payload.get("citations") or []
         if citations_payload:
+            type_labels = {
+                "text": "text_match",
+                "table_row": "row_match",
+                "table_stat": "computed",
+            }
+
+            def _infer_engine_label(citation: dict[str, Any]) -> str:
+                backend = str(citation.get("backend") or "").strip()
+                if backend:
+                    return backend
+                snippet = str(citation.get("snippet") or "")
+                m = re.search(r"\(engine=([a-zA-Z0-9_\-]+)\)", snippet)
+                if m:
+                    return m.group(1)
+                return "-"
+
+            def _citation_sort_key(citation: dict[str, Any]) -> tuple[int, int, str]:
+                evidence_type = str(citation.get("evidence_type") or "text")
+                type_priority = {
+                    "table_stat": 0,
+                    "table_row": 1,
+                    "text": 2,
+                }.get(evidence_type, 3)
+                strength = int(citation.get("rank", citation.get("score", 0)) or 0)
+                source = str(citation.get("source") or "")
+                return (type_priority, -strength, source)
+
+            ordered_citations = sorted(citations_payload, key=_citation_sort_key)
+            computed_citations = [
+                c for c in ordered_citations
+                if str(c.get("evidence_type") or "text") == "table_stat"
+            ]
+            supporting_citations = [
+                c for c in ordered_citations
+                if str(c.get("evidence_type") or "text") != "table_stat"
+            ]
+
             console.print()
             console.print(f"  [bold {theme.CORAL}]Evidence[/bold {theme.CORAL}]")
-            ctab = theme.make_clean_table()
-            ctab.add_column("Source", style=f"bold {theme.CORAL}", no_wrap=True, width=34)
-            ctab.add_column("Evidence")
-            ctab.add_column("Relevance", justify="right", no_wrap=True)
-            max_score = max(int(c.get("rank", c.get("score", 0)) or 0) for c in citations_payload)
-            for c in citations_payload:
-                score = int(c.get("rank", c.get("score", 0)) or 0)
-                ctab.add_row(
-                    _esc(_compact_query_text(c.get("source"), max_len=40)),
-                    _esc(_snippet_for_display(c.get("snippet"), max_len=280)),
-                    _relevance_label(score, max_score),
-                )
-            console.print(Padding(ctab, (0, 0, 0, 2)))
+            if computed_citations:
+                console.print(theme.info("Computed"))
+                ctab = theme.make_clean_table()
+                ctab.add_column("Source", style=f"bold {theme.CORAL}", no_wrap=True, width=34)
+                ctab.add_column("Computation")
+                ctab.add_column("Engine", justify="right", no_wrap=True)
+                for c in computed_citations:
+                    ctab.add_row(
+                        _esc(_compact_query_text(c.get("source"), max_len=40)),
+                        _esc(_snippet_for_display(c.get("snippet"), max_len=300)),
+                        _esc(_infer_engine_label(c)),
+                    )
+                console.print(Padding(ctab, (0, 0, 0, 2)))
+
+            if supporting_citations:
+                console.print(theme.info("Supporting"))
+                stab = theme.make_clean_table()
+                stab.add_column("Source", style=f"bold {theme.CORAL}", no_wrap=True, width=34)
+                stab.add_column("Evidence")
+                stab.add_column("Type", justify="right", no_wrap=True)
+                for c in supporting_citations:
+                    evidence_type = str(c.get("evidence_type") or "text")
+                    stab.add_row(
+                        _esc(_compact_query_text(c.get("source"), max_len=40)),
+                        _esc(_snippet_for_display(c.get("snippet"), max_len=280)),
+                        type_labels.get(evidence_type, evidence_type),
+                    )
+                console.print(Padding(stab, (0, 0, 0, 2)))
 
         conf = payload.get("confidence")
         if citations_payload and isinstance(conf, (int, float)):

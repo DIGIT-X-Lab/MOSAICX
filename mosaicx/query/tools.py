@@ -12,6 +12,16 @@ from typing import Any
 
 
 _TOKEN_RE = re.compile(r"[a-z0-9]+")
+_DEFAULT_STOPWORDS = {
+    "the", "a", "an", "and", "or", "of", "in", "on", "to", "for", "with",
+    "is", "are", "was", "were", "be", "been", "being", "what", "which",
+    "who", "whom", "when", "where", "why", "how", "does", "do", "did",
+    "please", "show", "tell", "about", "can", "you", "your", "my", "me",
+    "from", "that", "this", "those", "these", "there", "their", "them",
+    "no", "patient", "study", "scan", "ct", "mri", "table", "tables",
+    "dataset", "data", "cohort", "findings", "impression", "compared",
+    "comparison", "today",
+}
 _TERM_SYNONYMS: dict[str, set[str]] = {
     "cancer": {
         "carcinoma",
@@ -37,6 +47,17 @@ _TERM_SYNONYMS: dict[str, set[str]] = {
         "node",
         "lymph",
     },
+}
+_OPERATION_ALIASES = {
+    "mean": {"mean", "average", "avg"},
+    "median": {"median"},
+    "min": {"min", "minimum", "lowest", "smallest"},
+    "max": {"max", "maximum", "highest", "largest"},
+    "sum": {"sum", "total"},
+    "std": {"std", "stdev", "standard", "deviation"},
+    "count": {"count", "rows", "row"},
+    "nunique": {"distinct", "unique"},
+    "missing_count": {"missing", "null", "na", "nan"},
 }
 
 
@@ -68,6 +89,670 @@ def _expand_terms(terms: list[str]) -> list[str]:
     return expanded
 
 
+def _normalize_column_name(name: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "_", str(name).lower()).strip("_")
+
+
+def _format_scalar(value: Any) -> str:
+    if value is None:
+        return "null"
+    try:
+        import pandas as pd
+
+        if pd.isna(value):
+            return "null"
+    except Exception:
+        pass
+    if isinstance(value, float):
+        return f"{value:.6g}"
+    return str(value)
+
+
+def _iter_tables(data: dict[str, Any]):
+    try:
+        import pandas as pd
+    except ImportError:
+        return
+    for name, value in data.items():
+        if isinstance(value, pd.DataFrame):
+            yield name, value
+
+
+def _resolve_table(name: str, *, data: dict[str, Any]):
+    try:
+        import pandas as pd
+    except ImportError as exc:
+        raise RuntimeError("pandas is required for table tools") from exc
+
+    if name not in data:
+        raise KeyError(f"Table '{name}' not found. Available: {list(data.keys())}")
+    value = data[name]
+    if not isinstance(value, pd.DataFrame):
+        raise TypeError(f"Source '{name}' is not tabular (got {type(value).__name__})")
+    return value
+
+
+def _resolve_column(df, column: str) -> str:
+    columns = [str(c) for c in df.columns]
+    col_map = {_normalize_column_name(c): c for c in columns}
+    if column in columns:
+        return column
+    n = _normalize_column_name(column)
+    if n in col_map:
+        return col_map[n]
+    raise KeyError(f"Column '{column}' not found. Available: {columns}")
+
+
+def _choose_column(question: str, columns: list[str]) -> str | None:
+    q_terms = [t for t in _extract_terms(question) if t not in _DEFAULT_STOPWORDS]
+    if not q_terms:
+        return None
+    q_compact = "_".join(q_terms)
+
+    best: tuple[int, str] | None = None
+    for col in columns:
+        col_norm = _normalize_column_name(col)
+        col_terms = [t for t in col_norm.split("_") if t]
+        score = 0
+        if col_norm and col_norm in q_compact:
+            score += 120
+        overlap = len(set(col_terms) & set(q_terms))
+        score += overlap * 15
+        if col_norm in q_terms:
+            score += 60
+        if score > 0 and (best is None or score > best[0]):
+            best = (score, col)
+    if best is None:
+        return None
+    return best[1]
+
+
+def _detect_operation(question: str) -> str | None:
+    q_terms = set(_extract_terms(question))
+    for op, aliases in _OPERATION_ALIASES.items():
+        if q_terms & aliases:
+            return op
+    if "average" in question.lower():
+        return "mean"
+    return None
+
+
+def _normalize_operation(operation: str) -> str:
+    op = operation.strip().lower()
+    if op in {"avg", "average"}:
+        return "mean"
+    if op in {"unique", "distinct"}:
+        return "nunique"
+    if op in {"missing", "null", "na"}:
+        return "missing_count"
+    return op
+
+
+def _sql_ident(name: str) -> str:
+    return '"' + str(name).replace('"', '""') + '"'
+
+
+def list_tables(
+    *,
+    data: dict[str, Any],
+    max_columns: int = 30,
+) -> list[dict[str, Any]]:
+    """List tabular sources with shape and column preview."""
+    out: list[dict[str, Any]] = []
+    for name, df in _iter_tables(data) or ():
+        columns = [str(c) for c in df.columns]
+        shown = columns[: max(1, max_columns)]
+        out.append(
+            {
+                "source": name,
+                "rows": int(len(df)),
+                "columns": shown,
+                "column_count": int(len(columns)),
+                "has_more_columns": len(columns) > len(shown),
+            }
+        )
+    return out
+
+
+def get_table_schema(
+    name: str,
+    *,
+    data: dict[str, Any],
+    max_columns: int = 200,
+) -> dict[str, Any]:
+    """Return schema summary for a table source."""
+    df = _resolve_table(name, data=data)
+    rows = int(len(df))
+    columns: list[dict[str, Any]] = []
+    for c in [str(x) for x in df.columns[: max(1, max_columns)]]:
+        s = df[c]
+        non_null = int(s.notna().sum())
+        missing = int(rows - non_null)
+        uniq = int(s.nunique(dropna=True))
+        columns.append(
+            {
+                "name": c,
+                "dtype": str(s.dtype),
+                "non_null": non_null,
+                "missing": missing,
+                "missing_pct": (missing / rows) if rows else 0.0,
+                "unique": uniq,
+            }
+        )
+    return {
+        "source": name,
+        "rows": rows,
+        "column_count": int(len(df.columns)),
+        "columns": columns,
+    }
+
+
+def sample_table_rows(
+    name: str,
+    *,
+    data: dict[str, Any],
+    columns_csv: str = "",
+    limit: int = 5,
+    strategy: str = "head",
+) -> list[dict[str, Any]]:
+    """Sample rows from a table source.
+
+    Parameters
+    ----------
+    name:
+        Table source name.
+    data:
+        Session data map.
+    columns_csv:
+        Optional comma-separated subset of columns.
+    limit:
+        Number of rows to return.
+    strategy:
+        head, tail, or random.
+    """
+    df = _resolve_table(name, data=data)
+    limit = max(1, min(int(limit), 100))
+
+    selected_df = df
+    if columns_csv.strip():
+        selected_cols: list[str] = []
+        for raw in columns_csv.split(","):
+            raw = raw.strip()
+            if not raw:
+                continue
+            selected_cols.append(_resolve_column(df, raw))
+        if selected_cols:
+            selected_df = selected_df[selected_cols]
+
+    strategy_norm = strategy.strip().lower()
+    if strategy_norm == "tail":
+        sampled = selected_df.tail(limit)
+    elif strategy_norm == "random":
+        sampled = selected_df.sample(min(limit, len(selected_df)), random_state=0)
+    else:
+        sampled = selected_df.head(limit)
+
+    out: list[dict[str, Any]] = []
+    for idx, row in sampled.iterrows():
+        row_obj = {"__row_index": int(idx) if isinstance(idx, (int,)) else str(idx)}
+        for col, val in row.items():
+            row_obj[str(col)] = _format_scalar(val)
+        out.append(row_obj)
+    return out
+
+
+def _compute_table_stat_duckdb(
+    name: str,
+    *,
+    df: Any,
+    column: str,
+    operation: str,
+    group_by: str,
+    where: str,
+    top_n: int,
+) -> list[dict[str, Any]]:
+    import duckdb
+
+    col = _resolve_column(df, column)
+    op = _normalize_operation(operation)
+    if op not in {
+        "mean",
+        "median",
+        "min",
+        "max",
+        "sum",
+        "std",
+        "count",
+        "nunique",
+        "missing_count",
+    }:
+        raise ValueError(f"Unsupported operation: {op}")
+
+    group_col = _resolve_column(df, group_by) if group_by.strip() else ""
+    table_name = "_mosaicx_table"
+    where_sql = f" WHERE {where.strip()}" if where.strip() else ""
+    top_n = max(1, min(int(top_n), 50))
+
+    numeric_expr = f"TRY_CAST({_sql_ident(col)} AS DOUBLE)"
+    agg_expr = {
+        "mean": f"AVG({numeric_expr})",
+        "median": f"MEDIAN({numeric_expr})",
+        "min": f"MIN({numeric_expr})",
+        "max": f"MAX({numeric_expr})",
+        "sum": f"SUM({numeric_expr})",
+        "std": f"STDDEV_SAMP({numeric_expr})",
+        "count": f"COUNT({_sql_ident(col)})",
+        "nunique": f"COUNT(DISTINCT {_sql_ident(col)})",
+        "missing_count": f"SUM(CASE WHEN {_sql_ident(col)} IS NULL THEN 1 ELSE 0 END)",
+    }[op]
+
+    with duckdb.connect(database=":memory:") as conn:
+        conn.register(table_name, df)
+
+        try:
+            row_count = int(
+                conn.execute(
+                    f"SELECT COUNT(*) FROM {table_name}{where_sql}"
+                ).fetchone()[0]
+            )
+        except Exception as exc:
+            raise ValueError(f"Invalid where expression: {exc}") from exc
+
+        if group_col:
+            query = (
+                f"SELECT {_sql_ident(group_col)} AS grp, {agg_expr} AS val "
+                f"FROM {table_name}{where_sql} "
+                f"GROUP BY {_sql_ident(group_col)} "
+                f"ORDER BY val DESC NULLS LAST "
+                f"LIMIT {top_n}"
+            )
+            try:
+                rows = conn.execute(query).fetchall()
+            except Exception as exc:
+                raise ValueError(f"Failed to compute grouped stat: {exc}") from exc
+
+            out: list[dict[str, Any]] = []
+            for grp, val in rows:
+                out.append(
+                    {
+                        "source": name,
+                        "group": _format_scalar(grp),
+                        "column": col,
+                        "operation": op,
+                        "value": _format_scalar(val),
+                        "row_count": row_count,
+                        "backend": "duckdb",
+                    }
+                )
+            return out
+
+        if op in {"mean", "median", "min", "max", "sum", "std"}:
+            non_null_expr = f"COUNT({numeric_expr})"
+        else:
+            non_null_expr = f"COUNT({_sql_ident(col)})"
+        query = (
+            f"SELECT {agg_expr} AS val, {non_null_expr} AS non_null "
+            f"FROM {table_name}{where_sql}"
+        )
+        try:
+            value, non_null = conn.execute(query).fetchone()
+        except Exception as exc:
+            raise ValueError(f"Failed to compute stat: {exc}") from exc
+
+    if op in {"mean", "median", "min", "max", "sum", "std"} and int(non_null or 0) == 0:
+        raise ValueError(f"Column '{col}' has no numeric values for operation '{op}'")
+
+    return [
+        {
+            "source": name,
+            "column": col,
+            "operation": op,
+            "value": _format_scalar(value) if op in {"mean", "median", "min", "max", "sum", "std"} else int(value or 0),
+            "row_count": int(row_count),
+            "non_null": int(non_null or 0),
+            "backend": "duckdb",
+        }
+    ]
+
+
+def _compute_table_stat_pandas(
+    name: str,
+    *,
+    df: Any,
+    column: str,
+    operation: str,
+    group_by: str,
+    where: str,
+    top_n: int,
+) -> list[dict[str, Any]]:
+    import pandas as pd
+
+    working = df
+    if where.strip():
+        try:
+            working = working.query(where, engine="python")
+        except Exception as exc:
+            raise ValueError(f"Invalid where expression: {exc}") from exc
+
+    col = _resolve_column(working, column)
+    op = _normalize_operation(operation)
+
+    group_col = ""
+    if group_by.strip():
+        group_col = _resolve_column(working, group_by)
+
+    if group_col:
+        if op in {"count", "nunique", "missing_count"}:
+            grouped = working.groupby(group_col, dropna=False)[col]
+            if op == "count":
+                series = grouped.count()
+            elif op == "nunique":
+                series = grouped.nunique(dropna=True)
+            elif op == "missing_count":
+                series = grouped.apply(lambda s: int(s.isna().sum()))
+            else:
+                raise ValueError(f"Unsupported operation with group_by: {op}")
+        else:
+            num = pd.to_numeric(working[col], errors="coerce")
+            grouped = pd.DataFrame(
+                {"__group": working[group_col], "__value": num}
+            ).groupby("__group", dropna=False)["__value"]
+            if op == "mean":
+                series = grouped.mean()
+            elif op == "median":
+                series = grouped.median()
+            elif op == "min":
+                series = grouped.min()
+            elif op == "max":
+                series = grouped.max()
+            elif op == "sum":
+                series = grouped.sum()
+            elif op == "std":
+                series = grouped.std()
+            else:
+                raise ValueError(f"Unsupported operation with group_by: {op}")
+
+        rows: list[dict[str, Any]] = []
+        for idx, value in series.sort_values(ascending=False).head(max(1, min(int(top_n), 50))).items():
+            rows.append(
+                {
+                    "source": name,
+                    "group": _format_scalar(idx),
+                    "column": col,
+                    "operation": op,
+                    "value": _format_scalar(value),
+                    "row_count": int(len(working)),
+                    "backend": "pandas",
+                }
+            )
+        return rows
+
+    series = working[col]
+    if op in {"mean", "median", "min", "max", "sum", "std"}:
+        nums = pd.to_numeric(series, errors="coerce")
+        valid = nums.dropna()
+        if valid.empty:
+            raise ValueError(
+                f"Column '{col}' has no numeric values for operation '{op}'"
+            )
+        if op == "mean":
+            value = float(valid.mean())
+        elif op == "median":
+            value = float(valid.median())
+        elif op == "min":
+            value = float(valid.min())
+        elif op == "max":
+            value = float(valid.max())
+        elif op == "sum":
+            value = float(valid.sum())
+        elif op == "std":
+            value = float(valid.std())
+        else:
+            raise ValueError(f"Unsupported operation: {op}")
+        return [
+            {
+                "source": name,
+                "column": col,
+                "operation": op,
+                "value": _format_scalar(value),
+                "row_count": int(len(working)),
+                "non_null": int(valid.shape[0]),
+                "backend": "pandas",
+            }
+        ]
+
+    if op == "count":
+        value = int(series.notna().sum())
+    elif op == "nunique":
+        value = int(series.nunique(dropna=True))
+    elif op == "missing_count":
+        value = int(series.isna().sum())
+    else:
+        raise ValueError(f"Unsupported operation: {op}")
+    return [
+        {
+            "source": name,
+            "column": col,
+            "operation": op,
+            "value": value,
+            "row_count": int(len(working)),
+            "non_null": int(series.notna().sum()),
+            "backend": "pandas",
+        }
+    ]
+
+
+def compute_table_stat(
+    name: str,
+    *,
+    data: dict[str, Any],
+    column: str,
+    operation: str = "mean",
+    group_by: str = "",
+    where: str = "",
+    top_n: int = 10,
+) -> list[dict[str, Any]]:
+    """Compute common statistics from a tabular source.
+
+    Prefers DuckDB (fast, deterministic SQL execution) when available and
+    falls back to pandas to keep query usable in minimal environments.
+    """
+    df = _resolve_table(name, data=data)
+    op = _normalize_operation(operation)
+
+    try:
+        return _compute_table_stat_duckdb(
+            name,
+            df=df,
+            column=column,
+            operation=op,
+            group_by=group_by,
+            where=where,
+            top_n=top_n,
+        )
+    except ImportError:
+        pass
+    except Exception as duckdb_exc:
+        # Fall back to pandas for broader expression compatibility.
+        try:
+            return _compute_table_stat_pandas(
+                name,
+                df=df,
+                column=column,
+                operation=op,
+                group_by=group_by,
+                where=where,
+                top_n=top_n,
+            )
+        except Exception:
+            raise duckdb_exc
+
+    return _compute_table_stat_pandas(
+        name,
+        df=df,
+        column=column,
+        operation=op,
+        group_by=group_by,
+        where=where,
+        top_n=top_n,
+    )
+
+
+def run_table_sql(
+    name: str,
+    *,
+    data: dict[str, Any],
+    sql: str,
+    limit: int = 50,
+) -> list[dict[str, Any]]:
+    """Run a read-only SQL query against a tabular source via DuckDB."""
+    import duckdb
+
+    df = _resolve_table(name, data=data)
+    query = sql.strip()
+    if not query:
+        raise ValueError("sql must be non-empty")
+    query_lc = query.lower().lstrip()
+    if not query_lc.startswith("select"):
+        raise ValueError("Only SELECT SQL statements are allowed.")
+    if ";" in query.rstrip(";"):
+        raise ValueError("Only a single SQL statement is allowed.")
+
+    safe_limit = max(1, min(int(limit), 500))
+    with duckdb.connect(database=":memory:") as conn:
+        conn.register("_mosaicx_table", df)
+        try:
+            result = conn.execute(query).fetchdf()
+        except Exception as exc:
+            raise ValueError(f"SQL execution failed: {exc}") from exc
+
+    rows: list[dict[str, Any]] = []
+    for _, row in result.head(safe_limit).iterrows():
+        obj: dict[str, Any] = {}
+        for col, val in row.items():
+            obj[str(col)] = _format_scalar(val)
+        rows.append(obj)
+    return rows
+
+
+def analyze_table_question(
+    question: str,
+    *,
+    data: dict[str, Any],
+    top_k: int = 5,
+) -> list[dict[str, Any]]:
+    """Derive deterministic evidence snippets for common cohort-stat questions."""
+    op = _detect_operation(question)
+    out: list[dict[str, Any]] = []
+
+    for name, df in _iter_tables(data) or ():
+        columns = [str(c) for c in df.columns]
+        selected_col = _choose_column(question, columns)
+        if not op or not selected_col:
+            continue
+        try:
+            computed = compute_table_stat(
+                name,
+                data=data,
+                column=selected_col,
+                operation=op,
+            )
+        except Exception:
+            continue
+        for row in computed:
+            value = row.get("value")
+            row_count = row.get("row_count")
+            non_null = row.get("non_null")
+            backend = str(row.get("backend") or "table_engine")
+            if non_null is not None:
+                snippet = (
+                    f"Computed {op} of {selected_col} from {row_count} rows "
+                    f"(non-null {non_null}): {value} (engine={backend})"
+                )
+            else:
+                snippet = (
+                    f"Computed {op} of {selected_col} from {row_count} rows: "
+                    f"{value} (engine={backend})"
+                )
+            out.append(
+                {
+                    "source": name,
+                    "snippet": snippet,
+                    "score": 80,
+                    "evidence_type": "table_stat",
+                    "operation": op,
+                    "column": selected_col,
+                    "value": value,
+                    "backend": backend,
+                }
+            )
+
+    out.sort(key=lambda x: int(x.get("score", 0)), reverse=True)
+    return out[: max(1, top_k)]
+
+
+def search_tables(
+    query: str,
+    *,
+    data: dict[str, Any],
+    top_k: int = 5,
+    max_rows: int = 6000,
+) -> list[dict[str, Any]]:
+    """Search tabular sources and return row-level snippets.
+
+    This complements ``search_documents`` for CSV/Parquet/Excel sources.
+    """
+    query_terms = [t for t in _extract_terms(query) if len(t) >= 2 and t not in _DEFAULT_STOPWORDS]
+    if not query_terms:
+        query_terms = _extract_terms(query)
+    query_terms = _expand_terms(query_terms)
+    if not query_terms:
+        return []
+
+    out: list[dict[str, Any]] = []
+    for name, df in _iter_tables(data) or ():
+        columns = [str(c) for c in df.columns]
+        col_norm_map = {c: _normalize_column_name(c) for c in columns}
+        candidate_cols = [
+            c for c in columns
+            if any(term in col_norm_map[c] for term in query_terms)
+        ]
+        if not candidate_cols:
+            candidate_cols = columns[: min(12, len(columns))]
+
+        # Prefer most informative rows while staying bounded for large tables.
+        view = df.head(max(1, min(int(max_rows), len(df))))
+        for idx, row in view.iterrows():
+            matched_pairs: list[tuple[str, str]] = []
+            row_score = 0
+            for c in candidate_cols:
+                val_text = _format_scalar(row[c]).lower()
+                col_text = col_norm_map[c]
+                hits = sum(1 for t in query_terms if t in col_text or t in val_text)
+                if hits:
+                    row_score += hits
+                    matched_pairs.append((c, _format_scalar(row[c])))
+            if row_score <= 0:
+                continue
+
+            preview_pairs = matched_pairs[:4]
+            preview = ", ".join([f"{k}={v}" for k, v in preview_pairs])
+            row_label = int(idx) if isinstance(idx, int) else str(idx)
+            snippet = f"row {row_label}: {preview}"
+            out.append(
+                {
+                    "source": name,
+                    "snippet": snippet,
+                    "score": int(row_score),
+                    "evidence_type": "table_row",
+                    "row_index": row_label,
+                }
+            )
+
+    out.sort(key=lambda x: int(x.get("score", 0)), reverse=True)
+    return out[: max(1, top_k)]
+
+
 def search_documents(
     query: str,
     *,
@@ -91,16 +776,7 @@ def search_documents(
         Matching results with keys: source, snippet, score.
     """
     raw_terms = _extract_terms(query)
-    stopwords = {
-        "the", "a", "an", "and", "or", "of", "in", "on", "to", "for", "with",
-        "is", "are", "was", "were", "be", "been", "being", "what", "which",
-        "who", "whom", "when", "where", "why", "how", "does", "do", "did",
-        "please", "show", "tell", "about", "can", "you", "your", "my", "me",
-        "from", "that", "this", "those", "these", "there", "their", "them",
-        "no", "patient", "study", "scan", "ct", "mri",
-        "findings", "impression", "compared", "comparison", "today",
-    }
-    query_terms = [t for t in raw_terms if len(t) >= 2 and t not in stopwords]
+    query_terms = [t for t in raw_terms if len(t) >= 2 and t not in _DEFAULT_STOPWORDS]
     if not query_terms:
         query_terms = raw_terms
     query_terms = _expand_terms(query_terms)
@@ -137,9 +813,16 @@ def search_documents(
                 end = min(len(text), idx + 320)
                 snippet = " ".join(text[start:end].split())
 
-            results.append({"source": name, "snippet": snippet, "score": score})
+            results.append(
+                {
+                    "source": name,
+                    "snippet": snippet,
+                    "score": score,
+                    "evidence_type": "text",
+                }
+            )
 
-    results.sort(key=lambda r: r["score"], reverse=True)
+    results.sort(key=lambda r: int(r["score"]), reverse=True)
     return results[:top_k]
 
 

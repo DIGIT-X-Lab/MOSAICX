@@ -331,6 +331,26 @@ class TestQueryEngineConversation:
         assert "16 mm" in citations[0]["snippet"] or "16 mm" in citations[1]["snippet"]
         assert all(c["snippet"].lower() != "radiology report" for c in citations)
 
+    def test_build_citations_adds_tabular_computed_evidence(self, tmp_path: Path):
+        """Citations should include computed table evidence for cohort-stat questions."""
+        from mosaicx.query.engine import QueryEngine
+        from mosaicx.query.session import QuerySession
+
+        f = tmp_path / "cohort.csv"
+        f.write_text("BMI,Age\n20,40\n25,55\n30,60\n")
+        session = QuerySession(sources=[f])
+        engine = QueryEngine(session=session)
+
+        citations = engine._build_citations(
+            question="what is the average bmi of the cohort?",
+            answer="Average BMI is approximately 25.",
+            seed_hits=[],
+            top_k=3,
+        )
+        assert len(citations) >= 1
+        assert any(c.get("evidence_type") == "table_stat" for c in citations)
+        assert any("mean of BMI" in c["snippet"] for c in citations)
+
 
 class TestQueryEngineConfig:
     def test_engine_has_configurable_max_iterations(self, tmp_path: Path):

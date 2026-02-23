@@ -4,6 +4,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 
 class TestSearchDocuments:
     def test_keyword_search(self):
@@ -63,6 +65,110 @@ class TestSearchDocuments:
         results = search_documents("what cancer did the patient have", documents=docs, top_k=5)
         assert len(results) >= 1
         assert "carcinoma" in results[0]["snippet"].lower()
+
+
+class TestTabularTools:
+    def test_compute_table_stat_mean(self):
+        import pandas as pd
+
+        from mosaicx.query.tools import compute_table_stat
+
+        data = {
+            "cohort.csv": pd.DataFrame(
+                {"BMI": [20.0, 25.0, 30.0], "Sex": ["F", "M", "F"]}
+            )
+        }
+        rows = compute_table_stat(
+            "cohort.csv",
+            data=data,
+            column="BMI",
+            operation="mean",
+        )
+        assert len(rows) == 1
+        assert rows[0]["operation"] == "mean"
+        assert rows[0]["column"] == "BMI"
+        assert rows[0]["value"] == "25"
+        assert rows[0]["backend"] in {"duckdb", "pandas"}
+
+    def test_compute_table_stat_where_clause(self):
+        import pandas as pd
+
+        from mosaicx.query.tools import compute_table_stat
+
+        data = {
+            "cohort.csv": pd.DataFrame(
+                {"BMI": [20.0, 25.0, 30.0], "Sex": ["F", "M", "F"]}
+            )
+        }
+        rows = compute_table_stat(
+            "cohort.csv",
+            data=data,
+            column="BMI",
+            operation="mean",
+            where="BMI >= 25",
+        )
+        assert len(rows) == 1
+        assert rows[0]["value"] == "27.5"
+        assert rows[0]["row_count"] == 2
+        assert rows[0]["backend"] in {"duckdb", "pandas"}
+
+    def test_analyze_table_question_derives_mean_evidence(self):
+        import pandas as pd
+
+        from mosaicx.query.tools import analyze_table_question
+
+        data = {
+            "cohort.csv": pd.DataFrame(
+                {"BMI": [20.0, 25.0, 30.0], "Age": [40, 55, 60]}
+            )
+        }
+        hits = analyze_table_question(
+            "what is the average BMI of the cohort?",
+            data=data,
+            top_k=3,
+        )
+        assert len(hits) >= 1
+        assert hits[0]["evidence_type"] == "table_stat"
+        assert "mean of BMI" in hits[0]["snippet"]
+        assert "25" in hits[0]["snippet"]
+        assert "engine=" in hits[0]["snippet"]
+
+    def test_search_tables_returns_row_level_snippets(self):
+        import pandas as pd
+
+        from mosaicx.query.tools import search_tables
+
+        data = {
+            "cohort.csv": pd.DataFrame(
+                {"Subject": ["S1", "S2"], "BMI": [21.5, 26.1], "Sex": ["F", "M"]}
+            )
+        }
+        hits = search_tables("find bmi rows", data=data, top_k=2)
+        assert len(hits) >= 1
+        assert hits[0]["evidence_type"] == "table_row"
+        assert "row" in hits[0]["snippet"].lower()
+        assert "BMI=" in hits[0]["snippet"]
+
+    def test_run_table_sql_returns_rows(self):
+        import pandas as pd
+
+        duckdb = pytest.importorskip("duckdb")
+        assert duckdb is not None
+
+        from mosaicx.query.tools import run_table_sql
+
+        data = {
+            "cohort.csv": pd.DataFrame(
+                {"BMI": [20.0, 25.0, 30.0], "Sex": ["F", "M", "F"]}
+            )
+        }
+        rows = run_table_sql(
+            "cohort.csv",
+            data=data,
+            sql="SELECT AVG(BMI) AS mean_bmi FROM _mosaicx_table",
+        )
+        assert len(rows) == 1
+        assert rows[0]["mean_bmi"] == "25"
 
 
 class TestGetDocument:

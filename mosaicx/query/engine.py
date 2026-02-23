@@ -82,7 +82,25 @@ def _text_for_data(value: Any) -> str:
         import pandas as pd
 
         if isinstance(value, pd.DataFrame):
-            return str(value.to_string(max_rows=200))
+            rows = int(len(value))
+            cols = int(len(value.columns))
+            col_preview = ", ".join([str(c) for c in value.columns[:30]])
+            if cols > 30:
+                col_preview += ", ..."
+
+            # Keep prompt context compact: schema + small head/tail sample.
+            head_n = min(8, rows)
+            tail_n = min(4, max(0, rows - head_n))
+            frames = [value.head(head_n)]
+            if tail_n > 0:
+                frames.append(value.tail(tail_n))
+            sample = pd.concat(frames, axis=0).drop_duplicates()
+            sample_text = sample.to_string(max_rows=12, max_cols=16)
+            return (
+                f"DataFrame {rows} rows x {cols} cols\n"
+                f"Columns: {col_preview}\n"
+                f"Sample rows:\n{sample_text}"
+            )
     except ImportError:
         pass
 
@@ -170,10 +188,45 @@ class QueryEngine:
     # Query
     # ------------------------------------------------------------------
 
+    def _merge_hits(
+        self,
+        hits: list[dict[str, Any]],
+        *,
+        max_hits: int,
+    ) -> list[dict[str, Any]]:
+        merged: list[dict[str, Any]] = []
+        seen: set[tuple[str, str]] = set()
+        for hit in hits:
+            source = str(hit.get("source") or "")
+            snippet = " ".join(str(hit.get("snippet") or "").split())
+            if not source or not snippet:
+                continue
+            key = (source, snippet[:180])
+            if key in seen:
+                continue
+            seen.add(key)
+            item = dict(hit)
+            item["snippet"] = snippet
+            merged.append(item)
+            if len(merged) >= max_hits:
+                break
+        return merged
+
     def _run_query_once(self, question: str) -> tuple[str, list[dict[str, Any]]]:
         import dspy
 
-        from mosaicx.query.tools import get_document, save_artifact, search_documents
+        from mosaicx.query.tools import (
+            analyze_table_question,
+            compute_table_stat,
+            get_document,
+            get_table_schema,
+            list_tables,
+            run_table_sql,
+            sample_table_rows,
+            save_artifact,
+            search_documents,
+            search_tables,
+        )
 
         # Build catalog summary for the RLM context
         catalog_lines = []
@@ -194,10 +247,73 @@ class QueryEngine:
 
         # Bind documents into tool closures so RLM tools have access
         docs = self._documents
+        data = self._session.data
 
         def _search(query: str, top_k: int = 5) -> list[dict[str, Any]]:
             """Search loaded documents by keyword. Returns matching snippets."""
             return search_documents(query, documents=docs, top_k=top_k)
+
+        def _search_tables(query: str, top_k: int = 5) -> list[dict[str, Any]]:
+            """Search tabular sources and return row-level evidence snippets."""
+            return search_tables(query, data=data, top_k=top_k)
+
+        def _list_tables() -> list[dict[str, Any]]:
+            """List loaded CSV/Parquet/Excel sources with shape and columns."""
+            return list_tables(data=data)
+
+        def _table_schema(name: str, max_columns: int = 120) -> dict[str, Any]:
+            """Inspect table schema: dtypes, missingness, and unique counts."""
+            return get_table_schema(name, data=data, max_columns=max_columns)
+
+        def _table_rows(name: str, columns_csv: str = "", limit: int = 5, strategy: str = "head") -> list[dict[str, Any]]:
+            """Sample rows from a tabular source."""
+            return sample_table_rows(
+                name,
+                data=data,
+                columns_csv=columns_csv,
+                limit=limit,
+                strategy=strategy,
+            )
+
+        def _table_stat(
+            name: str,
+            column: str,
+            operation: str = "mean",
+            group_by: str = "",
+            where: str = "",
+            top_n: int = 10,
+        ) -> list[dict[str, Any]]:
+            """Compute stats from tabular data (mean/median/min/max/count/etc.)."""
+            return compute_table_stat(
+                name,
+                data=data,
+                column=column,
+                operation=operation,
+                group_by=group_by,
+                where=where,
+                top_n=top_n,
+            )
+
+        def _table_sql(name: str, sql: str, limit: int = 50) -> list[dict[str, Any]]:
+            """Run a read-only SQL query over a tabular source (DuckDB)."""
+            try:
+                return run_table_sql(
+                    name,
+                    data=data,
+                    sql=sql,
+                    limit=limit,
+                )
+            except ImportError:
+                return [
+                    {
+                        "error": "duckdb_not_installed",
+                        "hint": "Install mosaicx[query] to enable run_table_sql.",
+                    }
+                ]
+
+        def _analyze_table_question(question: str, top_k: int = 5) -> list[dict[str, Any]]:
+            """Compute deterministic evidence snippets for common cohort-stat questions."""
+            return analyze_table_question(question, data=data, top_k=top_k)
 
         def _get(name: str) -> str:
             """Retrieve a full document by name."""
@@ -209,16 +325,30 @@ class QueryEngine:
 
         tools = [
             dspy.Tool(_search, name="search_documents", desc="Search loaded documents by keyword."),
+            dspy.Tool(_search_tables, name="search_tables", desc="Search tabular sources and return row-level evidence."),
+            dspy.Tool(_list_tables, name="list_tables", desc="List loaded tabular sources with row/column counts."),
+            dspy.Tool(_table_schema, name="get_table_schema", desc="Get detailed schema for a table source."),
+            dspy.Tool(_table_rows, name="sample_table_rows", desc="Sample rows from a table source."),
+            dspy.Tool(_table_stat, name="compute_table_stat", desc="Compute statistics (mean/median/min/max/count/etc.) for a column."),
+            dspy.Tool(_table_sql, name="run_table_sql", desc="Run read-only SQL over a tabular source for complex analytics."),
+            dspy.Tool(_analyze_table_question, name="analyze_table_question", desc="Derive computed evidence for cohort/statistics questions."),
             dspy.Tool(_get, name="get_document", desc="Retrieve a full document by name."),
             dspy.Tool(_save, name="save_artifact", desc="Save query results as a CSV or JSON file."),
         ]
 
         # Seed retrieval to help the RLM start from concrete evidence.
-        seed_hits = search_documents(question.strip(), documents=docs, top_k=6)
+        text_hits = search_documents(question.strip(), documents=docs, top_k=6)
+        table_hits = search_tables(question.strip(), data=data, top_k=6)
+        computed_hits = analyze_table_question(question.strip(), data=data, top_k=4)
+        seed_hits = self._merge_hits(
+            [*computed_hits, *table_hits, *text_hits],
+            max_hits=12,
+        )
         retrieval_lines = []
         for h in seed_hits:
+            evidence_type = str(h.get("evidence_type") or "text")
             retrieval_lines.append(
-                f"- {h.get('source', 'unknown')} (score={h.get('score', 0)}): "
+                f"- [{evidence_type}] {h.get('source', 'unknown')} (score={h.get('score', 0)}): "
                 f"{str(h.get('snippet', '')).strip()[:220]}"
             )
         retrieval_text = "\n".join(retrieval_lines) if retrieval_lines else "(no keyword hits)"
@@ -247,6 +377,9 @@ class QueryEngine:
         guidance = (
             "Use only grounded evidence from retrieval/tool outputs. "
             "If evidence exists, answer directly and do not claim sources are unavailable. "
+            "For CSV/Parquet/Excel questions, inspect schema and compute stats with table tools before answering. "
+            "For complex cohort questions, use run_table_sql and cite computed outputs. "
+            "Never estimate numeric cohort statistics from memory; compute them. "
             "For timeline/date questions, return concise chronological bullets. "
             "Avoid repeating headings."
         )
@@ -275,9 +408,10 @@ class QueryEngine:
         seed_hits: list[dict[str, Any]],
         top_k: int,
     ) -> list[dict[str, Any]]:
-        from mosaicx.query.tools import search_documents
+        from mosaicx.query.tools import analyze_table_question, search_documents, search_tables
 
         docs = self._documents
+        data = self._session.data
         question_terms = {
             t
             for t in re.findall(r"[a-z0-9]+", question.lower())
@@ -285,7 +419,7 @@ class QueryEngine:
         }
         is_delta_question = self._is_delta_question(question)
 
-        def _citation_rank(snippet: str, base_score: int) -> int:
+        def _citation_rank(snippet: str, base_score: int, evidence_type: str) -> int:
             snip = " ".join(str(snippet).split())
             if not snip:
                 return -1000
@@ -310,20 +444,28 @@ class QueryEngine:
                 "ct chest/abdomen/pelvis with contrast",
             }:
                 rank -= 20
+            if evidence_type == "table_row":
+                rank += 14
+            elif evidence_type == "table_stat":
+                rank += 30
             return rank
 
         query = " ".join([question.strip(), answer.strip()]).strip()
-        hits = search_documents(query, documents=docs, top_k=max(top_k, 6))
+        text_hits = search_documents(query, documents=docs, top_k=max(top_k, 6))
+        table_hits = search_tables(query, data=data, top_k=max(top_k, 8))
+        computed_hits = analyze_table_question(question.strip(), data=data, top_k=max(top_k, 5))
+        hits = self._merge_hits([*computed_hits, *table_hits, *text_hits], max_hits=max(top_k, 12))
         combined = []
         seen = set()
         for h in [*seed_hits, *hits]:
             source = str(h.get("source") or "")
             snippet = " ".join(str(h.get("snippet") or "").split())
             score = int(h.get("score") or 0)
+            evidence_type = str(h.get("evidence_type") or "text")
             key = (source, snippet[:120])
             if not source or not snippet or key in seen:
                 continue
-            rank = _citation_rank(snippet, score)
+            rank = _citation_rank(snippet, score, evidence_type)
             if rank < 0:
                 continue
             if is_delta_question and not re.search(r"\b\d+(?:\.\d+)?\s*mm\b", snippet.lower()):
@@ -337,6 +479,7 @@ class QueryEngine:
                 "snippet": snippet,
                 "score": score,
                 "rank": rank,
+                "evidence_type": evidence_type,
             })
 
         combined.sort(key=lambda x: (x.get("rank", 0), x.get("score", 0)), reverse=True)

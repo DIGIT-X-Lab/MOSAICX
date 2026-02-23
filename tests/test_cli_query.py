@@ -217,3 +217,64 @@ class TestQueryQuestionMode:
         assert "turns" in payload
         assert isinstance(payload["turns"], list)
         assert payload["turns"][0]["citations"][0]["source"] == "report.txt"
+
+    def test_query_question_prioritizes_computed_evidence_block(self, tmp_path, monkeypatch):
+        from mosaicx.cli import cli
+        from mosaicx.query.loaders import SourceMeta
+        import mosaicx.cli as cli_mod
+        import mosaicx.sdk as sdk_mod
+
+        doc = tmp_path / "cohort.csv"
+        doc.write_text("BMI,Sex\n20,F\n30,M\n")
+
+        class _FakeSession:
+            catalog = [SourceMeta(
+                name="cohort.csv",
+                format="csv",
+                source_type="dataframe",
+                size=32,
+                preview="2 rows x 2 cols",
+            )]
+
+            def ask_structured(self, question: str, *, max_iterations: int = 20, top_k_citations: int = 3):
+                return {
+                    "question": question,
+                    "answer": "Average BMI is 25.",
+                    "citations": [
+                        {
+                            "source": "cohort.csv",
+                            "snippet": "row 0: BMI=20, Sex=F",
+                            "score": 5,
+                            "evidence_type": "table_row",
+                        },
+                        {
+                            "source": "cohort.csv",
+                            "snippet": "Computed mean of BMI from 2 rows (non-null 2): 25 (engine=duckdb)",
+                            "score": 80,
+                            "evidence_type": "table_stat",
+                            "backend": "duckdb",
+                        },
+                    ],
+                    "confidence": 0.95,
+                    "sources_consulted": ["cohort.csv"],
+                    "turn_index": 1,
+                }
+
+            def close(self):
+                return None
+
+        monkeypatch.setattr(cli_mod, "_check_api_key", lambda: None)
+        monkeypatch.setattr(cli_mod, "_configure_dspy", lambda: None)
+        monkeypatch.setattr(sdk_mod, "query", lambda sources: _FakeSession())
+
+        runner = CliRunner()
+        result = runner.invoke(cli, [
+            "query",
+            "--document", str(doc),
+            "--question", "average bmi?",
+        ])
+        assert result.exit_code == 0
+        assert "Computed" in result.output
+        assert "Supporting" in result.output
+        assert "duckdb" in result.output
+        assert result.output.find("Computed") < result.output.find("Supporting")
