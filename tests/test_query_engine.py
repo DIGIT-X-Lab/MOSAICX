@@ -243,6 +243,66 @@ class TestQueryEngineConversation:
         engine = QueryEngine(session=session)
         assert engine._looks_like_non_answer("The cancer type is not specified.")
 
+    def test_confidence_high_for_short_modality_answers(self, tmp_path: Path):
+        """Grounding should be high when concise answer is explicitly present in evidence."""
+        from mosaicx.query.engine import QueryEngine
+        from mosaicx.query.session import QuerySession
+
+        f = tmp_path / "report.txt"
+        f.write_text("Modality: CT")
+        session = QuerySession(sources=[f])
+        engine = QueryEngine(session=session)
+        citations = [
+            {"source": "P001_CT_2025-08-01.pdf", "snippet": "Modality: CT", "score": 1, "rank": 24},
+            {"source": "P001_CT_2025-09-10.pdf", "snippet": "Modality: CT", "score": 1, "rank": 24},
+        ]
+        conf = engine._citation_confidence(
+            "what kind of imaging modality was used in this patient throughout",
+            "CT",
+            citations,
+        )
+        assert conf >= 0.75
+
+    def test_confidence_high_for_scan_dates(self, tmp_path: Path):
+        """Date-list answers should score high when both dates are cited."""
+        from mosaicx.query.engine import QueryEngine
+        from mosaicx.query.session import QuerySession
+
+        f = tmp_path / "report.txt"
+        f.write_text("Study Date: 2025-08-01")
+        session = QuerySession(sources=[f])
+        engine = QueryEngine(session=session)
+        citations = [
+            {"source": "P001_CT_2025-08-01.pdf", "snippet": "Study Date: 2025-08-01", "score": 2, "rank": 24},
+            {"source": "P001_CT_2025-09-10.pdf", "snippet": "Study Date: 2025-09-10", "score": 2, "rank": 24},
+        ]
+        conf = engine._citation_confidence(
+            "what were the imaging scan dates",
+            "- 2025-08-01\n- 2025-09-10",
+            citations,
+        )
+        assert conf >= 0.75
+
+    def test_confidence_drops_for_answer_not_in_evidence(self, tmp_path: Path):
+        """Grounding should decrease when answer values are missing from citations."""
+        from mosaicx.query.engine import QueryEngine
+        from mosaicx.query.session import QuerySession
+
+        f = tmp_path / "report.txt"
+        f.write_text("Modality: CT")
+        session = QuerySession(sources=[f])
+        engine = QueryEngine(session=session)
+        citations = [
+            {"source": "P001_CT_2025-08-01.pdf", "snippet": "Modality: CT", "score": 1, "rank": 24},
+            {"source": "P001_CT_2025-09-10.pdf", "snippet": "Modality: CT", "score": 1, "rank": 24},
+        ]
+        conf = engine._citation_confidence(
+            "what kind of imaging modality was used in this patient throughout",
+            "MRI",
+            citations,
+        )
+        assert conf < 0.6
+
     def test_build_citations_filters_generic_delta_noise(self, tmp_path: Path, monkeypatch):
         """Delta citation ranking should suppress generic headers when measured lines exist."""
         from mosaicx.query.engine import QueryEngine

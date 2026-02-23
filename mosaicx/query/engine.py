@@ -56,6 +56,8 @@ _QUERY_STOPWORDS = {
     "please", "show", "tell", "about", "can", "you", "your", "my", "me",
     "from", "that", "this", "those", "these", "there", "their", "them",
     "report", "reports", "patient", "study", "scan", "ct", "mri",
+    "kind", "used", "use", "throughout", "across", "overall", "imaging",
+    "image", "images", "imaged",
 }
 
 
@@ -360,13 +362,101 @@ class QueryEngine:
             selected.append(item)
         return selected
 
-    def _citation_confidence(self, question: str, citations: list[dict[str, Any]]) -> float:
+    def _normalize_term(self, token: str) -> str:
+        if token.endswith("ies") and len(token) > 4:
+            return token[:-3] + "y"
+        if token.endswith("s") and len(token) > 3:
+            return token[:-1]
+        return token
+
+    def _salient_terms(self, text: str, *, min_len: int = 3) -> set[str]:
+        return {
+            self._normalize_term(t)
+            for t in re.findall(r"[a-z0-9]+", text.lower())
+            if len(t) >= min_len and self._normalize_term(t) not in _QUERY_STOPWORDS
+        }
+
+    def _extract_answer_values(self, answer: str) -> set[str]:
+        values: set[str] = set()
+        lowered = answer.lower()
+
+        # Clinical/date literals where exact match should strongly impact grounding.
+        for m in re.findall(r"\b\d{4}-\d{2}-\d{2}\b", answer):
+            values.add(m.lower())
+        for m in re.findall(r"\b\d+(?:\.\d+)?\s*(?:mm|cm|%)\b", lowered):
+            values.add(" ".join(m.split()))
+
+        # Common modality literals, including short tokens that normal term logic drops.
+        for modality in ("ct", "mri", "pet", "xray", "x-ray", "ultrasound", "us"):
+            if re.search(rf"\b{re.escape(modality)}\b", lowered):
+                values.add(modality)
+
+        return values
+
+    def _citation_confidence(
+        self,
+        question: str,
+        answer: str,
+        citations: list[dict[str, Any]],
+    ) -> float:
         if not citations:
             return 0.0
-        terms = {t for t in re.findall(r"[a-z0-9]+", question.lower()) if len(t) >= 3}
-        denom = max(len(terms), 1)
-        max_score = max(int(c.get("score", 0)) for c in citations)
-        return max(0.0, min(1.0, max_score / denom))
+
+        question_terms = self._salient_terms(question, min_len=3)
+        citation_blob = " ".join(
+            " ".join(str(c.get("snippet") or "").split()).lower()
+            for c in citations
+        )
+        citation_terms = self._salient_terms(citation_blob, min_len=3)
+
+        if question_terms:
+            question_coverage = len(question_terms & citation_terms) / len(question_terms)
+        else:
+            question_coverage = 1.0
+
+        answer_values = self._extract_answer_values(answer)
+        if answer_values:
+            answer_value_support = sum(1 for v in answer_values if v in citation_blob) / len(answer_values)
+        else:
+            answer_value_support = None
+
+        answer_terms = self._salient_terms(answer, min_len=2)
+        if answer_terms:
+            answer_term_support = len(answer_terms & citation_terms) / len(answer_terms)
+        else:
+            answer_term_support = None
+
+        if answer_value_support is None and answer_term_support is None:
+            answer_support = 0.5
+        elif answer_value_support is None:
+            answer_support = answer_term_support or 0.0
+        elif answer_term_support is None:
+            answer_support = answer_value_support
+        else:
+            answer_support = max(answer_value_support, answer_term_support)
+
+        max_rank = max(int(c.get("rank", c.get("score", 0)) or 0) for c in citations)
+        rank_strength = max(0.0, min(1.0, max_rank / 30.0))
+
+        unique_sources = len({str(c.get("source") or "") for c in citations if c.get("source")})
+        source_diversity = max(0.0, min(1.0, unique_sources / 2.0))
+
+        confidence = (
+            0.25 * rank_strength
+            + 0.25 * question_coverage
+            + 0.35 * answer_support
+            + 0.15 * source_diversity
+        )
+
+        # Penalize literal mismatches (e.g., answer says MRI but evidence says CT).
+        if answer_values and answer_value_support == 0.0:
+            confidence *= 0.6
+        elif answer_value_support is not None and answer_value_support < 0.5:
+            confidence *= 0.8
+        if answer_term_support is not None and answer_term_support < 0.2:
+            confidence *= 0.85
+
+        return max(0.0, min(1.0, confidence))
 
     def _is_delta_question(self, question: str) -> bool:
         q = " ".join(question.lower().split())
@@ -586,7 +676,7 @@ class QueryEngine:
                     seed_hits=seed_hits,
                     top_k=max(1, top_k_citations),
                 )
-        confidence = self._citation_confidence(question.strip(), citations)
+        confidence = self._citation_confidence(question.strip(), answer, citations)
 
         self._session.add_turn("user", question.strip())
         self._session.add_turn("assistant", answer)
