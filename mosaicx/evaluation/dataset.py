@@ -27,6 +27,8 @@ PIPELINE_INPUT_FIELDS: dict[str, list[str]] = {
     "summarize": ["reports", "patient_id"],
     "deidentify": ["document_text", "mode"],
     "schema": ["description", "example_text", "document_text"],
+    "query": ["question", "source_text"],
+    "verify": ["claim", "source_text"],
 }
 
 

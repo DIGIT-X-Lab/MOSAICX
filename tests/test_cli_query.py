@@ -151,6 +151,7 @@ class TestQueryQuestionMode:
 
         monkeypatch.setattr(cli_mod, "_check_api_key", lambda: None)
         monkeypatch.setattr(cli_mod, "_configure_dspy", lambda: None)
+        monkeypatch.setattr(cli_mod, "_ensure_deno_runtime", lambda **kwargs: None)
         monkeypatch.setattr(sdk_mod, "query", lambda sources: _FakeSession())
 
         runner = CliRunner()
@@ -202,6 +203,7 @@ class TestQueryQuestionMode:
 
         monkeypatch.setattr(cli_mod, "_check_api_key", lambda: None)
         monkeypatch.setattr(cli_mod, "_configure_dspy", lambda: None)
+        monkeypatch.setattr(cli_mod, "_ensure_deno_runtime", lambda **kwargs: None)
         monkeypatch.setattr(sdk_mod, "query", lambda sources: _FakeSession())
 
         runner = CliRunner()
@@ -265,6 +267,7 @@ class TestQueryQuestionMode:
 
         monkeypatch.setattr(cli_mod, "_check_api_key", lambda: None)
         monkeypatch.setattr(cli_mod, "_configure_dspy", lambda: None)
+        monkeypatch.setattr(cli_mod, "_ensure_deno_runtime", lambda **kwargs: None)
         monkeypatch.setattr(sdk_mod, "query", lambda sources: _FakeSession())
 
         runner = CliRunner()

@@ -54,6 +54,8 @@ _PIPELINE_REGISTRY: dict[str, tuple[str, str]] = {
     "summarize":    ("mosaicx.pipelines.summarizer",   "ReportSummarizer"),
     "deidentify":   ("mosaicx.pipelines.deidentifier", "Deidentifier"),
     "schema":       ("mosaicx.pipelines.schema_gen",   "SchemaGenerator"),
+    "query":        ("mosaicx.pipelines.query_qa",     "QueryGroundedResponder"),
+    "verify":       ("mosaicx.pipelines.verify_claim", "VerifyClaimResponder"),
 }
 
 
