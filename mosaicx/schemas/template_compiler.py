@@ -270,8 +270,55 @@ def schema_spec_to_template_yaml(
     """
     import re
 
-    sections: list[dict[str, Any]] = []
     list_re = re.compile(r"^list\[(\w+)\]$", re.IGNORECASE)
+
+    def _field_spec_to_dict(field: Any) -> dict[str, Any]:
+        """Recursively convert schema_gen.FieldSpec into template FieldSpec dict."""
+        field_type = field.type.strip().lower()
+        alias_map = {
+            "string": "str",
+            "integer": "int",
+            "number": "float",
+            "boolean": "bool",
+        }
+        normalized_type = alias_map.get(field_type, field_type)
+        payload: dict[str, Any] = {"name": field.name, "type": normalized_type}
+
+        if getattr(field, "description", ""):
+            payload["description"] = field.description
+        if not getattr(field, "required", True):
+            payload["required"] = False
+
+        if normalized_type == "enum":
+            enum_values = getattr(field, "enum_values", None) or getattr(field, "values", None)
+            if enum_values:
+                payload["values"] = list(enum_values)
+
+        if normalized_type == "object":
+            nested = getattr(field, "fields", None)
+            if nested:
+                payload["fields"] = [_field_spec_to_dict(sub) for sub in nested]
+
+        list_match = list_re.match(field_type)
+        if list_match:
+            inner = alias_map.get(list_match.group(1).lower(), list_match.group(1).lower())
+            payload["type"] = "list"
+            if inner == "object":
+                nested = getattr(field, "fields", None)
+                if nested:
+                    payload["item"] = {
+                        "type": "object",
+                        "fields": [_field_spec_to_dict(sub) for sub in nested],
+                    }
+                else:
+                    # Safe fallback: avoid emitting invalid object item with no fields.
+                    payload["item"] = {"type": "str"}
+            else:
+                payload["item"] = {"type": inner}
+
+        return payload
+
+    sections: list[dict[str, Any]] = []
 
     for field in spec.fields:
         section: dict[str, Any] = {"name": field.name}
@@ -288,11 +335,30 @@ def schema_spec_to_template_yaml(
                 "number": "float", "boolean": "bool",
             }
             inner = inner_map.get(inner, inner)
-            section["item"] = {"type": inner}
+            if inner == "object":
+                nested = getattr(field, "fields", None)
+                if nested:
+                    section["item"] = {
+                        "type": "object",
+                        "fields": [_field_spec_to_dict(sub) for sub in nested],
+                    }
+                else:
+                    # Safe fallback: avoid generating an invalid template.
+                    section["item"] = {"type": "str"}
+            else:
+                section["item"] = {"type": inner}
         elif type_str == "enum":
             section["type"] = "enum"
             if field.enum_values:
                 section["values"] = list(field.enum_values)
+        elif type_str == "object":
+            nested = getattr(field, "fields", None)
+            if nested:
+                section["type"] = "object"
+                section["fields"] = [_field_spec_to_dict(sub) for sub in nested]
+            else:
+                # Safe fallback: avoid invalid object definitions with missing fields.
+                section["type"] = "str"
         else:
             # Normalise scalar aliases
             alias_map = {

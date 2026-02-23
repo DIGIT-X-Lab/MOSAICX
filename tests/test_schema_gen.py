@@ -74,6 +74,42 @@ class TestSchemaSpec:
         instance = Model(gender="male")
         assert instance.gender == "male"
 
+    def test_compile_with_list_object_field(self):
+        from mosaicx.pipelines.schema_gen import SchemaSpec, FieldSpec, compile_schema
+
+        spec = SchemaSpec(
+            class_name="CervicalSpine",
+            description="Nested level findings",
+            fields=[
+                FieldSpec(
+                    name="level_findings",
+                    type="list[object]",
+                    required=True,
+                    fields=[
+                        FieldSpec(name="level", type="str", required=True),
+                        FieldSpec(name="stenosis", type="enum", required=True, enum_values=["none", "mild", "severe"]),
+                    ],
+                ),
+            ],
+        )
+        Model = compile_schema(spec)
+        instance = Model(level_findings=[{"level": "C5-C6", "stenosis": "mild"}])
+        assert instance.level_findings[0].level == "C5-C6"
+        assert str(instance.level_findings[0].stenosis.value) == "mild"
+
+    def test_compile_list_object_without_fields_falls_back_to_dict(self):
+        from mosaicx.pipelines.schema_gen import SchemaSpec, FieldSpec, compile_schema
+
+        spec = SchemaSpec(
+            class_name="FallbackListObject",
+            fields=[
+                FieldSpec(name="items", type="list[object]", required=True),
+            ],
+        )
+        Model = compile_schema(spec)
+        instance = Model(items=[{"k": "v"}])
+        assert instance.items == [{"k": "v"}]
+
 
 class TestSchemaStorage:
     """Test schema save/load/list operations."""

@@ -19,7 +19,7 @@ import shutil
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
-from typing import TYPE_CHECKING, List, NamedTuple, Optional
+from typing import TYPE_CHECKING, Any, List, NamedTuple, Optional
 
 from pydantic import BaseModel, Field, create_model
 
@@ -45,6 +45,13 @@ class FieldSpec(BaseModel):
         None,
         description="Allowed values when type is 'enum'",
     )
+    fields: Optional[List["FieldSpec"]] = Field(
+        None,
+        description="Nested fields when type is 'object' or 'list[object]'",
+    )
+
+
+FieldSpec.model_rebuild()
 
 
 class SchemaSpec(BaseModel):
@@ -80,7 +87,30 @@ _SIMPLE_TYPE_MAP: dict[str, type] = {
 _LIST_RE = re.compile(r"^list\[(\w+)\]$", re.IGNORECASE)
 
 
-def _resolve_type(spec: FieldSpec) -> type:
+def _build_nested_model(spec: FieldSpec, *, parent_name: str = "") -> type[BaseModel]:
+    """Build a nested Pydantic model for object-like fields."""
+    nested_fields = spec.fields or []
+    field_defs: dict[str, tuple[Any, Any]] = {}
+
+    for nested in nested_fields:
+        nested_type = _resolve_type(nested, parent_name=f"{parent_name}_{spec.name}")
+        if nested.required:
+            field_defs[nested.name] = (
+                nested_type,
+                Field(..., description=nested.description or None),
+            )
+        else:
+            field_defs[nested.name] = (
+                Optional[nested_type],
+                Field(default=None, description=nested.description or None),
+            )
+
+    model_name = f"{parent_name}_{spec.name}".strip("_") or "NestedObject"
+    model_name = "".join(part.capitalize() for part in model_name.split("_"))
+    return create_model(model_name, **field_defs)  # type: ignore[call-overload]
+
+
+def _resolve_type(spec: FieldSpec, *, parent_name: str = "") -> type:
     """Map a FieldSpec's type string to an actual Python type.
 
     Supports:
@@ -92,6 +122,12 @@ def _resolve_type(spec: FieldSpec) -> type:
     """
     type_str = spec.type.strip().lower()
 
+    # --- object / dict ---
+    if type_str in {"object", "dict"}:
+        if spec.fields:
+            return _build_nested_model(spec, parent_name=parent_name)
+        return dict
+
     # --- simple scalars ---
     if type_str in _SIMPLE_TYPE_MAP:
         return _SIMPLE_TYPE_MAP[type_str]
@@ -100,6 +136,20 @@ def _resolve_type(spec: FieldSpec) -> type:
     m = _LIST_RE.match(type_str)
     if m:
         inner = m.group(1).lower()
+        if inner == "object":
+            if spec.fields:
+                nested_item_spec = FieldSpec(
+                    name=f"{spec.name}_item",
+                    type="object",
+                    fields=spec.fields,
+                )
+                inner_type = _build_nested_model(
+                    nested_item_spec,
+                    parent_name=parent_name,
+                )
+            else:
+                inner_type = dict
+            return list[inner_type]  # type: ignore[valid-type]
         inner_type = _SIMPLE_TYPE_MAP.get(inner)
         if inner_type is None:
             raise ValueError(
@@ -145,7 +195,7 @@ def compile_schema(spec: SchemaSpec) -> type[BaseModel]:
     field_definitions: dict = {}
 
     for field in spec.fields:
-        py_type = _resolve_type(field)
+        py_type = _resolve_type(field, parent_name=spec.class_name)
 
         # Enhance description for enum fields with allowed values
         desc = field.description or ""
@@ -407,6 +457,8 @@ def _build_dspy_classes():
         - Use 'enum' with enum_values for categorical fields (modality, severity, laterality).
         - Use 'bool' for yes/no or present/absent fields.
         - Use 'list[str]' for multi-value fields (findings, diagnoses).
+        - Use 'list[object]' for repeating structured groups and provide nested
+          field definitions using the "fields" attribute.
         - Use 'int' or 'float' for numeric measurements.
         - Use 'str' only for genuinely free-text content (impressions, narratives).
 

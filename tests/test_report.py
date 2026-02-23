@@ -778,3 +778,50 @@ class TestSchemaSpecToYaml:
         assert "findings" in model.model_fields
         assert "score" in model.model_fields
         assert "tags" in model.model_fields
+
+    def test_list_object_conversion_emits_nested_fields(self):
+        from mosaicx.pipelines.schema_gen import FieldSpec as GenFieldSpec
+        from mosaicx.pipelines.schema_gen import SchemaSpec
+        from mosaicx.schemas.template_compiler import schema_spec_to_template_yaml
+
+        spec = SchemaSpec(
+            class_name="NestedList",
+            fields=[
+                GenFieldSpec(
+                    name="level_findings",
+                    type="list[object]",
+                    description="Per-level findings",
+                    fields=[
+                        GenFieldSpec(name="level", type="str", required=True),
+                        GenFieldSpec(name="severity", type="enum", required=True, enum_values=["mild", "severe"]),
+                    ],
+                ),
+            ],
+        )
+
+        yaml_str = schema_spec_to_template_yaml(spec)
+        assert "name: level_findings" in yaml_str
+        assert "item:" in yaml_str
+        assert "type: object" in yaml_str
+        assert "fields:" in yaml_str
+        assert "name: level" in yaml_str
+        assert "name: severity" in yaml_str
+
+    def test_list_object_without_fields_downgrades_to_string_item(self):
+        from mosaicx.pipelines.schema_gen import FieldSpec as GenFieldSpec
+        from mosaicx.pipelines.schema_gen import SchemaSpec
+        from mosaicx.schemas.template_compiler import compile_template, schema_spec_to_template_yaml
+
+        spec = SchemaSpec(
+            class_name="NoNestedFields",
+            fields=[
+                GenFieldSpec(name="items", type="list[object]", description="Missing nested fields"),
+            ],
+        )
+
+        yaml_str = schema_spec_to_template_yaml(spec)
+        assert "type: list" in yaml_str
+        assert "item:" in yaml_str
+        assert "type: str" in yaml_str
+        model = compile_template(yaml_str)
+        assert "items" in model.model_fields
