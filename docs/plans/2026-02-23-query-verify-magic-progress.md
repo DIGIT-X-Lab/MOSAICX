@@ -42,3 +42,23 @@ Commit: `fabcba1`
 ## Notes
 - Existing unrelated modified/untracked files are present in the worktree and are intentionally left untouched.
 - No placeholder features: each task ships with tests or explicit failure notes.
+
+## Phase 2 (In Progress)
+- [x] `Q2` Replace brittle follow-up suffixing with structured follow-up rewrite from session state (`query_state`, prior turn context, DSPy rewrite + deterministic fallback)
+Status: `done (local)`
+
+- [x] `Q3` Add planner-first tabular execution path (execute ReAct plan directly for `count_rows`, `count_distinct`, `list_values`, `aggregate`, `mixed`)
+Status: `done (local)`
+
+- [x] `T2` Add regression tests for follow-up rewrite + planner-first execution
+Status: `done (local)`
+
+- [ ] `R2` Run focused query tests and fix regressions
+Status: `done`
+Run command: `.venv/bin/pytest -q tests/test_query_engine.py tests/test_query_control_plane.py -m 'not integration'`
+Result: `44 passed, 2 deselected`
+Run command: `.venv/bin/pytest -q tests/test_query_tools.py -m 'not integration'`
+Result: `31 passed`
+
+- [ ] `G2` Commit + push phase-2 improvements
+Status: `pending`

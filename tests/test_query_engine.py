@@ -433,7 +433,7 @@ class TestQueryEngineConversation:
         assert "Ethnicity" in state.get("active_columns", [])
 
     def test_followup_resolution_uses_structured_query_state(self, tmp_path: Path):
-        """Coreference follow-ups should include query_state context when available."""
+        """Coreference follow-ups should be rewritten with explicit state context."""
         from mosaicx.query.engine import QueryEngine
         from mosaicx.query.session import QuerySession
 
@@ -452,9 +452,44 @@ class TestQueryEngineConversation:
             }
         )
         resolved = engine._resolve_followup_question("what are they?")
-        assert "follow-up context:" in resolved
-        assert "active_columns=Ethnicity" in resolved
-        assert "active_sources=cohort.csv" in resolved
+        assert "distinct values of Ethnicity" in resolved
+        assert "cohort.csv" in resolved
+
+    def test_planner_executes_count_values_plan_before_lexical_fallback(self, tmp_path: Path, monkeypatch):
+        """ReAct planner output should run directly and avoid brittle lexical fallback."""
+        from mosaicx.query.engine import QueryEngine
+        from mosaicx.query.session import QuerySession
+
+        f = tmp_path / "cohort.csv"
+        f.write_text("Subject,Sex\nS1,M\nS2,F\nS3,M\n")
+        session = QuerySession(sources=[f])
+        engine = QueryEngine(session=session)
+
+        monkeypatch.setattr(engine, "_should_try_programmatic_first", lambda **kwargs: False)
+        monkeypatch.setattr(
+            engine,
+            "_plan_tabular_question_with_llm",
+            lambda _q: {
+                "intent": "count_distinct",
+                "source": "cohort.csv",
+                "column": "Sex",
+                "operation": None,
+                "include_values": True,
+            },
+        )
+        monkeypatch.setattr(
+            engine,
+            "_build_citations",
+            lambda **kwargs: kwargs.get("seed_hits", []),
+        )
+
+        payload = engine.ask_structured("how many genders are there and what are they?")
+        answer = str(payload["answer"])
+        assert "2 distinct Sex values" in answer
+        assert "M" in answer
+        assert "F" in answer
+        assert payload["deterministic_used"] is True
+        assert payload["deterministic_intent"] in {"count_values", "count_distinct"}
 
     def test_ask_structured_count_values_accepts_table_value_computed_evidence(self, tmp_path: Path, monkeypatch):
         """For count+values questions, value-count evidence should satisfy computed guard."""

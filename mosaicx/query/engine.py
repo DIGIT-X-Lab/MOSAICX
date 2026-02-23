@@ -848,50 +848,115 @@ class QueryEngine:
                 return content
         return None
 
+    def _coerce_string_list(self, value: Any, *, limit: int) -> list[str]:
+        if not isinstance(value, list):
+            return []
+        out: list[str] = []
+        for item in value:
+            text = str(item or "").strip()
+            if not text or text in out:
+                continue
+            out.append(text)
+            if len(out) >= max(1, limit):
+                break
+        return out
+
+    def _rewrite_followup_with_state(
+        self,
+        *,
+        question: str,
+        prior_question: str,
+        prior_answer: str,
+        query_state: dict[str, Any],
+    ) -> str | None:
+        active_columns = self._coerce_string_list(query_state.get("active_columns"), limit=6)
+        active_sources = self._coerce_string_list(query_state.get("active_sources"), limit=4)
+        entities = self._coerce_string_list(query_state.get("entities"), limit=6)
+        metrics = self._coerce_string_list(query_state.get("metrics"), limit=6)
+        timeframe = str(query_state.get("timeframe") or "").strip()
+
+        if not any((active_columns, active_sources, entities, metrics, timeframe)):
+            return None
+
+        state_payload = {
+            "active_columns": active_columns,
+            "active_sources": active_sources,
+            "entities": entities,
+            "metrics": metrics,
+            "timeframe": timeframe,
+        }
+        state_json = json.dumps(state_payload, ensure_ascii=False)
+
+        try:
+            import dspy
+
+            if getattr(dspy.settings, "lm", None) is not None:
+                predictor = dspy.Predict(
+                    "guidance, question, prior_question, prior_answer, state_json -> standalone_question"
+                )
+                guidance = (
+                    "Rewrite follow-up into a standalone question. "
+                    "Use only details from prior turns/state_json. "
+                    "Prefer explicit table/column mentions when available. "
+                    "Return only the rewritten question text."
+                )
+                pred = predictor(
+                    guidance=guidance,
+                    question=question.strip(),
+                    prior_question=self._compact_history_content(prior_question or "", max_chars=220),
+                    prior_answer=self._compact_history_content(prior_answer or "", max_chars=220),
+                    state_json=state_json,
+                )
+                rewritten = " ".join(str(getattr(pred, "standalone_question", "")).split())
+                if rewritten and rewritten != question.strip():
+                    return rewritten
+        except Exception:
+            pass
+
+        first_col = active_columns[0] if active_columns else ""
+        first_source = active_sources[0] if active_sources else ""
+        q = " ".join(question.strip().split())
+        if self._has_value_list_marker(q) and first_col:
+            if first_source:
+                return f"What are the distinct values of {first_col} in {first_source}?"
+            return f"What are the distinct values of {first_col}?"
+        if first_col:
+            if first_source:
+                return f"{q} about {first_col} in {first_source}"
+            return f"{q} about {first_col}"
+        if entities:
+            return f"{q} about {entities[0]}"
+        return None
+
     def _resolve_followup_question(self, question: str) -> str:
         q = question.strip()
         if not self._is_coreference_followup(q):
             return q
-        prev_user = self._latest_user_question()
-        context_parts: list[str] = []
-        if prev_user:
-            prev_user_compact = self._compact_history_content(prev_user, max_chars=180)
-            context_parts.append(f"prior_question={prev_user_compact}")
-        prev_assistant = self._latest_assistant_answer()
-        if prev_assistant:
-            prev_answer_compact = self._compact_history_content(prev_assistant, max_chars=180)
-            context_parts.append(f"prior_answer={prev_answer_compact}")
+
+        query_state = self._session.get_state("query_state", {})
+        if not isinstance(query_state, dict):
+            query_state = {}
 
         state_source = str(self._session.get_state("last_tabular_source", "")).strip()
         state_column = str(self._session.get_state("last_tabular_column", "")).strip()
-        state_intent = str(self._session.get_state("last_intent", "")).strip()
         if state_source:
-            context_parts.append(f"last_table={state_source}")
+            query_state.setdefault("active_sources", [])
+            if isinstance(query_state.get("active_sources"), list):
+                query_state["active_sources"] = [state_source, *query_state["active_sources"]]
         if state_column:
-            context_parts.append(f"last_column={state_column}")
-        if state_intent:
-            context_parts.append(f"last_intent={state_intent}")
-        query_state = self._session.get_state("query_state", {})
-        if isinstance(query_state, dict):
-            active_sources = query_state.get("active_sources")
-            if isinstance(active_sources, list) and active_sources:
-                context_parts.append(
-                    "active_sources=" + ",".join(str(v) for v in active_sources[:3])
-                )
-            active_columns = query_state.get("active_columns")
-            if isinstance(active_columns, list) and active_columns:
-                context_parts.append(
-                    "active_columns=" + ",".join(str(v) for v in active_columns[:5])
-                )
-            entities = query_state.get("entities")
-            if isinstance(entities, list) and entities:
-                context_parts.append(
-                    "entities=" + ",".join(str(v) for v in entities[:6])
-                )
+            query_state.setdefault("active_columns", [])
+            if isinstance(query_state.get("active_columns"), list):
+                query_state["active_columns"] = [state_column, *query_state["active_columns"]]
 
-        if not context_parts:
-            return q
-        return f"{q} (follow-up context: {'; '.join(context_parts)})"
+        rewritten = self._rewrite_followup_with_state(
+            question=q,
+            prior_question=self._latest_user_question() or "",
+            prior_answer=self._latest_assistant_answer() or "",
+            query_state=query_state,
+        )
+        if rewritten:
+            return rewritten
+        return q
 
     def _parse_json_object(self, raw: str) -> dict[str, Any] | None:
         text = str(raw or "").strip()
@@ -1171,6 +1236,214 @@ class QueryEngine:
             "include_values": bool(plan.include_values),
         }
 
+    def _execute_planned_tabular_answer(
+        self,
+        *,
+        question: str,
+        plan: dict[str, Any],
+    ) -> tuple[str, list[dict[str, Any]], str] | None:
+        if not plan:
+            return None
+
+        from mosaicx.query.tools import (
+            compute_table_stat,
+            list_distinct_values,
+        )
+
+        source = str(plan.get("source") or "").strip()
+        if not source or source not in self._session.data:
+            return None
+        intent = str(plan.get("intent") or "").strip().lower()
+        column = str(plan.get("column") or "").strip()
+        operation = str(plan.get("operation") or "").strip().lower() or None
+        include_values = bool(plan.get("include_values"))
+
+        if intent == "schema":
+            return self._try_deterministic_schema_answer(question)
+
+        q = " ".join(question.lower().split())
+        wants_count = intent in {"count_rows", "count_distinct", "mixed"} or (
+            ("how many" in q) or ("number of" in q) or ("count" in q)
+        )
+        wants_distribution = self._is_distribution_request(question)
+        wants_values = (
+            include_values
+            or intent in {"list_values", "mixed"}
+            or wants_distribution
+            or self._has_value_list_marker(question)
+            or self._is_count_plus_values_request(question)
+        )
+
+        seed_hits: list[dict[str, Any]] = []
+        if column:
+            seed_hits.append(
+                {
+                    "source": source,
+                    "column": column,
+                    "role": "llm_planned",
+                    "score": 96,
+                    "snippet": f"LLM planner selected column: {column}",
+                    "evidence_type": "table_column",
+                }
+            )
+
+        if intent == "count_rows":
+            row_count = int(len(self._session.data[source]))
+            seed_hits.append(
+                {
+                    "source": source,
+                    "snippet": f"Computed row_count from {row_count} rows: {row_count} (engine=pandas)",
+                    "score": 88,
+                    "evidence_type": "table_stat",
+                    "operation": "row_count",
+                    "column": "__rows__",
+                    "value": row_count,
+                    "backend": "pandas",
+                }
+            )
+            self._session.set_state(
+                last_tabular_source=source,
+                last_tabular_column="__rows__",
+                last_intent="count_rows",
+            )
+            return f"There are {row_count} rows in {source}.", self._merge_hits(seed_hits, max_hits=16), "count_rows"
+
+        if intent == "aggregate":
+            if operation not in {"mean", "median", "min", "max", "sum", "std"}:
+                operation = self._detect_aggregate_operation(question)
+            if operation not in {"mean", "median", "min", "max", "sum", "std"} or not column:
+                return None
+            try:
+                agg_rows = compute_table_stat(
+                    source,
+                    data=self._session.data,
+                    column=column,
+                    operation=operation,
+                )
+            except Exception:
+                return None
+            if not agg_rows:
+                return None
+            row = agg_rows[0]
+            value = str(row.get("value"))
+            backend = str(row.get("backend") or "table_engine")
+            row_count = row.get("row_count")
+            non_null = row.get("non_null")
+            seed_hits.append(
+                {
+                    "source": source,
+                    "snippet": (
+                        f"Computed {operation} of {column} from {row_count} rows "
+                        f"(non-null {non_null}): {value} (engine={backend})"
+                    ),
+                    "score": 90,
+                    "evidence_type": "table_stat",
+                    "operation": operation,
+                    "column": column,
+                    "value": row.get("value"),
+                    "backend": backend,
+                }
+            )
+            self._session.set_state(
+                last_tabular_source=source,
+                last_tabular_column=column,
+                last_intent="aggregate",
+            )
+            return f"{operation} of {column}: {value}.", self._merge_hits(seed_hits, max_hits=16), "aggregate"
+
+        if intent not in {"count_distinct", "list_values", "mixed"} or not column:
+            return None
+
+        try:
+            distinct_rows = list_distinct_values(
+                source,
+                data=self._session.data,
+                column=column,
+                limit=12,
+            )
+        except Exception:
+            distinct_rows = []
+
+        count_value: str | None = None
+        try:
+            count_rows = compute_table_stat(
+                source,
+                data=self._session.data,
+                column=column,
+                operation="nunique",
+            )
+        except Exception:
+            count_rows = []
+        if count_rows:
+            row = count_rows[0]
+            count_value = str(row.get("value"))
+            backend = str(row.get("backend") or "table_engine")
+            seed_hits.append(
+                {
+                    "source": source,
+                    "snippet": (
+                        f"Computed unique_count of {column} from {row.get('row_count')} rows: "
+                        f"{count_value} (engine={backend})"
+                    ),
+                    "score": 90,
+                    "evidence_type": "table_stat",
+                    "operation": "nunique",
+                    "column": column,
+                    "value": row.get("value"),
+                    "backend": backend,
+                }
+            )
+        if distinct_rows:
+            for row in distinct_rows:
+                backend = str(row.get("backend") or "table_engine")
+                seed_hits.append(
+                    {
+                        "source": source,
+                        "snippet": (
+                            f"Distinct {column}: {row.get('value')} "
+                            f"(count={row.get('count')}, engine={backend})"
+                        ),
+                        "score": 88,
+                        "evidence_type": "table_value",
+                        "operation": "distinct_values",
+                        "column": column,
+                        "value": row.get("value"),
+                        "count": int(row.get("count") or 0),
+                        "backend": backend,
+                    }
+                )
+
+        if count_value is None and distinct_rows:
+            count_value = str(len(distinct_rows))
+        if count_value is None and not distinct_rows:
+            return None
+
+        if wants_distribution and distinct_rows:
+            distribution_preview = ", ".join(
+                f"{r.get('value')}={int(r.get('count') or 0)}"
+                for r in distinct_rows[:10]
+            )
+            answer = f"{column} distribution ({count_value} groups): {distribution_preview}."
+            deterministic_intent = "count_values"
+        elif wants_count and wants_values and distinct_rows:
+            values_preview = ", ".join(str(r.get("value")) for r in distinct_rows[:8])
+            answer = f"There are {count_value} distinct {column} values: {values_preview}."
+            deterministic_intent = "count_values"
+        elif wants_values and distinct_rows:
+            values_preview = ", ".join(str(r.get("value")) for r in distinct_rows[:12])
+            answer = f"Distinct {column} values: {values_preview}."
+            deterministic_intent = "list_values"
+        else:
+            answer = f"There are {count_value} distinct {column} values."
+            deterministic_intent = "count_distinct"
+
+        self._session.set_state(
+            last_tabular_source=source,
+            last_tabular_column=column,
+            last_intent=deterministic_intent,
+        )
+        return answer, self._merge_hits(seed_hits, max_hits=16), deterministic_intent
+
     def _resolve_tabular_target_with_llm(self, question: str) -> tuple[str, str] | None:
         """Use configured LM to resolve the best table/column for a tabular question."""
         plan = self._plan_tabular_question_with_llm(question)
@@ -1209,6 +1482,13 @@ class QueryEngine:
         )
 
         llm_plan = self._plan_tabular_question_with_llm(resolved_q)
+        if llm_plan is not None:
+            planned = self._execute_planned_tabular_answer(
+                question=resolved_q,
+                plan=llm_plan,
+            )
+            if planned is not None:
+                return planned
         wants_count = route.wants_count or ("how many" in q) or ("number of" in q) or ("count" in q)
         wants_values = (
             route.wants_values
