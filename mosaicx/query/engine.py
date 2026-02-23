@@ -49,6 +49,24 @@ _DELTA_QUESTION_MARKERS = (
     "went up",
     "went down",
 )
+_COREFERENCE_MARKERS = {
+    "they",
+    "them",
+    "those",
+    "that",
+    "it",
+    "this",
+    "these",
+    "ones",
+}
+_VALUE_LIST_MARKERS = (
+    "what are they",
+    "which ones",
+    "list them",
+    "what are those",
+    "what are the values",
+    "what are the categories",
+)
 _QUERY_STOPWORDS = {
     "the", "a", "an", "and", "or", "of", "in", "on", "to", "for", "with",
     "is", "are", "was", "were", "be", "been", "being", "what", "which",
@@ -220,6 +238,7 @@ class QueryEngine:
             compute_table_stat,
             get_document,
             get_table_schema,
+            list_distinct_values,
             list_tables,
             profile_table,
             run_table_sql,
@@ -241,9 +260,9 @@ class QueryEngine:
 
         # Build conversation context
         history_lines = []
-        for turn in self._session.conversation:
+        for turn in self._session.conversation[-8:]:
             role = turn["role"]
-            content = turn["content"]
+            content = self._compact_history_content(turn["content"], max_chars=360)
             history_lines.append(f"{role}: {content}")
         history_text = "\n".join(history_lines) if history_lines else "(new session)"
 
@@ -304,6 +323,16 @@ class QueryEngine:
                 max_columns=max_columns,
             )
 
+        def _list_distinct_values(name: str, column: str, where: str = "", limit: int = 25) -> list[dict[str, Any]]:
+            """List distinct values for a column with counts."""
+            return list_distinct_values(
+                name,
+                data=data,
+                column=column,
+                where=where,
+                limit=limit,
+            )
+
         def _suggest_table_columns(question: str, top_k: int = 8) -> list[dict[str, Any]]:
             """Suggest likely columns for a question across loaded tables."""
             return suggest_table_columns(
@@ -347,6 +376,7 @@ class QueryEngine:
             dspy.Tool(_list_tables, name="list_tables", desc="List loaded tabular sources with row/column counts."),
             dspy.Tool(_table_schema, name="get_table_schema", desc="Get detailed schema for a table source."),
             dspy.Tool(_table_profile, name="profile_table", desc="Create schema-agnostic profile with role inference and summary stats."),
+            dspy.Tool(_list_distinct_values, name="list_distinct_values", desc="List distinct values in a column with counts."),
             dspy.Tool(_suggest_table_columns, name="suggest_table_columns", desc="Suggest likely columns for the current question."),
             dspy.Tool(_table_rows, name="sample_table_rows", desc="Sample rows from a table source."),
             dspy.Tool(_table_stat, name="compute_table_stat", desc="Compute statistics (mean/median/min/max/count/etc.) for a column."),
@@ -399,6 +429,8 @@ class QueryEngine:
             "Use only grounded evidence from retrieval/tool outputs. "
             "If evidence exists, answer directly and do not claim sources are unavailable. "
             "For CSV/Parquet/Excel questions, inspect schema, profile tables, and compute stats with table tools before answering. "
+            "For category listing questions, use list_distinct_values and include concrete values. "
+            "Resolve follow-up pronouns (e.g., 'what are they') using recent user turns. "
             "Use suggest_table_columns when column names are unfamiliar. "
             "For complex cohort questions, use run_table_sql and cite computed outputs. "
             "For subject/patient counts, use deterministic distinct counts (nunique), not sampled rows. "
@@ -476,6 +508,8 @@ class QueryEngine:
                 rank += 14
             elif evidence_type == "table_stat":
                 rank += 30
+            elif evidence_type == "table_value":
+                rank += 26
             elif evidence_type == "table_column":
                 rank += 18
             return rank
@@ -542,6 +576,184 @@ class QueryEngine:
         if token.endswith("s") and len(token) > 3:
             return token[:-1]
         return token
+
+    def _compact_history_content(self, text: str, *, max_chars: int = 360) -> str:
+        value = " ".join(str(text).split())
+        if len(value) <= max_chars:
+            return value
+        clipped = value[: max_chars - 1].rstrip()
+        if " " in clipped:
+            clipped = clipped.rsplit(" ", 1)[0]
+        return clipped + "…"
+
+    def _is_coreference_followup(self, question: str) -> bool:
+        q = " ".join(question.lower().split())
+        q_terms = {
+            self._normalize_term(t)
+            for t in re.findall(r"[a-z0-9]+", q)
+            if len(t) >= 2
+        }
+        if any(marker in q for marker in _VALUE_LIST_MARKERS):
+            return True
+        return bool(q_terms & _COREFERENCE_MARKERS) and len(q_terms) <= 10
+
+    def _latest_user_question(self) -> str | None:
+        for turn in reversed(self._session.conversation):
+            if str(turn.get("role") or "").strip().lower() != "user":
+                continue
+            content = str(turn.get("content") or "").strip()
+            if content:
+                return content
+        return None
+
+    def _resolve_followup_question(self, question: str) -> str:
+        q = question.strip()
+        if not self._is_coreference_followup(q):
+            return q
+        prev_user = self._latest_user_question()
+        if not prev_user:
+            return q
+        prev_compact = self._compact_history_content(prev_user, max_chars=220)
+        return f"{q} (follow-up context: {prev_compact})"
+
+    def _has_value_list_marker(self, question: str) -> bool:
+        q = " ".join(question.lower().split())
+        return any(marker in q for marker in _VALUE_LIST_MARKERS)
+
+    def _try_deterministic_tabular_answer(
+        self,
+        question: str,
+    ) -> tuple[str, list[dict[str, Any]]] | None:
+        if not self._has_tabular_sources():
+            return None
+
+        from mosaicx.query.tools import (
+            compute_table_stat,
+            list_distinct_values,
+            suggest_table_columns,
+        )
+
+        q_raw = question.strip()
+        q = " ".join(q_raw.lower().split())
+        resolved_q = self._resolve_followup_question(q_raw)
+        wants_count = ("how many" in q) or ("number of" in q) or ("count" in q)
+        wants_values = self._has_value_list_marker(q_raw)
+        wants_row_count = bool(
+            {
+                self._normalize_term(t)
+                for t in re.findall(r"[a-z0-9]+", q)
+            }
+            & {"row", "record", "entry", "sample", "observation"}
+        )
+
+        if not wants_count and not wants_values:
+            return None
+
+        column_hits = suggest_table_columns(
+            resolved_q,
+            data=self._session.data,
+            top_k=6,
+        )
+        if not column_hits:
+            return None
+        top = column_hits[0]
+        source = str(top.get("source") or "")
+        column = str(top.get("column") or "")
+        if not source or not column:
+            return None
+
+        seed_hits: list[dict[str, Any]] = [top]
+        distinct_rows: list[dict[str, Any]] = []
+        count_value: str | None = None
+
+        if wants_count:
+            if wants_row_count and source in self._session.data:
+                row_count = int(len(self._session.data[source]))
+                count_value = str(row_count)
+                seed_hits.append(
+                    {
+                        "source": source,
+                        "snippet": f"Computed row_count from {row_count} rows: {row_count} (engine=pandas)",
+                        "score": 82,
+                        "evidence_type": "table_stat",
+                        "operation": "row_count",
+                        "column": "__rows__",
+                        "value": row_count,
+                        "backend": "pandas",
+                    }
+                )
+            else:
+                count_rows = compute_table_stat(
+                    source,
+                    data=self._session.data,
+                    column=column,
+                    operation="nunique",
+                )
+                if count_rows:
+                    row = count_rows[0]
+                    backend = str(row.get("backend") or "table_engine")
+                    count_value = str(row.get("value"))
+                    seed_hits.append(
+                        {
+                            "source": source,
+                            "snippet": (
+                                f"Computed unique_count of {column} from {row.get('row_count')} rows: "
+                                f"{count_value} (engine={backend})"
+                            ),
+                            "score": 84,
+                            "evidence_type": "table_stat",
+                            "operation": "nunique",
+                            "column": column,
+                            "value": row.get("value"),
+                            "backend": backend,
+                        }
+                    )
+
+        if wants_values or (wants_count and ("male" in q or "female" in q)):
+            distinct_rows = list_distinct_values(
+                source,
+                data=self._session.data,
+                column=column,
+                limit=12,
+            )
+            for row in distinct_rows:
+                backend = str(row.get("backend") or "table_engine")
+                seed_hits.append(
+                    {
+                        "source": source,
+                        "snippet": (
+                            f"Distinct {column}: {row.get('value')} "
+                            f"(count={row.get('count')}, engine={backend})"
+                        ),
+                        "score": 84,
+                        "evidence_type": "table_value",
+                        "operation": "distinct_values",
+                        "column": column,
+                        "value": row.get("value"),
+                        "count": int(row.get("count") or 0),
+                        "backend": backend,
+                    }
+                )
+
+        if not seed_hits:
+            return None
+
+        if wants_count and distinct_rows:
+            values_preview = ", ".join(str(r.get("value")) for r in distinct_rows[:8])
+            if count_value is None:
+                count_value = str(len(distinct_rows))
+            answer = (
+                f"There are {count_value} distinct {column} values: {values_preview}."
+            )
+        elif wants_values and distinct_rows:
+            values_preview = ", ".join(str(r.get("value")) for r in distinct_rows[:12])
+            answer = f"Distinct {column} values: {values_preview}."
+        elif wants_count and count_value is not None:
+            answer = f"There are {count_value} distinct {column} values."
+        else:
+            return None
+
+        return answer, self._merge_hits(seed_hits, max_hits=16)
 
     def _salient_terms(self, text: str, *, min_len: int = 3) -> set[str]:
         return {
@@ -826,39 +1038,69 @@ class QueryEngine:
         rescue_used = False
         rescue_reason: str | None = None
 
-        try:
-            answer, seed_hits = self._run_query_once(question.strip())
-        except Exception as exc:
-            from mosaicx.query.tools import search_documents
+        resolved_question = self._resolve_followup_question(question.strip())
 
-            fallback_used = True
-            fallback_reason = f"{type(exc).__name__}: {exc}"
-            seed_hits = search_documents(
-                question.strip(),
-                documents=self._documents,
-                top_k=max(3, top_k_citations),
-            )
-            if seed_hits:
-                top = seed_hits[0]
-                snippet = " ".join(str(top.get("snippet") or "").split())
-                answer = (
-                    f"LLM unavailable. Best matching evidence is from "
-                    f"{top.get('source', 'unknown')}: {snippet[:220]}"
+        deterministic = self._try_deterministic_tabular_answer(resolved_question)
+        if deterministic is not None:
+            answer, seed_hits = deterministic
+        else:
+            try:
+                answer, seed_hits = self._run_query_once(resolved_question)
+            except Exception as exc:
+                from mosaicx.query.tools import (
+                    analyze_table_question,
+                    search_documents,
+                    search_tables,
+                    suggest_table_columns,
                 )
-            else:
-                answer = (
-                    "LLM unavailable. Could not compute a full answer; use the evidence table below."
+
+                fallback_used = True
+                fallback_reason = f"{type(exc).__name__}: {exc}"
+                text_hits = search_documents(
+                    resolved_question,
+                    documents=self._documents,
+                    top_k=max(3, top_k_citations),
                 )
+                table_hits = search_tables(
+                    resolved_question,
+                    data=self._session.data,
+                    top_k=max(3, top_k_citations),
+                )
+                computed_hits = analyze_table_question(
+                    resolved_question,
+                    data=self._session.data,
+                    top_k=max(3, top_k_citations),
+                )
+                column_hits = suggest_table_columns(
+                    resolved_question,
+                    data=self._session.data,
+                    top_k=max(3, top_k_citations),
+                )
+                seed_hits = self._merge_hits(
+                    [*computed_hits, *column_hits, *table_hits, *text_hits],
+                    max_hits=max(4, top_k_citations * 2),
+                )
+                if seed_hits:
+                    top = seed_hits[0]
+                    snippet = " ".join(str(top.get("snippet") or "").split())
+                    answer = (
+                        f"LLM unavailable. Best matching evidence is from "
+                        f"{top.get('source', 'unknown')}: {snippet[:220]}"
+                    )
+                else:
+                    answer = (
+                        "LLM unavailable. Could not compute a full answer; use the evidence table below."
+                    )
 
         citations = self._build_citations(
-            question=question.strip(),
+            question=resolved_question,
             answer=answer,
             seed_hits=seed_hits,
             top_k=max(1, top_k_citations),
         )
         if citations:
             reconciled = self._reconcile_answer_with_evidence(
-                question=question.strip(),
+                question=resolved_question,
                 draft_answer=answer,
                 citations=citations,
             )
@@ -879,30 +1121,30 @@ class QueryEngine:
                 rescue_used = True
                 rescue_reason = "non_answer_with_evidence"
                 citations = self._build_citations(
-                    question=question.strip(),
+                    question=resolved_question,
                     answer=answer,
                     seed_hits=seed_hits,
                     top_k=max(1, top_k_citations),
                 )
 
-        requires_computed = self._has_tabular_sources() and self._requires_computed_evidence(question.strip())
+        requires_computed = self._has_tabular_sources() and self._requires_computed_evidence(resolved_question)
         if requires_computed and not self._has_computed_citations(citations):
             from mosaicx.query.tools import analyze_table_question
 
             computed_hits = analyze_table_question(
-                question.strip(),
+                resolved_question,
                 data=self._session.data,
                 top_k=max(3, top_k_citations),
             )
             if computed_hits:
                 citations = self._build_citations(
-                    question=question.strip(),
+                    question=resolved_question,
                     answer=answer,
                     seed_hits=[*computed_hits, *seed_hits],
                     top_k=max(1, top_k_citations),
                 )
                 reconciled = self._reconcile_answer_with_evidence(
-                    question=question.strip(),
+                    question=resolved_question,
                     draft_answer=answer,
                     citations=citations,
                 )
@@ -919,7 +1161,7 @@ class QueryEngine:
                 rescue_used = True
                 rescue_reason = "missing_computed_evidence"
 
-        confidence = self._citation_confidence(question.strip(), answer, citations)
+        confidence = self._citation_confidence(resolved_question, answer, citations)
 
         self._session.add_turn("user", question.strip())
         self._session.add_turn("assistant", answer)

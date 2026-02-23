@@ -3360,6 +3360,7 @@ def query(
                 "text": "text_match",
                 "table_row": "row_match",
                 "table_stat": "computed",
+                "table_value": "value_count",
                 "table_column": "schema_match",
             }
 
@@ -3377,8 +3378,9 @@ def query(
                 evidence_type = str(citation.get("evidence_type") or "text")
                 type_priority = {
                     "table_stat": 0,
-                    "table_row": 1,
-                    "text": 2,
+                    "table_value": 1,
+                    "table_row": 2,
+                    "text": 3,
                 }.get(evidence_type, 3)
                 strength = int(citation.get("rank", citation.get("score", 0)) or 0)
                 source = str(citation.get("source") or "")

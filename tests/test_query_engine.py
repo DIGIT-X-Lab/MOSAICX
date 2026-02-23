@@ -195,6 +195,24 @@ class TestQueryEngineConversation:
         assert payload["rescue_reason"] == "non_answer_with_evidence"
         assert "Timeline from grounded evidence" in payload["answer"]
 
+    def test_ask_structured_deterministic_tabular_count_and_values(self, tmp_path: Path):
+        """Tabular count+value queries should resolve deterministically without LM dependency."""
+        from mosaicx.query.engine import QueryEngine
+        from mosaicx.query.session import QuerySession
+
+        f = tmp_path / "cohort.csv"
+        f.write_text("Subject,Ethnicity,Sex\nS1,Japanese,M\nS2,Japanese,F\nS3,German,M\n")
+        session = QuerySession(sources=[f])
+        engine = QueryEngine(session=session)
+
+        payload = engine.ask_structured("how many ethnicities are there and what are they?")
+        answer = str(payload["answer"])
+        assert "2 distinct Ethnicity values" in answer
+        assert "Japanese" in answer
+        assert "German" in answer
+        assert any(c.get("evidence_type") == "table_stat" for c in payload["citations"])
+        assert any(c.get("evidence_type") == "table_value" for c in payload["citations"])
+
     def test_analytic_guard_not_applied_for_text_only_sessions(self, tmp_path: Path, monkeypatch):
         """Numeric fail-closed guard should not trigger for text-only sources."""
         from mosaicx.query.engine import QueryEngine

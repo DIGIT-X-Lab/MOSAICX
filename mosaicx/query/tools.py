@@ -231,11 +231,22 @@ def _is_entity_count_question(question: str) -> bool:
 
 def _is_row_count_question(question: str) -> bool:
     q_terms = _question_terms(question)
-    q_norm = " ".join(question.lower().split())
     asks_rows = bool(q_terms & _ROW_COUNT_TERMS)
-    asks_how_many = "how many" in q_norm or "number of" in q_norm
-    asks_entities = bool(q_terms & _ENTITY_COUNT_TERMS)
-    return asks_rows or (asks_how_many and not asks_entities)
+    return asks_rows
+
+
+def _wants_distinct_values(question: str) -> bool:
+    q = " ".join(question.lower().split())
+    markers = (
+        "what are they",
+        "which are they",
+        "which ones",
+        "list them",
+        "what are those",
+        "what are the values",
+        "what are the categories",
+    )
+    return any(m in q for m in markers)
 
 
 def infer_table_roles(
@@ -814,6 +825,127 @@ def _compute_table_stat_pandas(
     ]
 
 
+def _list_distinct_values_duckdb(
+    name: str,
+    *,
+    df: Any,
+    column: str,
+    where: str,
+    limit: int,
+) -> list[dict[str, Any]]:
+    import duckdb
+
+    col = _resolve_column(df, column)
+    table_name = "_mosaicx_table"
+    where_sql = ""
+    if where.strip():
+        where_sql = f" AND ({where.strip()})"
+    safe_limit = max(1, min(int(limit), 100))
+
+    query = (
+        f"SELECT {_sql_ident(col)} AS value, COUNT(*) AS count "
+        f"FROM {table_name} "
+        f"WHERE {_sql_ident(col)} IS NOT NULL{where_sql} "
+        f"GROUP BY {_sql_ident(col)} "
+        f"ORDER BY count DESC, value ASC "
+        f"LIMIT {safe_limit}"
+    )
+    with duckdb.connect(database=":memory:") as conn:
+        conn.register(table_name, df)
+        try:
+            rows = conn.execute(query).fetchall()
+        except Exception as exc:
+            raise ValueError(f"Failed to list distinct values: {exc}") from exc
+
+    out: list[dict[str, Any]] = []
+    for val, cnt in rows:
+        out.append(
+            {
+                "source": name,
+                "column": col,
+                "value": _format_scalar(val),
+                "count": int(cnt or 0),
+                "operation": "distinct_values",
+                "backend": "duckdb",
+            }
+        )
+    return out
+
+
+def _list_distinct_values_pandas(
+    name: str,
+    *,
+    df: Any,
+    column: str,
+    where: str,
+    limit: int,
+) -> list[dict[str, Any]]:
+    working = df
+    if where.strip():
+        try:
+            working = working.query(where, engine="python")
+        except Exception as exc:
+            raise ValueError(f"Invalid where expression: {exc}") from exc
+
+    col = _resolve_column(working, column)
+    safe_limit = max(1, min(int(limit), 100))
+    vc = working[col].dropna().astype(str).value_counts().head(safe_limit)
+    out: list[dict[str, Any]] = []
+    for val, cnt in vc.items():
+        out.append(
+            {
+                "source": name,
+                "column": col,
+                "value": _format_scalar(val),
+                "count": int(cnt),
+                "operation": "distinct_values",
+                "backend": "pandas",
+            }
+        )
+    return out
+
+
+def list_distinct_values(
+    name: str,
+    *,
+    data: dict[str, Any],
+    column: str,
+    where: str = "",
+    limit: int = 25,
+) -> list[dict[str, Any]]:
+    """List distinct non-null values for a column with counts."""
+    df = _resolve_table(name, data=data)
+    try:
+        return _list_distinct_values_duckdb(
+            name,
+            df=df,
+            column=column,
+            where=where,
+            limit=limit,
+        )
+    except ImportError:
+        pass
+    except Exception as duckdb_exc:
+        try:
+            return _list_distinct_values_pandas(
+                name,
+                df=df,
+                column=column,
+                where=where,
+                limit=limit,
+            )
+        except Exception:
+            raise duckdb_exc
+
+    return _list_distinct_values_pandas(
+        name,
+        df=df,
+        column=column,
+        where=where,
+        limit=limit,
+    )
+
+
 def compute_table_stat(
     name: str,
     *,
@@ -956,9 +1088,41 @@ def analyze_table_question(
             )
             continue
 
+        if _wants_distinct_values(question):
+            try:
+                rows = list_distinct_values(
+                    name,
+                    data=data,
+                    column=selected_col,
+                    limit=max(6, min(12, top_k * 2)),
+                )
+            except Exception:
+                rows = []
+            if rows:
+                backend = str(rows[0].get("backend") or "table_engine")
+                for row in rows:
+                    out.append(
+                        {
+                            "source": name,
+                            "snippet": (
+                                f"Distinct {selected_col}: {row.get('value')} "
+                                f"(count={row.get('count')}, engine={backend})"
+                            ),
+                            "score": 84,
+                            "evidence_type": "table_value",
+                            "operation": "distinct_values",
+                            "column": selected_col,
+                            "value": row.get("value"),
+                            "count": int(row.get("count") or 0),
+                            "backend": backend,
+                        }
+                    )
+                continue
+
         op_to_run = op
         if op == "count" and (
             _should_use_distinct_count(question, selected_col)
+            or ("how many" in question.lower() and bool(_question_terms(question) & set(_extract_terms(selected_col))))
             or (_is_entity_count_question(question) and selected_col in id_candidates)
         ):
             op_to_run = "nunique"
