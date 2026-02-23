@@ -183,3 +183,26 @@ Status: `partial (env dependency)`
 Run command: `.venv/bin/pytest -q tests/test_query_engine.py`
 Result: `50 passed, 2 errors`
 Note: `ModuleNotFoundError: pydantic_settings` in integration fixture setup.
+
+## Phase 9 (Completed)
+- [x] `Q13` Harden schema intent for tabular query (typo-tolerant `column` detection + explicit `schema_count` answers)
+Status: `done (local)`
+
+- [x] `Q14` Add schema-context follow-up handling (`how many are there?` after schema turn -> count columns)
+Status: `done (local)`
+
+- [x] `Q15` Prevent schema drift from stale active column state (clear active columns on schema turns; avoid forced carry-forward)
+Status: `done (local)`
+
+- [x] `Q16` Tighten SQL-first gating for ambiguous count prompts and add schema truth guard override
+Status: `done (local)`
+
+- [x] `T9` Add regressions for schema typo/count follow-up/stale-column state reset
+Status: `done (local)`
+
+- [x] `R9` Run focused query suites after phase-9 changes
+Status: `done`
+Run command: `.venv/bin/pytest -q tests/test_query_engine.py -m 'not integration'`
+Result: `54 passed, 2 deselected`
+Run command: `.venv/bin/pytest -q tests/test_query_control_plane.py -m 'not integration'`
+Result: `2 passed`

@@ -6,6 +6,7 @@ deterministic data-plane execution in ``mosaicx.query.tools``.
 
 from __future__ import annotations
 
+import difflib
 import re
 from dataclasses import dataclass
 from typing import Any
@@ -30,6 +31,20 @@ _SCHEMA_MARKERS = (
     "list columns",
     "what are the columns",
 )
+_SCHEMA_ENTITY_HINTS = {
+    "column",
+    "columns",
+    "colum",
+    "colums",
+    "field",
+    "fields",
+    "header",
+    "headers",
+    "feature",
+    "features",
+    "variable",
+    "variables",
+}
 _COUNT_MARKERS = ("how many", "number of", "count")
 _DISTRIBUTION_MARKERS = ("distribution", "breakdown", "split by")
 _AGG_OPERATION_MARKERS: tuple[tuple[str, str], ...] = (
@@ -95,7 +110,7 @@ class IntentRouter:
     ) -> IntentDecision:
         q = " ".join(question.lower().split())
 
-        wants_schema = any(marker in q for marker in _SCHEMA_MARKERS)
+        wants_schema = self._wants_schema(q)
         wants_count = self._wants_count(q)
         wants_values = self._wants_values(q, wants_count=wants_count)
         wants_distribution = self._wants_distribution(q)
@@ -159,6 +174,46 @@ class IntentRouter:
 
     def _wants_count(self, q: str) -> bool:
         return any(marker in q for marker in _COUNT_MARKERS)
+
+    def _looks_like_schema_token(self, token: str) -> bool:
+        value = " ".join(str(token).lower().split())
+        if not value:
+            return False
+        if value in _SCHEMA_ENTITY_HINTS:
+            return True
+        column_like = {"column", "columns", "colum", "colums"}
+        close = difflib.get_close_matches(value, list(column_like), n=1, cutoff=0.8)
+        return bool(close)
+
+    def _wants_schema(self, q: str) -> bool:
+        if any(marker in q for marker in _SCHEMA_MARKERS):
+            return True
+        tokens = re.findall(r"[a-z0-9]+", q)
+        if not any(self._looks_like_schema_token(t) for t in tokens):
+            return False
+        schema_context_terms = {
+            "name",
+            "names",
+            "list",
+            "all",
+            "different",
+            "header",
+            "headers",
+            "field",
+            "fields",
+            "feature",
+            "features",
+            "variable",
+            "variables",
+            "count",
+            "number",
+            "many",
+            "total",
+            "what",
+            "which",
+            "how",
+        }
+        return bool(set(tokens) & schema_context_terms)
 
     def _wants_values(self, q: str, *, wants_count: bool) -> bool:
         if any(marker in q for marker in _VALUE_MARKERS):

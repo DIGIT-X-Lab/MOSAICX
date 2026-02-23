@@ -11,6 +11,7 @@ even when dspy is not fully configured.
 
 from __future__ import annotations
 
+import difflib
 import json
 import re
 from typing import TYPE_CHECKING, Any
@@ -86,6 +87,20 @@ _SCHEMA_QUESTION_MARKERS = (
     "list columns",
     "what are the columns",
 )
+_SCHEMA_ENTITY_HINTS = {
+    "column",
+    "columns",
+    "colum",
+    "colums",
+    "field",
+    "fields",
+    "header",
+    "headers",
+    "feature",
+    "features",
+    "variable",
+    "variables",
+}
 _NUMERIC_STAT_MARKERS = (
     "average",
     "mean",
@@ -994,6 +1009,18 @@ class QueryEngine:
 
     def _resolve_followup_question(self, question: str) -> str:
         q = question.strip()
+        last_intent = str(self._session.get_state("last_intent", "")).strip().lower()
+        state_source = str(self._session.get_state("last_tabular_source", "")).strip()
+        if last_intent in {"schema", "schema_count"}:
+            if self._is_ambiguous_count_question(q):
+                if state_source:
+                    return f"How many columns are there in {state_source}?"
+                return "How many columns are there?"
+            if self._has_value_list_marker(q) and self._is_coreference_followup(q):
+                if state_source:
+                    return f"What are the column names in {state_source}?"
+                return "What are the column names?"
+
         if not self._is_coreference_followup(q):
             return q
 
@@ -1001,7 +1028,6 @@ class QueryEngine:
         if not isinstance(query_state, dict):
             query_state = {}
 
-        state_source = str(self._session.get_state("last_tabular_source", "")).strip()
         state_column = str(self._session.get_state("last_tabular_column", "")).strip()
         if state_source:
             query_state.setdefault("active_sources", [])
@@ -1056,14 +1082,17 @@ class QueryEngine:
 
         sources = sorted({str(c.get("source") or "").strip() for c in citations if c.get("source")})
         columns = sorted({str(c.get("column") or "").strip() for c in citations if c.get("column")})
-        if not columns:
+        if not columns and route.intent != "schema":
             state_col = str(self._session.get_state("last_tabular_column", "")).strip()
             if state_col:
                 columns = [state_col]
         values = sorted({str(c.get("value") or "").strip() for c in citations if c.get("value") not in {None, ""}})
         if sources:
             state["active_sources"] = sources[:6]
-        if columns:
+        if route.intent == "schema":
+            state["active_columns"] = []
+            state["schema_focus"] = True
+        elif columns:
             state["active_columns"] = columns[:10]
         state["last_route_intent"] = route.intent
         if values:
@@ -1127,13 +1156,78 @@ class QueryEngine:
             or re.search(r"\band\b[^?]{0,160}\blist\b", q)
         )
 
+    def _looks_like_schema_token(self, token: str) -> bool:
+        value = self._normalize_term(str(token).strip().lower())
+        if not value:
+            return False
+        if value in _SCHEMA_ENTITY_HINTS:
+            return True
+        column_like = {"column", "columns", "colum", "colums"}
+        close = difflib.get_close_matches(
+            value,
+            list(column_like),
+            n=1,
+            cutoff=0.8,
+        )
+        return bool(close)
+
+    def _is_ambiguous_count_question(self, question: str) -> bool:
+        q = " ".join(question.lower().split())
+        if not (("how many" in q) or ("number of" in q) or ("count" in q)):
+            return False
+        tokens = [self._normalize_term(t) for t in re.findall(r"[a-z0-9]+", q)]
+        informative = [
+            t
+            for t in tokens
+            if t
+            and t not in _QUERY_STOPWORDS
+            and t not in {"how", "many", "number", "count", "total", "there"}
+        ]
+        return len(informative) == 0
+
     def _has_value_list_marker(self, question: str) -> bool:
         q = " ".join(question.lower().split())
         return any(marker in q for marker in _VALUE_LIST_MARKERS) or self._is_count_plus_values_request(q)
 
+    def _is_schema_count_question(self, question: str) -> bool:
+        q = " ".join(question.lower().split())
+        if not self._is_schema_question(q):
+            return False
+        return ("how many" in q) or ("number of" in q) or ("count" in q) or ("total" in q)
+
     def _is_schema_question(self, question: str) -> bool:
         q = " ".join(question.lower().split())
-        return any(marker in q for marker in _SCHEMA_QUESTION_MARKERS)
+        if any(marker in q for marker in _SCHEMA_QUESTION_MARKERS):
+            return True
+
+        tokens = [self._normalize_term(t) for t in re.findall(r"[a-z0-9]+", q)]
+        has_schema_entity = any(self._looks_like_schema_token(t) for t in tokens)
+        if not has_schema_entity:
+            return False
+
+        schema_context_terms = {
+            "name",
+            "names",
+            "list",
+            "all",
+            "different",
+            "header",
+            "headers",
+            "field",
+            "fields",
+            "feature",
+            "features",
+            "variable",
+            "variables",
+            "count",
+            "number",
+            "many",
+            "total",
+            "what",
+            "which",
+            "how",
+        }
+        return bool(set(tokens) & schema_context_terms)
 
     def _detect_aggregate_operation(self, question: str) -> str | None:
         q = " ".join(question.lower().split())
@@ -1203,6 +1297,7 @@ class QueryEngine:
         else:
             selected = sources
 
+        wants_schema_count = self._is_schema_count_question(question)
         seed_hits: list[dict[str, Any]] = []
         lines: list[str] = []
         for source in selected:
@@ -1220,15 +1315,24 @@ class QueryEngine:
                     "column_count": len(cols),
                 }
             )
-            if len(selected) == 1:
+            if wants_schema_count:
+                lines.append(f"There are {len(cols)} columns in {source}.")
+            elif len(selected) == 1:
                 lines.append(f"Columns in {source} ({len(cols)}): {', '.join(cols)}")
             else:
                 lines.append(f"{source} ({len(cols)}): {', '.join(cols)}")
-            self._session.set_state(last_tabular_source=source, last_intent="schema")
+            self._session.set_state(
+                last_tabular_source=source,
+                last_intent="schema_count" if wants_schema_count else "schema",
+            )
 
         if not lines:
             return None
-        return "\n".join(lines), self._merge_hits(seed_hits, max_hits=12), "schema"
+        return (
+            "\n".join(lines),
+            self._merge_hits(seed_hits, max_hits=12),
+            "schema_count" if wants_schema_count else "schema",
+        )
 
     def _plan_tabular_question_with_llm(self, question: str) -> dict[str, Any] | None:
         """Use DSPy ReAct planning to route tabular questions."""
@@ -1985,6 +2089,8 @@ class QueryEngine:
             return False
         if self._is_schema_question(question):
             return False
+        if route.intent == "schema":
+            return False
         q = " ".join(question.lower().split())
         row_count_markers = {"row", "rows", "record", "records", "entry", "entries", "observation", "observations", "sample", "samples"}
         q_terms = {
@@ -2010,6 +2116,14 @@ class QueryEngine:
             return False
 
         explicit_column = self._question_mentions_explicit_column(question)
+        if (
+            route.intent == "count"
+            and not explicit_column
+            and not self._is_distribution_request(question)
+            and not self._has_value_list_marker(question)
+            and not self._is_count_plus_values_request(question)
+        ):
+            return False
         explicit_simple_aggregate = (
             explicit_column
             and route.intent in {"count", "aggregate"}
@@ -2245,6 +2359,10 @@ class QueryEngine:
             f"Lesion size {direction} from {earliest['value_display']} ({earliest_when}) "
             f"to {latest['value_display']} ({latest_when}), a change of {delta_display}."
         )
+
+    def _looks_like_schema_answer(self, answer: str) -> bool:
+        a = " ".join(str(answer).lower().split())
+        return any(marker in a for marker in ("column", "columns", "field", "fields", "header", "headers"))
 
     def _is_delta_question(self, question: str) -> bool:
         q = " ".join(question.lower().split())
@@ -2661,7 +2779,7 @@ class QueryEngine:
             and self._has_computed_citations(citations)
             and not self._looks_like_non_answer(answer)
         )
-        if citations and deterministic_intent != "schema" and not skip_reconcile_for_deterministic:
+        if citations and deterministic_intent not in {"schema", "schema_count"} and not skip_reconcile_for_deterministic:
             reconciled = self._reconcile_answer_with_evidence(
                 question=resolved_question,
                 draft_answer=answer,
@@ -2705,7 +2823,7 @@ class QueryEngine:
                 )
 
         needs_rescue = bool(
-            deterministic_intent != "schema"
+            deterministic_intent not in {"schema", "schema_count"}
             and citations
             and self._looks_like_non_answer(answer)
         )
@@ -2726,7 +2844,7 @@ class QueryEngine:
                     top_k=effective_top_k,
                 )
 
-        requires_computed = self._has_tabular_sources() and (
+        requires_computed = self._has_tabular_sources() and not self._is_schema_question(resolved_question) and (
             route.intent in {"count", "count_values", "aggregate", "mixed"}
             or self._requires_computed_evidence(resolved_question)
         )
@@ -2901,6 +3019,27 @@ class QueryEngine:
                         citations=citations,
                     )
 
+        if self._has_tabular_sources() and self._is_schema_question(resolved_question):
+            schema_answer = self._try_deterministic_schema_answer(resolved_question)
+            should_override_schema = (
+                deterministic_intent not in {"schema", "schema_count"}
+                or not self._looks_like_schema_answer(answer)
+            )
+            if schema_answer is not None and should_override_schema:
+                schema_text, schema_hits, schema_intent = schema_answer
+                answer = schema_text
+                deterministic_used = True
+                deterministic_intent = schema_intent
+                rescue_used = True
+                rescue_reason = "schema_truth_guard"
+                seed_hits = self._merge_hits([*schema_hits, *seed_hits], max_hits=16)
+                citations = self._build_citations(
+                    question=resolved_question,
+                    answer=answer,
+                    seed_hits=seed_hits,
+                    top_k=max(effective_top_k, 4),
+                )
+
         confidence = self._citation_confidence(resolved_question, answer, citations)
 
         self._session.add_turn("user", question.strip())
@@ -2912,11 +3051,21 @@ class QueryEngine:
             last_confidence=confidence,
             last_route_intent=route.intent,
         )
+        state_route = route
+        if deterministic_intent in {"schema", "schema_count"}:
+            state_route = IntentDecision(
+                intent="schema",
+                wants_schema=True,
+                wants_count=False,
+                wants_values=False,
+                operation=None,
+                needs_numeric_stat=False,
+            )
         self._update_structured_query_state(
             question=resolved_question,
             answer=answer,
             citations=citations,
-            route=route,
+            route=state_route,
         )
 
         effective_intent = deterministic_intent or route.intent

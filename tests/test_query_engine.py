@@ -455,6 +455,81 @@ class TestQueryEngineConversation:
         assert "Age" in str(second["answer"])
         assert second.get("deterministic_intent") == "schema"
 
+    def test_schema_followup_how_many_are_there_refers_to_columns(self, tmp_path: Path):
+        """Ambiguous count follow-up after schema turn should count columns, not rows/values."""
+        from mosaicx.query.engine import QueryEngine
+        from mosaicx.query.session import QuerySession
+
+        f = tmp_path / "cohort.csv"
+        f.write_text("Subject,Ethnicity,Sex,Age\nS1,Japanese,M,50\nS2,German,F,52\n")
+        session = QuerySession(sources=[f])
+        engine = QueryEngine(session=session)
+
+        _ = engine.ask_structured("what are the column names?")
+        payload = engine.ask_structured("how many are there?")
+
+        answer = str(payload["answer"]).lower()
+        assert "4 columns" in answer
+        assert payload.get("deterministic_intent") == "schema_count"
+        assert "row" not in answer
+
+    def test_schema_count_handles_typo_colum_names(self, tmp_path: Path):
+        """Schema count detection should handle common column-name typos."""
+        from mosaicx.query.engine import QueryEngine
+        from mosaicx.query.session import QuerySession
+
+        f = tmp_path / "cohort.csv"
+        f.write_text("Subject,Ethnicity,Sex,Age\nS1,Japanese,M,50\nS2,German,F,52\n")
+        session = QuerySession(sources=[f])
+        engine = QueryEngine(session=session)
+
+        payload = engine.ask_structured("i mean how many colum names are there?")
+        answer = str(payload["answer"]).lower()
+
+        assert "4 columns" in answer
+        assert payload.get("deterministic_intent") == "schema_count"
+        assert "mean of weight" not in answer
+        assert "distinct weight" not in answer
+
+    def test_schema_count_typo_skips_programmatic_sql_first(self, tmp_path: Path):
+        """Schema-count prompts should never trigger SQL-first planner attempts."""
+        from mosaicx.query.engine import QueryEngine
+        from mosaicx.query.session import QuerySession
+
+        f = tmp_path / "cohort.csv"
+        f.write_text("Subject,Ethnicity,Sex,Age\nS1,Japanese,M,50\n")
+        session = QuerySession(sources=[f])
+        engine = QueryEngine(session=session)
+
+        route = engine._intent_router.route(  # noqa: SLF001 - targeted behavior check
+            question="how many colum names are there?",
+            history="",
+            has_tabular_sources=True,
+        )
+        should_programmatic = engine._should_try_programmatic_first(  # noqa: SLF001
+            question="how many colum names are there?",
+            route=route,
+        )
+        assert should_programmatic is False
+
+    def test_schema_turn_clears_stale_active_column_context(self, tmp_path: Path):
+        """Schema turns should clear stale active column state to avoid drift on next turn."""
+        from mosaicx.query.engine import QueryEngine
+        from mosaicx.query.session import QuerySession
+
+        f = tmp_path / "cohort.csv"
+        f.write_text("Subject,Ethnicity,Sex,Weight\nS1,Japanese,M,80\nS2,German,F,65\n")
+        session = QuerySession(sources=[f])
+        engine = QueryEngine(session=session)
+
+        _ = engine.ask_structured("what is the average weight?")
+        _ = engine.ask_structured("what are the column names?")
+        state = session.get_state("query_state", {})
+
+        assert isinstance(state, dict)
+        assert state.get("active_columns", []) == []
+        assert state.get("schema_focus") is True
+
     def test_query_state_tracks_active_sources_and_columns(self, tmp_path: Path):
         """Structured query state should capture active sources/columns for follow-ups."""
         from mosaicx.query.engine import QueryEngine
