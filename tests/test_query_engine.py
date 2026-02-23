@@ -195,8 +195,8 @@ class TestQueryEngineConversation:
         assert payload["rescue_reason"] == "non_answer_with_evidence"
         assert "Timeline from grounded evidence" in payload["answer"]
 
-    def test_delta_question_uses_deterministic_measurement_guard(self, tmp_path: Path, monkeypatch):
-        """Delta questions should not return zero-change when evidence disagrees."""
+    def test_reconciler_corrects_unsupported_draft_answer(self, tmp_path: Path, monkeypatch):
+        """Evidence reconciler should correct unsupported draft answers."""
         from mosaicx.query.engine import QueryEngine
         from mosaicx.query.session import QuerySession
 
@@ -221,11 +221,27 @@ class TestQueryEngineConversation:
             "_build_citations",
             lambda **kwargs: kwargs["seed_hits"],
         )
+        monkeypatch.setattr(
+            engine,
+            "_reconcile_answer_with_evidence",
+            lambda **kwargs: "Lesion size increased from 12 mm to 16 mm (+4 mm).",
+        )
 
         payload = engine.ask_structured("how much did the lesion size change")
         assert payload["rescue_used"] is True
-        assert payload["rescue_reason"] == "numeric_delta_from_evidence"
-        assert "12 mm -> 16 mm" in payload["answer"]
+        assert payload["rescue_reason"] == "evidence_reconciler"
+        assert "12 mm to 16 mm" in payload["answer"]
+
+    def test_non_answer_marker_not_specified(self, tmp_path: Path):
+        """Common fallback phrasing should trigger non-answer detection."""
+        from mosaicx.query.engine import QueryEngine
+        from mosaicx.query.session import QuerySession
+
+        f = tmp_path / "report.txt"
+        f.write_text("Indication: Known prostate carcinoma.")
+        session = QuerySession(sources=[f])
+        engine = QueryEngine(session=session)
+        assert engine._looks_like_non_answer("The cancer type is not specified.")
 
     def test_build_citations_filters_generic_delta_noise(self, tmp_path: Path, monkeypatch):
         """Delta citation ranking should suppress generic headers when measured lines exist."""

@@ -12,6 +12,32 @@ from typing import Any
 
 
 _TOKEN_RE = re.compile(r"[a-z0-9]+")
+_TERM_SYNONYMS: dict[str, set[str]] = {
+    "cancer": {
+        "carcinoma",
+        "malignancy",
+        "malignant",
+        "neoplasm",
+        "tumor",
+        "oncology",
+        "adenocarcinoma",
+        "metastasis",
+        "metastatic",
+    },
+    "pathology": {
+        "diagnosis",
+        "disease",
+        "carcinoma",
+        "malignancy",
+        "tumor",
+    },
+    "lesion": {
+        "nodule",
+        "mass",
+        "node",
+        "lymph",
+    },
+}
 
 
 def _normalize_token(token: str) -> str:
@@ -25,6 +51,21 @@ def _normalize_token(token: str) -> str:
 
 def _extract_terms(text: str) -> list[str]:
     return [_normalize_token(t) for t in _TOKEN_RE.findall(text.lower())]
+
+
+def _expand_terms(terms: list[str]) -> list[str]:
+    expanded: list[str] = []
+    seen: set[str] = set()
+    for term in terms:
+        if term and term not in seen:
+            expanded.append(term)
+            seen.add(term)
+        for syn in _TERM_SYNONYMS.get(term, ()):
+            syn_n = _normalize_token(syn)
+            if syn_n and syn_n not in seen:
+                expanded.append(syn_n)
+                seen.add(syn_n)
+    return expanded
 
 
 def search_documents(
@@ -62,6 +103,7 @@ def search_documents(
     query_terms = [t for t in raw_terms if len(t) >= 2 and t not in stopwords]
     if not query_terms:
         query_terms = raw_terms
+    query_terms = _expand_terms(query_terms)
     results: list[dict[str, Any]] = []
 
     for name, text in documents.items():

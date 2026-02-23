@@ -56,6 +56,14 @@ class TestSearchDocuments:
         assert len(results) >= 1
         assert "16 mm" in results[0]["snippet"]
 
+    def test_cancer_query_matches_carcinoma_synonym(self):
+        from mosaicx.query.tools import search_documents
+
+        docs = {"report.txt": "Indication: Known prostate carcinoma."}
+        results = search_documents("what cancer did the patient have", documents=docs, top_k=5)
+        assert len(results) >= 1
+        assert "carcinoma" in results[0]["snippet"].lower()
+
 
 class TestGetDocument:
     def test_get_by_name(self):

@@ -30,6 +30,10 @@ _NON_ANSWER_MARKERS = (
     "can't provide",
     "do not have access",
     "not available",
+    "not specified",
+    "not provided",
+    "not mentioned",
+    "unknown",
     "insufficient information",
     "no further details are available",
 )
@@ -368,78 +372,56 @@ class QueryEngine:
         q = " ".join(question.lower().split())
         return any(marker in q for marker in _DELTA_QUESTION_MARKERS)
 
-    def _extract_mm_values(self, text: str) -> list[float]:
-        vals: list[float] = []
-        for m in re.finditer(r"\b(\d+(?:\.\d+)?)\s*mm\b", text.lower()):
-            try:
-                vals.append(float(m.group(1)))
-            except (TypeError, ValueError):
-                continue
-        return vals
-
-    def _answer_conflicts_with_measurements(
+    def _reconcile_answer_with_evidence(
         self,
         *,
-        answer: str,
-        citations: list[dict[str, Any]],
-    ) -> bool:
-        citation_vals: list[float] = []
-        for c in citations:
-            citation_vals.extend(self._extract_mm_values(str(c.get("snippet") or "")))
-        unique_vals = sorted(set(citation_vals))
-        if len(unique_vals) < 2:
-            return False
-
-        answer_text = " ".join(answer.lower().split())
-        answer_vals = set(self._extract_mm_values(answer_text))
-
-        # Strong contradiction patterns.
-        if ("no change" in answer_text or "0 mm" in answer_text or "zero mm" in answer_text) and unique_vals[0] != unique_vals[-1]:
-            return True
-        if answer_vals and answer_vals.isdisjoint(set(unique_vals)):
-            return True
-        return False
-
-    def _deterministic_delta_answer(
-        self,
-        *,
+        question: str,
+        draft_answer: str,
         citations: list[dict[str, Any]],
     ) -> str | None:
-        entries: list[tuple[str, int, str, float]] = []
-        for idx, c in enumerate(citations):
+        """Use an LLM adjudication pass to correct unsupported draft answers."""
+        if not citations:
+            return None
+
+        try:
+            import dspy
+        except Exception:
+            return None
+
+        evidence_blocks: list[str] = []
+        for idx, c in enumerate(citations[:8], start=1):
             source = str(c.get("source") or "unknown")
             snippet = " ".join(str(c.get("snippet") or "").split())
-            vals = self._extract_mm_values(snippet)
-            if not vals:
-                continue
-            date_match = re.search(r"\b\d{4}-\d{2}-\d{2}\b", source) or re.search(r"\b\d{4}-\d{2}-\d{2}\b", snippet)
-            date_key = date_match.group(0) if date_match else f"z{idx:03d}"
-            entries.append((date_key, idx, source, vals[0]))
+            evidence_blocks.append(f"[{idx}] {source}: {snippet[:360]}")
 
-        # Keep first measurement per source/date key.
-        if len(entries) < 2:
-            return None
-        entries.sort(key=lambda x: (x[0], x[1]))
-        start = entries[0]
-        end = entries[-1]
-        start_val = start[3]
-        end_val = end[3]
-        delta = round(end_val - start_val, 3)
-        if abs(delta) < 1e-9:
-            direction = "no change"
-            sign_delta = "0"
-        elif delta > 0:
-            direction = "increase"
-            sign_delta = f"+{delta:g}"
-        else:
-            direction = "decrease"
-            sign_delta = f"{delta:g}"
-
-        return (
-            f"Grounded size change: {start_val:g} mm -> {end_val:g} mm "
-            f"({sign_delta} mm, {direction}). "
-            f"Sources: {start[2]} and {end[2]}."
+        guidance = (
+            "Decide whether the draft answer is fully supported by the evidence. "
+            "If unsupported or contradicted, provide a corrected grounded answer using only evidence. "
+            "If evidence is insufficient, say so briefly. "
+            "status must be one of: supported, corrected, insufficient."
         )
+        predictor = dspy.Predict("guidance, question, draft_answer, evidence -> status, revised_answer")
+        try:
+            pred = predictor(
+                guidance=guidance,
+                question=question.strip(),
+                draft_answer=draft_answer.strip(),
+                evidence="\n".join(evidence_blocks),
+            )
+        except Exception:
+            return None
+
+        status = " ".join(str(getattr(pred, "status", "")).lower().split())
+        revised = str(getattr(pred, "revised_answer", "")).strip()
+        if not revised:
+            return None
+
+        # Only replace when model explicitly flags mismatch or when draft was a non-answer.
+        if "correct" in status or "contrad" in status or "unsupported" in status:
+            return revised
+        if self._looks_like_non_answer(draft_answer) and revised != draft_answer.strip():
+            return revised
+        return None
 
     def _looks_like_non_answer(self, answer: str) -> bool:
         text = " ".join(answer.lower().split())
@@ -576,17 +558,18 @@ class QueryEngine:
             seed_hits=seed_hits,
             top_k=max(1, top_k_citations),
         )
-        needs_rescue = bool(citations and self._looks_like_non_answer(answer))
-        if citations and self._is_delta_question(question) and self._answer_conflicts_with_measurements(
-            answer=answer,
-            citations=citations,
-        ):
-            deterministic = self._deterministic_delta_answer(citations=citations)
-            if deterministic:
-                answer = deterministic
+        if citations:
+            reconciled = self._reconcile_answer_with_evidence(
+                question=question.strip(),
+                draft_answer=answer,
+                citations=citations,
+            )
+            if reconciled and reconciled.strip() != answer.strip():
+                answer = reconciled.strip()
                 rescue_used = True
-                rescue_reason = "numeric_delta_from_evidence"
-                needs_rescue = False
+                rescue_reason = "evidence_reconciler"
+
+        needs_rescue = bool(citations and self._looks_like_non_answer(answer))
 
         if needs_rescue:
             rescued = self._rescue_answer_with_evidence(
