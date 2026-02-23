@@ -227,6 +227,34 @@ class TestQueryEngineConversation:
         assert payload["rescue_reason"] == "numeric_delta_from_evidence"
         assert "12 mm -> 16 mm" in payload["answer"]
 
+    def test_build_citations_filters_generic_delta_noise(self, tmp_path: Path, monkeypatch):
+        """Delta citation ranking should suppress generic headers when measured lines exist."""
+        from mosaicx.query.engine import QueryEngine
+        from mosaicx.query.session import QuerySession
+
+        f = tmp_path / "report.txt"
+        f.write_text("dummy")
+        session = QuerySession(sources=[f])
+        engine = QueryEngine(session=session)
+
+        seed_hits = [
+            {"source": "P001_CT_2025-09-10.pdf", "snippet": "Radiology Report", "score": 20},
+            {"source": "P001_CT_2025-09-10.pdf", "snippet": "Lymph nodes: Right external iliac node increased in size (now 16 mm short-axis).", "score": 5},
+            {"source": "P001_CT_2025-08-01.pdf", "snippet": "Right external iliac node measured 12 mm short-axis.", "score": 4},
+        ]
+
+        monkeypatch.setattr("mosaicx.query.tools.search_documents", lambda *args, **kwargs: [])
+        citations = engine._build_citations(
+            question="how much did the lesion size change",
+            answer="",
+            seed_hits=seed_hits,
+            top_k=3,
+        )
+
+        assert len(citations) >= 2
+        assert "16 mm" in citations[0]["snippet"] or "16 mm" in citations[1]["snippet"]
+        assert all(c["snippet"].lower() != "radiology report" for c in citations)
+
 
 class TestQueryEngineConfig:
     def test_engine_has_configurable_max_iterations(self, tmp_path: Path):

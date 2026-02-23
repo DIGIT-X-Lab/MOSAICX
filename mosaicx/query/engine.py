@@ -45,6 +45,14 @@ _DELTA_QUESTION_MARKERS = (
     "went up",
     "went down",
 )
+_QUERY_STOPWORDS = {
+    "the", "a", "an", "and", "or", "of", "in", "on", "to", "for", "with",
+    "is", "are", "was", "were", "be", "been", "being", "what", "which",
+    "who", "whom", "when", "where", "why", "how", "does", "do", "did",
+    "please", "show", "tell", "about", "can", "you", "your", "my", "me",
+    "from", "that", "this", "those", "these", "there", "their", "them",
+    "report", "reports", "patient", "study", "scan", "ct", "mri",
+}
 
 
 def _text_for_data(value: Any) -> str:
@@ -264,26 +272,89 @@ class QueryEngine:
         from mosaicx.query.tools import search_documents
 
         docs = self._documents
+        question_terms = {
+            t
+            for t in re.findall(r"[a-z0-9]+", question.lower())
+            if len(t) >= 3 and t not in _QUERY_STOPWORDS
+        }
+        is_delta_question = self._is_delta_question(question)
+
+        def _citation_rank(snippet: str, base_score: int) -> int:
+            snip = " ".join(str(snippet).split())
+            if not snip:
+                return -1000
+            has_mm = bool(re.search(r"\b\d+(?:\.\d+)?\s*mm\b", snip.lower()))
+            has_date = bool(re.search(r"\b\d{4}-\d{2}-\d{2}\b", snip))
+            snip_terms = {
+                t
+                for t in re.findall(r"[a-z0-9]+", snip.lower())
+                if len(t) >= 3 and t not in _QUERY_STOPWORDS
+            }
+            overlap = len(question_terms & snip_terms)
+            rank = overlap * 20 + min(base_score, 12)
+            if has_mm:
+                rank += 12
+            if has_date:
+                rank += 5
+            if len(snip) < 26 and not (has_mm or has_date):
+                rank -= 8
+            if snip.lower() in {
+                "radiology report",
+                "follow-up radiology report",
+                "ct chest/abdomen/pelvis with contrast",
+            }:
+                rank -= 20
+            return rank
+
         query = " ".join([question.strip(), answer.strip()]).strip()
         hits = search_documents(query, documents=docs, top_k=max(top_k, 6))
         combined = []
         seen = set()
         for h in [*seed_hits, *hits]:
             source = str(h.get("source") or "")
-            snippet = str(h.get("snippet") or "")
+            snippet = " ".join(str(h.get("snippet") or "").split())
             score = int(h.get("score") or 0)
             key = (source, snippet[:120])
             if not source or not snippet or key in seen:
                 continue
+            rank = _citation_rank(snippet, score)
+            if rank < 0:
+                continue
+            if is_delta_question and not re.search(r"\b\d+(?:\.\d+)?\s*mm\b", snippet.lower()):
+                # For size-change questions, prefer explicit measurements.
+                rank -= 25
+                if rank < 0:
+                    continue
             seen.add(key)
             combined.append({
                 "source": source,
-                "snippet": snippet.strip(),
+                "snippet": snippet,
                 "score": score,
+                "rank": rank,
             })
 
-        combined.sort(key=lambda x: x["score"], reverse=True)
-        return combined[:top_k]
+        combined.sort(key=lambda x: (x.get("rank", 0), x.get("score", 0)), reverse=True)
+
+        # First pass: maximize source diversity.
+        selected: list[dict[str, Any]] = []
+        seen_sources: set[str] = set()
+        for item in combined:
+            src = item["source"]
+            if src in seen_sources:
+                continue
+            selected.append(item)
+            seen_sources.add(src)
+            if len(selected) >= top_k:
+                return selected
+
+        # Second pass: fill remaining slots.
+        for item in combined:
+            if len(selected) >= top_k:
+                break
+            if item in selected:
+                continue
+            selected.append(item)
+        return selected
 
     def _citation_confidence(self, question: str, citations: list[dict[str, Any]]) -> float:
         if not citations:

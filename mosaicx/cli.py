@@ -3210,9 +3210,9 @@ def query(
             ctab.add_column("Source", style=f"bold {theme.CORAL}", no_wrap=True, width=34)
             ctab.add_column("Evidence")
             ctab.add_column("Relevance", justify="right", no_wrap=True)
-            max_score = max(int(c.get("score", 0) or 0) for c in citations_payload)
+            max_score = max(int(c.get("rank", c.get("score", 0)) or 0) for c in citations_payload)
             for c in citations_payload:
-                score = int(c.get("score", 0) or 0)
+                score = int(c.get("rank", c.get("score", 0)) or 0)
                 ctab.add_row(
                     _esc(_compact_query_text(c.get("source"), max_len=40)),
                     _esc(_snippet_for_display(c.get("snippet"), max_len=280)),
