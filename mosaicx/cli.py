@@ -3338,7 +3338,11 @@ def query(
             reason = str(payload.get("fallback_reason") or "unknown")
             console.print(theme.warn(f"LLM fallback active -- { _compact_query_text(reason, max_len=140) }"))
         elif payload.get("rescue_used"):
-            console.print(theme.info("Recovered final answer from grounded evidence"))
+            reason = str(payload.get("rescue_reason") or "").strip()
+            if reason == "missing_computed_evidence":
+                console.print(theme.warn("Applied truth guard: missing computed table evidence"))
+            else:
+                console.print(theme.info("Recovered final answer from grounded evidence"))
 
         answer = _normalize_answer_text(payload.get("answer") or "")
         if answer:
@@ -3444,6 +3448,7 @@ def query(
             trace_table.add_column("Value", style=theme.MUTED)
             trace_table.add_row("fallback_used", str(bool(payload.get("fallback_used"))).lower())
             trace_table.add_row("rescue_used", str(bool(payload.get("rescue_used"))).lower())
+            trace_table.add_row("deterministic_used", str(bool(payload.get("deterministic_used"))).lower())
             if payload.get("rescue_reason"):
                 trace_table.add_row("rescue_reason", _esc(_compact_query_text(payload.get("rescue_reason"), max_len=80)))
             computed_count = sum(

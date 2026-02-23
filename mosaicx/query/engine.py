@@ -1037,12 +1037,14 @@ class QueryEngine:
         fallback_reason: str | None = None
         rescue_used = False
         rescue_reason: str | None = None
+        deterministic_used = False
 
         resolved_question = self._resolve_followup_question(question.strip())
 
         deterministic = self._try_deterministic_tabular_answer(resolved_question)
         if deterministic is not None:
             answer, seed_hits = deterministic
+            deterministic_used = True
         else:
             try:
                 answer, seed_hits = self._run_query_once(resolved_question)
@@ -1177,6 +1179,7 @@ class QueryEngine:
             "fallback_reason": fallback_reason,
             "rescue_used": rescue_used,
             "rescue_reason": rescue_reason,
+            "deterministic_used": deterministic_used,
         }
 
     def ask(self, question: str) -> str:
