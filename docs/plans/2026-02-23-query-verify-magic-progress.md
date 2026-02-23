@@ -165,3 +165,21 @@ Result: `81 passed, 2 deselected`
 - [x] `G7` Commit + push phase-7 improvements
 Status: `done`
 Commit: `5144d94`
+
+## Phase 8 (Completed)
+- [x] `Q12` Add temporal comparison guard for long-doc questions (`change`, `increase/decrease`, `when smallest/largest`) based on cited dated measurements
+Status: `done (local)`
+
+- [x] `T8` Add regressions for temporal correction and temporal-date answering
+Status: `done (local)`
+
+- [x] `R8` Run focused query tests for temporal + long-doc grounding
+Status: `done`
+Run command: `.venv/bin/pytest -q tests/test_query_engine.py -k "temporal_comparison_guard or longdoc_literal_guard"`
+Result: `3 passed`
+
+- [x] `R8b` Run full query-engine suite for side effects
+Status: `partial (env dependency)`
+Run command: `.venv/bin/pytest -q tests/test_query_engine.py`
+Result: `50 passed, 2 errors`
+Note: `ModuleNotFoundError: pydantic_settings` in integration fixture setup.

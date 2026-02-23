@@ -1209,6 +1209,91 @@ class TestQueryEngineConversation:
         assert payload["longdoc_literal_support"] == pytest.approx(1.0, abs=1e-6)
         assert any(c.get("evidence_type") == "text_chunk" for c in payload["citations"])
 
+    def test_temporal_comparison_guard_corrects_wrong_delta_answer(self, tmp_path: Path, monkeypatch):
+        """Temporal comparison questions should be corrected from citation measurements/dates."""
+        from mosaicx.query.engine import QueryEngine
+        from mosaicx.query.session import QuerySession
+
+        f = tmp_path / "report.txt"
+        f.write_text(
+            "Study Date: 2025-08-01. Right external iliac node measured 12 mm.\n"
+            "Study Date: 2025-09-10. Right external iliac node now 16 mm."
+        )
+        session = QuerySession(sources=[f])
+        engine = QueryEngine(session=session)
+
+        seed_hits = [
+            {
+                "source": "P001_CT_2025-08-01.pdf",
+                "snippet": "Study Date: 2025-08-01. Right external iliac node measured 12 mm short-axis.",
+                "score": 9,
+                "evidence_type": "text_chunk",
+                "chunk_id": 1,
+                "start": 120,
+                "end": 230,
+            },
+            {
+                "source": "P001_CT_2025-09-10.pdf",
+                "snippet": "Study Date: 2025-09-10. Right external iliac node increased in size (now 16 mm short-axis).",
+                "score": 10,
+                "evidence_type": "text_chunk",
+                "chunk_id": 2,
+                "start": 420,
+                "end": 560,
+            },
+        ]
+
+        monkeypatch.setattr(engine, "_run_query_once", lambda _q: ("No change (0 mm).", seed_hits))
+        monkeypatch.setattr(engine, "_build_citations", lambda **kwargs: kwargs.get("seed_hits", []))
+        monkeypatch.setattr(engine, "_reconcile_answer_with_evidence", lambda **kwargs: None)
+
+        payload = engine.ask_structured("how much did the lesion size change?")
+        answer = str(payload["answer"])
+        assert "12 mm" in answer
+        assert "16 mm" in answer
+        assert "4 mm" in answer
+        assert payload["rescue_used"] is True
+        assert payload["rescue_reason"] == "temporal_comparison_guard"
+
+    def test_temporal_comparison_guard_answers_when_smallest(self, tmp_path: Path, monkeypatch):
+        """Temporal guard should answer smallest-time queries directly from dated evidence."""
+        from mosaicx.query.engine import QueryEngine
+        from mosaicx.query.session import QuerySession
+
+        f = tmp_path / "report.txt"
+        f.write_text(
+            "Study Date: 2025-08-01. Node measured 12 mm.\n"
+            "Study Date: 2025-09-10. Node measured 16 mm."
+        )
+        session = QuerySession(sources=[f])
+        engine = QueryEngine(session=session)
+
+        seed_hits = [
+            {
+                "source": "P001_CT_2025-08-01.pdf",
+                "snippet": "Study Date: 2025-08-01. Right external iliac node measured 12 mm short-axis.",
+                "score": 9,
+                "evidence_type": "text_chunk",
+            },
+            {
+                "source": "P001_CT_2025-09-10.pdf",
+                "snippet": "Study Date: 2025-09-10. Right external iliac node measured 16 mm short-axis.",
+                "score": 9,
+                "evidence_type": "text_chunk",
+            },
+        ]
+
+        monkeypatch.setattr(engine, "_run_query_once", lambda _q: ("Not specified.", seed_hits))
+        monkeypatch.setattr(engine, "_build_citations", lambda **kwargs: kwargs.get("seed_hits", []))
+        monkeypatch.setattr(engine, "_reconcile_answer_with_evidence", lambda **kwargs: None)
+
+        payload = engine.ask_structured("when was the lesion smallest?")
+        answer = str(payload["answer"])
+        assert "2025-08-01" in answer
+        assert "12 mm" in answer
+        assert payload["rescue_used"] is True
+        assert payload["rescue_reason"] == "temporal_comparison_guard"
+
 
 class TestQueryEngineConfig:
     def test_engine_has_configurable_max_iterations(self, tmp_path: Path):

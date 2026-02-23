@@ -2128,6 +2128,124 @@ class QueryEngine:
         supported = sum(1 for lit in literals if lit in chunk_blob)
         return supported / len(literals)
 
+    def _is_temporal_comparison_question(self, question: str) -> bool:
+        q = " ".join(question.lower().split())
+        if self._is_delta_question(q):
+            return True
+        if ("when was" in q or "which date" in q or "what date" in q) and (
+            any(m in q for m in ("small", "smallest", "lowest", "minimum", "min"))
+            or any(m in q for m in ("large", "largest", "highest", "maximum", "max"))
+        ):
+            return True
+        return any(m in q for m in ("increase", "decrease", "grew", "shrank", "went up", "went down"))
+
+    def _format_mm_value(self, mm_value: float) -> str:
+        if abs(mm_value - round(mm_value)) < 1e-6:
+            return f"{int(round(mm_value))} mm"
+        return f"{mm_value:.1f} mm"
+
+    def _extract_temporal_observations_from_citations(
+        self,
+        citations: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        observations: list[dict[str, Any]] = []
+        seen: set[tuple[str, float, str]] = set()
+        for citation in citations[:24]:
+            snippet = " ".join(str(citation.get("snippet") or "").split())
+            if not snippet:
+                continue
+            source = str(citation.get("source") or "").strip()
+
+            date = None
+            date_match = re.search(r"\b\d{4}-\d{2}-\d{2}\b", snippet)
+            if date_match:
+                date = date_match.group(0)
+            if not date and source:
+                src_date_match = re.search(r"\b\d{4}-\d{2}-\d{2}\b", source)
+                if src_date_match:
+                    date = src_date_match.group(0)
+
+            for match in re.finditer(r"\b(\d+(?:\.\d+)?)\s*(mm|cm)\b", snippet.lower()):
+                numeric = float(match.group(1))
+                unit = str(match.group(2)).lower()
+                mm_value = numeric * (10.0 if unit == "cm" else 1.0)
+                value_display = f"{match.group(1)} {unit}"
+                key = (date or "", round(mm_value, 4), source)
+                if key in seen:
+                    continue
+                seen.add(key)
+                observations.append(
+                    {
+                        "date": date,
+                        "source": source,
+                        "value_mm": mm_value,
+                        "value_display": value_display,
+                    }
+                )
+        return observations
+
+    def _infer_temporal_answer_from_citations(
+        self,
+        *,
+        question: str,
+        citations: list[dict[str, Any]],
+    ) -> str | None:
+        if not citations or not self._is_temporal_comparison_question(question):
+            return None
+
+        observations = self._extract_temporal_observations_from_citations(citations)
+        if len(observations) < 2:
+            return None
+
+        q = " ".join(question.lower().split())
+        with_dates = [obs for obs in observations if obs.get("date")]
+        if len(with_dates) >= 2:
+            ordered = sorted(with_dates, key=lambda obs: str(obs.get("date") or ""))
+        else:
+            ordered = sorted(observations, key=lambda obs: float(obs.get("value_mm") or 0.0))
+        earliest = ordered[0]
+        latest = ordered[-1]
+
+        if ("when was" in q or "which date" in q or "what date" in q) and any(
+            m in q for m in ("small", "smallest", "lowest", "minimum", "min")
+        ):
+            smallest = min(observations, key=lambda obs: float(obs.get("value_mm") or 0.0))
+            when = str(smallest.get("date") or smallest.get("source") or "the available evidence")
+            return (
+                f"The smallest recorded measurement was {smallest['value_display']} on {when}."
+            )
+
+        if ("when was" in q or "which date" in q or "what date" in q) and any(
+            m in q for m in ("large", "largest", "highest", "maximum", "max")
+        ):
+            largest = max(observations, key=lambda obs: float(obs.get("value_mm") or 0.0))
+            when = str(largest.get("date") or largest.get("source") or "the available evidence")
+            return (
+                f"The largest recorded measurement was {largest['value_display']} on {when}."
+            )
+
+        if not self._is_delta_question(q) and not any(
+            m in q for m in ("increase", "decrease", "difference", "change", "delta", "grew", "shrank")
+        ):
+            return None
+
+        earliest_when = str(earliest.get("date") or earliest.get("source") or "earlier report")
+        latest_when = str(latest.get("date") or latest.get("source") or "later report")
+        delta_mm = float(latest.get("value_mm") or 0.0) - float(earliest.get("value_mm") or 0.0)
+        if abs(delta_mm) < 0.1:
+            return (
+                "No measurable size change was found: "
+                f"{earliest['value_display']} ({earliest_when}) and "
+                f"{latest['value_display']} ({latest_when})."
+            )
+
+        direction = "increased" if delta_mm > 0 else "decreased"
+        delta_display = self._format_mm_value(abs(delta_mm))
+        return (
+            f"Lesion size {direction} from {earliest['value_display']} ({earliest_when}) "
+            f"to {latest['value_display']} ({latest_when}), a change of {delta_display}."
+        )
+
     def _is_delta_question(self, question: str) -> bool:
         q = " ".join(question.lower().split())
         return any(marker in q for marker in _DELTA_QUESTION_MARKERS)
@@ -2553,6 +2671,38 @@ class QueryEngine:
                 answer = reconciled.strip()
                 rescue_used = True
                 rescue_reason = "evidence_reconciler"
+
+        temporal_override = self._infer_temporal_answer_from_citations(
+            question=resolved_question,
+            citations=citations,
+        )
+        if temporal_override and temporal_override.strip() != answer.strip():
+            apply_temporal_override = False
+            if self._looks_like_non_answer(answer):
+                apply_temporal_override = True
+            else:
+                current_conf = self._citation_confidence(resolved_question, answer, citations)
+                temporal_conf = self._citation_confidence(resolved_question, temporal_override, citations)
+                # Apply only when inferred temporal answer is materially better grounded.
+                if temporal_conf >= current_conf + 0.08:
+                    apply_temporal_override = True
+                elif current_conf < 0.45 and temporal_conf >= 0.55:
+                    apply_temporal_override = True
+
+            if apply_temporal_override:
+                answer = temporal_override.strip()
+                rescue_used = True
+                rescue_reason = "temporal_comparison_guard"
+                citations = self._build_citations(
+                    question=resolved_question,
+                    answer=answer,
+                    seed_hits=seed_hits,
+                    top_k=max(effective_top_k, 4),
+                )
+                longdoc_literal_support = self._chunk_literal_support(
+                    answer=answer,
+                    citations=citations,
+                )
 
         needs_rescue = bool(
             deterministic_intent != "schema"
