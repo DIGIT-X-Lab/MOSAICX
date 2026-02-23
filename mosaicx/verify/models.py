@@ -25,10 +25,26 @@ class FieldVerdict(BaseModel):
     status: Literal["verified", "mismatch", "unsupported", "not_checked"] = (
         "not_checked"
     )
+    field_path: str | None = None
     claimed_value: str | None = None
     source_value: str | None = None
     evidence_excerpt: str | None = None
+    evidence_source: str | None = None
+    evidence_type: str | None = None
+    evidence_chunk_id: int | None = None
+    evidence_start: int | None = None
+    evidence_end: int | None = None
+    evidence_score: float | None = None
     severity: Literal["info", "warning", "critical"] = "info"
+
+
+class Evidence(BaseModel):
+    """Evidence snippet supporting or contradicting a claim."""
+
+    source: str
+    excerpt: str
+    supports: str | None = None
+    contradicts: str | None = None
 
 
 class VerificationReport(BaseModel):
@@ -43,6 +59,8 @@ class VerificationReport(BaseModel):
     )
     issues: list[Issue] = Field(default_factory=list)
     field_verdicts: list[FieldVerdict] = Field(default_factory=list)
+    evidence: list[Evidence] = Field(default_factory=list)
+    missed_content: list[str] = Field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to a plain dict for JSON serialization."""
@@ -52,4 +70,6 @@ class VerificationReport(BaseModel):
             "level": self.level,
             "issues": [i.model_dump() for i in self.issues],
             "field_verdicts": [fv.model_dump() for fv in self.field_verdicts],
+            "evidence": [ev.model_dump() for ev in self.evidence],
+            "missed_content": list(self.missed_content),
         }

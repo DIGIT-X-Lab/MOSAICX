@@ -316,3 +316,53 @@ class TestVerifyClaimComparison:
         assert "source" in result.output.lower()
         assert "evidence" in result.output.lower()
         assert "(not available)" not in result.output.lower()
+
+    def test_verify_displays_structured_evidence_table(self, tmp_path, monkeypatch):
+        from mosaicx.cli import cli
+        import mosaicx.sdk as sdk_mod
+
+        doc = tmp_path / "report.txt"
+        doc.write_text("Vitals: BP 128/82 measured at triage.")
+
+        def fake_verify(**_kwargs):
+            return {
+                "verdict": "verified",
+                "decision": "verified",
+                "confidence": 1.0,
+                "level": "audit",
+                "issues": [],
+                "field_verdicts": [
+                    {
+                        "status": "verified",
+                        "field_path": "claim",
+                        "claimed_value": "patient BP is 128/82",
+                        "source_value": "BP 128/82",
+                        "evidence_excerpt": "Vitals: BP 128/82 measured at triage.",
+                    }
+                ],
+                "citations": [
+                    {
+                        "source": "sample_patient_vitals.pdf",
+                        "snippet": "Vitals: BP 128/82 measured at triage.",
+                        "evidence_type": "text_chunk",
+                        "relevance": "high",
+                        "chunk_id": 9,
+                    }
+                ],
+                "evidence": [],
+                "missed_content": [],
+            }
+
+        monkeypatch.setattr(sdk_mod, "verify", fake_verify)
+
+        runner = CliRunner()
+        result = runner.invoke(cli, [
+            "verify", "--document", str(doc),
+            "--claim", "patient BP is 128/82",
+            "--level", "quick",
+        ])
+        assert result.exit_code == 0
+        output = result.output.lower()
+        assert "evidence" in output
+        assert "chunk 9" in output
+        assert "sample_patient_vitals.pdf" in output

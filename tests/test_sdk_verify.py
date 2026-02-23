@@ -65,6 +65,8 @@ class TestSDKVerifyQuick:
             "fallback_used",
             "support_score",
             "verification_mode",
+            "citations",
+            "sources_consulted",
         ):
             assert key in result, f"Missing key: {key}"
 
@@ -115,6 +117,9 @@ class TestSDKVerifyQuick:
         assert "claim_comparison" in result
         assert result["claim_comparison"]["claimed"]
         assert result["claim_comparison"]["grounded"] is True
+        assert isinstance(result.get("citations"), list)
+        assert result["citations"]
+        assert result["citations"][0].get("evidence_type")
 
     def test_verify_claim_wrong_number(self):
         """Claim with wrong number should not be verified."""
@@ -195,6 +200,44 @@ class TestSDKVerifyFallback:
 
 
 class TestSDKVerifyEdgeCases:
+    def test_verify_claim_citations_preserve_chunk_metadata(self):
+        from mosaicx.sdk import verify
+        from mosaicx.verify.models import FieldVerdict, VerificationReport
+
+        mocked_report = VerificationReport(
+            verdict="verified",
+            confidence=0.93,
+            level="audit",
+            field_verdicts=[
+                FieldVerdict(
+                    status="verified",
+                    field_path="claim",
+                    claimed_value="patient BP is 128/82",
+                    source_value="BP 128/82",
+                    evidence_excerpt="Vitals: BP 128/82 measured at triage.",
+                    evidence_source="sample_patient_vitals.pdf",
+                    evidence_type="text_chunk",
+                    evidence_chunk_id=9,
+                    evidence_start=1220,
+                    evidence_end=1268,
+                    evidence_score=8.0,
+                )
+            ],
+        )
+
+        with patch("mosaicx.verify.engine.verify", return_value=mocked_report):
+            result = verify(
+                claim="patient BP is 128/82",
+                source_text="Vitals: BP 128/82 measured at triage.",
+                level="thorough",
+            )
+
+        assert result["citations"]
+        top = result["citations"][0]
+        assert top["evidence_type"] == "text_chunk"
+        assert top["chunk_id"] == 9
+        assert top["source"] == "sample_patient_vitals.pdf"
+
     def test_requires_source_text_or_document(self):
         from mosaicx.sdk import verify
 

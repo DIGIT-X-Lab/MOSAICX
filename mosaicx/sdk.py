@@ -587,6 +587,130 @@ def _claim_comparison_from_report(
     }
 
 
+def _verification_citations_from_report(
+    *,
+    report: dict[str, Any],
+    verification_mode: str,
+    max_citations: int = 8,
+) -> list[dict[str, Any]]:
+    """Build a normalized evidence list for verify outputs.
+
+    Aligns verify evidence semantics with query citations so downstream tools can
+    reason over a consistent structure.
+    """
+    citations: list[dict[str, Any]] = []
+    field_verdicts = report.get("field_verdicts", [])
+    evidence_items = report.get("evidence", [])
+
+    def _to_int(value: Any) -> int | None:
+        try:
+            return int(value)
+        except Exception:
+            return None
+
+    def _status_rank(status: str, *, claim_row: bool) -> int:
+        status_lc = status.strip().lower()
+        if status_lc == "mismatch":
+            return 96 if claim_row else 92
+        if status_lc == "verified":
+            return 92 if claim_row else 86
+        if status_lc == "unsupported":
+            return 74
+        return 60
+
+    for fv in field_verdicts:
+        if not isinstance(fv, dict):
+            continue
+        snippet = _compact_text(fv.get("evidence_excerpt") or fv.get("source_value"))
+        if not snippet:
+            continue
+        field_path = str(fv.get("field_path") or "").strip()
+        status = str(fv.get("status") or "not_checked").strip().lower()
+        is_claim_row = verification_mode == "claim" and field_path in {"", "claim"}
+        evidence_type = str(
+            fv.get("evidence_type")
+            or ("claim_evidence" if is_claim_row else "field_evidence")
+        ).strip() or "field_evidence"
+        rank = _status_rank(status, claim_row=is_claim_row)
+
+        evidence_score = fv.get("evidence_score")
+        if isinstance(evidence_score, (int, float)):
+            if evidence_score <= 1.0:
+                rank += int(round(max(0.0, evidence_score) * 10))
+            else:
+                rank += min(12, int(round(max(0.0, evidence_score))))
+
+        citation: dict[str, Any] = {
+            "source": str(fv.get("evidence_source") or "source_document"),
+            "snippet": snippet,
+            "evidence_type": evidence_type,
+            "score": rank,
+            "rank": rank,
+            "status": status,
+            "field_path": field_path or None,
+            "claimed_value": _compact_text(fv.get("claimed_value")),
+            "source_value": _compact_text(fv.get("source_value")),
+        }
+        if status in {"verified", "mismatch"}:
+            citation["relevance"] = "high"
+        elif status == "unsupported":
+            citation["relevance"] = "medium"
+        else:
+            citation["relevance"] = "low"
+
+        chunk_id = _to_int(fv.get("evidence_chunk_id"))
+        start = _to_int(fv.get("evidence_start"))
+        end = _to_int(fv.get("evidence_end"))
+        if chunk_id is not None:
+            citation["chunk_id"] = chunk_id
+        if start is not None:
+            citation["start"] = start
+        if end is not None:
+            citation["end"] = end
+
+        citations.append(citation)
+
+    for ev in evidence_items:
+        if not isinstance(ev, dict):
+            continue
+        snippet = _compact_text(ev.get("contradicts") or ev.get("supports") or ev.get("excerpt"))
+        if not snippet:
+            continue
+        rank = 78 if ev.get("supports") or ev.get("contradicts") else 70
+        citations.append(
+            {
+                "source": str(ev.get("source") or "source_document"),
+                "snippet": snippet,
+                "evidence_type": "supporting_text",
+                "score": rank,
+                "rank": rank,
+                "relevance": "medium",
+            }
+        )
+
+    deduped: list[dict[str, Any]] = []
+    seen: set[tuple[str, str, str]] = set()
+    for citation in citations:
+        key = (
+            str(citation.get("source") or ""),
+            str(citation.get("evidence_type") or ""),
+            str(citation.get("snippet") or "")[:180],
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(citation)
+
+    deduped.sort(
+        key=lambda item: (
+            int(item.get("rank", item.get("score", 0)) or 0),
+            int(item.get("score", 0) or 0),
+        ),
+        reverse=True,
+    )
+    return deduped[: max(1, int(max_citations))]
+
+
 # ---------------------------------------------------------------------------
 # extract
 # ---------------------------------------------------------------------------
@@ -1547,6 +1671,10 @@ def verify(
     verification_mode = "claim" if claim is not None and extraction is None else "extraction"
     out["verification_mode"] = verification_mode
     out["confidence_score"] = out.get("confidence")
+    out["citations"] = _verification_citations_from_report(
+        report=out,
+        verification_mode=verification_mode,
+    )
 
     if fallback_used:
         fallback_issue = next(
@@ -1574,6 +1702,25 @@ def verify(
         grounded = bool(claim_comparison.get("grounded"))
         out["grounded"] = grounded
 
+        if not out.get("citations"):
+            fallback_snippet = _compact_text(
+                claim_comparison.get("evidence")
+                or claim_comparison.get("source")
+            )
+            if fallback_snippet:
+                out["citations"] = [
+                    {
+                        "source": "source_document",
+                        "snippet": fallback_snippet,
+                        "evidence_type": "claim_evidence",
+                        "score": 70,
+                        "rank": 70,
+                        "relevance": "medium",
+                        "claimed_value": _compact_text(claim_comparison.get("claimed")),
+                        "source_value": _compact_text(claim_comparison.get("source")),
+                    }
+                ]
+
         # Avoid hard pass/fail labels when we have no source-grounding payload.
         if decision in {"verified", "contradicted"} and not grounded:
             decision = "insufficient_evidence"
@@ -1593,6 +1740,13 @@ def verify(
         out["support_score"] = out.get("confidence")
 
     out["decision"] = decision
+    out["sources_consulted"] = sorted(
+        {
+            str(c.get("source") or "")
+            for c in out.get("citations", [])
+            if str(c.get("source") or "").strip()
+        }
+    )
 
     return out
 

@@ -149,35 +149,66 @@ def _make_search_source_chunks(chunks: list[dict[str, Any]]):
         context_chars: int = 300,
         top_k: int = 12,
     ) -> list[dict[str, Any]]:
-        """Search all chunks for a query and return chunk-aware matches."""
+        """Search all chunks for a query and return chunk-aware ranked matches.
+
+        Uses both exact phrase and term-level matching so paraphrased questions
+        can still surface relevant chunk evidence.
+        """
         q = (query or "").strip()
         if not q:
             return []
         query_lower = q.lower()
+        terms = [t for t in re.findall(r"[a-z0-9]+", query_lower) if len(t) >= 2]
         out: list[dict[str, Any]] = []
         for chunk in chunks:
             text = str(chunk.get("text") or "")
-            text_lower = text.lower()
-            pos = text_lower.find(query_lower)
-            if pos < 0:
+            if not text:
                 continue
-            start = max(0, pos - context_chars // 2)
-            end = min(len(text), pos + len(q) + context_chars // 2)
-            snippet = text[start:end]
+            text_lower = text.lower()
+
+            exact_pos = text_lower.find(query_lower)
+            term_hits = 0
+            term_coverage = 0
+            best_term_pos = -1
+            best_term = ""
+            for term in terms:
+                pattern = re.compile(rf"\b{re.escape(term)}\b")
+                matches = list(pattern.finditer(text_lower))
+                if not matches:
+                    continue
+                term_hits += len(matches)
+                term_coverage += 1
+                if best_term_pos < 0:
+                    best_term_pos = matches[0].start()
+                    best_term = term
+
+            score = (8 if exact_pos >= 0 else 0) + (term_coverage * 2) + term_hits
+            if score <= 0:
+                continue
+
+            anchor_pos = exact_pos if exact_pos >= 0 else best_term_pos
+            anchor_len = len(q) if exact_pos >= 0 else len(best_term)
+            if anchor_pos < 0:
+                anchor_pos = 0
+                anchor_len = min(24, len(text))
+            snip_start = max(0, anchor_pos - context_chars // 2)
+            snip_end = min(len(text), anchor_pos + max(anchor_len, 1) + context_chars // 2)
+            snippet = text[snip_start:snip_end]
             out.append(
                 {
                     "chunk_id": chunk["chunk_id"],
-                    "start": chunk["start"] + pos,
-                    "end": chunk["start"] + pos + len(q),
+                    "start": chunk["start"] + anchor_pos,
+                    "end": chunk["start"] + anchor_pos + max(anchor_len, 1),
                     "snippet": snippet,
-                    "exact_match": text[pos: pos + len(q)],
+                    "exact_match": text[anchor_pos: anchor_pos + max(anchor_len, 1)],
+                    "score": score,
+                    "evidence_type": "text_chunk",
                 }
             )
-            if len(out) >= max(1, top_k):
-                break
+        out.sort(key=lambda row: int(row.get("score") or 0), reverse=True)
         if not out:
             return [{"chunk_id": -1, "note": f"'{q}' not found in source chunks"}]
-        return out
+        return out[: max(1, top_k)]
 
     return search_source_chunks
 
@@ -413,7 +444,9 @@ def run_audit(
 
         audit_report MUST be a JSON object:
         {"field_verdicts": [{"field_path": "...", "status": "verified|mismatch|unsupported",
-        "source_value": "value from source or null", "detail": "brief explanation"}],
+        "source_value": "value from source or null",
+        "detail": "brief explanation",
+        "evidence": {"excerpt": "...", "chunk_id": 12, "start": 420, "end": 460, "score": 7.0}}],
         "omissions": ["important source content not in extraction"],
         "summary": "one sentence overall assessment"}
         """
@@ -457,6 +490,22 @@ def _parse_audit_report(
         except Exception:
             return str(value)
 
+    def _to_int(value: Any) -> int | None:
+        if value is None:
+            return None
+        try:
+            return int(value)
+        except Exception:
+            return None
+
+    def _to_float(value: Any) -> float | None:
+        if value is None:
+            return None
+        try:
+            return float(value)
+        except Exception:
+            return None
+
     report = parse_json_like(raw_report)
     if report is None:
         logger.warning("RLM audit returned non-JSON: %s", raw_report[:300])
@@ -488,12 +537,58 @@ def _parse_audit_report(
         else:
             status = "not_checked"
 
+        evidence_payload = v.get("evidence")
+        if isinstance(evidence_payload, list):
+            evidence_payload = next(
+                (item for item in evidence_payload if isinstance(item, dict)),
+                evidence_payload[0] if evidence_payload else None,
+            )
+
+        evidence_source = None
+        evidence_type = None
+        evidence_chunk_id = None
+        evidence_start = None
+        evidence_end = None
+        evidence_score = None
+        evidence_excerpt_obj = None
+        source_value_obj = None
+
+        if isinstance(evidence_payload, dict):
+            evidence_excerpt_obj = (
+                evidence_payload.get("excerpt")
+                or evidence_payload.get("snippet")
+                or evidence_payload.get("detail")
+                or evidence_payload.get("reason")
+            )
+            source_value_obj = (
+                evidence_payload.get("source_value")
+                or evidence_payload.get("exact_match")
+            )
+            evidence_source = _to_text(
+                evidence_payload.get("source") or evidence_payload.get("source_name")
+            )
+            evidence_type = _to_text(
+                evidence_payload.get("evidence_type") or evidence_payload.get("type")
+            )
+            evidence_chunk_id = _to_int(evidence_payload.get("chunk_id"))
+            evidence_start = _to_int(evidence_payload.get("start"))
+            evidence_end = _to_int(evidence_payload.get("end"))
+            evidence_score = _to_float(evidence_payload.get("score"))
+        else:
+            evidence_excerpt_obj = v.get("evidence")
+
         fv = FieldVerdict(
             status=status,
             field_path=field_path,
             claimed_value=_to_text(v.get("claimed_value") or v.get("value", "")),
-            source_value=_to_text(v.get("source_value") or v.get("source")),
-            evidence_excerpt=_to_text(v.get("detail") or v.get("evidence") or v.get("reason")),
+            source_value=_to_text(v.get("source_value") or v.get("source") or source_value_obj),
+            evidence_excerpt=_to_text(v.get("detail") or evidence_excerpt_obj or v.get("reason")),
+            evidence_source=evidence_source,
+            evidence_type=evidence_type,
+            evidence_chunk_id=evidence_chunk_id,
+            evidence_start=evidence_start,
+            evidence_end=evidence_end,
+            evidence_score=evidence_score,
             severity="critical" if status == "mismatch" else "info",
         )
         field_verdicts.append(fv)
@@ -593,7 +688,9 @@ def run_claim_audit(
 
         audit_report MUST be a JSON object:
         {"field_verdicts": [{"field_path": "claim", "status": "verified|mismatch|unsupported",
-        "source_value": "value from source or null", "detail": "brief explanation"}],
+        "source_value": "value from source or null",
+        "detail": "brief explanation",
+        "evidence": {"excerpt": "...", "chunk_id": 12, "start": 420, "end": 460, "score": 7.0}}],
         "summary": "one sentence overall assessment"}
         """
 

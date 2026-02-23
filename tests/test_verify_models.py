@@ -54,6 +54,14 @@ class TestFieldVerdict:
             claimed_value="22mm",
             source_value="14mm",
             evidence_excerpt="nodule now measures 14mm",
+            evidence_source="report.txt",
+            evidence_type="text_chunk",
+            evidence_chunk_id=7,
+            evidence_start=420,
+            evidence_end=460,
+            evidence_score=8.5,
             severity="critical",
         )
         assert fv.status == "mismatch"
+        assert fv.evidence_type == "text_chunk"
+        assert fv.evidence_chunk_id == 7

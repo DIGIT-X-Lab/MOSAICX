@@ -76,6 +76,20 @@ class TestChunkedSourceTools:
         assert hits[0]["chunk_id"] >= 0
         assert "carcinoma" in hits[0]["snippet"].lower()
 
+    def test_search_source_chunks_handles_paraphrase_term_match(self):
+        from mosaicx.verify.audit import _chunk_source_text, _make_search_source_chunks
+
+        source = (
+            "C" * 6400
+            + " Impression: right external iliac lymph node increased to 16 mm short-axis."
+        )
+        chunks = _chunk_source_text(source, chunk_chars=1100, overlap_chars=120)
+        search_chunks = _make_search_source_chunks(chunks)
+        hits = search_chunks("lesion enlarged 16 mm", top_k=3)
+        assert hits
+        assert int(hits[0].get("score", 0)) > 0
+        assert "16 mm" in hits[0]["snippet"].lower()
+
     def test_source_manifest_reports_chunk_count(self):
         from mosaicx.verify.audit import _build_source_manifest, _chunk_source_text
 
@@ -319,6 +333,42 @@ class TestParseAuditReport:
         assert verdicts[1].status == "mismatch"
         assert verdicts[2].status == "unsupported"
         assert verdicts[3].status == "not_checked"
+
+    def test_structured_evidence_metadata_is_preserved(self):
+        from mosaicx.verify.audit import _parse_audit_report
+
+        report = json.dumps({
+            "field_verdicts": [
+                {
+                    "field_path": "claim",
+                    "status": "mismatch",
+                    "claimed_value": "BP 120/82",
+                    "source_value": "BP 128/82",
+                    "detail": "Claimed value does not match source",
+                    "evidence": {
+                        "excerpt": "Vitals: BP 128/82 measured at triage.",
+                        "chunk_id": 11,
+                        "start": 3812,
+                        "end": 3860,
+                        "score": 9.0,
+                        "evidence_type": "text_chunk",
+                        "source": "sample_patient_vitals.pdf",
+                    },
+                }
+            ],
+            "omissions": [],
+        })
+
+        issues, verdicts = _parse_audit_report(report)
+        assert len(issues) == 1
+        assert len(verdicts) == 1
+        fv = verdicts[0]
+        assert fv.evidence_source == "sample_patient_vitals.pdf"
+        assert fv.evidence_type == "text_chunk"
+        assert fv.evidence_chunk_id == 11
+        assert fv.evidence_start == 3812
+        assert fv.evidence_end == 3860
+        assert fv.evidence_score == 9.0
 
 
 # ---------------------------------------------------------------------------

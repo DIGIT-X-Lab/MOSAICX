@@ -2611,6 +2611,40 @@ def verify(
         comparison.add_row("Evidence", _esc(_compact_text(claim_evidence or "(not available)", max_len=140)))
         console.print(Padding(comparison, (0, 0, 0, 2)))
 
+    verify_citations = result.get("citations") or []
+    if verify_citations:
+        console.print()
+        console.print(f"  [bold {theme.CORAL}]Evidence[/bold {theme.CORAL}]")
+        evidence_table = theme.make_clean_table()
+        evidence_table.add_column("Source", style=f"bold {theme.CORAL}", no_wrap=True)
+        evidence_table.add_column("Evidence")
+        evidence_table.add_column("Type", no_wrap=True)
+        evidence_table.add_column("Relevance", no_wrap=True)
+        evidence_table.add_column("Where", no_wrap=True)
+        type_labels = {
+            "claim_evidence": "claim",
+            "field_evidence": "field",
+            "supporting_text": "support",
+            "text_chunk": "chunk",
+        }
+        for citation in verify_citations[:8]:
+            source_name = _compact_text(citation.get("source") or "source_document", max_len=34)
+            snippet = _compact_text(citation.get("snippet"), max_len=120)
+            evidence_type = str(citation.get("evidence_type") or "supporting_text")
+            where = "—"
+            if citation.get("chunk_id") is not None:
+                where = f"chunk {citation.get('chunk_id')}"
+            elif citation.get("start") is not None and citation.get("end") is not None:
+                where = f"{citation.get('start')}:{citation.get('end')}"
+            evidence_table.add_row(
+                _esc(source_name or "source_document"),
+                _esc(snippet or "—"),
+                type_labels.get(evidence_type, evidence_type),
+                str(citation.get("relevance") or "medium"),
+                str(where),
+            )
+        console.print(Padding(evidence_table, (0, 0, 0, 2)))
+
     # -- Problems: the stuff that actually matters --
     if non_llm_issues:
         console.print()
