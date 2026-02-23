@@ -6,6 +6,7 @@ import csv
 import io
 import json
 import re
+import warnings
 from collections import Counter
 from pathlib import Path
 from typing import Any
@@ -280,8 +281,23 @@ def infer_table_roles(
         else:
             sample = s.dropna().astype(str).head(80)
             avg_len = float(sample.str.len().mean()) if not sample.empty else 0.0
-            parsed_dates = pd.to_datetime(sample, errors="coerce")
-            date_ratio = float(parsed_dates.notna().mean()) if not sample.empty else 0.0
+            date_ratio = 0.0
+            if not sample.empty:
+                col_lc = str(col).lower()
+                has_datetime_name_hint = any(
+                    hint in col_lc for hint in ("date", "time", "timestamp", "dob")
+                )
+                has_digit = sample.str.contains(r"\d", regex=True)
+                has_separator = sample.str.contains(r"[-/:]", regex=True)
+                parse_candidate_ratio = float((has_digit & has_separator).mean())
+                should_try_datetime_parse = (
+                    has_datetime_name_hint or parse_candidate_ratio >= 0.45
+                )
+                if should_try_datetime_parse:
+                    with warnings.catch_warnings():
+                        warnings.simplefilter("ignore", category=UserWarning)
+                        parsed_dates = pd.to_datetime(sample, errors="coerce")
+                    date_ratio = float(parsed_dates.notna().mean())
             if date_ratio >= 0.7:
                 role = "datetime"
             elif avg_len >= 48 and unique >= min(max(15, non_null // 3), non_null):
