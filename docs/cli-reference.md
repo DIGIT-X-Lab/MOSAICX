@@ -677,6 +677,7 @@ Load one or more data files and ask a question. Uses RLM (Recursive Language Mod
 | `-q`, `--question` | TEXT | No | Ask one question and print answer with evidence |
 | `--chat` | flag | No | Start a multi-turn query chat session |
 | `--citations` | INT | No | Maximum citations returned per turn (default: `3`) |
+| `--max-iterations` | INT | No | RLM iteration budget per answer (default: `8`, lower is faster) |
 | `-o`, `--output` | PATH | No | Save query turns/citations to JSON or YAML file |
 
 **Important:**

@@ -132,7 +132,7 @@ class TestQueryQuestionMode:
                 preview="Patient has a 5mm nodule.",
             )]
 
-            def ask_structured(self, question: str, *, top_k_citations: int = 3):
+            def ask_structured(self, question: str, *, max_iterations: int = 20, top_k_citations: int = 3):
                 return {
                     "question": question,
                     "answer": "There is a 5mm nodule.",
@@ -183,7 +183,7 @@ class TestQueryQuestionMode:
                 preview="Patient has a 5mm nodule.",
             )]
 
-            def ask_structured(self, question: str, *, top_k_citations: int = 3):
+            def ask_structured(self, question: str, *, max_iterations: int = 20, top_k_citations: int = 3):
                 return {
                     "question": question,
                     "answer": "5mm nodule",

@@ -517,6 +517,12 @@ mosaicx query --document report.pdf --chat
 
 Use `/exit` to end the session. Conversation history is retained during the session, so follow-up questions are context-aware.
 
+If responses are too slow, lower the RLM iteration budget:
+
+```bash
+mosaicx query --document report.pdf --chat --max-iterations 4
+```
+
 ### Query multiple documents
 
 You can load more than one document at a time:

@@ -140,6 +140,7 @@ class TestQueryEngineConversation:
         assert payload["citations"][0]["source"] == "report.txt"
         assert 0.0 <= payload["confidence"] <= 1.0
         assert payload["fallback_used"] is False
+        assert payload["rescue_used"] is False
         # user + assistant turn
         assert len(session.conversation) == 2
 
@@ -161,8 +162,38 @@ class TestQueryEngineConversation:
         assert payload["answer"]
         assert payload["fallback_used"] is True
         assert "RuntimeError" in str(payload["fallback_reason"])
+        assert "rescue_used" in payload
         assert isinstance(payload["citations"], list)
         assert len(session.conversation) == 2
+
+    def test_ask_structured_rescues_non_answer_when_evidence_exists(self, tmp_path: Path, monkeypatch):
+        """If RLM returns a non-answer but citations exist, engine should rescue."""
+        from mosaicx.query.engine import QueryEngine
+        from mosaicx.query.session import QuerySession
+
+        f = tmp_path / "report.txt"
+        f.write_text("Study Date: 2025-08-01. Findings: No suspicious nodules.")
+        session = QuerySession(sources=[f])
+        engine = QueryEngine(session=session)
+
+        monkeypatch.setattr(
+            engine,
+            "_run_query_once",
+            lambda q: (
+                "I’m unable to retrieve the report contents.",
+                [{"source": "report.txt", "snippet": "Study Date: 2025-08-01.", "score": 2}],
+            ),
+        )
+        monkeypatch.setattr(
+            engine,
+            "_rescue_answer_with_evidence",
+            lambda **kwargs: "Timeline from grounded evidence:\n- 2025-08-01 | report.txt: No suspicious nodules.",
+        )
+
+        payload = engine.ask_structured("Summarize with timeline")
+        assert payload["rescue_used"] is True
+        assert payload["rescue_reason"] == "non_answer_with_evidence"
+        assert "Timeline from grounded evidence" in payload["answer"]
 
 
 class TestQueryEngineConfig:

@@ -28,6 +28,21 @@ class TestSearchDocuments:
         results = search_documents("finding", documents=docs, top_k=3)
         assert len(results) == 3
 
+    def test_ignores_short_substring_false_positives(self):
+        from mosaicx.query.tools import search_documents
+
+        docs = {"report.txt": "Technique: contrast-enhanced CT of chest."}
+        results = search_documents("can", documents=docs, top_k=5)
+        assert len(results) == 0
+
+    def test_plural_query_matches_singular_text(self):
+        from mosaicx.query.tools import search_documents
+
+        docs = {"report.txt": "The radiology report notes no pleural effusion."}
+        results = search_documents("summarize reports", documents=docs, top_k=5)
+        assert len(results) >= 1
+        assert results[0]["source"] == "report.txt"
+
 
 class TestGetDocument:
     def test_get_by_name(self):

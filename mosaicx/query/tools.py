@@ -5,8 +5,26 @@ from __future__ import annotations
 import csv
 import io
 import json
+import re
+from collections import Counter
 from pathlib import Path
 from typing import Any
+
+
+_TOKEN_RE = re.compile(r"[a-z0-9]+")
+
+
+def _normalize_token(token: str) -> str:
+    """Lightweight token normalization for keyword matching."""
+    if token.endswith("ies") and len(token) > 4:
+        return token[:-3] + "y"
+    if token.endswith("s") and len(token) > 3:
+        return token[:-1]
+    return token
+
+
+def _extract_terms(text: str) -> list[str]:
+    return [_normalize_token(t) for t in _TOKEN_RE.findall(text.lower())]
 
 
 def search_documents(
@@ -31,13 +49,13 @@ def search_documents(
     list[dict]
         Matching results with keys: source, snippet, score.
     """
-    query_lower = query.lower()
-    raw_terms = [t for t in query_lower.split() if t.strip()]
+    raw_terms = _extract_terms(query)
     stopwords = {
         "the", "a", "an", "and", "or", "of", "in", "on", "to", "for", "with",
         "is", "are", "was", "were", "be", "been", "being", "what", "which",
         "who", "whom", "when", "where", "why", "how", "does", "do", "did",
-        "please", "show", "tell", "about",
+        "please", "show", "tell", "about", "can", "you", "your", "my", "me",
+        "from", "that", "this", "those", "these", "there", "their", "them",
     }
     query_terms = [t for t in raw_terms if len(t) >= 2 and t not in stopwords]
     if not query_terms:
@@ -45,21 +63,33 @@ def search_documents(
     results: list[dict[str, Any]] = []
 
     for name, text in documents.items():
-        text_lower = text.lower()
         if not query_terms:
             continue
 
-        term_counts = {term: text_lower.count(term) for term in query_terms}
+        tokens = _extract_terms(text)
+        counts = Counter(tokens)
+        term_counts = {term: counts.get(term, 0) for term in query_terms}
         score = sum(term_counts.values())
         if score > 0:
             # Anchor snippet around strongest match term.
             anchor = max(term_counts, key=term_counts.get)
-            idx = text_lower.find(anchor)
-            if idx < 0:
-                idx = 0
-            start = max(0, idx - 50)
-            end = min(len(text), idx + 200)
-            snippet = text[start:end]
+            snippet = ""
+            line_match = re.compile(rf"\b{re.escape(anchor)}s?\b", flags=re.IGNORECASE)
+
+            # Prefer a full line containing the anchor term if available.
+            for raw_line in text.splitlines():
+                line = " ".join(raw_line.split()).strip()
+                if line and line_match.search(line):
+                    snippet = line
+                    break
+
+            if not snippet:
+                match = line_match.search(text)
+                idx = match.start() if match else 0
+                start = max(0, idx - 120)
+                end = min(len(text), idx + 320)
+                snippet = " ".join(text[start:end].split())
+
             results.append({"source": name, "snippet": snippet, "score": score})
 
     results.sort(key=lambda r: r["score"], reverse=True)

@@ -77,7 +77,18 @@ def _configure_dspy() -> None:
 
     ensure_runtime_env()
 
+    import os
+
     cfg = get_config()
+    cache_dir = cfg.home_dir / ".dspy_cache"
+    try:
+        cache_dir.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        cache_dir = Path("/tmp/mosaicx_dspy_cache")
+        cache_dir.mkdir(parents=True, exist_ok=True)
+    os.environ.setdefault("DSPY_CACHEDIR", str(cache_dir))
+    os.environ.setdefault("LITELLM_LOCAL_MODEL_COST_MAP", "True")
+
     if not cfg.api_key:
         raise click.ClickException(
             "No API key configured. Set MOSAICX_API_KEY or add api_key to your config."
@@ -88,6 +99,14 @@ def _configure_dspy() -> None:
         raise click.ClickException(
             "DSPy is required for this command. Install with: pip install dspy"
         )
+    import logging
+
+    # Keep interactive CLI output clean; surface failures via MOSAICX messages.
+    logging.getLogger("dspy.predict.rlm").setLevel(logging.ERROR)
+    logging.getLogger("LiteLLM").setLevel(logging.ERROR)
+    logging.getLogger("litellm").setLevel(logging.ERROR)
+    os.environ.setdefault("LITELLM_LOG", "ERROR")
+
     from .metrics import TokenTracker, make_harmony_lm, set_tracker
 
     lm = make_harmony_lm(cfg.lm, api_key=cfg.api_key, api_base=cfg.api_base, temperature=cfg.lm_temperature)
@@ -99,9 +118,6 @@ def _configure_dspy() -> None:
     set_tracker(tracker)
     dspy.settings.usage_tracker = tracker
     dspy.settings.track_usage = True
-
-    model_name = cfg.lm.split("/", 1)[-1] if "/" in cfg.lm else cfg.lm
-    console.print(theme.info(f"Model: {model_name}"))
 
 
 # ---------------------------------------------------------------------------
@@ -3073,6 +3089,7 @@ def config_set(key: str, value: str) -> None:
 @click.option("--question", "-q", type=str, default=None, help="Ask a single question (non-interactive).")
 @click.option("--chat", is_flag=True, default=False, help="Start a multi-turn query chat session.")
 @click.option("--citations", type=int, default=3, show_default=True, help="Maximum citations to return per answer.")
+@click.option("--max-iterations", type=int, default=8, show_default=True, help="RLM iteration budget per answer (lower is faster).")
 @click.option("--output", "-o", type=click.Path(path_type=Path), default=None, help="Save output to file (.json or .yaml/.yml).")
 def query(
     document: tuple[Path, ...],
@@ -3080,6 +3097,7 @@ def query(
     question: Optional[str],
     chat: bool,
     citations: int,
+    max_iterations: int,
     output: Optional[Path],
 ) -> None:
     """Query documents and data sources with natural language.
@@ -3119,40 +3137,99 @@ def query(
         table.add_row(src.name, src.format, src.source_type, f"{src.size:,} B")
     console.print(Padding(table, (0, 0, 0, 2)))
 
-    def _compact_query_text(value: Any, *, max_len: int = 180) -> str:
+    def _compact_query_text(value: Any, *, max_len: int = 220) -> str:
         text = " ".join(str(value).split())
         if len(text) <= max_len:
             return text
-        return text[: max_len - 1] + "…"
+        clipped = text[: max_len - 1].rstrip()
+        if " " in clipped:
+            clipped = clipped.rsplit(" ", 1)[0]
+        return clipped + "…"
+
+    def _normalize_answer_text(value: Any) -> str:
+        lines: list[str] = []
+        prev_norm = ""
+        for raw_line in str(value).splitlines():
+            stripped = raw_line.strip()
+            if not stripped:
+                if lines and lines[-1]:
+                    lines.append("")
+                continue
+            norm = re.sub(r"\s+", " ", stripped).lower()
+            if norm == prev_norm:
+                continue
+            prev_norm = norm
+            lines.append(stripped)
+        return "\n".join(lines).strip()
+
+    def _snippet_for_display(value: Any, *, max_len: int = 260) -> str:
+        text = " ".join(str(value).split()).strip()
+        if not text:
+            return "(no snippet)"
+        sentences = re.split(r"(?<=[.!?])\s+", text)
+        if sentences and 40 <= len(sentences[0]) <= max_len:
+            return sentences[0]
+        return _compact_query_text(text, max_len=max_len)
+
+    def _relevance_label(score: int, max_score: int) -> str:
+        if max_score <= 0:
+            return "low"
+        ratio = score / max_score
+        if ratio >= 0.67:
+            return "high"
+        if ratio >= 0.34:
+            return "medium"
+        return "low"
 
     def _render_query_payload(payload: dict[str, Any]) -> None:
         if payload.get("fallback_used"):
             reason = str(payload.get("fallback_reason") or "unknown")
             console.print(theme.warn(f"LLM fallback active -- { _compact_query_text(reason, max_len=140) }"))
+        elif payload.get("rescue_used"):
+            console.print(theme.info("Recovered final answer from grounded evidence"))
 
-        answer = str(payload.get("answer") or "").strip()
+        answer = _normalize_answer_text(payload.get("answer") or "")
         if answer:
-            console.print(Padding(answer, (1, 2, 0, 4)))
+            console.print(
+                Padding(
+                    Panel(
+                        _esc(answer),
+                        title=f"[bold {theme.CORAL}]Answer[/bold {theme.CORAL}]",
+                        border_style=theme.GREIGE,
+                        box=box.ROUNDED,
+                    ),
+                    (1, 2, 0, 2),
+                )
+            )
 
         citations_payload = payload.get("citations") or []
         if citations_payload:
             console.print()
             console.print(f"  [bold {theme.CORAL}]Evidence[/bold {theme.CORAL}]")
             ctab = theme.make_clean_table()
-            ctab.add_column("Source", style=f"bold {theme.CORAL}", no_wrap=True)
-            ctab.add_column("Snippet")
-            ctab.add_column("Score", justify="right", no_wrap=True)
+            ctab.add_column("Source", style=f"bold {theme.CORAL}", no_wrap=True, width=34)
+            ctab.add_column("Evidence")
+            ctab.add_column("Relevance", justify="right", no_wrap=True)
+            max_score = max(int(c.get("score", 0) or 0) for c in citations_payload)
             for c in citations_payload:
+                score = int(c.get("score", 0) or 0)
                 ctab.add_row(
                     _esc(_compact_query_text(c.get("source"), max_len=40)),
-                    _esc(_compact_query_text(c.get("snippet"), max_len=160)),
-                    str(c.get("score", 0)),
+                    _esc(_snippet_for_display(c.get("snippet"), max_len=280)),
+                    _relevance_label(score, max_score),
                 )
             console.print(Padding(ctab, (0, 0, 0, 2)))
 
         conf = payload.get("confidence")
-        if isinstance(conf, (int, float)):
-            console.print(theme.info(f"Grounding confidence: {float(conf):.2f}"))
+        if citations_payload and isinstance(conf, (int, float)):
+            conf_value = float(conf)
+            if conf_value >= 0.8:
+                grade = "high"
+            elif conf_value >= 0.45:
+                grade = "medium"
+            else:
+                grade = "low"
+            console.print(theme.info(f"Grounding: {grade} ({conf_value:.2f})"))
 
     # Question/chat modes
     if question is not None or chat:
@@ -3166,8 +3243,12 @@ def query(
         }
 
         def _ask_once(q: str) -> dict[str, Any]:
-            with theme.spinner("Querying... thinking with code", console):
-                return session.ask_structured(q, top_k_citations=max(1, citations))
+            with theme.spinner("Querying sources...", console):
+                return session.ask_structured(
+                    q,
+                    max_iterations=max(1, max_iterations),
+                    top_k_citations=max(1, citations),
+                )
 
         if question is not None:
             payload = _ask_once(question)
@@ -3179,7 +3260,7 @@ def query(
             console.print(theme.info("Chat mode active. Type /exit to finish."))
             while True:
                 try:
-                    prompt_text = Prompt.ask(f"[bold {theme.CORAL}]You[/bold {theme.CORAL}]")
+                    prompt_text = Prompt.ask(f"  [bold {theme.CORAL}]You[/bold {theme.CORAL}]")
                 except (EOFError, KeyboardInterrupt):
                     console.print()
                     break

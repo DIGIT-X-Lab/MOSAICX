@@ -19,6 +19,22 @@ if TYPE_CHECKING:
     from mosaicx.query.session import QuerySession
 
 
+_NON_ANSWER_MARKERS = (
+    "unable to retrieve",
+    "unable to provide",
+    "unable to access",
+    "cannot retrieve",
+    "cannot provide",
+    "cannot access",
+    "can't retrieve",
+    "can't provide",
+    "do not have access",
+    "not available",
+    "insufficient information",
+    "no further details are available",
+)
+
+
 def _text_for_data(value: Any) -> str:
     """Convert a loaded data value to a text representation for tools.
 
@@ -202,12 +218,20 @@ class QueryEngine:
                 # Keep query available even if sub-model init fails.
                 pass
 
+        guidance = (
+            "Use only grounded evidence from retrieval/tool outputs. "
+            "If evidence exists, answer directly and do not claim sources are unavailable. "
+            "For timeline/date questions, return concise chronological bullets. "
+            "Avoid repeating headings."
+        )
+
         rlm = dspy.RLM(
-            "catalog, history, retrieval, question -> answer",
+            "guidance, catalog, history, retrieval, question -> answer",
             **rlm_kwargs,
         )
 
         prediction = rlm(
+            guidance=guidance,
             catalog=catalog_text,
             history=history_text,
             retrieval=retrieval_text,
@@ -257,6 +281,94 @@ class QueryEngine:
         max_score = max(int(c.get("score", 0)) for c in citations)
         return max(0.0, min(1.0, max_score / denom))
 
+    def _looks_like_non_answer(self, answer: str) -> bool:
+        text = " ".join(answer.lower().split())
+        if not text:
+            return True
+        return any(marker in text for marker in _NON_ANSWER_MARKERS)
+
+    def _fallback_answer_from_citations(
+        self,
+        *,
+        question: str,
+        citations: list[dict[str, Any]],
+    ) -> str | None:
+        if not citations:
+            return None
+
+        q = question.lower()
+        is_timeline = "timeline" in q or "chronolog" in q or "over time" in q
+        lines: list[str] = []
+
+        if is_timeline:
+            dated: list[tuple[str, str, str]] = []
+            undated: list[tuple[str, str]] = []
+            for c in citations[:6]:
+                source = str(c.get("source") or "unknown")
+                snippet = " ".join(str(c.get("snippet") or "").split())
+                date_match = re.search(r"\b\d{4}-\d{2}-\d{2}\b", snippet)
+                if date_match:
+                    dated.append((date_match.group(0), source, snippet))
+                else:
+                    undated.append((source, snippet))
+            dated.sort(key=lambda x: x[0])
+            if dated:
+                lines.append("Timeline from grounded evidence:")
+                for date_str, source, snippet in dated[:4]:
+                    lines.append(f"- {date_str} | {source}: {snippet[:220]}")
+            for source, snippet in undated[:2]:
+                lines.append(f"- {source}: {snippet[:220]}")
+        else:
+            lines.append("Grounded summary from loaded sources:")
+            for c in citations[:4]:
+                source = str(c.get("source") or "unknown")
+                snippet = " ".join(str(c.get("snippet") or "").split())
+                lines.append(f"- {source}: {snippet[:240]}")
+
+        text = "\n".join(lines).strip()
+        return text or None
+
+    def _rescue_answer_with_evidence(
+        self,
+        *,
+        question: str,
+        citations: list[dict[str, Any]],
+    ) -> str | None:
+        if not citations:
+            return None
+
+        try:
+            import dspy
+        except Exception:
+            return self._fallback_answer_from_citations(question=question, citations=citations)
+
+        evidence_blocks: list[str] = []
+        for idx, c in enumerate(citations[:6], start=1):
+            source = str(c.get("source") or "unknown")
+            snippet = " ".join(str(c.get("snippet") or "").split())
+            evidence_blocks.append(f"[{idx}] {source}: {snippet[:360]}")
+
+        guidance = (
+            "Answer the question using only the evidence snippets. "
+            "Do not say the files are unavailable when evidence is present. "
+            "If the question asks for a timeline, return chronological bullets with dates. "
+            "Be concise and concrete."
+        )
+        predictor = dspy.Predict("guidance, question, evidence -> answer")
+        try:
+            pred = predictor(
+                guidance=guidance,
+                question=question.strip(),
+                evidence="\n".join(evidence_blocks),
+            )
+            rescued = str(getattr(pred, "answer", "")).strip()
+            if rescued and not self._looks_like_non_answer(rescued):
+                return rescued
+        except Exception:
+            pass
+
+        return self._fallback_answer_from_citations(question=question, citations=citations)
+
     def ask_structured(
         self,
         question: str,
@@ -271,6 +383,8 @@ class QueryEngine:
 
         fallback_used = False
         fallback_reason: str | None = None
+        rescue_used = False
+        rescue_reason: str | None = None
 
         try:
             answer, seed_hits = self._run_query_once(question.strip())
@@ -293,7 +407,7 @@ class QueryEngine:
                 )
             else:
                 answer = (
-                    "LLM unavailable and no matching evidence was found in the loaded sources."
+                    "LLM unavailable. Could not compute a full answer; use the evidence table below."
                 )
 
         citations = self._build_citations(
@@ -302,6 +416,21 @@ class QueryEngine:
             seed_hits=seed_hits,
             top_k=max(1, top_k_citations),
         )
+        if citations and self._looks_like_non_answer(answer):
+            rescued = self._rescue_answer_with_evidence(
+                question=question.strip(),
+                citations=citations,
+            )
+            if rescued:
+                answer = rescued
+                rescue_used = True
+                rescue_reason = "non_answer_with_evidence"
+                citations = self._build_citations(
+                    question=question.strip(),
+                    answer=answer,
+                    seed_hits=seed_hits,
+                    top_k=max(1, top_k_citations),
+                )
         confidence = self._citation_confidence(question.strip(), citations)
 
         self._session.add_turn("user", question.strip())
@@ -316,6 +445,8 @@ class QueryEngine:
             "turn_index": len(self._session.conversation) // 2,
             "fallback_used": fallback_used,
             "fallback_reason": fallback_reason,
+            "rescue_used": rescue_used,
+            "rescue_reason": rescue_reason,
         }
 
     def ask(self, question: str) -> str:
