@@ -1261,12 +1261,61 @@ class QueryEngine:
         if isinstance(rows[0], dict) and rows[0].get("error"):
             return None
 
+        q = " ".join(question.lower().split())
+        wants_count = ("how many" in q) or ("number of" in q) or ("count" in q)
+        wants_values = self._has_value_list_marker(question) or self._is_count_plus_values_request(question)
+        wants_distribution = self._is_distribution_request(question)
+
         preview_rows = rows[:6]
         serialized_rows = json.dumps(preview_rows, default=str, ensure_ascii=False)
 
-        if len(preview_rows) == 1 and isinstance(preview_rows[0], dict) and len(preview_rows[0]) == 1:
+        def _is_int_like(value: Any) -> bool:
+            text = str(value).strip()
+            if not text:
+                return False
+            try:
+                parsed = float(text)
+            except ValueError:
+                return False
+            return parsed.is_integer()
+
+        value_column = ""
+        count_column = ""
+        if preview_rows and all(isinstance(r, dict) for r in preview_rows):
+            columns = list(preview_rows[0].keys())
+            for candidate in columns:
+                c_norm = re.sub(r"[^a-z0-9]+", "_", str(candidate).lower()).strip("_")
+                if c_norm in {"count", "cnt", "n", "freq", "frequency"}:
+                    if all(_is_int_like(r.get(candidate)) for r in preview_rows):
+                        count_column = str(candidate)
+                        break
+            if count_column:
+                for candidate in columns:
+                    if str(candidate) == count_column:
+                        continue
+                    value_column = str(candidate)
+                    break
+
+        answer: str
+        if value_column and count_column and (wants_distribution or wants_values):
+            pairs = [
+                f"{str(r.get(value_column))}={int(float(str(r.get(count_column) or 0)))}"
+                for r in preview_rows[:10]
+            ]
+            values = [str(r.get(value_column)) for r in preview_rows[:10]]
+            if wants_distribution:
+                answer = f"{value_column} distribution ({len(rows)} groups): {', '.join(pairs)}."
+            elif wants_count:
+                answer = f"There are {len(rows)} distinct {value_column} values: {', '.join(values)}."
+            else:
+                answer = f"Distinct {value_column} values: {', '.join(values)}."
+        elif len(preview_rows) == 1 and isinstance(preview_rows[0], dict) and len(preview_rows[0]) == 1:
             key, value = next(iter(preview_rows[0].items()))
-            answer = f"{key}: {value}."
+            key_norm = re.sub(r"[^a-z0-9]+", "_", str(key).lower()).strip("_")
+            if wants_count and any(token in key_norm for token in ("count", "n", "total", "rows")):
+                answer = f"There are {value}."
+            else:
+                answer = f"{key}: {value}."
         elif len(preview_rows) == 1:
             answer = f"Computed result: {serialized_rows}"
         else:
@@ -1288,12 +1337,129 @@ class QueryEngine:
                 "row_count": len(rows),
             }
         ]
+        if value_column and count_column:
+            for row in preview_rows[:10]:
+                try:
+                    count_value = int(float(str(row.get(count_column) or 0)))
+                except ValueError:
+                    count_value = 0
+                seed_hits.append(
+                    {
+                        "source": source,
+                        "snippet": (
+                            f"Distinct {value_column}: {row.get(value_column)} "
+                            f"(count={count_value}, engine=duckdb-sql)"
+                        ),
+                        "score": 90,
+                        "evidence_type": "table_value",
+                        "operation": "distinct_values",
+                        "column": value_column,
+                        "value": row.get(value_column),
+                        "count": count_value,
+                        "backend": "duckdb-sql",
+                    }
+                )
+            seed_hits.append(
+                {
+                    "source": source,
+                    "snippet": (
+                        f"Computed unique_count of {value_column} from SQL result: "
+                        f"{len(rows)} groups (engine=duckdb-sql)"
+                    ),
+                    "score": 88,
+                    "evidence_type": "table_stat",
+                    "operation": "nunique",
+                    "column": value_column,
+                    "value": len(rows),
+                    "backend": "duckdb-sql",
+                }
+            )
         self._session.set_state(
             last_tabular_source=source,
             last_tabular_sql=sql,
+            last_tabular_column=value_column or self._session.get_state("last_tabular_column", ""),
             last_intent="sql_analytic",
         )
         return answer, self._merge_hits(seed_hits, max_hits=8), "sql_analytic"
+
+    def _question_mentions_explicit_column(self, question: str) -> bool:
+        if not self._has_tabular_sources():
+            return False
+        q = " ".join(question.lower().split())
+        q_terms = {
+            self._normalize_term(t)
+            for t in re.findall(r"[a-z0-9]+", q)
+            if len(t) >= 2
+        }
+        if not q_terms:
+            return False
+        profiles = self._build_table_profiles(max_columns=200, top_values=0)
+        for profile in profiles.values():
+            columns = profile.get("columns", [])
+            if not isinstance(columns, list):
+                continue
+            for col in columns:
+                if not isinstance(col, dict):
+                    continue
+                name = str(col.get("name") or "").strip()
+                if not name:
+                    continue
+                name_lc = name.lower()
+                if name_lc in q:
+                    return True
+                col_terms = {
+                    self._normalize_term(t)
+                    for t in re.findall(r"[a-z0-9]+", name_lc)
+                    if len(t) >= 2
+                }
+                if col_terms and len(col_terms) <= 4 and col_terms.issubset(q_terms):
+                    return True
+        return False
+
+    def _should_try_programmatic_first(
+        self,
+        *,
+        question: str,
+        route: IntentDecision,
+    ) -> bool:
+        if not self._has_tabular_sources():
+            return False
+        if self._is_schema_question(question):
+            return False
+        q = " ".join(question.lower().split())
+        row_count_markers = {"row", "rows", "record", "records", "entry", "entries", "observation", "observations", "sample", "samples"}
+        q_terms = {
+            self._normalize_term(t)
+            for t in re.findall(r"[a-z0-9]+", q)
+            if len(t) >= 2
+        }
+        is_row_count_only = (
+            route.intent == "count"
+            and bool(q_terms & row_count_markers)
+            and not self._has_value_list_marker(question)
+            and not self._is_distribution_request(question)
+        )
+        if is_row_count_only:
+            return False
+
+        analytic_like = (
+            route.intent in {"aggregate", "count_values", "mixed"}
+            or (route.intent == "count" and not is_row_count_only)
+            or self._requires_computed_evidence(question)
+        )
+        if not analytic_like:
+            return False
+
+        explicit_column = self._question_mentions_explicit_column(question)
+        explicit_simple_aggregate = (
+            explicit_column
+            and route.intent in {"count", "aggregate"}
+            and not self._is_distribution_request(question)
+            and not self._has_value_list_marker(question)
+        )
+        if explicit_simple_aggregate:
+            return False
+        return True
 
     def _salient_terms(self, text: str, *, min_len: int = 3) -> set[str]:
         return {
@@ -1628,86 +1794,93 @@ class QueryEngine:
             # Keep enough room for count evidence + category values.
             effective_top_k = max(effective_top_k, 6)
 
-        deterministic = self._try_deterministic_tabular_answer(question.strip())
-        if deterministic is not None:
-            answer, seed_hits, deterministic_intent = deterministic
-            deterministic_used = True
-        else:
-            run_error: Exception | None = None
-            attempt_questions = [
-                resolved_question,
-                (
-                    f"{resolved_question}\n"
-                    "Return a concise plain-text answer grounded only in tool evidence. "
-                    "Avoid JSON wrappers."
-                ),
-            ]
-            answer = ""
-            seed_hits: list[dict[str, Any]] = []
-            for idx, attempt_question in enumerate(attempt_questions):
-                try:
-                    answer, seed_hits = self._run_query_once(attempt_question)
-                    run_error = None
-                    break
-                except Exception as exc:
-                    run_error = exc
-                    exc_text = f"{type(exc).__name__}: {exc}"
-                    is_adapter_parse = (
-                        "AdapterParseError" in exc_text
-                        or "JSONAdapter" in exc_text
-                        or "cannot be serialized to a JSON object" in exc_text.lower()
-                    )
-                    if not is_adapter_parse:
-                        break
-                    if idx + 1 >= len(attempt_questions):
-                        break
+        answer = ""
+        seed_hits: list[dict[str, Any]] = []
+        if self._should_try_programmatic_first(question=resolved_question, route=route):
+            sql_primary = self._attempt_programmatic_sql_answer(resolved_question)
+            if sql_primary is not None:
+                answer, seed_hits, deterministic_intent = sql_primary
+                deterministic_used = True
 
-            if run_error is not None:
-                from mosaicx.query.tools import (
-                    analyze_table_question,
-                    search_documents,
-                    search_tables,
-                    suggest_table_columns,
-                )
+        if not answer:
+            deterministic = self._try_deterministic_tabular_answer(question.strip())
+            if deterministic is not None:
+                answer, seed_hits, deterministic_intent = deterministic
+                deterministic_used = True
+            else:
+                run_error: Exception | None = None
+                attempt_questions = [
+                    resolved_question,
+                    (
+                        f"{resolved_question}\n"
+                        "Return a concise plain-text answer grounded only in tool evidence. "
+                        "Avoid JSON wrappers."
+                    ),
+                ]
+                for idx, attempt_question in enumerate(attempt_questions):
+                    try:
+                        answer, seed_hits = self._run_query_once(attempt_question)
+                        run_error = None
+                        break
+                    except Exception as exc:
+                        run_error = exc
+                        exc_text = f"{type(exc).__name__}: {exc}"
+                        is_adapter_parse = (
+                            "AdapterParseError" in exc_text
+                            or "JSONAdapter" in exc_text
+                            or "cannot be serialized to a JSON object" in exc_text.lower()
+                        )
+                        if not is_adapter_parse:
+                            break
+                        if idx + 1 >= len(attempt_questions):
+                            break
 
-                fallback_used = True
-                fallback_reason = f"{type(run_error).__name__}: {run_error}"
-                fallback_code = "adapter_parse_error" if "AdapterParseError" in fallback_reason else "lm_runtime_error"
-                text_hits = search_documents(
-                    resolved_question,
-                    documents=self._documents,
-                    top_k=max(3, effective_top_k),
-                )
-                table_hits = search_tables(
-                    resolved_question,
-                    data=self._session.data,
-                    top_k=max(3, effective_top_k),
-                )
-                computed_hits = analyze_table_question(
-                    resolved_question,
-                    data=self._session.data,
-                    top_k=max(3, effective_top_k),
-                )
-                column_hits = suggest_table_columns(
-                    resolved_question,
-                    data=self._session.data,
-                    top_k=max(3, effective_top_k),
-                )
-                seed_hits = self._merge_hits(
-                    [*computed_hits, *column_hits, *table_hits, *text_hits],
-                    max_hits=max(4, effective_top_k * 2),
-                )
-                if seed_hits:
-                    top = seed_hits[0]
-                    snippet = " ".join(str(top.get("snippet") or "").split())
-                    answer = (
-                        f"LLM unavailable. Best matching evidence is from "
-                        f"{top.get('source', 'unknown')}: {snippet[:220]}"
+                if run_error is not None:
+                    from mosaicx.query.tools import (
+                        analyze_table_question,
+                        search_documents,
+                        search_tables,
+                        suggest_table_columns,
                     )
-                else:
-                    answer = (
-                        "LLM unavailable. Could not compute a full answer; use the evidence table below."
+
+                    fallback_used = True
+                    fallback_reason = f"{type(run_error).__name__}: {run_error}"
+                    fallback_code = "adapter_parse_error" if "AdapterParseError" in fallback_reason else "lm_runtime_error"
+                    text_hits = search_documents(
+                        resolved_question,
+                        documents=self._documents,
+                        top_k=max(3, effective_top_k),
                     )
+                    table_hits = search_tables(
+                        resolved_question,
+                        data=self._session.data,
+                        top_k=max(3, effective_top_k),
+                    )
+                    computed_hits = analyze_table_question(
+                        resolved_question,
+                        data=self._session.data,
+                        top_k=max(3, effective_top_k),
+                    )
+                    column_hits = suggest_table_columns(
+                        resolved_question,
+                        data=self._session.data,
+                        top_k=max(3, effective_top_k),
+                    )
+                    seed_hits = self._merge_hits(
+                        [*computed_hits, *column_hits, *table_hits, *text_hits],
+                        max_hits=max(4, effective_top_k * 2),
+                    )
+                    if seed_hits:
+                        top = seed_hits[0]
+                        snippet = " ".join(str(top.get("snippet") or "").split())
+                        answer = (
+                            f"LLM unavailable. Best matching evidence is from "
+                            f"{top.get('source', 'unknown')}: {snippet[:220]}"
+                        )
+                    else:
+                        answer = (
+                            "LLM unavailable. Could not compute a full answer; use the evidence table below."
+                        )
 
         citations = self._build_citations(
             question=resolved_question,

@@ -490,16 +490,27 @@ class ProgrammaticTableAnalyst:
 
         schema_blocks: list[str] = []
         for source, profile in table_profiles.items():
-            cols = [
-                str(c.get("name"))
-                for c in profile.get("columns", [])[:80]
-                if isinstance(c, dict) and c.get("name")
-            ]
-            schema_blocks.append(f"Table: {source}\nColumns: {', '.join(cols)}")
+            lines = [f"Table: {source}", f"Rows: {profile.get('rows', 'unknown')}"]
+            for col in profile.get("columns", [])[:80]:
+                if not isinstance(col, dict) or not col.get("name"):
+                    continue
+                col_name = str(col.get("name"))
+                role = str(col.get("role") or "unknown")
+                values = col.get("top_values") if isinstance(col.get("top_values"), list) else []
+                preview_values: list[str] = []
+                for item in values[:4]:
+                    if isinstance(item, dict) and item.get("value") is not None:
+                        preview_values.append(str(item.get("value")))
+                preview = f" top_values={','.join(preview_values)}" if preview_values else ""
+                lines.append(f"- {col_name} [{role}]{preview}")
+            schema_blocks.append("\n".join(lines))
 
         guidance = (
             "Generate a safe, read-only SQL query for a single selected source table. "
             "Use only SELECT queries and reference table alias `_mosaicx_table`. "
+            "For distribution/category questions, return rows with aliases `value` and `count` "
+            "(GROUP BY category, COUNT(*) AS count). "
+            "For count-distinct questions, use COUNT(DISTINCT ...) with alias `count`. "
             "Return source as one table name from schema and sql as executable query."
         )
         try:

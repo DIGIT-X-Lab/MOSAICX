@@ -248,6 +248,110 @@ class TestQueryEngineConversation:
         assert "F=2" in answer or "female=2" in answer.lower()
         assert any(c.get("evidence_type") == "table_value" for c in payload["citations"])
 
+    def test_semantic_count_values_prefers_programmatic_first(self, tmp_path: Path, monkeypatch):
+        """Semantic category questions should use programmatic SQL before lexical fallback."""
+        from mosaicx.query.engine import QueryEngine
+        from mosaicx.query.session import QuerySession
+
+        f = tmp_path / "cohort.csv"
+        f.write_text("Subject,Sex\nS1,M\nS2,F\nS3,M\n")
+        session = QuerySession(sources=[f])
+        engine = QueryEngine(session=session)
+
+        det_called = {"value": False}
+
+        def _deterministic(_q: str):
+            det_called["value"] = True
+            return None
+
+        monkeypatch.setattr(engine, "_try_deterministic_tabular_answer", _deterministic)
+        monkeypatch.setattr(
+            engine,
+            "_attempt_programmatic_sql_answer",
+            lambda _q: (
+                "Sex distribution (2 groups): M=2, F=1.",
+                [
+                    {
+                        "source": "cohort.csv",
+                        "snippet": "Distinct Sex: M (count=2, engine=duckdb-sql)",
+                        "score": 90,
+                        "evidence_type": "table_value",
+                        "operation": "distinct_values",
+                        "column": "Sex",
+                        "value": "M",
+                        "count": 2,
+                        "backend": "duckdb-sql",
+                    },
+                    {
+                        "source": "cohort.csv",
+                        "snippet": "Distinct Sex: F (count=1, engine=duckdb-sql)",
+                        "score": 90,
+                        "evidence_type": "table_value",
+                        "operation": "distinct_values",
+                        "column": "Sex",
+                        "value": "F",
+                        "count": 1,
+                        "backend": "duckdb-sql",
+                    },
+                    {
+                        "source": "cohort.csv",
+                        "snippet": "Computed unique_count of Sex from SQL result: 2 groups (engine=duckdb-sql)",
+                        "score": 88,
+                        "evidence_type": "table_stat",
+                        "operation": "nunique",
+                        "column": "Sex",
+                        "value": 2,
+                        "backend": "duckdb-sql",
+                    },
+                ],
+                "sql_analytic",
+            ),
+        )
+        monkeypatch.setattr(engine, "_build_citations", lambda **kwargs: kwargs.get("seed_hits", []))
+
+        payload = engine.ask_structured("how many genders are there and what are they?")
+        assert det_called["value"] is False
+        assert payload["deterministic_used"] is True
+        assert payload["deterministic_intent"] == "sql_analytic"
+        assert "M=2" in str(payload["answer"])
+
+    def test_attempt_programmatic_sql_answer_formats_distribution_rows(self, tmp_path: Path, monkeypatch):
+        """Programmatic SQL path should emit readable distribution answers with value evidence."""
+        from mosaicx.query.engine import QueryEngine
+        from mosaicx.query.session import QuerySession
+
+        f = tmp_path / "cohort.csv"
+        f.write_text("Subject,Sex\nS1,M\nS2,F\nS3,M\nS4,F\nS5,M\n")
+        session = QuerySession(sources=[f])
+        engine = QueryEngine(session=session)
+
+        monkeypatch.setattr(
+            engine._programmatic_analyst,  # noqa: SLF001 - intentional planner stub
+            "propose_sql",
+            lambda **kwargs: {
+                "source": "cohort.csv",
+                "sql": "SELECT Sex AS value, COUNT(*) AS count FROM _mosaicx_table GROUP BY 1 ORDER BY count DESC",
+                "rationale": "sex distribution",
+            },
+        )
+        monkeypatch.setattr(
+            "mosaicx.query.tools.run_table_sql",
+            lambda name, *, data, sql, limit=25: [
+                {"value": "M", "count": "3"},
+                {"value": "F", "count": "2"},
+            ],
+        )
+
+        result = engine._attempt_programmatic_sql_answer("what is the distribution of male and female in the cohort?")
+        assert result is not None
+        answer, hits, intent = result
+        assert intent == "sql_analytic"
+        assert "distribution" in answer.lower()
+        assert "M=3" in answer or "m=3" in answer.lower()
+        assert "F=2" in answer or "f=2" in answer.lower()
+        assert any(h.get("evidence_type") == "table_value" for h in hits)
+        assert any(h.get("evidence_type") == "table_stat" for h in hits)
+
     def test_try_deterministic_tabular_answer_ignores_none_operation(self, tmp_path: Path, monkeypatch):
         """Planner output with operation='none' should not trigger aggregate compute crashes."""
         from mosaicx.query.control_plane import IntentDecision
@@ -491,8 +595,7 @@ class TestQueryEngineConversation:
         )
 
         payload = engine.ask_structured("what is the 95th percentile bmi?")
-        assert payload["rescue_used"] is True
-        assert payload["rescue_reason"] == "programmatic_sql"
+        assert payload["deterministic_used"] is True
         assert payload["deterministic_intent"] == "sql_analytic"
         assert "mean_bmi: 25" in payload["answer"]
         assert payload["rescue_reason"] != "missing_computed_evidence"
