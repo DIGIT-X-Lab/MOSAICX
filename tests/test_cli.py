@@ -50,6 +50,13 @@ class TestCLISkeleton:
         result = runner.invoke(cli, ["optimize", "--help"])
         assert result.exit_code == 0
 
+    def test_eval_command_registered(self):
+        from mosaicx.cli import cli
+        runner = CliRunner()
+        result = runner.invoke(cli, ["eval", "--help"])
+        assert result.exit_code == 0
+        assert "--quality-gate" in result.output
+
     def test_config_command_registered(self):
         from mosaicx.cli import cli
         runner = CliRunner()

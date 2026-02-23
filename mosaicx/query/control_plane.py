@@ -486,21 +486,21 @@ class ProgrammaticTableAnalyst:
         if getattr(dspy.settings, "lm", None) is None:
             return None
         schema_text = self._schema_text(table_profiles)
-        pot_plan = self._propose_sql_with_program_of_thought(
+        codeact_plan = self._propose_sql_with_codeact(
             dspy=dspy,
             question=question,
             history=history,
-            schema=schema_text,
+            table_schema=schema_text,
             table_profiles=table_profiles,
         )
-        if pot_plan is not None:
-            return pot_plan
+        if codeact_plan is not None:
+            return codeact_plan
 
-        return self._propose_sql_with_codeact(
+        return self._propose_sql_with_program_of_thought(
             dspy=dspy,
             question=question,
             history=history,
-            schema=schema_text,
+            table_schema=schema_text,
             table_profiles=table_profiles,
         )
 
@@ -548,7 +548,7 @@ class ProgrammaticTableAnalyst:
         dspy: Any,
         question: str,
         history: str,
-        schema: str,
+        table_schema: str,
         table_profiles: dict[str, dict[str, Any]],
     ) -> dict[str, str] | None:
         if not hasattr(dspy, "ProgramOfThought"):
@@ -564,13 +564,13 @@ class ProgrammaticTableAnalyst:
         )
         try:
             pot = dspy.ProgramOfThought(
-                "guidance, question, history, schema -> source, sql, rationale"
+                "guidance, question, history, table_schema -> source, sql, rationale"
             )
             pred = pot(
                 guidance=guidance,
                 question=question.strip(),
                 history=_compact(history, limit=900),
-                schema=schema,
+                table_schema=table_schema,
             )
         except Exception:
             return None
@@ -588,7 +588,7 @@ class ProgrammaticTableAnalyst:
         dspy: Any,
         question: str,
         history: str,
-        schema: str,
+        table_schema: str,
         table_profiles: dict[str, dict[str, Any]],
     ) -> dict[str, str] | None:
         if not hasattr(dspy, "CodeAct"):
@@ -623,7 +623,7 @@ class ProgrammaticTableAnalyst:
         try:
             codeact = dspy.CodeAct(
                 (
-                    "question, history, schema -> source, sql, rationale"
+                    "question, history, table_schema -> source, sql, rationale"
                 ),
                 tools=[list_tables, list_columns, describe_column],
                 max_iters=5,
@@ -631,7 +631,7 @@ class ProgrammaticTableAnalyst:
             pred = codeact(
                 question=question.strip(),
                 history=_compact(history, limit=700),
-                schema=schema,
+                table_schema=table_schema,
             )
         except Exception:
             return None

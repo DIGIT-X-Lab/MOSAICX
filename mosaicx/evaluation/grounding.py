@@ -145,17 +145,8 @@ def query_grounded_numeric_metric(
     trace: Any = None,
 ) -> float:
     """Combined metric for query outputs: grounding + numeric exactness."""
-    grounding = complete_and_grounded_metric(example, prediction, trace=trace)
-
-    expected_numeric = getattr(example, "expected_numeric", None)
-    has_numeric_target = expected_numeric is not None or _NUM_RE.search(
-        _as_text(getattr(example, "response", ""))
-    )
-    if not has_numeric_target:
-        return grounding
-
-    numeric = numeric_exactness_metric(example, prediction, trace=trace)
-    return (0.4 * grounding) + (0.6 * numeric)
+    components = query_metric_components(example, prediction, trace=trace)
+    return float(components["score"])
 
 
 def verify_grounded_metric(
@@ -164,6 +155,59 @@ def verify_grounded_metric(
     trace: Any = None,
 ) -> float:
     """Metric for verify outputs: verdict correctness + grounding confidence."""
+    components = verify_metric_components(example, prediction, trace=trace)
+    return float(components["score"])
+
+
+def query_metric_components(
+    example: Any,
+    prediction: Any,
+    trace: Any = None,
+) -> dict[str, Any]:
+    """Return detailed query metric components used by quality gates.
+
+    Keys:
+    - ``grounding``: complete+grounded score in [0,1]
+    - ``numeric``: numeric exactness score in [0,1] (1.0 when no numeric target)
+    - ``has_numeric_target``: bool
+    - ``score``: blended final score in [0,1]
+    """
+    grounding = complete_and_grounded_metric(example, prediction, trace=trace)
+
+    expected_numeric = getattr(example, "expected_numeric", None)
+    has_numeric_target = expected_numeric is not None or _NUM_RE.search(
+        _as_text(getattr(example, "response", ""))
+    )
+    if not has_numeric_target:
+        return {
+            "grounding": float(grounding),
+            "numeric": 1.0,
+            "has_numeric_target": False,
+            "score": float(grounding),
+        }
+
+    numeric = numeric_exactness_metric(example, prediction, trace=trace)
+    score = (0.4 * grounding) + (0.6 * numeric)
+    return {
+        "grounding": float(grounding),
+        "numeric": float(numeric),
+        "has_numeric_target": True,
+        "score": float(score),
+    }
+
+
+def verify_metric_components(
+    example: Any,
+    prediction: Any,
+    trace: Any = None,
+) -> dict[str, Any]:
+    """Return detailed verify metric components used by quality gates.
+
+    Keys:
+    - ``verdict_match``: 1.0 when predicted verdict matches gold, else 0.0
+    - ``confidence``: clipped confidence in [0,1]
+    - ``score``: blended final score in [0,1]
+    """
     gold_verdict = _as_text(getattr(example, "verdict", getattr(example, "response", ""))).strip().lower()
     pred_verdict = _as_text(getattr(prediction, "verdict", getattr(prediction, "response", ""))).strip().lower()
 
@@ -176,4 +220,9 @@ def verify_grounded_metric(
         conf_score = 0.5
     conf_score = max(0.0, min(1.0, conf_score))
 
-    return (0.8 * verdict_score) + (0.2 * conf_score)
+    score = (0.8 * verdict_score) + (0.2 * conf_score)
+    return {
+        "verdict_match": float(verdict_score),
+        "confidence": float(conf_score),
+        "score": float(score),
+    }

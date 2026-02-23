@@ -47,3 +47,26 @@ def test_verify_grounded_metric_rewards_matching_verdict():
     prediction = SimpleNamespace(verdict="verified", confidence=0.9)
     score = verify_grounded_metric(example, prediction)
     assert score >= 0.9
+
+
+def test_query_metric_components_expose_grounding_and_numeric_parts():
+    from mosaicx.evaluation.grounding import query_metric_components
+
+    example = SimpleNamespace(question="Mean BMI?", response="25", expected_numeric=25)
+    prediction = SimpleNamespace(response="Mean BMI is 25", context="Computed mean BMI: 25")
+    parts = query_metric_components(example, prediction)
+    assert parts["has_numeric_target"] is True
+    assert 0.0 <= parts["grounding"] <= 1.0
+    assert 0.0 <= parts["numeric"] <= 1.0
+    assert 0.0 <= parts["score"] <= 1.0
+
+
+def test_verify_metric_components_expose_verdict_match_and_confidence():
+    from mosaicx.evaluation.grounding import verify_metric_components
+
+    example = SimpleNamespace(verdict="verified")
+    prediction = SimpleNamespace(verdict="contradicted", confidence=0.9)
+    parts = verify_metric_components(example, prediction)
+    assert parts["verdict_match"] == 0.0
+    assert 0.0 <= parts["confidence"] <= 1.0
+    assert 0.0 <= parts["score"] <= 1.0

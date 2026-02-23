@@ -2717,6 +2717,18 @@ def verify(
 )
 @click.option("--save", type=click.Path(path_type=Path), help="Save optimized program to this path.")
 @click.option("--list-pipelines", is_flag=True, default=False, help="List available pipelines and exit.")
+@click.option(
+    "--enforce-quality-gates/--no-enforce-quality-gates",
+    default=True,
+    show_default=True,
+    help="For query/verify, fail optimization if grounding/numeric quality gates do not pass.",
+)
+@click.option(
+    "--auto-escalate/--no-auto-escalate",
+    default=True,
+    show_default=True,
+    help="For query/verify, auto-rerun with heavy budget (GEPA) if gates fail on first pass.",
+)
 def optimize(
     pipeline: Optional[str],
     trainset: Optional[Path],
@@ -2724,6 +2736,8 @@ def optimize(
     budget: str,
     save: Optional[Path],
     list_pipelines: bool,
+    enforce_quality_gates: bool,
+    auto_escalate: bool,
 ) -> None:
     """Optimize a DSPy pipeline with labeled examples.
 
@@ -2778,6 +2792,9 @@ def optimize(
     t.add_row("Training set", str(trainset))
     t.add_row("Validation set", str(valset) if valset else "[dim]not specified[/dim]")
     t.add_row("Save path", str(save) if save else "[dim]not specified[/dim]")
+    if str(pipeline).strip().lower() in {"query", "verify"}:
+        t.add_row("Quality gates", "on" if enforce_quality_gates else "off")
+        t.add_row("Auto escalate", "on" if auto_escalate else "off")
     console.print(t)
 
     # Validate pipeline name
@@ -2833,9 +2850,63 @@ def optimize(
             save_path=save,
         )
 
+    quality_gate_report: dict[str, Any] | None = None
+    effective_budget = budget
+    if str(pipeline).strip().lower() in {"query", "verify"} and enforce_quality_gates:
+        from .evaluation.grounding import query_metric_components, verify_metric_components
+        from .evaluation.quality_gates import evaluate_quality_gates
+
+        eval_examples = val_examples if val_examples else train_examples
+
+        def _collect_gate_rows(mod: Any) -> list[dict[str, Any]]:
+            rows: list[dict[str, Any]] = []
+            for ex in eval_examples:
+                try:
+                    pred = mod(**dict(ex.inputs()))
+                    if str(pipeline).strip().lower() == "query":
+                        comp = query_metric_components(ex, pred)
+                    else:
+                        comp = verify_metric_components(ex, pred)
+                except Exception:
+                    if str(pipeline).strip().lower() == "query":
+                        comp = {
+                            "grounding": 0.0,
+                            "numeric": 0.0,
+                            "has_numeric_target": bool(getattr(ex, "expected_numeric", None) is not None),
+                            "score": 0.0,
+                        }
+                    else:
+                        comp = {"verdict_match": 0.0, "confidence": 0.0, "score": 0.0}
+                rows.append(comp)
+            return rows
+
+        gate_rows = _collect_gate_rows(optimized)
+        quality_gate_report = evaluate_quality_gates(str(pipeline), gate_rows)
+
+        should_escalate = (
+            auto_escalate
+            and not quality_gate_report.get("passed", False)
+            and str(budget).strip().lower() != "heavy"
+        )
+        if should_escalate:
+            console.print(theme.warn("Quality gates failed. Escalating to heavy budget (GEPA)."))
+            with theme.spinner("Re-optimizing with GEPA... patience you must have", console):
+                optimized, results = run_optimization(
+                    module=pipeline_cls(),
+                    trainset=train_examples,
+                    valset=val_examples,
+                    metric=metric,
+                    budget="heavy",
+                    save_path=save,
+                )
+            effective_budget = "heavy"
+            gate_rows = _collect_gate_rows(optimized)
+            quality_gate_report = evaluate_quality_gates(str(pipeline), gate_rows)
+
     # 04 · Results
     theme.section("Results", console, "04")
     results_table = theme.make_kv_table()
+    results_table.add_row("Budget", effective_budget)
     results_table.add_row("Strategy", results["strategy"])
     results_table.add_row("Train examples", str(results["num_train"]))
     results_table.add_row("Val examples", str(results["num_val"]))
@@ -2843,6 +2914,36 @@ def optimize(
     results_table.add_row("Val score", f"{results['val_score']:.3f}")
     results_table.add_row("Saved to", str(save))
     console.print(results_table)
+
+    if quality_gate_report is not None:
+        theme.section("Quality Gates", console, "05")
+        gate_table = theme.make_kv_table()
+        gate_table.add_row("Pipeline", str(quality_gate_report.get("pipeline", pipeline)))
+        gate_table.add_row("Passed", "yes" if quality_gate_report.get("passed") else "no")
+        summary = quality_gate_report.get("summary", {})
+        if isinstance(summary, dict):
+            for key in ("mean_score", "grounding_mean", "numeric_mean", "numeric_pass_rate", "verdict_accuracy", "confidence_mean"):
+                if key not in summary:
+                    continue
+                value = summary.get(key)
+                if value is None:
+                    gate_table.add_row(key, "n/a")
+                else:
+                    gate_table.add_row(key, f"{float(value):.3f}")
+        console.print(gate_table)
+
+        failed = quality_gate_report.get("failed_checks", [])
+        if isinstance(failed, list) and failed:
+            for item in failed:
+                name = str(item.get("name", "check"))
+                value = float(item.get("value", 0.0) or 0.0)
+                threshold = float(item.get("threshold", 0.0) or 0.0)
+                console.print(theme.warn(f"Gate failed: {name}={value:.3f} < {threshold:.3f}"))
+        if not quality_gate_report.get("passed", False):
+            raise click.ClickException(
+                "Quality gates failed for optimized program. "
+                "Improve labels or run more training examples."
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -2855,11 +2956,18 @@ def optimize(
 @click.option("--testset", type=click.Path(exists=True, path_type=Path), required=True, help="Test dataset path.")
 @click.option("--optimized", type=click.Path(exists=True, path_type=Path), default=None, help="Path to optimized program.")
 @click.option("--output", type=click.Path(path_type=Path), default=None, help="Save detailed results JSON to this path.")
+@click.option(
+    "--quality-gate/--no-quality-gate",
+    default=True,
+    show_default=True,
+    help="For query/verify, enforce hard grounding/numeric/verdict quality gates.",
+)
 def eval_cmd(
     pipeline: str,
     testset: Path,
     optimized: Optional[Path],
     output: Optional[Path],
+    quality_gate: bool,
 ) -> None:
     """Evaluate a pipeline against a labeled test set.
 
@@ -2917,16 +3025,38 @@ def eval_cmd(
 
     scores: list[float] = []
     details: list[dict] = []
+    gate_rows: list[dict[str, Any]] = []
+    pipeline_norm = str(pipeline).strip().lower()
+    collect_gate_rows = quality_gate and pipeline_norm in {"query", "verify"}
+    if collect_gate_rows:
+        from .evaluation.grounding import query_metric_components, verify_metric_components
 
     with theme.spinner("Evaluating... patience you must have", console):
         for i, example in enumerate(test_examples):
             try:
                 prediction = module(**dict(example.inputs()))
                 score = metric(example, prediction)
+                if collect_gate_rows:
+                    if pipeline_norm == "query":
+                        gate_rows.append(query_metric_components(example, prediction))
+                    else:
+                        gate_rows.append(verify_metric_components(example, prediction))
             except Exception as exc:
                 score = 0.0
                 prediction = None
                 console.print(theme.warn(f"Example {i+1} failed: {exc}"))
+                if collect_gate_rows:
+                    if pipeline_norm == "query":
+                        gate_rows.append(
+                            {
+                                "grounding": 0.0,
+                                "numeric": 0.0,
+                                "has_numeric_target": bool(getattr(example, "expected_numeric", None) is not None),
+                                "score": 0.0,
+                            }
+                        )
+                    else:
+                        gate_rows.append({"verdict_match": 0.0, "confidence": 0.0, "score": 0.0})
 
             scores.append(score)
             details.append({
@@ -2972,6 +3102,32 @@ def eval_cmd(
         hist_table.add_row(label, str(count), f"[{theme.CORAL}]{bar}[/{theme.CORAL}]")
     console.print(hist_table)
 
+    quality_gate_report: dict[str, Any] | None = None
+    if collect_gate_rows:
+        from .evaluation.quality_gates import evaluate_quality_gates
+
+        quality_gate_report = evaluate_quality_gates(pipeline_norm, gate_rows)
+        theme.section("Quality Gates", console, "04")
+        gate_table = theme.make_kv_table()
+        gate_table.add_row("Pipeline", pipeline_norm)
+        gate_table.add_row("Passed", "yes" if quality_gate_report.get("passed") else "no")
+        summary = quality_gate_report.get("summary", {})
+        if isinstance(summary, dict):
+            for key in ("mean_score", "grounding_mean", "numeric_mean", "numeric_pass_rate", "verdict_accuracy", "confidence_mean"):
+                if key not in summary:
+                    continue
+                val = summary.get(key)
+                gate_table.add_row(key, "n/a" if val is None else f"{float(val):.3f}")
+        console.print(gate_table)
+
+        failed_checks = quality_gate_report.get("failed_checks", [])
+        if isinstance(failed_checks, list):
+            for item in failed_checks:
+                name = str(item.get("name", "check"))
+                value = float(item.get("value", 0.0) or 0.0)
+                threshold = float(item.get("threshold", 0.0) or 0.0)
+                console.print(theme.warn(f"Gate failed: {name}={value:.3f} < {threshold:.3f}"))
+
     # Save detailed results
     if output:
         output_data = {
@@ -2986,9 +3142,16 @@ def eval_cmd(
             "max": max(scores),
             "details": details,
         }
+        if quality_gate_report is not None:
+            output_data["quality_gate"] = quality_gate_report
         output.parent.mkdir(parents=True, exist_ok=True)
         output.write_text(json.dumps(output_data, indent=2))
         console.print(theme.info(f"Results saved to {output}"))
+
+    if quality_gate_report is not None and not quality_gate_report.get("passed", False):
+        raise click.ClickException(
+            "Quality gates failed. This build should not be promoted to production."
+        )
 
 
 # ---------------------------------------------------------------------------

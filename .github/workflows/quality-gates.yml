@@ -30,5 +30,6 @@ jobs:
           pytest -q \
             tests/test_query_verify_quality_gates.py \
             tests/test_evaluation_grounding.py \
+            tests/test_evaluation_quality_gates.py \
             tests/test_evaluation_dataset.py \
             tests/test_optimize.py
