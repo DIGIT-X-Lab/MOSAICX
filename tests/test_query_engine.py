@@ -471,6 +471,43 @@ class TestQueryEngineConversation:
         assert "cohort.csv" in state.get("active_sources", [])
         assert "Ethnicity" in state.get("active_columns", [])
 
+    def test_query_state_preserves_active_context_when_current_turn_has_no_column_hits(self, tmp_path: Path):
+        """Sparse turns should not wipe previously learned active source/column context."""
+        from mosaicx.query.control_plane import IntentDecision
+        from mosaicx.query.engine import QueryEngine
+        from mosaicx.query.session import QuerySession
+
+        f = tmp_path / "cohort.csv"
+        f.write_text("Subject,Ethnicity,Sex\nS1,Japanese,M\nS2,German,F\n")
+        session = QuerySession(sources=[f])
+        engine = QueryEngine(session=session)
+
+        session.set_state(
+            query_state={
+                "active_sources": ["cohort.csv"],
+                "active_columns": ["Ethnicity"],
+                "entities": ["ethnicity"],
+            }
+        )
+
+        engine._update_structured_query_state(  # noqa: SLF001 - direct state regression coverage
+            question="can you summarize",
+            answer="Summary from evidence.",
+            citations=[
+                {
+                    "source": "cohort.csv",
+                    "snippet": "Summary sentence without explicit column metadata.",
+                    "score": 2,
+                    "evidence_type": "text",
+                }
+            ],
+            route=IntentDecision(intent="text_qa"),
+        )
+
+        state = session.get_state("query_state", {})
+        assert "cohort.csv" in state.get("active_sources", [])
+        assert "Ethnicity" in state.get("active_columns", [])
+
     def test_followup_resolution_uses_structured_query_state(self, tmp_path: Path):
         """Coreference follow-ups should be rewritten with explicit state context."""
         from mosaicx.query.engine import QueryEngine

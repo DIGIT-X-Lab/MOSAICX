@@ -1061,13 +1061,11 @@ class QueryEngine:
             if state_col:
                 columns = [state_col]
         values = sorted({str(c.get("value") or "").strip() for c in citations if c.get("value") not in {None, ""}})
-        state.update(
-            {
-                "active_sources": sources[:6],
-                "active_columns": columns[:10],
-                "last_route_intent": route.intent,
-            }
-        )
+        if sources:
+            state["active_sources"] = sources[:6]
+        if columns:
+            state["active_columns"] = columns[:10]
+        state["last_route_intent"] = route.intent
         if values:
             state["recent_values"] = values[:10]
 

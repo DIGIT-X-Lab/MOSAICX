@@ -124,3 +124,21 @@ Result: `62 passed`
 - [x] `G5` Commit + push phase-5 improvements
 Status: `done`
 Commit: `3d2a029`
+
+## Phase 6 (In Progress)
+- [x] `Q8` Preserve structured query memory across sparse turns (do not wipe active source/column when current citations omit column metadata)
+Status: `done (local)`
+
+- [x] `Q9` Extend query trace with chunk grounding visibility (`chunk_citations`)
+Status: `done (local)`
+
+- [x] `T6` Add regression for state preservation under sparse citations
+Status: `done (local)`
+
+- [ ] `R6` Run focused query tests and fix regressions
+Status: `done`
+Run command: `.venv/bin/pytest -q tests/test_query_engine.py tests/test_query_control_plane.py tests/test_query_tools.py -m 'not integration'`
+Result: `80 passed, 2 deselected`
+
+- [ ] `G6` Commit + push phase-6 improvements
+Status: `pending`

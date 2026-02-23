@@ -3674,6 +3674,12 @@ def query(
                 if str(c.get("evidence_type") or "").lower() in {"table_stat", "table_value"}
             )
             trace_table.add_row("computed_citations", str(computed_count))
+            chunk_count = sum(
+                1
+                for c in citations_payload
+                if str(c.get("evidence_type") or "").lower() == "text_chunk"
+            )
+            trace_table.add_row("chunk_citations", str(chunk_count))
             console.print(Padding(trace_table, (0, 0, 0, 2)))
 
     # Question/chat modes
