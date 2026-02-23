@@ -416,6 +416,46 @@ class TestQueryEngineConversation:
         assert "Age" in str(second["answer"])
         assert second.get("deterministic_intent") == "schema"
 
+    def test_query_state_tracks_active_sources_and_columns(self, tmp_path: Path):
+        """Structured query state should capture active sources/columns for follow-ups."""
+        from mosaicx.query.engine import QueryEngine
+        from mosaicx.query.session import QuerySession
+
+        f = tmp_path / "cohort.csv"
+        f.write_text("Subject,Ethnicity,Sex\nS1,Japanese,M\nS2,German,F\n")
+        session = QuerySession(sources=[f])
+        engine = QueryEngine(session=session)
+
+        _ = engine.ask_structured("how many ethnicities are there and what are they?")
+        state = session.get_state("query_state", {})
+        assert isinstance(state, dict)
+        assert "cohort.csv" in state.get("active_sources", [])
+        assert "Ethnicity" in state.get("active_columns", [])
+
+    def test_followup_resolution_uses_structured_query_state(self, tmp_path: Path):
+        """Coreference follow-ups should include query_state context when available."""
+        from mosaicx.query.engine import QueryEngine
+        from mosaicx.query.session import QuerySession
+
+        f = tmp_path / "cohort.csv"
+        f.write_text("Subject,Ethnicity,Sex\nS1,Japanese,M\nS2,German,F\n")
+        session = QuerySession(sources=[f])
+        engine = QueryEngine(session=session)
+
+        session.add_turn("user", "how many ethnicities are there?")
+        session.add_turn("assistant", "There are 2 distinct Ethnicity values.")
+        session.set_state(
+            query_state={
+                "active_sources": ["cohort.csv"],
+                "active_columns": ["Ethnicity"],
+                "entities": ["ethnicity"],
+            }
+        )
+        resolved = engine._resolve_followup_question("what are they?")
+        assert "follow-up context:" in resolved
+        assert "active_columns=Ethnicity" in resolved
+        assert "active_sources=cohort.csv" in resolved
+
     def test_ask_structured_count_values_accepts_table_value_computed_evidence(self, tmp_path: Path, monkeypatch):
         """For count+values questions, value-count evidence should satisfy computed guard."""
         from mosaicx.query.engine import QueryEngine

@@ -767,10 +767,123 @@ class QueryEngine:
             context_parts.append(f"last_column={state_column}")
         if state_intent:
             context_parts.append(f"last_intent={state_intent}")
+        query_state = self._session.get_state("query_state", {})
+        if isinstance(query_state, dict):
+            active_sources = query_state.get("active_sources")
+            if isinstance(active_sources, list) and active_sources:
+                context_parts.append(
+                    "active_sources=" + ",".join(str(v) for v in active_sources[:3])
+                )
+            active_columns = query_state.get("active_columns")
+            if isinstance(active_columns, list) and active_columns:
+                context_parts.append(
+                    "active_columns=" + ",".join(str(v) for v in active_columns[:5])
+                )
+            entities = query_state.get("entities")
+            if isinstance(entities, list) and entities:
+                context_parts.append(
+                    "entities=" + ",".join(str(v) for v in entities[:6])
+                )
 
         if not context_parts:
             return q
         return f"{q} (follow-up context: {'; '.join(context_parts)})"
+
+    def _parse_json_object(self, raw: str) -> dict[str, Any] | None:
+        text = str(raw or "").strip()
+        if not text:
+            return None
+        candidates = [text]
+        if "```" in text:
+            fenced = re.findall(r"```(?:json)?\s*(.*?)\s*```", text, flags=re.IGNORECASE | re.DOTALL)
+            candidates.extend(fenced)
+        start = text.find("{")
+        end = text.rfind("}")
+        if start != -1 and end != -1 and end > start:
+            candidates.append(text[start : end + 1])
+        for candidate in candidates:
+            try:
+                parsed = json.loads(candidate)
+                if isinstance(parsed, dict):
+                    return parsed
+            except Exception:
+                continue
+        return None
+
+    def _update_structured_query_state(
+        self,
+        *,
+        question: str,
+        answer: str,
+        citations: list[dict[str, Any]],
+        route: IntentDecision,
+    ) -> None:
+        prev = self._session.get_state("query_state", {})
+        state: dict[str, Any] = dict(prev) if isinstance(prev, dict) else {}
+
+        sources = sorted({str(c.get("source") or "").strip() for c in citations if c.get("source")})
+        columns = sorted({str(c.get("column") or "").strip() for c in citations if c.get("column")})
+        if not columns:
+            state_col = str(self._session.get_state("last_tabular_column", "")).strip()
+            if state_col:
+                columns = [state_col]
+        values = sorted({str(c.get("value") or "").strip() for c in citations if c.get("value") not in {None, ""}})
+        state.update(
+            {
+                "active_sources": sources[:6],
+                "active_columns": columns[:10],
+                "last_route_intent": route.intent,
+            }
+        )
+        if values:
+            state["recent_values"] = values[:10]
+
+        # Optional DSPy pass to maintain compact semantic memory across turns.
+        try:
+            import dspy
+
+            if getattr(dspy.settings, "lm", None) is not None:
+                citation_summary = "\n".join(
+                    f"- {str(c.get('source') or 'unknown')} | "
+                    f"column={str(c.get('column') or '')} | "
+                    f"value={str(c.get('value') or '')} | "
+                    f"{' '.join(str(c.get('snippet') or '').split())[:180]}"
+                    for c in citations[:8]
+                )
+                predictor = dspy.Predict(
+                    "guidance, prior_state_json, question, answer, citation_summary "
+                    "-> state_json"
+                )
+                guidance = (
+                    "Update memory state for future follow-up questions. "
+                    "Return strict JSON object with keys: "
+                    "entities (list[str]), metrics (list[str]), active_columns (list[str]), "
+                    "active_sources (list[str]), timeframe (str), unresolved_reference (bool). "
+                    "Use empty lists/empty string when unknown."
+                )
+                pred = predictor(
+                    guidance=guidance,
+                    prior_state_json=json.dumps(state, ensure_ascii=False),
+                    question=question.strip(),
+                    answer=answer.strip(),
+                    citation_summary=citation_summary or "(none)",
+                )
+                parsed = self._parse_json_object(str(getattr(pred, "state_json", "")))
+                if isinstance(parsed, dict):
+                    for key in (
+                        "entities",
+                        "metrics",
+                        "active_columns",
+                        "active_sources",
+                        "timeframe",
+                        "unresolved_reference",
+                    ):
+                        if key in parsed:
+                            state[key] = parsed[key]
+        except Exception:
+            pass
+
+        self._session.set_state(query_state=state)
 
     def _is_count_plus_values_request(self, question: str) -> bool:
         q = " ".join(question.lower().split())
@@ -2030,6 +2143,12 @@ class QueryEngine:
             last_answer=answer,
             last_confidence=confidence,
             last_route_intent=route.intent,
+        )
+        self._update_structured_query_state(
+            question=resolved_question,
+            answer=answer,
+            citations=citations,
+            route=route,
         )
 
         effective_intent = deterministic_intent or route.intent

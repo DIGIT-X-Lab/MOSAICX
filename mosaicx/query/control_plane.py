@@ -485,9 +485,26 @@ class ProgrammaticTableAnalyst:
             return None
         if getattr(dspy.settings, "lm", None) is None:
             return None
-        if not hasattr(dspy, "ProgramOfThought"):
-            return None
+        schema_text = self._schema_text(table_profiles)
+        pot_plan = self._propose_sql_with_program_of_thought(
+            dspy=dspy,
+            question=question,
+            history=history,
+            schema=schema_text,
+            table_profiles=table_profiles,
+        )
+        if pot_plan is not None:
+            return pot_plan
 
+        return self._propose_sql_with_codeact(
+            dspy=dspy,
+            question=question,
+            history=history,
+            schema=schema_text,
+            table_profiles=table_profiles,
+        )
+
+    def _schema_text(self, table_profiles: dict[str, dict[str, Any]]) -> str:
         schema_blocks: list[str] = []
         for source, profile in table_profiles.items():
             lines = [f"Table: {source}", f"Rows: {profile.get('rows', 'unknown')}"]
@@ -504,6 +521,38 @@ class ProgrammaticTableAnalyst:
                 preview = f" top_values={','.join(preview_values)}" if preview_values else ""
                 lines.append(f"- {col_name} [{role}]{preview}")
             schema_blocks.append("\n".join(lines))
+        return "\n\n".join(schema_blocks)[:18000]
+
+    def _normalize_sql_plan(
+        self,
+        *,
+        source: Any,
+        sql: Any,
+        rationale: Any,
+        table_profiles: dict[str, dict[str, Any]],
+    ) -> dict[str, str] | None:
+        source_text = " ".join(str(source or "").split())
+        sql_text = " ".join(str(sql or "").split())
+        rationale_text = _compact(str(rationale or ""), limit=260)
+        if not source_text or source_text not in table_profiles:
+            return None
+        if not self._is_safe_sql(sql_text):
+            return None
+        if "_mosaicx_table" not in sql_text:
+            return None
+        return {"source": source_text, "sql": sql_text, "rationale": rationale_text}
+
+    def _propose_sql_with_program_of_thought(
+        self,
+        *,
+        dspy: Any,
+        question: str,
+        history: str,
+        schema: str,
+        table_profiles: dict[str, dict[str, Any]],
+    ) -> dict[str, str] | None:
+        if not hasattr(dspy, "ProgramOfThought"):
+            return None
 
         guidance = (
             "Generate a safe, read-only SQL query for a single selected source table. "
@@ -521,21 +570,78 @@ class ProgrammaticTableAnalyst:
                 guidance=guidance,
                 question=question.strip(),
                 history=_compact(history, limit=900),
-                schema="\n\n".join(schema_blocks)[:18000],
+                schema=schema,
             )
         except Exception:
             return None
 
-        source = " ".join(str(getattr(pred, "source", "")).split())
-        sql = " ".join(str(getattr(pred, "sql", "")).split())
-        rationale = _compact(str(getattr(pred, "rationale", "") or ""), limit=260)
-        if not source or source not in table_profiles:
+        return self._normalize_sql_plan(
+            source=getattr(pred, "source", ""),
+            sql=getattr(pred, "sql", ""),
+            rationale=getattr(pred, "rationale", ""),
+            table_profiles=table_profiles,
+        )
+
+    def _propose_sql_with_codeact(
+        self,
+        *,
+        dspy: Any,
+        question: str,
+        history: str,
+        schema: str,
+        table_profiles: dict[str, dict[str, Any]],
+    ) -> dict[str, str] | None:
+        if not hasattr(dspy, "CodeAct"):
             return None
-        if not self._is_safe_sql(sql):
+
+        tables = sorted(table_profiles.keys())
+
+        def list_tables() -> list[str]:
+            """List available table names."""
+            return tables
+
+        def list_columns(source: str) -> list[str]:
+            """List columns for a table source."""
+            profile = table_profiles.get(str(source), {})
+            cols = profile.get("columns", [])
+            return [str(c.get("name")) for c in cols if isinstance(c, dict) and c.get("name")]
+
+        def describe_column(source: str, column: str) -> dict[str, Any]:
+            """Describe one column role/top values for planning."""
+            profile = table_profiles.get(str(source), {})
+            for col in profile.get("columns", []):
+                if not isinstance(col, dict):
+                    continue
+                if str(col.get("name")) == str(column):
+                    return {
+                        "name": str(col.get("name")),
+                        "role": str(col.get("role") or "unknown"),
+                        "top_values": col.get("top_values") or [],
+                    }
+            return {"name": str(column), "role": "unknown", "top_values": []}
+
+        try:
+            codeact = dspy.CodeAct(
+                (
+                    "question, history, schema -> source, sql, rationale"
+                ),
+                tools=[list_tables, list_columns, describe_column],
+                max_iters=5,
+            )
+            pred = codeact(
+                question=question.strip(),
+                history=_compact(history, limit=700),
+                schema=schema,
+            )
+        except Exception:
             return None
-        if "_mosaicx_table" not in sql:
-            return None
-        return {"source": source, "sql": sql, "rationale": rationale}
+
+        return self._normalize_sql_plan(
+            source=getattr(pred, "source", ""),
+            sql=getattr(pred, "sql", ""),
+            rationale=getattr(pred, "rationale", ""),
+            table_profiles=table_profiles,
+        )
 
     def _is_safe_sql(self, sql: str) -> bool:
         if not sql:
