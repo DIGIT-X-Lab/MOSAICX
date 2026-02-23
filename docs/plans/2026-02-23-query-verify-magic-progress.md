@@ -35,8 +35,9 @@ Result: `110 passed`
 Run command: `.venv/bin/pytest -q tests/test_query_tools.py tests/test_query_engine.py -m 'not integration' tests/test_query_control_plane.py`
 Result: `74 passed, 2 deselected`
 
-- [ ] `G1` Commit atomic changes and push
-Status: `in_progress`
+- [x] `G1` Commit atomic changes and push
+Status: `done`
+Commit: `fabcba1`
 
 ## Notes
 - Existing unrelated modified/untracked files are present in the worktree and are intentionally left untouched.
