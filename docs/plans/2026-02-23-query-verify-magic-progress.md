@@ -105,3 +105,21 @@ Result: `33 passed`
 - [x] `G4` Commit + push phase-4 improvements
 Status: `done`
 Commit: `4d37fee`
+
+## Phase 5 (In Progress)
+- [x] `V5` Add explicit developer truth aliases in SDK verify payload (`claim_true`, `is_verified`, `is_contradicted`)
+Status: `done (local)`
+
+- [x] `V6` Clarify CLI claim adjudication label from "Claim truth" to "Truth" and keep compatibility fallback
+Status: `done (local)`
+
+- [x] `T5` Add SDK regressions for new truth alias fields
+Status: `done (local)`
+
+- [ ] `R5` Run focused verify/CLI tests and fix regressions
+Status: `done`
+Run command: `.venv/bin/pytest -q tests/test_sdk_verify.py tests/test_cli_verify.py tests/test_verify_engine.py -m 'not integration'`
+Result: `62 passed`
+
+- [ ] `G5` Commit + push phase-5 improvements
+Status: `pending`

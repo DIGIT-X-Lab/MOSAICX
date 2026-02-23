@@ -1692,6 +1692,7 @@ def verify(
 
     decision = out.get("verdict")
     out["claim_truth"] = None
+    out["claim_true"] = None
     if verification_mode == "claim" and claim is not None:
         claim_comparison = _claim_comparison_from_report(
             claim=claim,
@@ -1736,10 +1737,13 @@ def verify(
             out["claim_truth"] = True
         elif decision == "contradicted":
             out["claim_truth"] = False
+        out["claim_true"] = out["claim_truth"]
     else:
         out["support_score"] = out.get("confidence")
 
     out["decision"] = decision
+    out["is_verified"] = decision == "verified"
+    out["is_contradicted"] = decision == "contradicted"
     out["sources_consulted"] = sorted(
         {
             str(c.get("source") or "")

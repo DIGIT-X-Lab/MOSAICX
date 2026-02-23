@@ -55,6 +55,9 @@ class TestSDKVerifyQuick:
             "verdict",
             "decision",
             "claim_truth",
+            "claim_true",
+            "is_verified",
+            "is_contradicted",
             "confidence",
             "confidence_score",
             "level",
@@ -114,6 +117,9 @@ class TestSDKVerifyQuick:
         assert result["support_score"] == pytest.approx(1.0)
         assert result["verification_mode"] == "claim"
         assert result["claim_truth"] is True
+        assert result["claim_true"] is True
+        assert result["is_verified"] is True
+        assert result["is_contradicted"] is False
         assert "claim_comparison" in result
         assert result["claim_comparison"]["claimed"]
         assert result["claim_comparison"]["grounded"] is True
@@ -133,6 +139,8 @@ class TestSDKVerifyQuick:
         assert result["verdict"] != "verified"
         assert result["decision"] != "verified"
         assert result["claim_truth"] in (None, False)
+        assert result["claim_true"] in (None, False)
+        assert result["is_verified"] is False
 
     def test_verify_with_document_path(self):
         """Verify should accept a document path and load the file."""
