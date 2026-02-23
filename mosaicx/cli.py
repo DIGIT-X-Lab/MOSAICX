@@ -3366,6 +3366,7 @@ def query(
                 "table_stat": "computed",
                 "table_value": "value_count",
                 "table_column": "schema_match",
+                "table_schema": "schema_profile",
             }
 
             def _infer_engine_label(citation: dict[str, Any]) -> str:
@@ -3393,11 +3394,11 @@ def query(
             ordered_citations = sorted(citations_payload, key=_citation_sort_key)
             computed_citations = [
                 c for c in ordered_citations
-                if str(c.get("evidence_type") or "text") == "table_stat"
+                if str(c.get("evidence_type") or "text") in {"table_stat", "table_value"}
             ]
             supporting_citations = [
                 c for c in ordered_citations
-                if str(c.get("evidence_type") or "text") != "table_stat"
+                if str(c.get("evidence_type") or "text") not in {"table_stat", "table_value"}
             ]
 
             console.print()
@@ -3454,7 +3455,7 @@ def query(
             computed_count = sum(
                 1
                 for c in citations_payload
-                if str(c.get("evidence_type") or "").lower() == "table_stat"
+                if str(c.get("evidence_type") or "").lower() in {"table_stat", "table_value"}
             )
             trace_table.add_row("computed_citations", str(computed_count))
             console.print(Padding(trace_table, (0, 0, 0, 2)))

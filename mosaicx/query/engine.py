@@ -67,6 +67,34 @@ _VALUE_LIST_MARKERS = (
     "what are the values",
     "what are the categories",
 )
+_SCHEMA_QUESTION_MARKERS = (
+    "column names",
+    "column name",
+    "all columns",
+    "all of the column names",
+    "field names",
+    "column headers",
+    "table headers",
+    "list columns",
+    "what are the columns",
+)
+_NUMERIC_STAT_MARKERS = (
+    "average",
+    "mean",
+    "median",
+    "min",
+    "minimum",
+    "max",
+    "maximum",
+    "sum",
+    "std",
+    "standard deviation",
+    "percent",
+    "ratio",
+    "correlation",
+    "change",
+    "difference",
+)
 _QUERY_STOPWORDS = {
     "the", "a", "an", "and", "or", "of", "in", "on", "to", "for", "with",
     "is", "are", "was", "were", "be", "been", "being", "what", "which",
@@ -510,6 +538,8 @@ class QueryEngine:
                 rank += 30
             elif evidence_type == "table_value":
                 rank += 26
+            elif evidence_type == "table_schema":
+                rank += 22
             elif evidence_type == "table_column":
                 rank += 18
             return rank
@@ -594,12 +624,29 @@ class QueryEngine:
             if len(t) >= 2
         }
         if any(marker in q for marker in _VALUE_LIST_MARKERS):
-            return True
+            topical_terms = {
+                t
+                for t in q_terms
+                if t not in _COREFERENCE_MARKERS and t not in _QUERY_STOPWORDS
+            }
+            # Treat as follow-up only when the user did not provide a concrete topic.
+            if not topical_terms:
+                return True
+            return False
         return bool(q_terms & _COREFERENCE_MARKERS) and len(q_terms) <= 10
 
     def _latest_user_question(self) -> str | None:
         for turn in reversed(self._session.conversation):
             if str(turn.get("role") or "").strip().lower() != "user":
+                continue
+            content = str(turn.get("content") or "").strip()
+            if content:
+                return content
+        return None
+
+    def _latest_assistant_answer(self) -> str | None:
+        for turn in reversed(self._session.conversation):
+            if str(turn.get("role") or "").strip().lower() != "assistant":
                 continue
             content = str(turn.get("content") or "").strip()
             if content:
@@ -613,15 +660,117 @@ class QueryEngine:
         prev_user = self._latest_user_question()
         if not prev_user:
             return q
-        prev_compact = self._compact_history_content(prev_user, max_chars=220)
-        return f"{q} (follow-up context: {prev_compact})"
+        prev_user_compact = self._compact_history_content(prev_user, max_chars=180)
+        prev_assistant = self._latest_assistant_answer()
+        if not prev_assistant:
+            return f"{q} (follow-up context: {prev_user_compact})"
+        prev_answer_compact = self._compact_history_content(prev_assistant, max_chars=180)
+        return (
+            f"{q} (follow-up context: prior_question={prev_user_compact}; "
+            f"prior_answer={prev_answer_compact})"
+        )
 
     def _has_value_list_marker(self, question: str) -> bool:
         q = " ".join(question.lower().split())
         return any(marker in q for marker in _VALUE_LIST_MARKERS)
 
-    def _resolve_tabular_target_with_llm(self, question: str) -> tuple[str, str] | None:
-        """Use the configured LM to resolve the best table/column for a tabular question."""
+    def _is_schema_question(self, question: str) -> bool:
+        q = " ".join(question.lower().split())
+        return any(marker in q for marker in _SCHEMA_QUESTION_MARKERS)
+
+    def _detect_aggregate_operation(self, question: str) -> str | None:
+        q = " ".join(question.lower().split())
+        if "average" in q or "mean" in q or "avg" in q:
+            return "mean"
+        if "median" in q:
+            return "median"
+        if "minimum" in q or "lowest" in q or re.search(r"\bmin\b", q):
+            return "min"
+        if "maximum" in q or "highest" in q or re.search(r"\bmax\b", q):
+            return "max"
+        if "sum" in q or "total" in q:
+            return "sum"
+        if "standard deviation" in q or re.search(r"\bstd\b", q):
+            return "std"
+        return None
+
+    def _tabular_source_names(self) -> list[str]:
+        out: list[str] = []
+        for meta in self._session.catalog:
+            if getattr(meta, "source_type", "") != "dataframe":
+                continue
+            name = str(getattr(meta, "name", "") or "").strip()
+            if name:
+                out.append(name)
+        return out
+
+    def _resolve_source_from_question(
+        self,
+        question: str,
+        sources: list[str],
+    ) -> str | None:
+        q = " ".join(question.lower().split())
+        for source in sources:
+            if source.lower() in q:
+                return source
+        return None
+
+    def _try_deterministic_schema_answer(
+        self,
+        question: str,
+    ) -> tuple[str, list[dict[str, Any]], str] | None:
+        if not self._has_tabular_sources() or not self._is_schema_question(question):
+            return None
+
+        try:
+            import pandas as pd
+        except Exception:
+            return None
+
+        sources = self._tabular_source_names()
+        if not sources:
+            return None
+
+        explicit = self._resolve_source_from_question(question, sources)
+        state_source = str(self._session.get_state("last_tabular_source", "")).strip()
+        if explicit:
+            selected = [explicit]
+        elif state_source and state_source in sources:
+            selected = [state_source]
+        elif len(sources) == 1:
+            selected = [sources[0]]
+        else:
+            selected = sources
+
+        seed_hits: list[dict[str, Any]] = []
+        lines: list[str] = []
+        for source in selected:
+            value = self._session.data.get(source)
+            if not isinstance(value, pd.DataFrame):
+                continue
+            cols = [str(c) for c in value.columns]
+            preview = ", ".join(cols[:40]) + (", ..." if len(cols) > 40 else "")
+            seed_hits.append(
+                {
+                    "source": source,
+                    "snippet": f"Schema columns ({len(cols)}): {preview}",
+                    "score": 90,
+                    "evidence_type": "table_schema",
+                    "column_count": len(cols),
+                }
+            )
+            if len(selected) == 1:
+                lines.append(f"Columns in {source} ({len(cols)}): {', '.join(cols)}")
+            else:
+                lines.append(f"{source} ({len(cols)}): {', '.join(cols)}")
+            self._session.set_state(last_tabular_source=source, last_intent="schema")
+
+        if not lines:
+            return None
+        return "\n".join(lines), self._merge_hits(seed_hits, max_hits=12), "schema"
+
+    def _plan_tabular_question_with_llm(self, question: str) -> dict[str, Any] | None:
+        """Use DSPy to route tabular questions into a deterministic execution plan."""
         if not self._has_tabular_sources():
             return None
 
@@ -640,24 +789,19 @@ class QueryEngine:
             return " ".join(cleaned.split())
 
         table_blocks: list[str] = []
-        for meta in self._session.catalog:
-            if getattr(meta, "source_type", "") != "dataframe":
-                continue
-            source_name = str(getattr(meta, "name", "") or "").strip()
-            if not source_name:
-                continue
+        for source_name in self._tabular_source_names():
             try:
                 prof = profile_table(
                     source_name,
                     data=self._session.data,
-                    max_columns=100,
+                    max_columns=120,
                     top_values=4,
                 )
             except Exception:
                 continue
 
             lines: list[str] = []
-            for col in prof.get("columns", [])[:100]:
+            for col in prof.get("columns", [])[:120]:
                 col_name = str(col.get("name") or "")
                 if not col_name:
                     continue
@@ -665,43 +809,68 @@ class QueryEngine:
                 top_vals = col.get("top_values") or []
                 value_preview = ""
                 if isinstance(top_vals, list) and top_vals:
-                    vals = [str(v.get("value")) for v in top_vals[:3] if isinstance(v, dict)]
+                    vals = [
+                        str(v.get("value"))
+                        for v in top_vals[:3]
+                        if isinstance(v, dict) and v.get("value") is not None
+                    ]
                     vals = [v for v in vals if v]
                     if vals:
                         value_preview = f" values={','.join(vals)}"
                 lines.append(f"- {col_name} [{role}]{value_preview}")
-            if not lines:
-                continue
-            table_blocks.append(f"Table: {source_name}\n" + "\n".join(lines))
+            if lines:
+                table_blocks.append(f"Table: {source_name}\n" + "\n".join(lines))
 
         if not table_blocks:
             return None
 
+        history_lines: list[str] = []
+        for turn in self._session.conversation[-4:]:
+            role = str(turn.get("role") or "")
+            content = self._compact_history_content(str(turn.get("content") or ""), max_chars=180)
+            history_lines.append(f"{role}: {content}")
+        history_text = "\n".join(history_lines) if history_lines else "(new session)"
+
         try:
-            predictor = dspy.Predict("question, tables -> source, column")
+            predictor = dspy.Predict(
+                "question, history, tables -> intent, source, column, operation, include_values"
+            )
             pred = predictor(
                 question=question.strip(),
-                tables="\n\n".join(table_blocks)[:18000],
+                history=history_text,
+                tables="\n\n".join(table_blocks)[:22000],
             )
         except Exception:
             return None
 
+        intent_raw = _clean(getattr(pred, "intent", "")).lower()
         source_raw = _clean(getattr(pred, "source", ""))
         column_raw = _clean(getattr(pred, "column", ""))
-        if not column_raw:
+        operation_raw = _clean(getattr(pred, "operation", "")).lower()
+        include_values_raw = _clean(getattr(pred, "include_values", "")).lower()
+
+        intent_map = {
+            "schema": "schema",
+            "schema_lookup": "schema",
+            "count_rows": "count_rows",
+            "row_count": "count_rows",
+            "count_distinct": "count_distinct",
+            "distinct_count": "count_distinct",
+            "list_values": "list_values",
+            "aggregate": "aggregate",
+        }
+        intent = intent_map.get(intent_raw, "")
+        if not intent:
             return None
 
-        # Source may be omitted when only one table is loaded.
+        sources = self._tabular_source_names()
         source = source_raw
-        if not source:
-            tabular_sources = [
-                str(getattr(m, "name", "") or "")
-                for m in self._session.catalog
-                if getattr(m, "source_type", "") == "dataframe"
-            ]
-            tabular_sources = [s for s in tabular_sources if s]
-            if len(tabular_sources) == 1:
-                source = tabular_sources[0]
+        if not source and len(sources) == 1:
+            source = sources[0]
+        if not source and sources:
+            state_source = str(self._session.get_state("last_tabular_source", "")).strip()
+            if state_source in sources:
+                source = state_source
         if not source or source not in self._session.data:
             return None
 
@@ -713,22 +882,55 @@ class QueryEngine:
         if not isinstance(df, pd.DataFrame):
             return None
 
-        col_map = {str(c): str(c) for c in df.columns}
-        col_norm_map = {re.sub(r"[^a-z0-9]+", "_", str(c).lower()).strip("_"): str(c) for c in df.columns}
-        if column_raw in col_map:
-            return source, col_map[column_raw]
-        column_norm = re.sub(r"[^a-z0-9]+", "_", column_raw.lower()).strip("_")
-        if column_norm in col_norm_map:
-            return source, col_norm_map[column_norm]
+        column = column_raw
+        if column:
+            col_map = {str(c): str(c) for c in df.columns}
+            col_norm_map = {
+                re.sub(r"[^a-z0-9]+", "_", str(c).lower()).strip("_"): str(c)
+                for c in df.columns
+            }
+            if column in col_map:
+                column = col_map[column]
+            else:
+                column_norm = re.sub(r"[^a-z0-9]+", "_", column.lower()).strip("_")
+                column = col_norm_map.get(column_norm, "")
+        if intent not in {"schema", "count_rows"} and not column:
+            return None
 
+        include_values = include_values_raw in {"true", "yes", "1", "y", "include", "list"}
+        operation = self._detect_aggregate_operation(operation_raw) if operation_raw else None
+        if operation is None and operation_raw in {"mean", "median", "min", "max", "sum", "std"}:
+            operation = operation_raw
+
+        return {
+            "intent": intent,
+            "source": source,
+            "column": column,
+            "operation": operation,
+            "include_values": include_values,
+        }
+
+    def _resolve_tabular_target_with_llm(self, question: str) -> tuple[str, str] | None:
+        """Use configured LM to resolve the best table/column for a tabular question."""
+        plan = self._plan_tabular_question_with_llm(question)
+        if not plan:
+            return None
+        source = str(plan.get("source") or "")
+        column = str(plan.get("column") or "")
+        if source and column:
+            return source, column
         return None
 
     def _try_deterministic_tabular_answer(
         self,
         question: str,
-    ) -> tuple[str, list[dict[str, Any]]] | None:
+    ) -> tuple[str, list[dict[str, Any]], str] | None:
         if not self._has_tabular_sources():
             return None
+
+        schema = self._try_deterministic_schema_answer(question)
+        if schema is not None:
+            return schema
 
         from mosaicx.query.tools import (
             compute_table_stat,
@@ -739,8 +941,10 @@ class QueryEngine:
         q_raw = question.strip()
         q = " ".join(q_raw.lower().split())
         resolved_q = self._resolve_followup_question(q_raw)
+        llm_plan = self._plan_tabular_question_with_llm(resolved_q)
         wants_count = ("how many" in q) or ("number of" in q) or ("count" in q)
         wants_values = self._has_value_list_marker(q_raw)
+        aggregate_op = self._detect_aggregate_operation(q_raw)
         wants_row_count = bool(
             {
                 self._normalize_term(t)
@@ -749,41 +953,107 @@ class QueryEngine:
             & {"row", "record", "entry", "sample", "observation"}
         )
 
-        if not wants_count and not wants_values:
+        if llm_plan:
+            intent = str(llm_plan.get("intent") or "")
+            if intent == "count_rows":
+                wants_count = True
+                wants_row_count = True
+            elif intent == "count_distinct":
+                wants_count = True
+            elif intent == "list_values":
+                wants_values = True
+            elif intent == "aggregate":
+                aggregate_op = str(llm_plan.get("operation") or aggregate_op or "").strip().lower() or aggregate_op
+            if bool(llm_plan.get("include_values")):
+                wants_values = True
+
+        if not wants_count and not wants_values and not aggregate_op:
             return None
 
-        llm_target = self._resolve_tabular_target_with_llm(resolved_q)
-        if llm_target is not None:
-            source, column = llm_target
+        if llm_plan and str(llm_plan.get("source") or "") and str(llm_plan.get("column") or ""):
+            source = str(llm_plan.get("source"))
+            column = str(llm_plan.get("column"))
             top = {
                 "source": source,
                 "column": column,
-                "role": "llm_resolved",
+                "role": "llm_planned",
                 "score": 96,
-                "snippet": f"LLM-resolved column: {column}",
+                "snippet": f"LLM planner selected column: {column}",
                 "evidence_type": "table_column",
             }
-            column_hits = [top]
         else:
-            column_hits = suggest_table_columns(
-                resolved_q,
-                data=self._session.data,
-                top_k=6,
-            )
-            if not column_hits:
-                return None
-            top = column_hits[0]
-            source = str(top.get("source") or "")
-            column = str(top.get("column") or "")
-            if not source or not column:
-                return None
+            llm_target = self._resolve_tabular_target_with_llm(resolved_q)
+            if llm_target is not None:
+                source, column = llm_target
+                top = {
+                    "source": source,
+                    "column": column,
+                    "role": "llm_resolved",
+                    "score": 94,
+                    "snippet": f"LLM-resolved column: {column}",
+                    "evidence_type": "table_column",
+                }
+            else:
+                column_hits = suggest_table_columns(
+                    resolved_q,
+                    data=self._session.data,
+                    top_k=6,
+                )
+                if not column_hits:
+                    return None
+                top = column_hits[0]
+                source = str(top.get("source") or "")
+                column = str(top.get("column") or "")
+                if not source or not column:
+                    return None
 
         seed_hits: list[dict[str, Any]] = [top]
         distinct_rows: list[dict[str, Any]] = []
         count_value: str | None = None
+        deterministic_intent = "count_distinct"
+
+        if aggregate_op:
+            deterministic_intent = "aggregate"
+            agg_rows = compute_table_stat(
+                source,
+                data=self._session.data,
+                column=column,
+                operation=aggregate_op,
+            )
+            if not agg_rows:
+                return None
+            row = agg_rows[0]
+            value = str(row.get("value"))
+            backend = str(row.get("backend") or "table_engine")
+            row_count = row.get("row_count")
+            non_null = row.get("non_null")
+            snippet = (
+                f"Computed {aggregate_op} of {column} from {row_count} rows "
+                f"(non-null {non_null}): {value} (engine={backend})"
+            )
+            seed_hits.append(
+                {
+                    "source": source,
+                    "snippet": snippet,
+                    "score": 88,
+                    "evidence_type": "table_stat",
+                    "operation": aggregate_op,
+                    "column": column,
+                    "value": row.get("value"),
+                    "backend": backend,
+                }
+            )
+            self._session.set_state(
+                last_tabular_source=source,
+                last_tabular_column=column,
+                last_intent=deterministic_intent,
+            )
+            answer = f"{aggregate_op} of {column}: {value}."
+            return answer, self._merge_hits(seed_hits, max_hits=16), deterministic_intent
 
         if wants_count:
             if wants_row_count and source in self._session.data:
+                deterministic_intent = "count_rows"
                 row_count = int(len(self._session.data[source]))
                 count_value = str(row_count)
                 seed_hits.append(
@@ -826,6 +1096,7 @@ class QueryEngine:
                     )
 
         if wants_values or (wants_count and ("male" in q or "female" in q)):
+            deterministic_intent = "list_values" if not wants_count else deterministic_intent
             distinct_rows = list_distinct_values(
                 source,
                 data=self._session.data,
@@ -869,7 +1140,13 @@ class QueryEngine:
         else:
             return None
 
-        return answer, self._merge_hits(seed_hits, max_hits=16)
+        self._session.set_state(
+            last_tabular_source=source,
+            last_tabular_column=column,
+            last_intent=deterministic_intent,
+        )
+
+        return answer, self._merge_hits(seed_hits, max_hits=16), deterministic_intent
 
     def _salient_terms(self, text: str, *, min_len: int = 3) -> set[str]:
         return {
@@ -989,12 +1266,24 @@ class QueryEngine:
         )
         return any(marker in q for marker in analytic_markers)
 
+    def _requires_numeric_stat_evidence(self, question: str) -> bool:
+        q = " ".join(question.lower().split())
+        return any(marker in q for marker in _NUMERIC_STAT_MARKERS)
+
     def _has_tabular_sources(self) -> bool:
         return any(getattr(meta, "source_type", "") == "dataframe" for meta in self._session.catalog)
 
-    def _has_computed_citations(self, citations: list[dict[str, Any]]) -> bool:
+    def _has_computed_citations(
+        self,
+        citations: list[dict[str, Any]],
+        *,
+        require_numeric_stat: bool = False,
+    ) -> bool:
+        allowed = {"table_stat"}
+        if not require_numeric_stat:
+            allowed.update({"table_value", "table_sql"})
         return any(
-            str(c.get("evidence_type") or "").strip().lower() == "table_stat"
+            str(c.get("evidence_type") or "").strip().lower() in allowed
             for c in citations
         )
 
@@ -1154,12 +1443,13 @@ class QueryEngine:
         rescue_used = False
         rescue_reason: str | None = None
         deterministic_used = False
+        deterministic_intent: str | None = None
 
         resolved_question = self._resolve_followup_question(question.strip())
 
-        deterministic = self._try_deterministic_tabular_answer(resolved_question)
+        deterministic = self._try_deterministic_tabular_answer(question.strip())
         if deterministic is not None:
-            answer, seed_hits = deterministic
+            answer, seed_hits, deterministic_intent = deterministic
             deterministic_used = True
         else:
             try:
@@ -1216,7 +1506,7 @@ class QueryEngine:
             seed_hits=seed_hits,
             top_k=max(1, top_k_citations),
         )
-        if citations:
+        if citations and deterministic_intent != "schema":
             reconciled = self._reconcile_answer_with_evidence(
                 question=resolved_question,
                 draft_answer=answer,
@@ -1227,7 +1517,11 @@ class QueryEngine:
                 rescue_used = True
                 rescue_reason = "evidence_reconciler"
 
-        needs_rescue = bool(citations and self._looks_like_non_answer(answer))
+        needs_rescue = bool(
+            deterministic_intent != "schema"
+            and citations
+            and self._looks_like_non_answer(answer)
+        )
 
         if needs_rescue:
             rescued = self._rescue_answer_with_evidence(
@@ -1246,7 +1540,11 @@ class QueryEngine:
                 )
 
         requires_computed = self._has_tabular_sources() and self._requires_computed_evidence(resolved_question)
-        if requires_computed and not self._has_computed_citations(citations):
+        requires_numeric_stat = self._requires_numeric_stat_evidence(resolved_question)
+        if requires_computed and not self._has_computed_citations(
+            citations,
+            require_numeric_stat=requires_numeric_stat,
+        ):
             from mosaicx.query.tools import analyze_table_question
 
             computed_hits = analyze_table_question(
@@ -1271,7 +1569,10 @@ class QueryEngine:
                     rescue_used = True
                     rescue_reason = "analytic_reconciler"
 
-            if not self._has_computed_citations(citations):
+            if not self._has_computed_citations(
+                citations,
+                require_numeric_stat=requires_numeric_stat,
+            ):
                 answer = (
                     "I cannot provide a reliable numeric answer yet because no computed "
                     "table evidence was produced. Ask for schema/profile or specify a column."
@@ -1296,6 +1597,7 @@ class QueryEngine:
             "rescue_used": rescue_used,
             "rescue_reason": rescue_reason,
             "deterministic_used": deterministic_used,
+            "deterministic_intent": deterministic_intent,
         }
 
     def ask(self, question: str) -> str:

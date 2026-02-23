@@ -213,6 +213,130 @@ class TestQueryEngineConversation:
         assert any(c.get("evidence_type") == "table_stat" for c in payload["citations"])
         assert any(c.get("evidence_type") == "table_value" for c in payload["citations"])
 
+    def test_ask_structured_schema_question_returns_all_columns(self, tmp_path: Path, monkeypatch):
+        """Schema questions should return full column list and skip reconciler rewrites."""
+        from mosaicx.query.engine import QueryEngine
+        from mosaicx.query.session import QuerySession
+
+        f = tmp_path / "cohort.csv"
+        f.write_text("Subject,Ethnicity,Sex,Age,Weight,BMI,Injected_Activity\nS1,Japanese,M,50,80,25,300\n")
+        session = QuerySession(sources=[f])
+        engine = QueryEngine(session=session)
+
+        def _must_not_run(**kwargs):
+            raise AssertionError("reconciler should not run for schema deterministic answers")
+
+        monkeypatch.setattr(engine, "_reconcile_answer_with_evidence", _must_not_run)
+
+        payload = engine.ask_structured("what are the column names?")
+        answer = str(payload["answer"])
+        assert "Subject" in answer
+        assert "Ethnicity" in answer
+        assert "Injected_Activity" in answer
+        assert payload["deterministic_used"] is True
+        assert payload.get("deterministic_intent") == "schema"
+        assert any(c.get("evidence_type") == "table_schema" for c in payload["citations"])
+
+    def test_ask_structured_followup_all_column_names_uses_state(self, tmp_path: Path):
+        """Follow-up schema request should keep table context and return full list."""
+        from mosaicx.query.engine import QueryEngine
+        from mosaicx.query.session import QuerySession
+
+        f = tmp_path / "cohort.csv"
+        f.write_text("Subject,Ethnicity,Sex,Age\nS1,Japanese,M,50\nS2,German,F,52\n")
+        session = QuerySession(sources=[f])
+        engine = QueryEngine(session=session)
+
+        first = engine.ask_structured("what are the column names")
+        second = engine.ask_structured("all of the column names please")
+
+        assert "Subject" in str(first["answer"])
+        assert "Ethnicity" in str(second["answer"])
+        assert "Age" in str(second["answer"])
+        assert second.get("deterministic_intent") == "schema"
+
+    def test_ask_structured_count_values_accepts_table_value_computed_evidence(self, tmp_path: Path, monkeypatch):
+        """For count+values questions, value-count evidence should satisfy computed guard."""
+        from mosaicx.query.engine import QueryEngine
+        from mosaicx.query.session import QuerySession
+
+        f = tmp_path / "cohort.csv"
+        f.write_text("Subject,Ethnicity\nS1,Japanese\nS2,Japanese\nS3,German\n")
+        session = QuerySession(sources=[f])
+        engine = QueryEngine(session=session)
+
+        hits = [
+            {
+                "source": "cohort.csv",
+                "snippet": "Distinct Ethnicity: Japanese (count=2, engine=duckdb)",
+                "score": 90,
+                "evidence_type": "table_value",
+                "operation": "distinct_values",
+                "column": "Ethnicity",
+                "value": "Japanese",
+                "count": 2,
+                "backend": "duckdb",
+            },
+            {
+                "source": "cohort.csv",
+                "snippet": "Distinct Ethnicity: German (count=1, engine=duckdb)",
+                "score": 90,
+                "evidence_type": "table_value",
+                "operation": "distinct_values",
+                "column": "Ethnicity",
+                "value": "German",
+                "count": 1,
+                "backend": "duckdb",
+            },
+        ]
+        monkeypatch.setattr(engine, "_run_query_once", lambda q: ("There are 2 ethnicities: Japanese, German.", hits))
+        monkeypatch.setattr(engine, "_build_citations", lambda **kwargs: hits)
+
+        payload = engine.ask_structured("how many ethnicities are there and what are they?")
+        assert "reliable numeric answer" not in str(payload["answer"])
+        assert payload.get("rescue_reason") != "missing_computed_evidence"
+
+    def test_count_values_after_schema_turns_uses_topic_not_prior_column_dump(self, tmp_path: Path):
+        """Topic-bearing count+values prompts should not be derailed by prior schema turns."""
+        from mosaicx.query.engine import QueryEngine
+        from mosaicx.query.session import QuerySession
+
+        f = tmp_path / "cohort.csv"
+        f.write_text(
+            "Subject,Ethnicity,Sex,Injected_Activity\n"
+            "S1,Japanese,M,300\n"
+            "S2,Japanese,F,280\n"
+            "S3,German,M,305\n"
+        )
+        session = QuerySession(sources=[f])
+        engine = QueryEngine(session=session)
+
+        _ = engine.ask_structured("what are the column names?")
+        _ = engine.ask_structured("all of the column names please")
+        payload = engine.ask_structured("how many ethnicities are there and what are they?")
+
+        answer = str(payload["answer"])
+        assert "Ethnicity" in answer
+        assert "Japanese" in answer
+        assert "German" in answer
+        assert "Injected_Activity" not in answer
+        assert payload.get("rescue_reason") != "missing_computed_evidence"
+
+    def test_ask_structured_deterministic_aggregate_for_average(self, tmp_path: Path):
+        """Average-style questions should use deterministic aggregate execution when possible."""
+        from mosaicx.query.engine import QueryEngine
+        from mosaicx.query.session import QuerySession
+
+        f = tmp_path / "cohort.csv"
+        f.write_text("Subject,BMI\nS1,20\nS2,25\nS3,30\n")
+        session = QuerySession(sources=[f])
+        engine = QueryEngine(session=session)
+
+        payload = engine.ask_structured("what is the average BMI?")
+        assert payload["deterministic_used"] is True
+        assert payload.get("deterministic_intent") == "aggregate"
+        assert "mean of BMI" in " ".join(str(c.get("snippet", "")) for c in payload["citations"])
+
     def test_analytic_guard_not_applied_for_text_only_sessions(self, tmp_path: Path, monkeypatch):
         """Numeric fail-closed guard should not trigger for text-only sources."""
         from mosaicx.query.engine import QueryEngine

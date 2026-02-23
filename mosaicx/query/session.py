@@ -27,6 +27,7 @@ class QuerySession:
         self._catalog: list[SourceMeta] = []
         self._data: dict[str, Any] = {}  # name -> loaded data
         self._conversation: list[dict[str, str]] = []
+        self._state: dict[str, Any] = {}
         self._closed: bool = False
         self._template = template
         self._sub_lm = sub_lm
@@ -98,6 +99,21 @@ class QuerySession:
         """Access loaded data by source name."""
         return dict(self._data)
 
+    @property
+    def state(self) -> dict[str, Any]:
+        """Structured session state for robust multi-turn reasoning."""
+        return dict(self._state)
+
+    def get_state(self, key: str, default: Any = None) -> Any:
+        """Get a state value by key."""
+        return self._state.get(key, default)
+
+    def set_state(self, **kwargs: Any) -> None:
+        """Update one or more state values."""
+        if self._closed:
+            raise ValueError("Cannot update state on a closed session.")
+        self._state.update(kwargs)
+
     def add_text_source(self, name: str, text: str) -> SourceMeta:
         """Add an in-memory text source to the session.
 
@@ -147,6 +163,7 @@ class QuerySession:
         """Close the session and release resources."""
         self._closed = True
         self._data.clear()
+        self._state.clear()
 
     def ask(
         self,
