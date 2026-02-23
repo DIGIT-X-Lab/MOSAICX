@@ -56,6 +56,8 @@ def search_documents(
         "who", "whom", "when", "where", "why", "how", "does", "do", "did",
         "please", "show", "tell", "about", "can", "you", "your", "my", "me",
         "from", "that", "this", "those", "these", "there", "their", "them",
+        "no", "patient", "study", "scan", "ct", "mri",
+        "findings", "impression", "compared", "comparison", "today",
     }
     query_terms = [t for t in raw_terms if len(t) >= 2 and t not in stopwords]
     if not query_terms:
@@ -71,19 +73,22 @@ def search_documents(
         term_counts = {term: counts.get(term, 0) for term in query_terms}
         score = sum(term_counts.values())
         if score > 0:
-            # Anchor snippet around strongest match term.
-            anchor = max(term_counts, key=term_counts.get)
             snippet = ""
-            line_match = re.compile(rf"\b{re.escape(anchor)}s?\b", flags=re.IGNORECASE)
-
-            # Prefer a full line containing the anchor term if available.
+            best_line_score = 0
             for raw_line in text.splitlines():
                 line = " ".join(raw_line.split()).strip()
-                if line and line_match.search(line):
+                if not line:
+                    continue
+                line_tokens = Counter(_extract_terms(line))
+                line_score = sum(line_tokens.get(term, 0) for term in query_terms)
+                if line_score > best_line_score:
+                    best_line_score = line_score
                     snippet = line
-                    break
 
             if not snippet:
+                # Anchor snippet around the strongest non-stopword match term.
+                anchor = max(term_counts, key=term_counts.get)
+                line_match = re.compile(rf"\b{re.escape(anchor)}s?\b", flags=re.IGNORECASE)
                 match = line_match.search(text)
                 idx = match.start() if match else 0
                 start = max(0, idx - 120)

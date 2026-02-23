@@ -38,10 +38,23 @@ class TestSearchDocuments:
     def test_plural_query_matches_singular_text(self):
         from mosaicx.query.tools import search_documents
 
-        docs = {"report.txt": "The radiology report notes no pleural effusion."}
+        docs = {"report.txt": "The radiology note reports no pleural effusion."}
         results = search_documents("summarize reports", documents=docs, top_k=5)
         assert len(results) >= 1
         assert results[0]["source"] == "report.txt"
+
+    def test_prefers_line_with_more_query_terms(self):
+        from mosaicx.query.tools import search_documents
+
+        docs = {
+            "report.txt": (
+                "Lungs: No suspicious pulmonary nodules.\n"
+                "Lymph nodes: Right external iliac node increased in size (now 16 mm short-axis)."
+            )
+        }
+        results = search_documents("lesion size change lymph node", documents=docs, top_k=3)
+        assert len(results) >= 1
+        assert "16 mm" in results[0]["snippet"]
 
 
 class TestGetDocument:

@@ -195,6 +195,38 @@ class TestQueryEngineConversation:
         assert payload["rescue_reason"] == "non_answer_with_evidence"
         assert "Timeline from grounded evidence" in payload["answer"]
 
+    def test_delta_question_uses_deterministic_measurement_guard(self, tmp_path: Path, monkeypatch):
+        """Delta questions should not return zero-change when evidence disagrees."""
+        from mosaicx.query.engine import QueryEngine
+        from mosaicx.query.session import QuerySession
+
+        f = tmp_path / "report.txt"
+        f.write_text("Lymph nodes: Right external iliac node increased in size (now 16 mm short-axis).")
+        session = QuerySession(sources=[f])
+        engine = QueryEngine(session=session)
+
+        monkeypatch.setattr(
+            engine,
+            "_run_query_once",
+            lambda q: (
+                "Size change: 0 mm (no change).",
+                [
+                    {"source": "P001_CT_2025-08-01.pdf", "snippet": "Right external iliac node measured 12 mm.", "score": 3},
+                    {"source": "P001_CT_2025-09-10.pdf", "snippet": "Right external iliac node increased in size (now 16 mm short-axis).", "score": 4},
+                ],
+            ),
+        )
+        monkeypatch.setattr(
+            engine,
+            "_build_citations",
+            lambda **kwargs: kwargs["seed_hits"],
+        )
+
+        payload = engine.ask_structured("how much did the lesion size change")
+        assert payload["rescue_used"] is True
+        assert payload["rescue_reason"] == "numeric_delta_from_evidence"
+        assert "12 mm -> 16 mm" in payload["answer"]
+
 
 class TestQueryEngineConfig:
     def test_engine_has_configurable_max_iterations(self, tmp_path: Path):
