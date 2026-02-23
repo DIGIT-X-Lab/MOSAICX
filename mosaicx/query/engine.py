@@ -221,11 +221,13 @@ class QueryEngine:
             get_document,
             get_table_schema,
             list_tables,
+            profile_table,
             run_table_sql,
             sample_table_rows,
             save_artifact,
             search_documents,
             search_tables,
+            suggest_table_columns,
         )
 
         # Build catalog summary for the RLM context
@@ -294,6 +296,22 @@ class QueryEngine:
                 top_n=top_n,
             )
 
+        def _table_profile(name: str, max_columns: int = 80) -> dict[str, Any]:
+            """Create schema-agnostic profile with roles, missingness, and summary stats."""
+            return profile_table(
+                name,
+                data=data,
+                max_columns=max_columns,
+            )
+
+        def _suggest_table_columns(question: str, top_k: int = 8) -> list[dict[str, Any]]:
+            """Suggest likely columns for a question across loaded tables."""
+            return suggest_table_columns(
+                question,
+                data=data,
+                top_k=top_k,
+            )
+
         def _table_sql(name: str, sql: str, limit: int = 50) -> list[dict[str, Any]]:
             """Run a read-only SQL query over a tabular source (DuckDB)."""
             try:
@@ -328,6 +346,8 @@ class QueryEngine:
             dspy.Tool(_search_tables, name="search_tables", desc="Search tabular sources and return row-level evidence."),
             dspy.Tool(_list_tables, name="list_tables", desc="List loaded tabular sources with row/column counts."),
             dspy.Tool(_table_schema, name="get_table_schema", desc="Get detailed schema for a table source."),
+            dspy.Tool(_table_profile, name="profile_table", desc="Create schema-agnostic profile with role inference and summary stats."),
+            dspy.Tool(_suggest_table_columns, name="suggest_table_columns", desc="Suggest likely columns for the current question."),
             dspy.Tool(_table_rows, name="sample_table_rows", desc="Sample rows from a table source."),
             dspy.Tool(_table_stat, name="compute_table_stat", desc="Compute statistics (mean/median/min/max/count/etc.) for a column."),
             dspy.Tool(_table_sql, name="run_table_sql", desc="Run read-only SQL over a tabular source for complex analytics."),
@@ -340,8 +360,9 @@ class QueryEngine:
         text_hits = search_documents(question.strip(), documents=docs, top_k=6)
         table_hits = search_tables(question.strip(), data=data, top_k=6)
         computed_hits = analyze_table_question(question.strip(), data=data, top_k=4)
+        column_hits = suggest_table_columns(question.strip(), data=data, top_k=6)
         seed_hits = self._merge_hits(
-            [*computed_hits, *table_hits, *text_hits],
+            [*computed_hits, *column_hits, *table_hits, *text_hits],
             max_hits=12,
         )
         retrieval_lines = []
@@ -377,7 +398,8 @@ class QueryEngine:
         guidance = (
             "Use only grounded evidence from retrieval/tool outputs. "
             "If evidence exists, answer directly and do not claim sources are unavailable. "
-            "For CSV/Parquet/Excel questions, inspect schema and compute stats with table tools before answering. "
+            "For CSV/Parquet/Excel questions, inspect schema, profile tables, and compute stats with table tools before answering. "
+            "Use suggest_table_columns when column names are unfamiliar. "
             "For complex cohort questions, use run_table_sql and cite computed outputs. "
             "For subject/patient counts, use deterministic distinct counts (nunique), not sampled rows. "
             "Never estimate numeric cohort statistics from memory; compute them. "
@@ -409,7 +431,12 @@ class QueryEngine:
         seed_hits: list[dict[str, Any]],
         top_k: int,
     ) -> list[dict[str, Any]]:
-        from mosaicx.query.tools import analyze_table_question, search_documents, search_tables
+        from mosaicx.query.tools import (
+            analyze_table_question,
+            search_documents,
+            search_tables,
+            suggest_table_columns,
+        )
 
         docs = self._documents
         data = self._session.data
@@ -449,13 +476,16 @@ class QueryEngine:
                 rank += 14
             elif evidence_type == "table_stat":
                 rank += 30
+            elif evidence_type == "table_column":
+                rank += 18
             return rank
 
         query = " ".join([question.strip(), answer.strip()]).strip()
         text_hits = search_documents(query, documents=docs, top_k=max(top_k, 6))
         table_hits = search_tables(query, data=data, top_k=max(top_k, 8))
         computed_hits = analyze_table_question(question.strip(), data=data, top_k=max(top_k, 5))
-        hits = self._merge_hits([*computed_hits, *table_hits, *text_hits], max_hits=max(top_k, 12))
+        column_hits = suggest_table_columns(question.strip(), data=data, top_k=max(top_k, 6))
+        hits = self._merge_hits([*computed_hits, *column_hits, *table_hits, *text_hits], max_hits=max(top_k, 12))
         combined = []
         seen = set()
         for h in [*seed_hits, *hits]:
@@ -605,6 +635,40 @@ class QueryEngine:
     def _is_delta_question(self, question: str) -> bool:
         q = " ".join(question.lower().split())
         return any(marker in q for marker in _DELTA_QUESTION_MARKERS)
+
+    def _requires_computed_evidence(self, question: str) -> bool:
+        q = " ".join(question.lower().split())
+        analytic_markers = (
+            "how many",
+            "number of",
+            "count",
+            "average",
+            "mean",
+            "median",
+            "min",
+            "max",
+            "sum",
+            "std",
+            "percent",
+            "ratio",
+            "prevalence",
+            "incidence",
+            "distribution",
+            "outlier",
+            "correlation",
+            "change",
+            "difference",
+        )
+        return any(marker in q for marker in analytic_markers)
+
+    def _has_tabular_sources(self) -> bool:
+        return any(getattr(meta, "source_type", "") == "dataframe" for meta in self._session.catalog)
+
+    def _has_computed_citations(self, citations: list[dict[str, Any]]) -> bool:
+        return any(
+            str(c.get("evidence_type") or "").strip().lower() == "table_stat"
+            for c in citations
+        )
 
     def _reconcile_answer_with_evidence(
         self,
@@ -820,6 +884,41 @@ class QueryEngine:
                     seed_hits=seed_hits,
                     top_k=max(1, top_k_citations),
                 )
+
+        requires_computed = self._has_tabular_sources() and self._requires_computed_evidence(question.strip())
+        if requires_computed and not self._has_computed_citations(citations):
+            from mosaicx.query.tools import analyze_table_question
+
+            computed_hits = analyze_table_question(
+                question.strip(),
+                data=self._session.data,
+                top_k=max(3, top_k_citations),
+            )
+            if computed_hits:
+                citations = self._build_citations(
+                    question=question.strip(),
+                    answer=answer,
+                    seed_hits=[*computed_hits, *seed_hits],
+                    top_k=max(1, top_k_citations),
+                )
+                reconciled = self._reconcile_answer_with_evidence(
+                    question=question.strip(),
+                    draft_answer=answer,
+                    citations=citations,
+                )
+                if reconciled and reconciled.strip() != answer.strip():
+                    answer = reconciled.strip()
+                    rescue_used = True
+                    rescue_reason = "analytic_reconciler"
+
+            if not self._has_computed_citations(citations):
+                answer = (
+                    "I cannot provide a reliable numeric answer yet because no computed "
+                    "table evidence was produced. Ask for schema/profile or specify a column."
+                )
+                rescue_used = True
+                rescue_reason = "missing_computed_evidence"
+
         confidence = self._citation_confidence(question.strip(), answer, citations)
 
         self._session.add_turn("user", question.strip())

@@ -155,6 +155,94 @@ class TestTabularTools:
         assert hits[0]["value"] == 3
         assert "unique_count of Subject" in hits[0]["snippet"]
 
+    def test_analyze_table_question_row_count_uses_table_rows(self):
+        import pandas as pd
+
+        from mosaicx.query.tools import analyze_table_question
+
+        data = {
+            "cohort.csv": pd.DataFrame(
+                {"Subject": ["S1", "S1", "S2", "S3"], "BMI": [20.0, 21.0, 25.0, 30.0]}
+            )
+        }
+        hits = analyze_table_question(
+            "how many rows are in this dataset?",
+            data=data,
+            top_k=3,
+        )
+        assert len(hits) >= 1
+        assert hits[0]["evidence_type"] == "table_stat"
+        assert hits[0]["operation"] == "row_count"
+        assert hits[0]["column"] == "__rows__"
+        assert hits[0]["value"] == 4
+
+    def test_infer_table_roles_detects_numeric_id_and_text(self):
+        import pandas as pd
+
+        from mosaicx.query.tools import infer_table_roles
+
+        data = {
+            "cohort.csv": pd.DataFrame(
+                {
+                    "SubjectID": ["S1", "S2", "S3", "S4"],
+                    "BMI": [20.0, 25.0, 30.0, 28.0],
+                    "Notes": [
+                        "Known prostate carcinoma with stable osseous lesion in lumbar spine.",
+                        "Follow-up exam with no suspicious visceral metastasis identified.",
+                        "Lymph node remains mildly enlarged but otherwise disease burden stable.",
+                        "No focal liver lesion, no pleural effusion, unchanged imaging pattern.",
+                    ],
+                }
+            )
+        }
+        profile = infer_table_roles("cohort.csv", data=data)
+        assert "BMI" in profile["roles"]["numeric"]
+        assert "SubjectID" in profile["roles"]["id"]
+        assert profile["column_roles"]["Notes"] == "text"
+
+    def test_suggest_table_columns_handles_entity_count_without_exact_column_match(self):
+        import pandas as pd
+
+        from mosaicx.query.tools import suggest_table_columns
+
+        data = {
+            "cohort.csv": pd.DataFrame(
+                {
+                    "patient_id": ["P1", "P2", "P3", "P4"],
+                    "BMI": [21.0, 24.0, 31.0, 29.0],
+                }
+            )
+        }
+        hits = suggest_table_columns(
+            "how many participants are included?",
+            data=data,
+            top_k=3,
+        )
+        assert len(hits) >= 1
+        assert hits[0]["column"] == "patient_id"
+        assert hits[0]["evidence_type"] == "table_column"
+
+    def test_profile_table_includes_numeric_summary_and_top_values(self):
+        import pandas as pd
+
+        from mosaicx.query.tools import profile_table
+
+        data = {
+            "cohort.csv": pd.DataFrame(
+                {
+                    "BMI": [20.0, 25.0, 30.0, 30.0],
+                    "Sex": ["F", "M", "F", "F"],
+                }
+            )
+        }
+        profile = profile_table("cohort.csv", data=data, max_columns=10, top_values=3)
+        assert profile["rows"] == 4
+        by_name = {c["name"]: c for c in profile["columns"]}
+        assert "summary" in by_name["BMI"]
+        assert by_name["BMI"]["summary"]["mean"] == "26.25"
+        assert "top_values" in by_name["Sex"]
+        assert by_name["Sex"]["top_values"][0]["value"] == "F"
+
     def test_search_tables_returns_row_level_snippets(self):
         import pandas as pd
 

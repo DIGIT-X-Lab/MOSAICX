@@ -195,6 +195,65 @@ class TestQueryEngineConversation:
         assert payload["rescue_reason"] == "non_answer_with_evidence"
         assert "Timeline from grounded evidence" in payload["answer"]
 
+    def test_analytic_guard_not_applied_for_text_only_sessions(self, tmp_path: Path, monkeypatch):
+        """Numeric fail-closed guard should not trigger for text-only sources."""
+        from mosaicx.query.engine import QueryEngine
+        from mosaicx.query.session import QuerySession
+
+        f = tmp_path / "report.txt"
+        f.write_text("Two reports were reviewed.")
+        session = QuerySession(sources=[f])
+        engine = QueryEngine(session=session)
+
+        seed_hits = [
+            {
+                "source": "report.txt",
+                "snippet": "Two reports were reviewed.",
+                "score": 3,
+                "evidence_type": "text",
+            }
+        ]
+        monkeypatch.setattr(
+            engine,
+            "_run_query_once",
+            lambda q: ("There were two reports.", seed_hits),
+        )
+        monkeypatch.setattr(
+            engine,
+            "_build_citations",
+            lambda **kwargs: seed_hits,
+        )
+
+        payload = engine.ask_structured("how many reports were reviewed?")
+        assert payload["answer"] == "There were two reports."
+        assert payload["rescue_reason"] != "missing_computed_evidence"
+
+    def test_analytic_guard_fail_closed_for_tabular_without_computed_evidence(self, tmp_path: Path, monkeypatch):
+        """Tabular analytics should fail closed when no computed citation is available."""
+        from mosaicx.query.engine import QueryEngine
+        from mosaicx.query.session import QuerySession
+
+        f = tmp_path / "cohort.csv"
+        f.write_text("BMI\n20\n25\n30\n")
+        session = QuerySession(sources=[f])
+        engine = QueryEngine(session=session)
+
+        monkeypatch.setattr(
+            engine,
+            "_run_query_once",
+            lambda q: ("Average BMI is 30.", []),
+        )
+        monkeypatch.setattr(
+            engine,
+            "_build_citations",
+            lambda **kwargs: [],
+        )
+
+        payload = engine.ask_structured("what is the average bmi?")
+        assert payload["rescue_used"] is True
+        assert payload["rescue_reason"] == "missing_computed_evidence"
+        assert "reliable numeric answer" in payload["answer"]
+
     def test_reconciler_corrects_unsupported_draft_answer(self, tmp_path: Path, monkeypatch):
         """Evidence reconciler should correct unsupported draft answers."""
         from mosaicx.query.engine import QueryEngine

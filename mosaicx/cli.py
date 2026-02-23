@@ -3202,6 +3202,8 @@ def runtime_install(assume_yes: bool, force: bool) -> None:
 )
 @click.option("--question", "-q", type=str, default=None, help="Ask a single question (non-interactive).")
 @click.option("--chat", is_flag=True, default=False, help="Start a multi-turn query chat session.")
+@click.option("--eda", is_flag=True, default=False, help="Run deterministic table profiling preflight for schema-agnostic analysis.")
+@click.option("--trace", "show_trace", is_flag=True, default=False, help="Show query execution diagnostics per turn.")
 @click.option("--citations", type=int, default=3, show_default=True, help="Maximum citations to return per answer.")
 @click.option("--max-iterations", type=int, default=8, show_default=True, help="RLM iteration budget per answer (lower is faster).")
 @click.option("--output", "-o", type=click.Path(path_type=Path), default=None, help="Save output to file (.json or .yaml/.yml).")
@@ -3210,6 +3212,8 @@ def query(
     sources: tuple[str, ...],
     question: Optional[str],
     chat: bool,
+    eda: bool,
+    show_trace: bool,
     citations: int,
     max_iterations: int,
     output: Optional[Path],
@@ -3250,6 +3254,50 @@ def query(
     for src in session.catalog:
         table.add_row(src.name, src.format, src.source_type, f"{src.size:,} B")
     console.print(Padding(table, (0, 0, 0, 2)))
+
+    eda_payload: dict[str, Any] | None = None
+    if eda:
+        from .query.tools import list_tables as _list_tables
+        from .query.tools import profile_table as _profile_table
+
+        table_list = _list_tables(data=session.data)
+        profiles: list[dict[str, Any]] = []
+        for item in table_list:
+            source_name = str(item.get("source") or "")
+            if not source_name:
+                continue
+            try:
+                profile = _profile_table(
+                    source_name,
+                    data=session.data,
+                    max_columns=80,
+                    top_values=6,
+                )
+            except Exception:
+                continue
+            profiles.append(profile)
+
+        if profiles:
+            eda_payload = {"tables": profiles}
+            session.add_text_source("__eda_profile__.json", json.dumps(eda_payload, ensure_ascii=False))
+            console.print(theme.info("EDA preflight: generated schema/profile artifact"))
+            ptab = theme.make_clean_table()
+            ptab.add_column("Table", style=f"bold {theme.CORAL}", no_wrap=True)
+            ptab.add_column("Rows", justify="right")
+            ptab.add_column("Cols", justify="right")
+            ptab.add_column("ID candidates")
+            ptab.add_column("Numeric cols", justify="right")
+            for p in profiles[:6]:
+                id_cols = [str(x.get("column")) for x in (p.get("id_candidates") or [])[:2] if isinstance(x, dict)]
+                numeric_cols = p.get("roles", {}).get("numeric", []) if isinstance(p.get("roles"), dict) else []
+                ptab.add_row(
+                    _esc(str(p.get("source") or "unknown")),
+                    str(p.get("rows", "—")),
+                    str(p.get("column_count", "—")),
+                    _esc(", ".join(id_cols) if id_cols else "—"),
+                    str(len(numeric_cols)),
+                )
+            console.print(Padding(ptab, (0, 0, 0, 2)))
 
     def _compact_query_text(value: Any, *, max_len: int = 220) -> str:
         text = " ".join(str(value).split())
@@ -3312,6 +3360,7 @@ def query(
                 "text": "text_match",
                 "table_row": "row_match",
                 "table_stat": "computed",
+                "table_column": "schema_match",
             }
 
             def _infer_engine_label(citation: dict[str, Any]) -> str:
@@ -3387,6 +3436,22 @@ def query(
                 grade = "low"
             console.print(theme.info(f"Grounding: {grade} ({conf_value:.2f})"))
 
+        if show_trace:
+            trace_table = theme.make_clean_table(show_header=False)
+            trace_table.add_column("Key", style=f"bold {theme.CORAL}", no_wrap=True)
+            trace_table.add_column("Value", style=theme.MUTED)
+            trace_table.add_row("fallback_used", str(bool(payload.get("fallback_used"))).lower())
+            trace_table.add_row("rescue_used", str(bool(payload.get("rescue_used"))).lower())
+            if payload.get("rescue_reason"):
+                trace_table.add_row("rescue_reason", _esc(_compact_query_text(payload.get("rescue_reason"), max_len=80)))
+            computed_count = sum(
+                1
+                for c in citations_payload
+                if str(c.get("evidence_type") or "").lower() == "table_stat"
+            )
+            trace_table.add_row("computed_citations", str(computed_count))
+            console.print(Padding(trace_table, (0, 0, 0, 2)))
+
     # Question/chat modes
     if question is not None or chat:
         _ensure_deno_runtime(command="query")
@@ -3398,6 +3463,8 @@ def query(
             "catalog": [m.model_dump() for m in session.catalog],
             "turns": [],
         }
+        if eda_payload is not None:
+            output_data["eda_profile"] = eda_payload
 
         def _ask_once(q: str) -> dict[str, Any]:
             with theme.spinner("Querying sources...", console):

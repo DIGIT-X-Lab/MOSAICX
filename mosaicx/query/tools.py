@@ -59,6 +59,17 @@ _OPERATION_ALIASES = {
     "nunique": {"distinct", "unique"},
     "missing_count": {"missing", "null", "na", "nan"},
 }
+_ENTITY_COUNT_TERMS = {
+    "subject",
+    "patient",
+    "participant",
+    "case",
+    "id",
+    "identifier",
+    "individual",
+    "person",
+}
+_ROW_COUNT_TERMS = {"row", "rows", "record", "records", "entry", "entries", "observation", "observations", "sample", "samples"}
 
 
 def _normalize_token(token: str) -> str:
@@ -181,12 +192,9 @@ def _detect_operation(question: str) -> str | None:
 
 
 def _should_use_distinct_count(question: str, selected_col: str) -> bool:
-    q_terms = set(_extract_terms(question))
     col_terms = set(_extract_terms(selected_col))
-    subjectish = {"subject", "patient", "participant", "case", "cohort"}
-    idish = {"id", "identifier", "subjectid", "patientid"}
-    asks_subject_count = bool(q_terms & subjectish) or "how many" in question.lower()
-    col_looks_identifier = bool(col_terms & subjectish) or bool(col_terms & idish)
+    asks_subject_count = _is_entity_count_question(question)
+    col_looks_identifier = bool(col_terms & _ENTITY_COUNT_TERMS)
     return asks_subject_count and col_looks_identifier
 
 
@@ -203,6 +211,241 @@ def _normalize_operation(operation: str) -> str:
 
 def _sql_ident(name: str) -> str:
     return '"' + str(name).replace('"', '""') + '"'
+
+
+def _question_terms(question: str) -> set[str]:
+    return set(_extract_terms(question))
+
+
+def _is_entity_count_question(question: str) -> bool:
+    q_terms = _question_terms(question)
+    q_norm = " ".join(question.lower().split())
+    if bool(q_terms & _ENTITY_COUNT_TERMS):
+        return True
+    return (
+        ("how many" in q_norm or "number of" in q_norm)
+        and "cohort" in q_terms
+    )
+
+
+def _is_row_count_question(question: str) -> bool:
+    q_terms = _question_terms(question)
+    q_norm = " ".join(question.lower().split())
+    asks_rows = bool(q_terms & _ROW_COUNT_TERMS)
+    asks_how_many = "how many" in q_norm or "number of" in q_norm
+    asks_entities = bool(q_terms & _ENTITY_COUNT_TERMS)
+    return asks_rows or (asks_how_many and not asks_entities)
+
+
+def infer_table_roles(
+    name: str,
+    *,
+    data: dict[str, Any],
+    max_columns: int = 300,
+) -> dict[str, Any]:
+    """Infer coarse semantic roles for columns in a tabular source."""
+    import pandas as pd
+    from pandas.api import types as ptypes
+
+    df = _resolve_table(name, data=data)
+    rows = int(len(df))
+    columns = [str(c) for c in df.columns[: max(1, max_columns)]]
+
+    roles: dict[str, list[str]] = {
+        "id": [],
+        "numeric": [],
+        "categorical": [],
+        "boolean": [],
+        "datetime": [],
+        "text": [],
+    }
+    id_candidates: list[dict[str, Any]] = []
+    column_roles: dict[str, str] = {}
+
+    for col in columns:
+        s = df[col]
+        dtype = str(s.dtype)
+        non_null = int(s.notna().sum())
+        unique = int(s.nunique(dropna=True))
+        unique_ratio = (unique / non_null) if non_null else 0.0
+        col_terms = set(_extract_terms(col))
+
+        role = "categorical"
+        if ptypes.is_bool_dtype(s):
+            role = "boolean"
+        elif ptypes.is_numeric_dtype(s):
+            role = "numeric"
+        elif ptypes.is_datetime64_any_dtype(s):
+            role = "datetime"
+        else:
+            sample = s.dropna().astype(str).head(80)
+            avg_len = float(sample.str.len().mean()) if not sample.empty else 0.0
+            parsed_dates = pd.to_datetime(sample, errors="coerce")
+            date_ratio = float(parsed_dates.notna().mean()) if not sample.empty else 0.0
+            if date_ratio >= 0.7:
+                role = "datetime"
+            elif avg_len >= 48 and unique >= min(max(15, non_null // 3), non_null):
+                role = "text"
+            else:
+                role = "categorical"
+
+        roles[role].append(col)
+        column_roles[col] = role
+
+        id_hint = bool(col_terms & _ENTITY_COUNT_TERMS)
+        eligible = (
+            non_null >= max(3, int(rows * 0.5))
+            and unique_ratio >= 0.95
+            and role in {"categorical", "numeric", "datetime"}
+        )
+        if eligible:
+            score = int(round(unique_ratio * 100)) + (20 if id_hint else 0)
+            id_candidates.append(
+                {
+                    "column": col,
+                    "score": score,
+                    "non_null": non_null,
+                    "unique": unique,
+                    "unique_ratio": round(unique_ratio, 6),
+                    "dtype": dtype,
+                    "role": role,
+                }
+            )
+
+    id_candidates.sort(
+        key=lambda x: (int(x.get("score", 0)), float(x.get("unique_ratio", 0.0))),
+        reverse=True,
+    )
+    roles["id"] = [str(x["column"]) for x in id_candidates[:10]]
+
+    return {
+        "source": name,
+        "rows": rows,
+        "column_count": int(len(df.columns)),
+        "roles": roles,
+        "id_candidates": id_candidates[:20],
+        "column_roles": column_roles,
+    }
+
+
+def suggest_table_columns(
+    question: str,
+    *,
+    data: dict[str, Any],
+    top_k: int = 8,
+) -> list[dict[str, Any]]:
+    """Suggest relevant columns for a question across all loaded tables."""
+    q_terms = [t for t in _extract_terms(question) if t not in _DEFAULT_STOPWORDS]
+    if not q_terms:
+        q_terms = _extract_terms(question)
+    if not q_terms:
+        return []
+
+    op = _detect_operation(question)
+    q_term_set = set(q_terms)
+    out: list[dict[str, Any]] = []
+    for name, df in _iter_tables(data) or ():
+        role_info = infer_table_roles(name, data=data, max_columns=300)
+        column_roles: dict[str, str] = role_info.get("column_roles", {})
+        id_cols = set(role_info.get("roles", {}).get("id", []))
+        for col in [str(c) for c in df.columns]:
+            col_norm = _normalize_column_name(col)
+            col_terms = [t for t in col_norm.split("_") if t]
+            overlap = len(set(col_terms) & q_term_set)
+            substring_hits = sum(1 for t in q_terms if t in col_norm)
+            score = overlap * 25 + substring_hits * 12
+
+            role = column_roles.get(col, "categorical")
+            if op in {"mean", "median", "min", "max", "sum", "std"} and role == "numeric":
+                score += 20
+            if op in {"nunique", "count"} and col in id_cols:
+                score += 25
+            if _is_entity_count_question(question) and col in id_cols:
+                score += 35
+
+            if score <= 0:
+                continue
+            out.append(
+                {
+                    "source": name,
+                    "column": col,
+                    "role": role,
+                    "score": int(score),
+                    "snippet": f"Column match: {col} (role={role}, score={int(score)})",
+                    "evidence_type": "table_column",
+                }
+            )
+
+    out.sort(key=lambda x: int(x.get("score", 0)), reverse=True)
+    return out[: max(1, top_k)]
+
+
+def profile_table(
+    name: str,
+    *,
+    data: dict[str, Any],
+    max_columns: int = 80,
+    top_values: int = 6,
+) -> dict[str, Any]:
+    """Build a schema-agnostic EDA profile for a table source."""
+    import pandas as pd
+
+    df = _resolve_table(name, data=data)
+    rows = int(len(df))
+    role_info = infer_table_roles(name, data=data, max_columns=max_columns)
+    column_roles = role_info.get("column_roles", {})
+
+    columns_out: list[dict[str, Any]] = []
+    max_columns = max(1, min(int(max_columns), len(df.columns)))
+    for col in [str(c) for c in df.columns[:max_columns]]:
+        s = df[col]
+        non_null = int(s.notna().sum())
+        missing = int(rows - non_null)
+        unique = int(s.nunique(dropna=True))
+        unique_ratio = (unique / non_null) if non_null else 0.0
+        role = str(column_roles.get(col, "categorical"))
+
+        col_item: dict[str, Any] = {
+            "name": col,
+            "dtype": str(s.dtype),
+            "role": role,
+            "non_null": non_null,
+            "missing": missing,
+            "missing_pct": round((missing / rows) if rows else 0.0, 6),
+            "unique": unique,
+            "unique_ratio": round(unique_ratio, 6),
+        }
+
+        if role == "numeric":
+            nums = pd.to_numeric(s, errors="coerce").dropna()
+            if not nums.empty:
+                col_item["summary"] = {
+                    "mean": _format_scalar(float(nums.mean())),
+                    "std": _format_scalar(float(nums.std())) if nums.shape[0] > 1 else "0",
+                    "min": _format_scalar(float(nums.min())),
+                    "p25": _format_scalar(float(nums.quantile(0.25))),
+                    "median": _format_scalar(float(nums.median())),
+                    "p75": _format_scalar(float(nums.quantile(0.75))),
+                    "max": _format_scalar(float(nums.max())),
+                }
+        elif role in {"categorical", "boolean"}:
+            vc = s.dropna().astype(str).value_counts().head(max(1, min(int(top_values), 20)))
+            if not vc.empty:
+                col_item["top_values"] = [
+                    {"value": str(idx), "count": int(cnt)}
+                    for idx, cnt in vc.items()
+                ]
+
+        columns_out.append(col_item)
+
+    return {
+        "source": name,
+        "rows": rows,
+        "column_count": int(len(df.columns)),
+        "roles": role_info.get("roles", {}),
+        "id_candidates": role_info.get("id_candidates", [])[:8],
+        "columns": columns_out,
+    }
 
 
 def list_tables(
@@ -660,11 +903,48 @@ def analyze_table_question(
 
     for name, df in _iter_tables(data) or ():
         columns = [str(c) for c in df.columns]
-        selected_col = _choose_column(question, columns)
-        if not op or not selected_col:
+        if not op:
             continue
+        role_info = infer_table_roles(name, data=data, max_columns=300)
+        id_candidates = [str(c) for c in role_info.get("roles", {}).get("id", [])]
+        numeric_candidates = [str(c) for c in role_info.get("roles", {}).get("numeric", [])]
+        selected_col = _choose_column(question, columns)
+        if selected_col is None:
+            suggested = suggest_table_columns(question, data={name: df}, top_k=6)
+            if suggested:
+                selected_col = str(suggested[0].get("column") or "")
+        if selected_col is None:
+            if _is_entity_count_question(question) and id_candidates:
+                selected_col = id_candidates[0]
+            elif op in {"mean", "median", "min", "max", "sum", "std"} and numeric_candidates:
+                selected_col = numeric_candidates[0]
+            elif columns:
+                selected_col = columns[0]
+        if not selected_col:
+            continue
+
+        # Generic "how many rows/records" should compute table row count.
+        if op == "count" and _is_row_count_question(question):
+            row_count = int(len(df))
+            out.append(
+                {
+                    "source": name,
+                    "snippet": f"Computed row_count from {row_count} rows: {row_count} (engine=pandas)",
+                    "score": 82,
+                    "evidence_type": "table_stat",
+                    "operation": "row_count",
+                    "column": "__rows__",
+                    "value": row_count,
+                    "backend": "pandas",
+                }
+            )
+            continue
+
         op_to_run = op
-        if op == "count" and _should_use_distinct_count(question, selected_col):
+        if op == "count" and (
+            _should_use_distinct_count(question, selected_col)
+            or (_is_entity_count_question(question) and selected_col in id_candidates)
+        ):
             op_to_run = "nunique"
         try:
             computed = compute_table_stat(
@@ -681,7 +961,7 @@ def analyze_table_question(
             non_null = row.get("non_null")
             backend = str(row.get("backend") or "table_engine")
             snippet_op = str(row.get("operation") or op_to_run)
-            if snippet_op == "nunique" and _should_use_distinct_count(question, selected_col):
+            if snippet_op == "nunique" and _is_entity_count_question(question):
                 snippet_op = "unique_count"
             if non_null is not None:
                 snippet = (
