@@ -285,7 +285,16 @@ def _wants_distinct_values(question: str) -> bool:
         "what are the values",
         "what are the categories",
     )
-    return any(m in q for m in markers)
+    if any(m in q for m in markers):
+        return True
+
+    has_count = ("how many" in q) or ("number of" in q) or ("count" in q)
+    asks_followup_values = bool(
+        re.search(r"\band\b[^?]{0,120}\bwhat\s+are\b", q)
+        or re.search(r"\band\b[^?]{0,120}\bwhich\b", q)
+        or re.search(r"\band\b[^?]{0,120}\blist\b", q)
+    )
+    return has_count and asks_followup_values
 
 
 def infer_table_roles(

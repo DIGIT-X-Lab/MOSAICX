@@ -513,6 +513,12 @@ class QueryEngine:
             if len(t) >= 3 and t not in _QUERY_STOPWORDS
         }
         is_delta_question = self._is_delta_question(question)
+        is_count_plus_values = self._is_count_plus_values_request(question)
+        needs_count_evidence = (
+            ("how many" in question.lower())
+            or ("number of" in question.lower())
+            or ("count" in question.lower())
+        )
 
         def _citation_rank(snippet: str, base_score: int, evidence_type: str) -> int:
             snip = " ".join(str(snippet).split())
@@ -588,14 +594,43 @@ class QueryEngine:
 
         combined.sort(key=lambda x: (x.get("rank", 0), x.get("score", 0)), reverse=True)
 
-        # First pass: maximize source diversity.
+        # Prefer evidence-type diversity for count+enumeration questions.
         selected: list[dict[str, Any]] = []
-        seen_sources: set[str] = set()
+        selected_keys: set[tuple[str, str]] = set()
+
+        def _add_selected(item: dict[str, Any]) -> None:
+            key = (str(item.get("source") or ""), str(item.get("snippet") or "")[:120])
+            if key in selected_keys:
+                return
+            selected.append(item)
+            selected_keys.add(key)
+
+        if is_count_plus_values:
+            value_item = next(
+                (item for item in combined if str(item.get("evidence_type") or "") == "table_value"),
+                None,
+            )
+            if value_item is not None:
+                _add_selected(value_item)
+            if needs_count_evidence:
+                count_item = next(
+                    (
+                        item
+                        for item in combined
+                        if str(item.get("evidence_type") or "") in {"table_stat", "table_sql"}
+                    ),
+                    None,
+                )
+                if count_item is not None:
+                    _add_selected(count_item)
+
+        # First pass: maximize source diversity.
+        seen_sources: set[str] = {str(item.get("source") or "") for item in selected}
         for item in combined:
             src = item["source"]
             if src in seen_sources:
                 continue
-            selected.append(item)
+            _add_selected(item)
             seen_sources.add(src)
             if len(selected) >= top_k:
                 return selected
@@ -604,9 +639,7 @@ class QueryEngine:
         for item in combined:
             if len(selected) >= top_k:
                 break
-            if item in selected:
-                continue
-            selected.append(item)
+            _add_selected(item)
         return selected
 
     def _normalize_term(self, token: str) -> str:
@@ -734,9 +767,20 @@ class QueryEngine:
             return q
         return f"{q} (follow-up context: {'; '.join(context_parts)})"
 
+    def _is_count_plus_values_request(self, question: str) -> bool:
+        q = " ".join(question.lower().split())
+        has_count = ("how many" in q) or ("number of" in q) or ("count" in q)
+        if not has_count:
+            return False
+        return bool(
+            re.search(r"\band\b[^?]{0,160}\bwhat\s+are\b", q)
+            or re.search(r"\band\b[^?]{0,160}\bwhich\b", q)
+            or re.search(r"\band\b[^?]{0,160}\blist\b", q)
+        )
+
     def _has_value_list_marker(self, question: str) -> bool:
         q = " ".join(question.lower().split())
-        return any(marker in q for marker in _VALUE_LIST_MARKERS)
+        return any(marker in q for marker in _VALUE_LIST_MARKERS) or self._is_count_plus_values_request(q)
 
     def _is_schema_question(self, question: str) -> bool:
         q = " ".join(question.lower().split())
@@ -940,7 +984,11 @@ class QueryEngine:
 
         llm_plan = self._plan_tabular_question_with_llm(resolved_q)
         wants_count = route.wants_count or ("how many" in q) or ("number of" in q) or ("count" in q)
-        wants_values = route.wants_values or self._has_value_list_marker(q_raw)
+        wants_values = (
+            route.wants_values
+            or self._has_value_list_marker(q_raw)
+            or self._is_count_plus_values_request(resolved_q)
+        )
         aggregate_op = route.operation or self._detect_aggregate_operation(q_raw)
         wants_row_count = bool(
             {
@@ -1364,6 +1412,12 @@ class QueryEngine:
             for c in citations
         )
 
+    def _has_value_citations(self, citations: list[dict[str, Any]]) -> bool:
+        return any(
+            str(c.get("evidence_type") or "").strip().lower() == "table_value"
+            for c in citations
+        )
+
     def _reconcile_answer_with_evidence(
         self,
         *,
@@ -1540,6 +1594,17 @@ class QueryEngine:
             history=self._recent_history_text(turns=8, max_chars=240),
             has_tabular_sources=self._has_tabular_sources(),
         )
+        requires_value_listing = (
+            self._has_tabular_sources()
+            and (
+                route.intent == "count_values"
+                or self._is_count_plus_values_request(resolved_question)
+            )
+        )
+        effective_top_k = max(1, int(top_k_citations))
+        if requires_value_listing:
+            # Keep enough room for count evidence + category values.
+            effective_top_k = max(effective_top_k, 6)
 
         deterministic = self._try_deterministic_tabular_answer(question.strip())
         if deterministic is not None:
@@ -1589,26 +1654,26 @@ class QueryEngine:
                 text_hits = search_documents(
                     resolved_question,
                     documents=self._documents,
-                    top_k=max(3, top_k_citations),
+                    top_k=max(3, effective_top_k),
                 )
                 table_hits = search_tables(
                     resolved_question,
                     data=self._session.data,
-                    top_k=max(3, top_k_citations),
+                    top_k=max(3, effective_top_k),
                 )
                 computed_hits = analyze_table_question(
                     resolved_question,
                     data=self._session.data,
-                    top_k=max(3, top_k_citations),
+                    top_k=max(3, effective_top_k),
                 )
                 column_hits = suggest_table_columns(
                     resolved_question,
                     data=self._session.data,
-                    top_k=max(3, top_k_citations),
+                    top_k=max(3, effective_top_k),
                 )
                 seed_hits = self._merge_hits(
                     [*computed_hits, *column_hits, *table_hits, *text_hits],
-                    max_hits=max(4, top_k_citations * 2),
+                    max_hits=max(4, effective_top_k * 2),
                 )
                 if seed_hits:
                     top = seed_hits[0]
@@ -1626,7 +1691,7 @@ class QueryEngine:
             question=resolved_question,
             answer=answer,
             seed_hits=seed_hits,
-            top_k=max(1, top_k_citations),
+            top_k=effective_top_k,
         )
         if citations and deterministic_intent != "schema":
             reconciled = self._reconcile_answer_with_evidence(
@@ -1658,7 +1723,7 @@ class QueryEngine:
                     question=resolved_question,
                     answer=answer,
                     seed_hits=seed_hits,
-                    top_k=max(1, top_k_citations),
+                    top_k=effective_top_k,
                 )
 
         requires_computed = self._has_tabular_sources() and (
@@ -1675,14 +1740,14 @@ class QueryEngine:
             computed_hits = analyze_table_question(
                 resolved_question,
                 data=self._session.data,
-                top_k=max(3, top_k_citations),
+                top_k=max(3, effective_top_k),
             )
             if computed_hits:
                 citations = self._build_citations(
                     question=resolved_question,
                     answer=answer,
                     seed_hits=[*computed_hits, *seed_hits],
-                    top_k=max(1, top_k_citations),
+                    top_k=effective_top_k,
                 )
                 reconciled = self._reconcile_answer_with_evidence(
                     question=resolved_question,
@@ -1708,7 +1773,7 @@ class QueryEngine:
                         question=resolved_question,
                         answer=answer,
                         seed_hits=[*sql_hits, *seed_hits],
-                        top_k=max(1, top_k_citations),
+                        top_k=effective_top_k,
                     )
                     rescue_used = True
                     rescue_reason = "programmatic_sql"
@@ -1723,6 +1788,42 @@ class QueryEngine:
                 )
                 rescue_used = True
                 rescue_reason = "missing_computed_evidence"
+
+        if requires_value_listing and not self._has_value_citations(citations):
+            from mosaicx.query.tools import analyze_table_question
+
+            value_hits = [
+                h
+                for h in analyze_table_question(
+                    resolved_question,
+                    data=self._session.data,
+                    top_k=max(6, effective_top_k * 2),
+                )
+                if str(h.get("evidence_type") or "").strip().lower() == "table_value"
+            ]
+            if value_hits:
+                citations = self._build_citations(
+                    question=resolved_question,
+                    answer=answer,
+                    seed_hits=[*value_hits, *seed_hits],
+                    top_k=max(effective_top_k, 6),
+                )
+                reconciled = self._reconcile_answer_with_evidence(
+                    question=resolved_question,
+                    draft_answer=answer,
+                    citations=citations,
+                )
+                if reconciled and reconciled.strip() != answer.strip():
+                    answer = reconciled.strip()
+                    rescue_used = True
+                    rescue_reason = "value_evidence_reconciler"
+            if not self._has_value_citations(citations):
+                answer = (
+                    "I can confirm the distinct count, but I cannot reliably list the "
+                    "actual category values because no value-level evidence was produced."
+                )
+                rescue_used = True
+                rescue_reason = "missing_value_evidence"
 
         confidence = self._citation_confidence(resolved_question, answer, citations)
 

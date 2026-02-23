@@ -95,8 +95,8 @@ class IntentRouter:
         q = " ".join(question.lower().split())
 
         wants_schema = any(marker in q for marker in _SCHEMA_MARKERS)
-        wants_values = any(marker in q for marker in _VALUE_MARKERS)
-        wants_count = any(marker in q for marker in _COUNT_MARKERS)
+        wants_count = self._wants_count(q)
+        wants_values = self._wants_values(q, wants_count=wants_count)
         operation = self._detect_operation(q)
         needs_numeric_stat = operation is not None
 
@@ -145,6 +145,20 @@ class IntentRouter:
                 return llm
 
         return IntentDecision(intent="text_qa")
+
+    def _wants_count(self, q: str) -> bool:
+        return any(marker in q for marker in _COUNT_MARKERS)
+
+    def _wants_values(self, q: str, *, wants_count: bool) -> bool:
+        if any(marker in q for marker in _VALUE_MARKERS):
+            return True
+        if not wants_count:
+            return False
+        return bool(
+            re.search(r"\band\b[^?]{0,120}\bwhat\s+are\b", q)
+            or re.search(r"\band\b[^?]{0,120}\bwhich\b", q)
+            or re.search(r"\band\b[^?]{0,120}\blist\b", q)
+        )
 
     def _detect_operation(self, q: str) -> str | None:
         for marker, op in _AGG_OPERATION_MARKERS:

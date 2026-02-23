@@ -217,6 +217,26 @@ class TestTabularTools:
         assert any(h.get("evidence_type") == "table_value" for h in hits)
         assert any(str(h.get("value")) == "Japanese" for h in hits)
 
+    def test_analyze_table_question_count_plus_enumeration_phrase_returns_values(self):
+        import pandas as pd
+
+        from mosaicx.query.tools import analyze_table_question
+
+        data = {
+            "cohort.csv": pd.DataFrame(
+                {"Ethnicity": ["Japanese", "Japanese", "German"], "Age": [50, 52, 49]}
+            )
+        }
+        hits = analyze_table_question(
+            "how many ethnicities are there and what are there?",
+            data=data,
+            top_k=6,
+        )
+        assert len(hits) >= 1
+        assert any(h.get("evidence_type") == "table_value" for h in hits)
+        assert any(str(h.get("value")) == "Japanese" for h in hits)
+        assert any(str(h.get("value")) == "German" for h in hits)
+
     def test_list_distinct_values_returns_counts(self):
         import pandas as pd
 
