@@ -48,6 +48,43 @@ _TERM_SYNONYMS: dict[str, set[str]] = {
         "node",
         "lymph",
     },
+    "gender": {
+        "sex",
+        "male",
+        "female",
+        "m",
+        "f",
+    },
+    "sex": {
+        "gender",
+        "male",
+        "female",
+        "m",
+        "f",
+    },
+    "sexe": {
+        "sex",
+        "gender",
+    },
+    "male": {
+        "m",
+        "man",
+        "masculine",
+    },
+    "female": {
+        "f",
+        "woman",
+        "feminine",
+    },
+    "ethnicity": {
+        "race",
+        "ethnic",
+        "origin",
+    },
+    "race": {
+        "ethnicity",
+        "ethnic",
+    },
 }
 _OPERATION_ALIASES = {
     "mean": {"mean", "average", "avg"},
@@ -156,10 +193,12 @@ def _resolve_column(df, column: str) -> str:
 
 
 def _choose_column(question: str, columns: list[str]) -> str | None:
-    q_terms = [t for t in _extract_terms(question) if t not in _DEFAULT_STOPWORDS]
-    if not q_terms:
+    q_terms_raw = [t for t in _extract_terms(question) if t not in _DEFAULT_STOPWORDS]
+    if not q_terms_raw:
         return None
+    q_terms = _expand_terms(q_terms_raw)
     q_compact = "_".join(q_terms)
+    q_term_set = set(q_terms)
 
     best: tuple[int, str] | None = None
     for col in columns:
@@ -168,7 +207,7 @@ def _choose_column(question: str, columns: list[str]) -> str | None:
         score = 0
         if col_norm and col_norm in q_compact:
             score += 120
-        overlap = len(set(col_terms) & set(q_terms))
+        overlap = len(set(col_terms) & q_term_set)
         score += overlap * 15
         if col_norm in q_terms:
             score += 60
@@ -362,14 +401,16 @@ def suggest_table_columns(
     top_k: int = 8,
 ) -> list[dict[str, Any]]:
     """Suggest relevant columns for a question across all loaded tables."""
-    q_terms = [t for t in _extract_terms(question) if t not in _DEFAULT_STOPWORDS]
-    if not q_terms:
-        q_terms = _extract_terms(question)
+    q_terms_raw = [t for t in _extract_terms(question) if t not in _DEFAULT_STOPWORDS]
+    if not q_terms_raw:
+        q_terms_raw = _extract_terms(question)
+    q_terms = _expand_terms(q_terms_raw)
     if not q_terms:
         return []
 
     op = _detect_operation(question)
     q_term_set = set(q_terms)
+    entity_count = _is_entity_count_question(question)
     out: list[dict[str, Any]] = []
     for name, df in _iter_tables(data) or ():
         role_info = infer_table_roles(name, data=data, max_columns=300)
@@ -380,15 +421,26 @@ def suggest_table_columns(
             col_terms = [t for t in col_norm.split("_") if t]
             overlap = len(set(col_terms) & q_term_set)
             substring_hits = sum(1 for t in q_terms if t in col_norm)
-            score = overlap * 25 + substring_hits * 12
+            base_score = overlap * 25 + substring_hits * 12
 
             role = column_roles.get(col, "categorical")
+            value_overlap = 0
+            if role in {"categorical", "boolean"}:
+                sample_tokens: set[str] = set()
+                sample_series = df[col].dropna().astype(str).head(300)
+                for value in sample_series:
+                    for tok in _extract_terms(value):
+                        sample_tokens.add(tok)
+                value_overlap = len(sample_tokens & q_term_set)
+                base_score += value_overlap * 18
+
+            score = base_score
             if op in {"mean", "median", "min", "max", "sum", "std"} and role == "numeric":
                 score += 20
-            if op in {"nunique", "count"} and col in id_cols:
-                score += 25
-            if _is_entity_count_question(question) and col in id_cols:
+            if entity_count and col in id_cols:
                 score += 35
+            elif op in {"nunique", "count"} and col in id_cols and base_score > 0:
+                score += 10
 
             if score <= 0:
                 continue
@@ -1048,6 +1100,9 @@ def analyze_table_question(
     """Derive deterministic evidence snippets for common cohort-stat questions."""
     op = _detect_operation(question)
     out: list[dict[str, Any]] = []
+    q_terms_expanded = set(
+        _expand_terms([t for t in _extract_terms(question) if t not in _DEFAULT_STOPWORDS])
+    )
 
     for name, df in _iter_tables(data) or ():
         columns = [str(c) for c in df.columns]
@@ -1120,10 +1175,24 @@ def analyze_table_question(
                 continue
 
         op_to_run = op
+        selected_role = str(role_info.get("column_roles", {}).get(selected_col, "categorical"))
+        non_null = int(df[selected_col].notna().sum()) if selected_col in df.columns else 0
+        unique_count = int(df[selected_col].nunique(dropna=True)) if selected_col in df.columns else 0
+        unique_ratio = (unique_count / non_null) if non_null else 0.0
         if op == "count" and (
             _should_use_distinct_count(question, selected_col)
-            or ("how many" in question.lower() and bool(_question_terms(question) & set(_extract_terms(selected_col))))
+            or (
+                "how many" in question.lower()
+                and bool(q_terms_expanded & set(_extract_terms(selected_col)))
+            )
             or (_is_entity_count_question(question) and selected_col in id_candidates)
+            or (
+                "how many" in question.lower()
+                and not _is_row_count_question(question)
+                and selected_role in {"categorical", "boolean"}
+                and unique_count <= 20
+                and unique_ratio <= 0.6
+            )
         ):
             op_to_run = "nunique"
         try:

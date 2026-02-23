@@ -284,6 +284,51 @@ class TestTabularTools:
         assert hits[0]["column"] == "patient_id"
         assert hits[0]["evidence_type"] == "table_column"
 
+    def test_suggest_table_columns_maps_gender_to_sex(self):
+        import pandas as pd
+
+        from mosaicx.query.tools import suggest_table_columns
+
+        data = {
+            "cohort.csv": pd.DataFrame(
+                {
+                    "Subject": ["S1", "S2", "S3"],
+                    "Sex": ["M", "F", "M"],
+                    "Age": [50, 54, 47],
+                }
+            )
+        }
+        hits = suggest_table_columns(
+            "how many genders are there?",
+            data=data,
+            top_k=3,
+        )
+        assert len(hits) >= 1
+        assert hits[0]["column"] == "Sex"
+
+    def test_analyze_table_question_maps_male_female_to_sex_distinct(self):
+        import pandas as pd
+
+        from mosaicx.query.tools import analyze_table_question
+
+        data = {
+            "cohort.csv": pd.DataFrame(
+                {
+                    "Subject": ["S1", "S2", "S3", "S4"],
+                    "Sex": ["M", "F", "M", "F"],
+                }
+            )
+        }
+        hits = analyze_table_question(
+            "how many male and female?",
+            data=data,
+            top_k=5,
+        )
+        assert len(hits) >= 1
+        table_stats = [h for h in hits if h.get("evidence_type") == "table_stat"]
+        assert table_stats
+        assert any(h.get("column") == "Sex" and h.get("operation") == "nunique" for h in table_stats)
+
     def test_profile_table_includes_numeric_summary_and_top_values(self):
         import pandas as pd
 

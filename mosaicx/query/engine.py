@@ -620,6 +620,109 @@ class QueryEngine:
         q = " ".join(question.lower().split())
         return any(marker in q for marker in _VALUE_LIST_MARKERS)
 
+    def _resolve_tabular_target_with_llm(self, question: str) -> tuple[str, str] | None:
+        """Use the configured LM to resolve the best table/column for a tabular question."""
+        if not self._has_tabular_sources():
+            return None
+
+        try:
+            import dspy
+        except Exception:
+            return None
+
+        if getattr(dspy.settings, "lm", None) is None:
+            return None
+
+        from mosaicx.query.tools import profile_table
+
+        def _clean(value: str) -> str:
+            cleaned = str(value).strip().strip("`").strip('"').strip("'")
+            return " ".join(cleaned.split())
+
+        table_blocks: list[str] = []
+        for meta in self._session.catalog:
+            if getattr(meta, "source_type", "") != "dataframe":
+                continue
+            source_name = str(getattr(meta, "name", "") or "").strip()
+            if not source_name:
+                continue
+            try:
+                prof = profile_table(
+                    source_name,
+                    data=self._session.data,
+                    max_columns=100,
+                    top_values=4,
+                )
+            except Exception:
+                continue
+
+            lines: list[str] = []
+            for col in prof.get("columns", [])[:100]:
+                col_name = str(col.get("name") or "")
+                if not col_name:
+                    continue
+                role = str(col.get("role") or "unknown")
+                top_vals = col.get("top_values") or []
+                value_preview = ""
+                if isinstance(top_vals, list) and top_vals:
+                    vals = [str(v.get("value")) for v in top_vals[:3] if isinstance(v, dict)]
+                    vals = [v for v in vals if v]
+                    if vals:
+                        value_preview = f" values={','.join(vals)}"
+                lines.append(f"- {col_name} [{role}]{value_preview}")
+            if not lines:
+                continue
+            table_blocks.append(f"Table: {source_name}\n" + "\n".join(lines))
+
+        if not table_blocks:
+            return None
+
+        try:
+            predictor = dspy.Predict("question, tables -> source, column")
+            pred = predictor(
+                question=question.strip(),
+                tables="\n\n".join(table_blocks)[:18000],
+            )
+        except Exception:
+            return None
+
+        source_raw = _clean(getattr(pred, "source", ""))
+        column_raw = _clean(getattr(pred, "column", ""))
+        if not column_raw:
+            return None
+
+        # Source may be omitted when only one table is loaded.
+        source = source_raw
+        if not source:
+            tabular_sources = [
+                str(getattr(m, "name", "") or "")
+                for m in self._session.catalog
+                if getattr(m, "source_type", "") == "dataframe"
+            ]
+            tabular_sources = [s for s in tabular_sources if s]
+            if len(tabular_sources) == 1:
+                source = tabular_sources[0]
+        if not source or source not in self._session.data:
+            return None
+
+        try:
+            import pandas as pd
+        except Exception:
+            return None
+        df = self._session.data.get(source)
+        if not isinstance(df, pd.DataFrame):
+            return None
+
+        col_map = {str(c): str(c) for c in df.columns}
+        col_norm_map = {re.sub(r"[^a-z0-9]+", "_", str(c).lower()).strip("_"): str(c) for c in df.columns}
+        if column_raw in col_map:
+            return source, col_map[column_raw]
+        column_norm = re.sub(r"[^a-z0-9]+", "_", column_raw.lower()).strip("_")
+        if column_norm in col_norm_map:
+            return source, col_norm_map[column_norm]
+
+        return None
+
     def _try_deterministic_tabular_answer(
         self,
         question: str,
@@ -649,18 +752,31 @@ class QueryEngine:
         if not wants_count and not wants_values:
             return None
 
-        column_hits = suggest_table_columns(
-            resolved_q,
-            data=self._session.data,
-            top_k=6,
-        )
-        if not column_hits:
-            return None
-        top = column_hits[0]
-        source = str(top.get("source") or "")
-        column = str(top.get("column") or "")
-        if not source or not column:
-            return None
+        llm_target = self._resolve_tabular_target_with_llm(resolved_q)
+        if llm_target is not None:
+            source, column = llm_target
+            top = {
+                "source": source,
+                "column": column,
+                "role": "llm_resolved",
+                "score": 96,
+                "snippet": f"LLM-resolved column: {column}",
+                "evidence_type": "table_column",
+            }
+            column_hits = [top]
+        else:
+            column_hits = suggest_table_columns(
+                resolved_q,
+                data=self._session.data,
+                top_k=6,
+            )
+            if not column_hits:
+                return None
+            top = column_hits[0]
+            source = str(top.get("source") or "")
+            column = str(top.get("column") or "")
+            if not source or not column:
+                return None
 
         seed_hits: list[dict[str, Any]] = [top]
         distinct_rows: list[dict[str, Any]] = []
