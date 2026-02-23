@@ -133,6 +133,28 @@ class TestTabularTools:
         assert "25" in hits[0]["snippet"]
         assert "engine=" in hits[0]["snippet"]
 
+    def test_analyze_table_question_subject_count_uses_distinct(self):
+        import pandas as pd
+
+        from mosaicx.query.tools import analyze_table_question
+
+        data = {
+            "cohort.csv": pd.DataFrame(
+                {"Subject": ["S1", "S1", "S2", "S3"], "BMI": [20.0, 21.0, 25.0, 30.0]}
+            )
+        }
+        hits = analyze_table_question(
+            "how many subjects are there?",
+            data=data,
+            top_k=3,
+        )
+        assert len(hits) >= 1
+        assert hits[0]["evidence_type"] == "table_stat"
+        assert hits[0]["operation"] == "nunique"
+        assert hits[0]["column"] == "Subject"
+        assert hits[0]["value"] == 3
+        assert "unique_count of Subject" in hits[0]["snippet"]
+
     def test_search_tables_returns_row_level_snippets(self):
         import pandas as pd
 

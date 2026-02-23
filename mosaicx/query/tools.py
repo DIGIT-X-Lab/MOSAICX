@@ -55,7 +55,7 @@ _OPERATION_ALIASES = {
     "max": {"max", "maximum", "highest", "largest"},
     "sum": {"sum", "total"},
     "std": {"std", "stdev", "standard", "deviation"},
-    "count": {"count", "rows", "row"},
+    "count": {"count", "rows", "row", "many", "number", "total"},
     "nunique": {"distinct", "unique"},
     "missing_count": {"missing", "null", "na", "nan"},
 }
@@ -172,9 +172,22 @@ def _detect_operation(question: str) -> str | None:
     for op, aliases in _OPERATION_ALIASES.items():
         if q_terms & aliases:
             return op
+    q_norm = " ".join(question.lower().split())
+    if "how many" in q_norm or "number of" in q_norm:
+        return "count"
     if "average" in question.lower():
         return "mean"
     return None
+
+
+def _should_use_distinct_count(question: str, selected_col: str) -> bool:
+    q_terms = set(_extract_terms(question))
+    col_terms = set(_extract_terms(selected_col))
+    subjectish = {"subject", "patient", "participant", "case", "cohort"}
+    idish = {"id", "identifier", "subjectid", "patientid"}
+    asks_subject_count = bool(q_terms & subjectish) or "how many" in question.lower()
+    col_looks_identifier = bool(col_terms & subjectish) or bool(col_terms & idish)
+    return asks_subject_count and col_looks_identifier
 
 
 def _normalize_operation(operation: str) -> str:
@@ -650,12 +663,15 @@ def analyze_table_question(
         selected_col = _choose_column(question, columns)
         if not op or not selected_col:
             continue
+        op_to_run = op
+        if op == "count" and _should_use_distinct_count(question, selected_col):
+            op_to_run = "nunique"
         try:
             computed = compute_table_stat(
                 name,
                 data=data,
                 column=selected_col,
-                operation=op,
+                operation=op_to_run,
             )
         except Exception:
             continue
@@ -664,14 +680,17 @@ def analyze_table_question(
             row_count = row.get("row_count")
             non_null = row.get("non_null")
             backend = str(row.get("backend") or "table_engine")
+            snippet_op = str(row.get("operation") or op_to_run)
+            if snippet_op == "nunique" and _should_use_distinct_count(question, selected_col):
+                snippet_op = "unique_count"
             if non_null is not None:
                 snippet = (
-                    f"Computed {op} of {selected_col} from {row_count} rows "
+                    f"Computed {snippet_op} of {selected_col} from {row_count} rows "
                     f"(non-null {non_null}): {value} (engine={backend})"
                 )
             else:
                 snippet = (
-                    f"Computed {op} of {selected_col} from {row_count} rows: "
+                    f"Computed {snippet_op} of {selected_col} from {row_count} rows: "
                     f"{value} (engine={backend})"
                 )
             out.append(
@@ -680,7 +699,7 @@ def analyze_table_question(
                     "snippet": snippet,
                     "score": 80,
                     "evidence_type": "table_stat",
-                    "operation": op,
+                    "operation": str(row.get("operation") or op_to_run),
                     "column": selected_col,
                     "value": value,
                     "backend": backend,

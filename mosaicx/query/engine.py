@@ -379,6 +379,7 @@ class QueryEngine:
             "If evidence exists, answer directly and do not claim sources are unavailable. "
             "For CSV/Parquet/Excel questions, inspect schema and compute stats with table tools before answering. "
             "For complex cohort questions, use run_table_sql and cite computed outputs. "
+            "For subject/patient counts, use deterministic distinct counts (nunique), not sampled rows. "
             "Never estimate numeric cohort statistics from memory; compute them. "
             "For timeline/date questions, return concise chronological bullets. "
             "Avoid repeating headings."
