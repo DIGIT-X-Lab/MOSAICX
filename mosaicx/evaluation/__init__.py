@@ -10,6 +10,12 @@ Submodules:
 
 from .dataset import PIPELINE_INPUT_FIELDS, load_jsonl
 from .metrics import get_metric, list_metrics
+from .grounding import (
+    complete_and_grounded_metric,
+    numeric_exactness_metric,
+    query_grounded_numeric_metric,
+    verify_grounded_metric,
+)
 from .optimize import (
     OPTIMIZATION_STRATEGY,
     get_optimizer_config,
@@ -23,6 +29,7 @@ from .optimize import (
 __all__ = [
     "OPTIMIZATION_STRATEGY",
     "PIPELINE_INPUT_FIELDS",
+    "complete_and_grounded_metric",
     "get_metric",
     "get_optimizer_config",
     "get_pipeline_class",
@@ -30,6 +37,9 @@ __all__ = [
     "list_pipelines",
     "load_jsonl",
     "load_optimized",
+    "numeric_exactness_metric",
+    "query_grounded_numeric_metric",
     "run_optimization",
     "save_optimized",
+    "verify_grounded_metric",
 ]

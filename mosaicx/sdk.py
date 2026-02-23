@@ -95,7 +95,23 @@ def _ensure_configured() -> None:
     from .metrics import TokenTracker, make_harmony_lm, set_tracker
 
     lm = make_harmony_lm(cfg.lm, api_key=cfg.api_key, api_base=cfg.api_base, temperature=cfg.lm_temperature)
-    dspy.configure(lm=lm)
+    adapter = None
+    try:
+        adapter = dspy.JSONAdapter()
+    except Exception:
+        adapter = None
+    try:
+        if adapter is not None:
+            dspy.configure(lm=lm, adapter=adapter)
+        else:
+            dspy.configure(lm=lm)
+    except TypeError:
+        dspy.configure(lm=lm)
+        if adapter is not None:
+            try:
+                dspy.settings.adapter = adapter
+            except Exception:
+                pass
 
     tracker = TokenTracker()
     set_tracker(tracker)

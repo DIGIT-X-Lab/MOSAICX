@@ -383,7 +383,7 @@ class TestQueryEngineConversation:
         monkeypatch.setattr(
             engine,
             "_run_query_once",
-            lambda q: ("Average BMI is 30.", []),
+            lambda q: ("95th percentile BMI is 30.", []),
         )
         monkeypatch.setattr(
             engine,
@@ -395,6 +395,79 @@ class TestQueryEngineConversation:
         assert payload["rescue_used"] is True
         assert payload["rescue_reason"] == "missing_computed_evidence"
         assert "reliable numeric answer" in payload["answer"]
+
+    def test_analytic_guard_uses_programmatic_sql_before_fail_closed(self, tmp_path: Path, monkeypatch):
+        """If deterministic evidence is missing, SQL planner rescue should run before fail-closed."""
+        from mosaicx.query.engine import QueryEngine
+        from mosaicx.query.session import QuerySession
+
+        f = tmp_path / "cohort.csv"
+        f.write_text("BMI\n20\n25\n30\n")
+        session = QuerySession(sources=[f])
+        engine = QueryEngine(session=session)
+
+        monkeypatch.setattr(
+            engine,
+            "_run_query_once",
+            lambda q: ("Average BMI is 30.", []),
+        )
+        monkeypatch.setattr(
+            engine,
+            "_build_citations",
+            lambda **kwargs: kwargs.get("seed_hits", []),
+        )
+        monkeypatch.setattr(
+            engine,
+            "_attempt_programmatic_sql_answer",
+            lambda _q: (
+                "mean_bmi: 25.",
+                [
+                    {
+                        "source": "cohort.csv",
+                        "snippet": "Computed SQL on cohort.csv: SELECT AVG(BMI) AS mean_bmi FROM _mosaicx_table -> [{\\\"mean_bmi\\\": \\\"25\\\"}]",
+                        "score": 92,
+                        "evidence_type": "table_sql",
+                    }
+                ],
+                "sql_analytic",
+            ),
+        )
+
+        payload = engine.ask_structured("what is the 95th percentile bmi?")
+        assert payload["rescue_used"] is True
+        assert payload["rescue_reason"] == "programmatic_sql"
+        assert payload["deterministic_intent"] == "sql_analytic"
+        assert "mean_bmi: 25" in payload["answer"]
+        assert payload["rescue_reason"] != "missing_computed_evidence"
+
+    def test_adapter_parse_error_retries_once_before_fallback(self, tmp_path: Path, monkeypatch):
+        """Adapter parse errors should retry once with stricter plain-text guidance."""
+        from mosaicx.query.engine import QueryEngine
+        from mosaicx.query.session import QuerySession
+
+        f = tmp_path / "report.txt"
+        f.write_text("Patient has a 5mm nodule in the right upper lobe.")
+        session = QuerySession(sources=[f])
+        engine = QueryEngine(session=session)
+
+        calls = {"n": 0}
+
+        def _flaky(_q):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise RuntimeError("AdapterParseError: LM response cannot be serialized to a JSON object.")
+            return (
+                "The report notes a 5mm nodule in the right upper lobe.",
+                [{"source": "report.txt", "snippet": "5mm nodule in the right upper lobe", "score": 4}],
+            )
+
+        monkeypatch.setattr(engine, "_run_query_once", _flaky)
+
+        payload = engine.ask_structured("What is the nodule size?")
+        assert calls["n"] == 2
+        assert payload["fallback_used"] is False
+        assert payload["fallback_code"] is None
+        assert "5mm nodule" in payload["answer"]
 
     def test_reconciler_corrects_unsupported_draft_answer(self, tmp_path: Path, monkeypatch):
         """Evidence reconciler should correct unsupported draft answers."""

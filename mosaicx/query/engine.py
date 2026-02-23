@@ -15,6 +15,14 @@ import json
 import re
 from typing import TYPE_CHECKING, Any
 
+from mosaicx.query.control_plane import (
+    EvidenceVerifier,
+    IntentDecision,
+    IntentRouter,
+    ProgrammaticTableAnalyst,
+    ReActTabularPlanner,
+)
+
 if TYPE_CHECKING:
     from mosaicx.query.session import QuerySession
 
@@ -200,6 +208,10 @@ class QueryEngine:
             name: _text_for_data(data)
             for name, data in self._session.data.items()
         }
+        self._intent_router = IntentRouter()
+        self._react_planner = ReActTabularPlanner()
+        self._programmatic_analyst = ProgrammaticTableAnalyst()
+        self._evidence_verifier = EvidenceVerifier()
 
     # ------------------------------------------------------------------
     # Properties
@@ -287,12 +299,7 @@ class QueryEngine:
         catalog_text = "\n".join(catalog_lines) if catalog_lines else "(no sources)"
 
         # Build conversation context
-        history_lines = []
-        for turn in self._session.conversation[-8:]:
-            role = turn["role"]
-            content = self._compact_history_content(turn["content"], max_chars=360)
-            history_lines.append(f"{role}: {content}")
-        history_text = "\n".join(history_lines) if history_lines else "(new session)"
+        history_text = self._recent_history_text(turns=8, max_chars=360)
 
         # Bind documents into tool closures so RLM tools have access
         docs = self._documents
@@ -536,6 +543,8 @@ class QueryEngine:
                 rank += 14
             elif evidence_type == "table_stat":
                 rank += 30
+            elif evidence_type == "table_sql":
+                rank += 28
             elif evidence_type == "table_value":
                 rank += 26
             elif evidence_type == "table_schema":
@@ -616,6 +625,50 @@ class QueryEngine:
             clipped = clipped.rsplit(" ", 1)[0]
         return clipped + "…"
 
+    def _recent_history_text(self, *, turns: int = 8, max_chars: int = 360) -> str:
+        lines: list[str] = []
+        for turn in self._session.conversation[-max(1, turns):]:
+            role = str(turn.get("role") or "")
+            content = self._compact_history_content(
+                str(turn.get("content") or ""),
+                max_chars=max_chars,
+            )
+            lines.append(f"{role}: {content}")
+        return "\n".join(lines) if lines else "(new session)"
+
+    def _build_table_profiles(
+        self,
+        *,
+        max_columns: int = 120,
+        top_values: int = 4,
+    ) -> dict[str, dict[str, Any]]:
+        from mosaicx.query.tools import profile_table
+
+        tabular_sources = self._tabular_source_names()
+        if not tabular_sources:
+            return {}
+
+        cached = self._session.get_state("_table_profiles")
+        if isinstance(cached, dict):
+            if set(cached.keys()) == set(tabular_sources):
+                return cached
+
+        profiles: dict[str, dict[str, Any]] = {}
+        for source_name in tabular_sources:
+            try:
+                profiles[source_name] = profile_table(
+                    source_name,
+                    data=self._session.data,
+                    max_columns=max_columns,
+                    top_values=top_values,
+                )
+            except Exception:
+                continue
+
+        if profiles:
+            self._session.set_state(_table_profiles=profiles)
+        return profiles
+
     def _is_coreference_followup(self, question: str) -> bool:
         q = " ".join(question.lower().split())
         q_terms = {
@@ -658,17 +711,28 @@ class QueryEngine:
         if not self._is_coreference_followup(q):
             return q
         prev_user = self._latest_user_question()
-        if not prev_user:
-            return q
-        prev_user_compact = self._compact_history_content(prev_user, max_chars=180)
+        context_parts: list[str] = []
+        if prev_user:
+            prev_user_compact = self._compact_history_content(prev_user, max_chars=180)
+            context_parts.append(f"prior_question={prev_user_compact}")
         prev_assistant = self._latest_assistant_answer()
-        if not prev_assistant:
-            return f"{q} (follow-up context: {prev_user_compact})"
-        prev_answer_compact = self._compact_history_content(prev_assistant, max_chars=180)
-        return (
-            f"{q} (follow-up context: prior_question={prev_user_compact}; "
-            f"prior_answer={prev_answer_compact})"
-        )
+        if prev_assistant:
+            prev_answer_compact = self._compact_history_content(prev_assistant, max_chars=180)
+            context_parts.append(f"prior_answer={prev_answer_compact}")
+
+        state_source = str(self._session.get_state("last_tabular_source", "")).strip()
+        state_column = str(self._session.get_state("last_tabular_column", "")).strip()
+        state_intent = str(self._session.get_state("last_intent", "")).strip()
+        if state_source:
+            context_parts.append(f"last_table={state_source}")
+        if state_column:
+            context_parts.append(f"last_column={state_column}")
+        if state_intent:
+            context_parts.append(f"last_intent={state_intent}")
+
+        if not context_parts:
+            return q
+        return f"{q} (follow-up context: {'; '.join(context_parts)})"
 
     def _has_value_list_marker(self, question: str) -> bool:
         q = " ".join(question.lower().split())
@@ -770,101 +834,25 @@ class QueryEngine:
         return "\n".join(lines), self._merge_hits(seed_hits, max_hits=12), "schema"
 
     def _plan_tabular_question_with_llm(self, question: str) -> dict[str, Any] | None:
-        """Use DSPy to route tabular questions into a deterministic execution plan."""
+        """Use DSPy ReAct planning to route tabular questions."""
         if not self._has_tabular_sources():
             return None
 
-        try:
-            import dspy
-        except Exception:
+        table_profiles = self._build_table_profiles(max_columns=120, top_values=4)
+        if not table_profiles:
             return None
 
-        if getattr(dspy.settings, "lm", None) is None:
-            return None
-
-        from mosaicx.query.tools import profile_table
-
-        def _clean(value: str) -> str:
-            cleaned = str(value).strip().strip("`").strip('"').strip("'")
-            return " ".join(cleaned.split())
-
-        table_blocks: list[str] = []
-        for source_name in self._tabular_source_names():
-            try:
-                prof = profile_table(
-                    source_name,
-                    data=self._session.data,
-                    max_columns=120,
-                    top_values=4,
-                )
-            except Exception:
-                continue
-
-            lines: list[str] = []
-            for col in prof.get("columns", [])[:120]:
-                col_name = str(col.get("name") or "")
-                if not col_name:
-                    continue
-                role = str(col.get("role") or "unknown")
-                top_vals = col.get("top_values") or []
-                value_preview = ""
-                if isinstance(top_vals, list) and top_vals:
-                    vals = [
-                        str(v.get("value"))
-                        for v in top_vals[:3]
-                        if isinstance(v, dict) and v.get("value") is not None
-                    ]
-                    vals = [v for v in vals if v]
-                    if vals:
-                        value_preview = f" values={','.join(vals)}"
-                lines.append(f"- {col_name} [{role}]{value_preview}")
-            if lines:
-                table_blocks.append(f"Table: {source_name}\n" + "\n".join(lines))
-
-        if not table_blocks:
-            return None
-
-        history_lines: list[str] = []
-        for turn in self._session.conversation[-4:]:
-            role = str(turn.get("role") or "")
-            content = self._compact_history_content(str(turn.get("content") or ""), max_chars=180)
-            history_lines.append(f"{role}: {content}")
-        history_text = "\n".join(history_lines) if history_lines else "(new session)"
-
-        try:
-            predictor = dspy.Predict(
-                "question, history, tables -> intent, source, column, operation, include_values"
-            )
-            pred = predictor(
-                question=question.strip(),
-                history=history_text,
-                tables="\n\n".join(table_blocks)[:22000],
-            )
-        except Exception:
-            return None
-
-        intent_raw = _clean(getattr(pred, "intent", "")).lower()
-        source_raw = _clean(getattr(pred, "source", ""))
-        column_raw = _clean(getattr(pred, "column", ""))
-        operation_raw = _clean(getattr(pred, "operation", "")).lower()
-        include_values_raw = _clean(getattr(pred, "include_values", "")).lower()
-
-        intent_map = {
-            "schema": "schema",
-            "schema_lookup": "schema",
-            "count_rows": "count_rows",
-            "row_count": "count_rows",
-            "count_distinct": "count_distinct",
-            "distinct_count": "count_distinct",
-            "list_values": "list_values",
-            "aggregate": "aggregate",
-        }
-        intent = intent_map.get(intent_raw, "")
-        if not intent:
+        history_text = self._recent_history_text(turns=4, max_chars=220)
+        plan = self._react_planner.plan(
+            question=question.strip(),
+            history=history_text,
+            table_profiles=table_profiles,
+        )
+        if plan is None:
             return None
 
         sources = self._tabular_source_names()
-        source = source_raw
+        source = str(plan.source or "").strip()
         if not source and len(sources) == 1:
             source = sources[0]
         if not source and sources:
@@ -882,7 +870,7 @@ class QueryEngine:
         if not isinstance(df, pd.DataFrame):
             return None
 
-        column = column_raw
+        column = str(plan.column or "").strip()
         if column:
             col_map = {str(c): str(c) for c in df.columns}
             col_norm_map = {
@@ -894,20 +882,23 @@ class QueryEngine:
             else:
                 column_norm = re.sub(r"[^a-z0-9]+", "_", column.lower()).strip("_")
                 column = col_norm_map.get(column_norm, "")
-        if intent not in {"schema", "count_rows"} and not column:
+
+        intent = str(plan.intent or "").strip().lower()
+        if intent not in {"schema", "count_rows", "count_distinct", "list_values", "aggregate", "mixed"}:
+            return None
+        if intent not in {"schema", "count_rows", "mixed"} and not column:
             return None
 
-        include_values = include_values_raw in {"true", "yes", "1", "y", "include", "list"}
-        operation = self._detect_aggregate_operation(operation_raw) if operation_raw else None
-        if operation is None and operation_raw in {"mean", "median", "min", "max", "sum", "std"}:
-            operation = operation_raw
+        operation = str(plan.operation or "").strip().lower() or None
+        if operation not in {None, "mean", "median", "min", "max", "sum", "std"}:
+            operation = None
 
         return {
             "intent": intent,
             "source": source,
             "column": column,
             "operation": operation,
-            "include_values": include_values,
+            "include_values": bool(plan.include_values),
         }
 
     def _resolve_tabular_target_with_llm(self, question: str) -> tuple[str, str] | None:
@@ -941,10 +932,16 @@ class QueryEngine:
         q_raw = question.strip()
         q = " ".join(q_raw.lower().split())
         resolved_q = self._resolve_followup_question(q_raw)
+        route = self._intent_router.route(
+            question=resolved_q,
+            history=self._recent_history_text(turns=6, max_chars=220),
+            has_tabular_sources=self._has_tabular_sources(),
+        )
+
         llm_plan = self._plan_tabular_question_with_llm(resolved_q)
-        wants_count = ("how many" in q) or ("number of" in q) or ("count" in q)
-        wants_values = self._has_value_list_marker(q_raw)
-        aggregate_op = self._detect_aggregate_operation(q_raw)
+        wants_count = route.wants_count or ("how many" in q) or ("number of" in q) or ("count" in q)
+        wants_values = route.wants_values or self._has_value_list_marker(q_raw)
+        aggregate_op = route.operation or self._detect_aggregate_operation(q_raw)
         wants_row_count = bool(
             {
                 self._normalize_term(t)
@@ -952,6 +949,11 @@ class QueryEngine:
             }
             & {"row", "record", "entry", "sample", "observation"}
         )
+        if route.intent == "count" and wants_count and wants_row_count:
+            wants_values = False
+        if route.intent == "count_values":
+            wants_count = True
+            wants_values = True
 
         if llm_plan:
             intent = str(llm_plan.get("intent") or "")
@@ -1148,6 +1150,81 @@ class QueryEngine:
 
         return answer, self._merge_hits(seed_hits, max_hits=16), deterministic_intent
 
+    def _attempt_programmatic_sql_answer(
+        self,
+        question: str,
+    ) -> tuple[str, list[dict[str, Any]], str] | None:
+        if not self._has_tabular_sources():
+            return None
+
+        from mosaicx.query.tools import run_table_sql
+
+        profiles = self._build_table_profiles(max_columns=120, top_values=4)
+        if not profiles:
+            return None
+
+        plan = self._programmatic_analyst.propose_sql(
+            question=question.strip(),
+            history=self._recent_history_text(turns=8, max_chars=240),
+            table_profiles=profiles,
+        )
+        if not plan:
+            return None
+
+        source = str(plan.get("source") or "").strip()
+        sql = str(plan.get("sql") or "").strip()
+        rationale = str(plan.get("rationale") or "").strip()
+        if not source or not sql:
+            return None
+
+        try:
+            rows = run_table_sql(
+                source,
+                data=self._session.data,
+                sql=sql,
+                limit=25,
+            )
+        except Exception:
+            return None
+        if not rows:
+            return None
+        if isinstance(rows[0], dict) and rows[0].get("error"):
+            return None
+
+        preview_rows = rows[:6]
+        serialized_rows = json.dumps(preview_rows, default=str, ensure_ascii=False)
+
+        if len(preview_rows) == 1 and isinstance(preview_rows[0], dict) and len(preview_rows[0]) == 1:
+            key, value = next(iter(preview_rows[0].items()))
+            answer = f"{key}: {value}."
+        elif len(preview_rows) == 1:
+            answer = f"Computed result: {serialized_rows}"
+        else:
+            answer = f"Computed result rows ({len(preview_rows)} shown): {serialized_rows}"
+
+        snippet = (
+            f"Computed SQL on {source}: {sql} "
+            f"-> {serialized_rows[:320]}"
+        )
+        if rationale:
+            snippet += f" (rationale: {rationale[:120]})"
+        seed_hits = [
+            {
+                "source": source,
+                "snippet": snippet,
+                "score": 92,
+                "evidence_type": "table_sql",
+                "sql": sql,
+                "row_count": len(rows),
+            }
+        ]
+        self._session.set_state(
+            last_tabular_source=source,
+            last_tabular_sql=sql,
+            last_intent="sql_analytic",
+        )
+        return answer, self._merge_hits(seed_hits, max_hits=8), "sql_analytic"
+
     def _salient_terms(self, text: str, *, min_len: int = 3) -> set[str]:
         return {
             self._normalize_term(t)
@@ -1279,9 +1356,9 @@ class QueryEngine:
         *,
         require_numeric_stat: bool = False,
     ) -> bool:
-        allowed = {"table_stat"}
+        allowed = {"table_stat", "table_sql"}
         if not require_numeric_stat:
-            allowed.update({"table_value", "table_sql"})
+            allowed.add("table_value")
         return any(
             str(c.get("evidence_type") or "").strip().lower() in allowed
             for c in citations
@@ -1297,6 +1374,17 @@ class QueryEngine:
         """Use an LLM adjudication pass to correct unsupported draft answers."""
         if not citations:
             return None
+
+        try:
+            revised = self._evidence_verifier.revise(
+                question=question,
+                draft_answer=draft_answer,
+                citations=citations,
+            )
+            if revised:
+                return revised
+        except Exception:
+            pass
 
         try:
             import dspy
@@ -1440,21 +1528,54 @@ class QueryEngine:
 
         fallback_used = False
         fallback_reason: str | None = None
+        fallback_code: str | None = None
         rescue_used = False
         rescue_reason: str | None = None
         deterministic_used = False
         deterministic_intent: str | None = None
 
         resolved_question = self._resolve_followup_question(question.strip())
+        route = self._intent_router.route(
+            question=resolved_question,
+            history=self._recent_history_text(turns=8, max_chars=240),
+            has_tabular_sources=self._has_tabular_sources(),
+        )
 
         deterministic = self._try_deterministic_tabular_answer(question.strip())
         if deterministic is not None:
             answer, seed_hits, deterministic_intent = deterministic
             deterministic_used = True
         else:
-            try:
-                answer, seed_hits = self._run_query_once(resolved_question)
-            except Exception as exc:
+            run_error: Exception | None = None
+            attempt_questions = [
+                resolved_question,
+                (
+                    f"{resolved_question}\n"
+                    "Return a concise plain-text answer grounded only in tool evidence. "
+                    "Avoid JSON wrappers."
+                ),
+            ]
+            answer = ""
+            seed_hits: list[dict[str, Any]] = []
+            for idx, attempt_question in enumerate(attempt_questions):
+                try:
+                    answer, seed_hits = self._run_query_once(attempt_question)
+                    run_error = None
+                    break
+                except Exception as exc:
+                    run_error = exc
+                    exc_text = f"{type(exc).__name__}: {exc}"
+                    is_adapter_parse = (
+                        "AdapterParseError" in exc_text
+                        or "JSONAdapter" in exc_text
+                        or "cannot be serialized to a JSON object" in exc_text.lower()
+                    )
+                    if not is_adapter_parse:
+                        break
+                    if idx + 1 >= len(attempt_questions):
+                        break
+
+            if run_error is not None:
                 from mosaicx.query.tools import (
                     analyze_table_question,
                     search_documents,
@@ -1463,7 +1584,8 @@ class QueryEngine:
                 )
 
                 fallback_used = True
-                fallback_reason = f"{type(exc).__name__}: {exc}"
+                fallback_reason = f"{type(run_error).__name__}: {run_error}"
+                fallback_code = "adapter_parse_error" if "AdapterParseError" in fallback_reason else "lm_runtime_error"
                 text_hits = search_documents(
                     resolved_question,
                     documents=self._documents,
@@ -1539,8 +1661,11 @@ class QueryEngine:
                     top_k=max(1, top_k_citations),
                 )
 
-        requires_computed = self._has_tabular_sources() and self._requires_computed_evidence(resolved_question)
-        requires_numeric_stat = self._requires_numeric_stat_evidence(resolved_question)
+        requires_computed = self._has_tabular_sources() and (
+            route.intent in {"count", "count_values", "aggregate", "mixed"}
+            or self._requires_computed_evidence(resolved_question)
+        )
+        requires_numeric_stat = route.needs_numeric_stat or self._requires_numeric_stat_evidence(resolved_question)
         if requires_computed and not self._has_computed_citations(
             citations,
             require_numeric_stat=requires_numeric_stat,
@@ -1573,6 +1698,25 @@ class QueryEngine:
                 citations,
                 require_numeric_stat=requires_numeric_stat,
             ):
+                sql_attempt = self._attempt_programmatic_sql_answer(resolved_question)
+                if sql_attempt is not None:
+                    sql_answer, sql_hits, sql_intent = sql_attempt
+                    answer = sql_answer
+                    deterministic_used = True
+                    deterministic_intent = sql_intent
+                    citations = self._build_citations(
+                        question=resolved_question,
+                        answer=answer,
+                        seed_hits=[*sql_hits, *seed_hits],
+                        top_k=max(1, top_k_citations),
+                    )
+                    rescue_used = True
+                    rescue_reason = "programmatic_sql"
+
+            if not self._has_computed_citations(
+                citations,
+                require_numeric_stat=requires_numeric_stat,
+            ):
                 answer = (
                     "I cannot provide a reliable numeric answer yet because no computed "
                     "table evidence was produced. Ask for schema/profile or specify a column."
@@ -1584,6 +1728,15 @@ class QueryEngine:
 
         self._session.add_turn("user", question.strip())
         self._session.add_turn("assistant", answer)
+        self._session.set_state(
+            last_user_question=question.strip(),
+            last_resolved_question=resolved_question,
+            last_answer=answer,
+            last_confidence=confidence,
+            last_route_intent=route.intent,
+        )
+
+        effective_intent = deterministic_intent or route.intent
 
         return {
             "question": question.strip(),
@@ -1594,10 +1747,13 @@ class QueryEngine:
             "turn_index": len(self._session.conversation) // 2,
             "fallback_used": fallback_used,
             "fallback_reason": fallback_reason,
+            "fallback_code": fallback_code,
             "rescue_used": rescue_used,
             "rescue_reason": rescue_reason,
             "deterministic_used": deterministic_used,
             "deterministic_intent": deterministic_intent,
+            "intent": effective_intent,
+            "route_intent": route.intent,
         }
 
     def ask(self, question: str) -> str:

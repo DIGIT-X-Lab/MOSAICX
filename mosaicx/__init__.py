@@ -48,6 +48,10 @@ def _configure_dspy() -> None:
     is missing.  Imported lazily so this module stays importable without
     DSPy installed.
     """
+    from .runtime_env import ensure_runtime_env
+
+    ensure_runtime_env()
+
     from .config import get_config  # noqa: delay until called
 
     cfg = get_config()
@@ -65,7 +69,23 @@ def _configure_dspy() -> None:
     from .metrics import TokenTracker, make_harmony_lm, set_tracker
 
     lm = make_harmony_lm(cfg.lm, api_key=cfg.api_key, api_base=cfg.api_base, temperature=cfg.lm_temperature)
-    dspy.configure(lm=lm)
+    adapter = None
+    try:
+        adapter = dspy.JSONAdapter()
+    except Exception:
+        adapter = None
+    try:
+        if adapter is not None:
+            dspy.configure(lm=lm, adapter=adapter)
+        else:
+            dspy.configure(lm=lm)
+    except TypeError:
+        dspy.configure(lm=lm)
+        if adapter is not None:
+            try:
+                dspy.settings.adapter = adapter
+            except Exception:
+                pass
 
     # Install token usage tracker
 
@@ -255,7 +275,10 @@ from mosaicx.sdk import (  # noqa: E402
     list_modes,
     list_schemas,
     list_templates,
+    query,
     summarize,
+    verify,
+    verify_batch,
 )
 
 
@@ -272,6 +295,9 @@ __all__ = [
     "list_templates",
     "evaluate",
     "health",
+    "verify",
+    "verify_batch",
+    "query",
     # Legacy file-based API
     "extract_file",
     "summarize_files",

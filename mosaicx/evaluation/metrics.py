@@ -16,6 +16,8 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
+from .grounding import query_grounded_numeric_metric, verify_grounded_metric
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -328,6 +330,8 @@ _METRIC_REGISTRY: dict[str, Callable] = {
     "summarize": summarizer_metric,
     "deidentify": deidentifier_metric,
     "schema": schema_gen_metric,
+    "query": query_grounded_numeric_metric,
+    "verify": verify_grounded_metric,
 }
 
 
