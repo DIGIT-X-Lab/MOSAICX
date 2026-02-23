@@ -103,6 +103,11 @@ _NUMERIC_STAT_MARKERS = (
     "change",
     "difference",
 )
+_DISTRIBUTION_MARKERS = (
+    "distribution",
+    "breakdown",
+    "split by",
+)
 _QUERY_STOPWORDS = {
     "the", "a", "an", "and", "or", "of", "in", "on", "to", "for", "with",
     "is", "are", "was", "were", "be", "been", "being", "what", "which",
@@ -802,6 +807,10 @@ class QueryEngine:
             return "std"
         return None
 
+    def _is_distribution_request(self, question: str) -> bool:
+        q = " ".join(question.lower().split())
+        return any(marker in q for marker in _DISTRIBUTION_MARKERS)
+
     def _tabular_source_names(self) -> list[str]:
         out: list[str] = []
         for meta in self._session.catalog:
@@ -989,6 +998,10 @@ class QueryEngine:
             or self._has_value_list_marker(q_raw)
             or self._is_count_plus_values_request(resolved_q)
         )
+        wants_distribution = self._is_distribution_request(resolved_q)
+        if wants_distribution:
+            wants_count = True
+            wants_values = True
         aggregate_op = route.operation or self._detect_aggregate_operation(q_raw)
         wants_row_count = bool(
             {
@@ -1016,6 +1029,8 @@ class QueryEngine:
                 aggregate_op = str(llm_plan.get("operation") or aggregate_op or "").strip().lower() or aggregate_op
             if bool(llm_plan.get("include_values")):
                 wants_values = True
+        if aggregate_op not in {None, "mean", "median", "min", "max", "sum", "std"}:
+            aggregate_op = None
 
         if not wants_count and not wants_values and not aggregate_op:
             return None
@@ -1176,12 +1191,19 @@ class QueryEngine:
             return None
 
         if wants_count and distinct_rows:
-            values_preview = ", ".join(str(r.get("value")) for r in distinct_rows[:8])
             if count_value is None:
                 count_value = str(len(distinct_rows))
-            answer = (
-                f"There are {count_value} distinct {column} values: {values_preview}."
-            )
+            if wants_distribution:
+                distribution_preview = ", ".join(
+                    f"{r.get('value')}={int(r.get('count') or 0)}"
+                    for r in distinct_rows[:10]
+                )
+                answer = f"{column} distribution ({count_value} groups): {distribution_preview}."
+            else:
+                values_preview = ", ".join(str(r.get("value")) for r in distinct_rows[:8])
+                answer = (
+                    f"There are {count_value} distinct {column} values: {values_preview}."
+                )
         elif wants_values and distinct_rows:
             values_preview = ", ".join(str(r.get("value")) for r in distinct_rows[:12])
             answer = f"Distinct {column} values: {values_preview}."

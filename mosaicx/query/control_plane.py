@@ -31,6 +31,7 @@ _SCHEMA_MARKERS = (
     "what are the columns",
 )
 _COUNT_MARKERS = ("how many", "number of", "count")
+_DISTRIBUTION_MARKERS = ("distribution", "breakdown", "split by")
 _AGG_OPERATION_MARKERS: tuple[tuple[str, str], ...] = (
     ("mean", "mean"),
     ("average", "mean"),
@@ -97,6 +98,7 @@ class IntentRouter:
         wants_schema = any(marker in q for marker in _SCHEMA_MARKERS)
         wants_count = self._wants_count(q)
         wants_values = self._wants_values(q, wants_count=wants_count)
+        wants_distribution = self._wants_distribution(q)
         operation = self._detect_operation(q)
         needs_numeric_stat = operation is not None
 
@@ -107,6 +109,15 @@ class IntentRouter:
                 wants_schema=True,
                 wants_values=False,
                 wants_count=False,
+                operation=None,
+                needs_numeric_stat=False,
+            )
+        if wants_distribution:
+            return IntentDecision(
+                intent="count_values",
+                wants_schema=False,
+                wants_values=True,
+                wants_count=True,
                 operation=None,
                 needs_numeric_stat=False,
             )
@@ -160,6 +171,9 @@ class IntentRouter:
             or re.search(r"\band\b[^?]{0,120}\blist\b", q)
         )
 
+    def _wants_distribution(self, q: str) -> bool:
+        return any(marker in q for marker in _DISTRIBUTION_MARKERS)
+
     def _detect_operation(self, q: str) -> str | None:
         for marker, op in _AGG_OPERATION_MARKERS:
             if marker == "min":
@@ -205,6 +219,8 @@ class IntentRouter:
 
         intent = " ".join(str(getattr(pred, "intent", "")).lower().split())
         op = " ".join(str(getattr(pred, "aggregate_operation", "")).lower().split()) or None
+        if op not in {None, "mean", "median", "min", "max", "sum", "std"}:
+            op = None
         needs_numeric = " ".join(str(getattr(pred, "needs_numeric_stat", "")).lower().split()) in {
             "true",
             "yes",

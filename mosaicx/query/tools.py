@@ -108,6 +108,7 @@ _ENTITY_COUNT_TERMS = {
     "person",
 }
 _ROW_COUNT_TERMS = {"row", "rows", "record", "records", "entry", "entries", "observation", "observations", "sample", "samples"}
+_DISTRIBUTION_MARKERS = {"distribution", "breakdown", "split"}
 
 
 def _normalize_token(token: str) -> str:
@@ -295,6 +296,11 @@ def _wants_distinct_values(question: str) -> bool:
         or re.search(r"\band\b[^?]{0,120}\blist\b", q)
     )
     return has_count and asks_followup_values
+
+
+def _is_distribution_question(question: str) -> bool:
+    q_terms = set(_extract_terms(question))
+    return bool(q_terms & _DISTRIBUTION_MARKERS)
 
 
 def infer_table_roles(
@@ -1108,6 +1114,7 @@ def analyze_table_question(
 ) -> list[dict[str, Any]]:
     """Derive deterministic evidence snippets for common cohort-stat questions."""
     op = _detect_operation(question)
+    distribution_requested = _is_distribution_question(question)
     out: list[dict[str, Any]] = []
     q_terms_expanded = set(
         _expand_terms([t for t in _extract_terms(question) if t not in _DEFAULT_STOPWORDS])
@@ -1115,7 +1122,7 @@ def analyze_table_question(
 
     for name, df in _iter_tables(data) or ():
         columns = [str(c) for c in df.columns]
-        if not op:
+        if not op and not distribution_requested:
             continue
         role_info = infer_table_roles(name, data=data, max_columns=300)
         id_candidates = [str(c) for c in role_info.get("roles", {}).get("id", [])]
@@ -1178,6 +1185,65 @@ def analyze_table_question(
                             "column": selected_col,
                             "value": row.get("value"),
                             "count": int(row.get("count") or 0),
+                            "backend": backend,
+                        }
+                    )
+                continue
+
+        if distribution_requested:
+            try:
+                rows = list_distinct_values(
+                    name,
+                    data=data,
+                    column=selected_col,
+                    limit=max(8, min(16, top_k * 3)),
+                )
+            except Exception:
+                rows = []
+            if rows:
+                backend = str(rows[0].get("backend") or "table_engine")
+                for row in rows:
+                    out.append(
+                        {
+                            "source": name,
+                            "snippet": (
+                                f"Distinct {selected_col}: {row.get('value')} "
+                                f"(count={row.get('count')}, engine={backend})"
+                            ),
+                            "score": 86,
+                            "evidence_type": "table_value",
+                            "operation": "distinct_values",
+                            "column": selected_col,
+                            "value": row.get("value"),
+                            "count": int(row.get("count") or 0),
+                            "backend": backend,
+                        }
+                    )
+
+                try:
+                    computed = compute_table_stat(
+                        name,
+                        data=data,
+                        column=selected_col,
+                        operation="nunique",
+                    )
+                except Exception:
+                    computed = []
+                if computed:
+                    row = computed[0]
+                    backend = str(row.get("backend") or "table_engine")
+                    out.append(
+                        {
+                            "source": name,
+                            "snippet": (
+                                f"Computed unique_count of {selected_col} from {row.get('row_count')} rows: "
+                                f"{row.get('value')} (engine={backend})"
+                            ),
+                            "score": 88,
+                            "evidence_type": "table_stat",
+                            "operation": "nunique",
+                            "column": selected_col,
+                            "value": row.get("value"),
                             "backend": backend,
                         }
                     )

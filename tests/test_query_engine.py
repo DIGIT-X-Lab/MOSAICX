@@ -231,6 +231,45 @@ class TestQueryEngineConversation:
         assert any(c.get("evidence_type") == "table_stat" for c in payload["citations"])
         assert any(c.get("evidence_type") == "table_value" for c in payload["citations"])
 
+    def test_ask_structured_distribution_query_returns_group_counts(self, tmp_path: Path):
+        """Distribution phrasing should resolve to deterministic category counts."""
+        from mosaicx.query.engine import QueryEngine
+        from mosaicx.query.session import QuerySession
+
+        f = tmp_path / "cohort.csv"
+        f.write_text("Subject,Sex\nS1,M\nS2,F\nS3,M\nS4,F\nS5,M\n")
+        session = QuerySession(sources=[f])
+        engine = QueryEngine(session=session)
+
+        payload = engine.ask_structured("what is the distribution of male and female in the cohort?")
+        answer = str(payload["answer"])
+        assert "distribution" in answer.lower()
+        assert "M=3" in answer or "male=3" in answer.lower()
+        assert "F=2" in answer or "female=2" in answer.lower()
+        assert any(c.get("evidence_type") == "table_value" for c in payload["citations"])
+
+    def test_try_deterministic_tabular_answer_ignores_none_operation(self, tmp_path: Path, monkeypatch):
+        """Planner output with operation='none' should not trigger aggregate compute crashes."""
+        from mosaicx.query.control_plane import IntentDecision
+        from mosaicx.query.engine import QueryEngine
+        from mosaicx.query.session import QuerySession
+
+        f = tmp_path / "cohort.csv"
+        f.write_text("Subject,BMI\nS1,20\nS2,25\nS3,30\n")
+        session = QuerySession(sources=[f])
+        engine = QueryEngine(session=session)
+
+        monkeypatch.setattr(
+            engine._intent_router,  # noqa: SLF001 - intentional test override
+            "route",
+            lambda **kwargs: IntentDecision(intent="aggregate", operation="none"),
+        )
+        monkeypatch.setattr(engine, "_plan_tabular_question_with_llm", lambda q: None)
+
+        # No exception should be raised, and deterministic path should decline cleanly.
+        result = engine._try_deterministic_tabular_answer("give me cohort overview")
+        assert result is None
+
     def test_ask_structured_schema_question_returns_all_columns(self, tmp_path: Path, monkeypatch):
         """Schema questions should return full column list and skip reconciler rewrites."""
         from mosaicx.query.engine import QueryEngine
