@@ -10,6 +10,7 @@ tables, nested dicts → subsections.  Works for all extraction paths
 from __future__ import annotations
 
 import json
+import math
 import re
 from enum import Enum
 from typing import Any
@@ -160,8 +161,16 @@ def _render_list_table(key: str, items: list[dict], console: Console) -> None:
             if item.get(k) is not None:
                 col_fill[k] += 1
 
-    # Filter: skip columns that are null in >80% of rows, and skip internal IDs
-    threshold = len(items) * 0.2
+    # Filter: skip columns that are null in most rows for generic tables.
+    # Keep sparse clinical level-finding columns visible to avoid hiding key findings.
+    sparse_findings = (
+        len(items) <= 12
+        and any(
+            marker in {k.lower() for k in all_keys}
+            for marker in {"level", "disc_bulge_type", "disc_protrusion", "disc_location"}
+        )
+    )
+    threshold = 1 if sparse_findings else max(1, math.ceil(len(items) * 0.2))
     viable = [k for k in all_keys if col_fill[k] >= threshold and k not in _SKIP_COLS]
 
     # Sort: priority columns first, then remainder
@@ -221,8 +230,13 @@ def _humanize_enum_like_value(text: str) -> str:
     if looks_internal:
         value = value.rsplit(".", 1)[-1]
 
+    # Preserve common vertebral level ranges (e.g. C3-C4, C7-T1).
+    level_match = re.fullmatch(r"\s*([A-Za-z]?\d+)\s*[-–]\s*([A-Za-z]?\d+)\s*", value)
+    if level_match:
+        return f"{level_match.group(1).upper()}-{level_match.group(2).upper()}"
+
     # Convert snake/camel style labels into readable words.
-    value = re.sub(r"[_\-]+", " ", value)
+    value = value.replace("_", " ")
     value = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", value)
     value = " ".join(value.split())
     if not value:

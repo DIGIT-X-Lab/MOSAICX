@@ -6,7 +6,7 @@ Status: Active
 Owner: Core platform
 Authoritative: Yes (single source of truth for rollout status)
 
-## 0) Canonical Status (Updated 2026-02-24 23:58)
+## 0) Canonical Status (Updated 2026-02-25 01:05)
 
 This file is the canonical status board for DSPy roadmap execution.
 Other plan files are design/history logs and must link here for status.
@@ -85,6 +85,26 @@ Other plan files are design/history logs and must link here for status.
     - `tests/test_query_engine.py::test_tabular_gender_count_followup_what_are_they_keeps_column_context`
   - Validation:
     - `PYTHONPATH=. .venv/bin/pytest -q tests/test_query_engine.py -k "tabular_gender_count_followup_what_are_they_keeps_column_context or tabular_coreference_followup_preserves_entity_context or tabular_typo_prompt_returns_grounded_count_values"` -> `3 passed, 72 deselected`
+- Planner-path determinism + fallback failure isolation hardening (`ROADMAP-QRY`, `DSPY-01`, `DSPY-15`):
+  - Planned tabular execution now normalizes under-specified planner intents (`count`, `count_values`, `aggregate` without operation for count/value asks) into executable deterministic paths, reducing planner-used/not-executed drift.
+  - Added parallel retrieval collection with strict failure isolation for LLM-fallback evidence gathering:
+    - `QueryEngine._collect_retrieval_hits_parallel` executes document/table/chunk/computed/column retrieval concurrently and degrades safely per-tool.
+    - Fallback payload now exposes `parallel_used` and `parallel_failures`.
+  - Added regressions:
+    - `tests/test_query_engine.py::test_planner_count_intent_normalizes_to_count_distinct_execution`
+    - `tests/test_query_engine.py::test_planner_aggregate_without_operation_normalizes_to_count_distinct`
+    - `tests/test_query_engine.py::test_collect_retrieval_hits_parallel_isolates_tool_failure`
+  - Validation:
+    - `PYTHONPATH=. .venv/bin/pytest -q tests/test_query_engine.py tests/test_cli_display.py -m 'not integration'` -> `77 passed, 6 deselected`
+    - `PYTHONPATH=. .venv/bin/pytest -q tests/test_query_engine.py -m integration` -> `6 passed, 72 deselected`
+- Extract/template display stabilization (`ROADMAP-EXT`):
+  - Preserved vertebral level hyphens in user-facing output (`C3-C4`, `C7-T1`) instead of degrading to `C3 4`.
+  - Level-finding tables now retain sparse-but-important columns (for example, `Disc Bulge Type`) instead of hiding them via generic null-threshold filtering.
+  - Added regressions:
+    - `tests/test_cli_display.py::test_format_value_preserves_vertebral_level_hyphen`
+    - `tests/test_cli_display.py::test_render_list_table_keeps_sparse_level_finding_columns`
+  - Live check:
+    - `mosaicx extract --template MRICervicalSpineV3` now renders `Level Findings` with `Disc Bulge Type` and correct level text (`C3-C4`).
 - Optimizer artifacts (`EVAL-002`) produced with real local model execution:
   - `docs/runs/2026-02-24-query-optimizer-seq-tiny/optimizer_sequence_manifest.json`
   - `docs/runs/2026-02-24-query-optimizer-seq-tiny/miprov2_optimized.json`

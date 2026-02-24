@@ -210,6 +210,48 @@ class TestQueryEngineConversation:
         assert payload["rescue_reason"] == "fallback_evidence_recovery"
         assert "prostate carcinoma" in str(payload["answer"]).lower()
         assert "LLM unavailable" not in str(payload["answer"])
+        assert payload["parallel_used"] is True
+        assert payload["parallel_failures"] == {}
+
+    def test_collect_retrieval_hits_parallel_isolates_tool_failure(self, tmp_path: Path):
+        from mosaicx.query.engine import QueryEngine
+        from mosaicx.query.session import QuerySession
+
+        f = tmp_path / "report.txt"
+        f.write_text("Findings: Right external iliac node 16 mm.")
+        session = QuerySession(sources=[f])
+        engine = QueryEngine(session=session)
+
+        docs = {"report.txt": f.read_text()}
+        data = {}
+        chunk_index = {}
+
+        def _boom(*_args, **_kwargs):
+            raise RuntimeError("tool exploded")
+
+        seed_hits, errors = engine._collect_retrieval_hits_parallel(
+            question="what changed?",
+            documents=docs,
+            data=data,
+            chunk_index=chunk_index,
+            text_top_k=5,
+            chunk_top_k=5,
+            table_top_k=5,
+            computed_top_k=5,
+            column_top_k=5,
+            max_hits=8,
+            search_documents_fn=_boom,
+            search_document_chunks_fn=lambda *_a, **_k: [
+                {"source": "report.txt", "snippet": "node increased to 16 mm", "score": 9}
+            ],
+            search_tables_fn=lambda *_a, **_k: [],
+            analyze_table_question_fn=lambda *_a, **_k: [],
+            suggest_table_columns_fn=lambda *_a, **_k: [],
+        )
+
+        assert any("16 mm" in str(h.get("snippet")) for h in seed_hits)
+        assert "text_hits" in errors
+        assert "RuntimeError" in errors["text_hits"]
 
     def test_ask_structured_rescues_non_answer_when_evidence_exists(self, tmp_path: Path, monkeypatch):
         """If RLM returns a non-answer but citations exist, engine should rescue."""
@@ -688,6 +730,78 @@ class TestQueryEngineConversation:
         assert payload["planner_intent"] == "count_distinct"
         assert payload["planner_source"] == "cohort.csv"
         assert payload["planner_column"] == "Sex"
+        assert payload["execution_path"] == "planned_executor"
+        assert payload["target_resolution"] == "planner"
+
+    def test_planner_count_intent_normalizes_to_count_distinct_execution(self, tmp_path: Path, monkeypatch):
+        """Generic planner `count` intent must still execute via planned tabular path."""
+        from mosaicx.query.engine import QueryEngine
+        from mosaicx.query.session import QuerySession
+
+        f = tmp_path / "cohort.csv"
+        f.write_text("Subject,Sex\nS1,M\nS2,F\nS3,M\n")
+        session = QuerySession(sources=[f])
+        engine = QueryEngine(session=session)
+
+        monkeypatch.setattr(engine, "_should_try_programmatic_first", lambda **kwargs: False)
+        monkeypatch.setattr(
+            engine,
+            "_plan_tabular_question_with_llm",
+            lambda _q: {
+                "intent": "count",
+                "source": "cohort.csv",
+                "column": "Sex",
+                "operation": None,
+                "include_values": True,
+            },
+        )
+        monkeypatch.setattr(
+            engine,
+            "_build_citations",
+            lambda **kwargs: kwargs.get("seed_hits", []),
+        )
+
+        payload = engine.ask_structured("how many male and female?")
+        answer = str(payload.get("answer") or "").lower()
+        assert any(tok in answer for tok in ("distribution", "distinct sex values", "there are"))
+        assert payload["planner_used"] is True
+        assert payload["planner_executed"] is True
+        assert payload["execution_path"] == "planned_executor"
+        assert payload["target_resolution"] == "planner"
+
+    def test_planner_aggregate_without_operation_normalizes_to_count_distinct(self, tmp_path: Path, monkeypatch):
+        """Planner aggregate intent without op for category asks should execute planned count-distinct path."""
+        from mosaicx.query.engine import QueryEngine
+        from mosaicx.query.session import QuerySession
+
+        f = tmp_path / "cohort.csv"
+        f.write_text("Subject,Sex\nS1,M\nS2,F\nS3,M\n")
+        session = QuerySession(sources=[f])
+        engine = QueryEngine(session=session)
+
+        monkeypatch.setattr(engine, "_should_try_programmatic_first", lambda **kwargs: False)
+        monkeypatch.setattr(
+            engine,
+            "_plan_tabular_question_with_llm",
+            lambda _q: {
+                "intent": "aggregate",
+                "source": "cohort.csv",
+                "column": "Sex",
+                "operation": None,
+                "include_values": True,
+            },
+        )
+        monkeypatch.setattr(
+            engine,
+            "_build_citations",
+            lambda **kwargs: kwargs.get("seed_hits", []),
+        )
+
+        payload = engine.ask_structured("how many male and female?")
+        answer = str(payload.get("answer") or "").lower()
+        assert any(tok in answer for tok in ("distribution", "distinct sex values", "there are"))
+        assert payload["planner_used"] is True
+        assert payload["planner_executed"] is True
         assert payload["execution_path"] == "planned_executor"
         assert payload["target_resolution"] == "planner"
 

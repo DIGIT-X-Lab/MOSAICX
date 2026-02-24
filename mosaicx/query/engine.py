@@ -11,6 +11,7 @@ even when dspy is not fully configured.
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import difflib
 import json
 import re
@@ -336,6 +337,105 @@ class QueryEngine:
                 break
         return merged
 
+    def _collect_retrieval_hits_parallel(
+        self,
+        *,
+        question: str,
+        documents: dict[str, str],
+        data: dict[str, Any],
+        chunk_index: dict[str, list[dict[str, Any]]],
+        text_top_k: int,
+        chunk_top_k: int,
+        table_top_k: int,
+        computed_top_k: int,
+        column_top_k: int,
+        max_hits: int,
+        search_documents_fn=None,
+        search_document_chunks_fn=None,
+        search_tables_fn=None,
+        analyze_table_question_fn=None,
+        suggest_table_columns_fn=None,
+    ) -> tuple[list[dict[str, Any]], dict[str, str]]:
+        """Collect retrieval hits in parallel with strict failure isolation."""
+        if (
+            search_documents_fn is None
+            or search_document_chunks_fn is None
+            or search_tables_fn is None
+            or analyze_table_question_fn is None
+            or suggest_table_columns_fn is None
+        ):
+            from mosaicx.query.tools import (
+                analyze_table_question,
+                search_document_chunks,
+                search_documents,
+                search_tables,
+                suggest_table_columns,
+            )
+
+            search_documents_fn = search_documents_fn or search_documents
+            search_document_chunks_fn = search_document_chunks_fn or search_document_chunks
+            search_tables_fn = search_tables_fn or search_tables
+            analyze_table_question_fn = analyze_table_question_fn or analyze_table_question
+            suggest_table_columns_fn = suggest_table_columns_fn or suggest_table_columns
+
+        def _ensure_hit_list(value: Any) -> list[dict[str, Any]]:
+            if isinstance(value, list):
+                return [v for v in value if isinstance(v, dict)]
+            return []
+
+        tasks = {
+            "text_hits": lambda: search_documents_fn(
+                question,
+                documents=documents,
+                top_k=max(1, text_top_k),
+            ),
+            "chunk_hits": lambda: search_document_chunks_fn(
+                question,
+                documents=documents,
+                top_k=max(1, chunk_top_k),
+                chunk_index=chunk_index,
+            ),
+            "table_hits": lambda: search_tables_fn(
+                question,
+                data=data,
+                top_k=max(1, table_top_k),
+            ),
+            "computed_hits": lambda: analyze_table_question_fn(
+                question,
+                data=data,
+                top_k=max(1, computed_top_k),
+            ),
+            "column_hits": lambda: suggest_table_columns_fn(
+                question,
+                data=data,
+                top_k=max(1, column_top_k),
+            ),
+        }
+
+        results: dict[str, list[dict[str, Any]]] = {name: [] for name in tasks}
+        errors: dict[str, str] = {}
+        with ThreadPoolExecutor(max_workers=len(tasks)) as pool:
+            future_map = {pool.submit(fn): name for name, fn in tasks.items()}
+            for future in as_completed(future_map):
+                name = future_map[future]
+                try:
+                    results[name] = _ensure_hit_list(future.result())
+                except Exception as exc:
+                    errors[name] = f"{type(exc).__name__}: {exc}"
+                    results[name] = []
+
+        merged = self._merge_hits(
+            [
+                *results["computed_hits"],
+                *results["column_hits"],
+                *results["table_hits"],
+                *results["chunk_hits"],
+                *results["text_hits"],
+            ],
+            max_hits=max_hits,
+        )
+        return merged, errors
+
     def _ensure_document_chunk_index(self) -> dict[str, list[dict[str, Any]]]:
         if self._document_chunk_index is not None:
             return self._document_chunk_index
@@ -549,19 +649,22 @@ class QueryEngine:
         ]
 
         # Seed retrieval to help the RLM start from concrete evidence.
-        text_hits = search_documents(question.strip(), documents=docs, top_k=6)
-        chunk_hits = search_document_chunks(
-            question.strip(),
+        seed_hits, _seed_errors = self._collect_retrieval_hits_parallel(
+            question=question.strip(),
             documents=docs,
-            top_k=8,
+            data=data,
             chunk_index=chunk_index,
-        )
-        table_hits = search_tables(question.strip(), data=data, top_k=6)
-        computed_hits = analyze_table_question(question.strip(), data=data, top_k=4)
-        column_hits = suggest_table_columns(question.strip(), data=data, top_k=6)
-        seed_hits = self._merge_hits(
-            [*computed_hits, *column_hits, *table_hits, *chunk_hits, *text_hits],
+            text_top_k=6,
+            chunk_top_k=8,
+            table_top_k=6,
+            computed_top_k=4,
+            column_top_k=6,
             max_hits=12,
+            search_documents_fn=search_documents,
+            search_document_chunks_fn=search_document_chunks,
+            search_tables_fn=search_tables,
+            analyze_table_question_fn=analyze_table_question,
+            suggest_table_columns_fn=suggest_table_columns,
         )
         retrieval_lines = []
         for h in seed_hits:
@@ -1724,6 +1827,10 @@ class QueryEngine:
             or self._is_count_plus_values_request(question)
         )
 
+        # Normalize under-specified planner intents for category-count prompts.
+        if intent == "aggregate" and operation not in {"mean", "median", "min", "max", "sum", "std"} and (wants_count or wants_values):
+            intent = "count_distinct"
+
         seed_hits: list[dict[str, Any]] = []
         if column:
             seed_hits.append(
@@ -1800,6 +1907,15 @@ class QueryEngine:
                 last_intent="aggregate",
             )
             return f"{operation} of {column}: {value}.", self._merge_hits(seed_hits, max_hits=16), "aggregate"
+
+        # ReAct planners may emit generic count/count_values intents for category asks.
+        # Normalize these to deterministic branches we can execute safely.
+        if intent == "count":
+            intent = "count_distinct"
+        elif intent == "count_values":
+            intent = "mixed"
+        elif intent not in {"count_distinct", "list_values", "mixed", "aggregate", "count_rows"} and column and (wants_count or wants_values):
+            intent = "count_distinct"
 
         if intent not in {"count_distinct", "list_values", "mixed"} or not column:
             return None
@@ -3308,6 +3424,8 @@ class QueryEngine:
         deterministic_intent: str | None = None
         longdoc_literal_support: float | None = None
         planner_trace: dict[str, Any] = {}
+        parallel_used = False
+        parallel_failures: dict[str, str] = {}
 
         resolved_question = self._resolve_followup_question(question.strip())
         route = self._intent_router.route(
@@ -3382,47 +3500,24 @@ class QueryEngine:
                             break
 
                 if run_error is not None:
-                    from mosaicx.query.tools import (
-                        analyze_table_question,
-                        search_document_chunks,
-                        search_documents,
-                        search_tables,
-                        suggest_table_columns,
-                    )
-
                     fallback_used = True
                     fallback_reason = f"{type(run_error).__name__}: {run_error}"
                     fallback_code = "adapter_parse_error" if "AdapterParseError" in fallback_reason else "lm_runtime_error"
-                    text_hits = search_documents(
-                        resolved_question,
+                    seed_hits, retrieval_errors = self._collect_retrieval_hits_parallel(
+                        question=resolved_question,
                         documents=self._documents,
-                        top_k=max(3, effective_top_k),
-                    )
-                    chunk_hits = search_document_chunks(
-                        resolved_question,
-                        documents=self._documents,
-                        top_k=max(4, effective_top_k + 1),
+                        data=self._session.data,
                         chunk_index=self._ensure_document_chunk_index(),
-                    )
-                    table_hits = search_tables(
-                        resolved_question,
-                        data=self._session.data,
-                        top_k=max(3, effective_top_k),
-                    )
-                    computed_hits = analyze_table_question(
-                        resolved_question,
-                        data=self._session.data,
-                        top_k=max(3, effective_top_k),
-                    )
-                    column_hits = suggest_table_columns(
-                        resolved_question,
-                        data=self._session.data,
-                        top_k=max(3, effective_top_k),
-                    )
-                    seed_hits = self._merge_hits(
-                        [*computed_hits, *column_hits, *table_hits, *chunk_hits, *text_hits],
+                        text_top_k=max(3, effective_top_k),
+                        chunk_top_k=max(4, effective_top_k + 1),
+                        table_top_k=max(3, effective_top_k),
+                        computed_top_k=max(3, effective_top_k),
+                        column_top_k=max(3, effective_top_k),
                         max_hits=max(4, effective_top_k * 2),
                     )
+                    parallel_used = True
+                    if retrieval_errors:
+                        parallel_failures = retrieval_errors
                     if seed_hits:
                         rescued = self._rescue_answer_with_evidence(
                             question=resolved_question,
@@ -3812,6 +3907,8 @@ class QueryEngine:
             "planner_column": planner_trace.get("planner_column"),
             "planner_column_recovered": bool(planner_trace.get("planner_column_recovered")),
             "planner_error": planner_trace.get("planner_error"),
+            "parallel_used": parallel_used,
+            "parallel_failures": parallel_failures,
         }
 
     def ask(self, question: str) -> str:
