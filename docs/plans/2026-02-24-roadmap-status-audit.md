@@ -6,7 +6,7 @@ Status: Active
 Owner: Core platform
 Authoritative: Yes (single source of truth for rollout status)
 
-## 0) Canonical Status (Updated 2026-02-25 01:05)
+## 0) Canonical Status (Updated 2026-02-24 23:59)
 
 This file is the canonical status board for DSPy roadmap execution.
 Other plan files are design/history logs and must link here for status.
@@ -15,19 +15,30 @@ Other plan files are design/history logs and must link here for status.
 
 - Closed roadmap delivery items:
   - `QRY-001`, `QRY-002`, `VER-001`, `VER-002`, `EXT-001`, `EXT-002`, `OPS-001`, `EVAL-001`, `EVAL-002`, `DOC-001`
+  - roadmap epics: `#33 [ROADMAP-OPS]`, `#34 [ROADMAP-QRY]`, `#35 [ROADMAP-EXT]`
   - legacy bugs: `#17`, `#18`, `#19`
   - current bug fixes: `#51`, `#52`, `#53`, `#54`, `#55`
   - closed duplicates: `#22`, `#27`
 - Closed DSPy capability items:
+  - `#36 [DSPY-01] ReAct planner as primary query control-plane`
+  - `#37 [DSPY-02] RLM executor robustness for long-document query + verify`
   - `#38 [DSPY-03] JSONAdapter default structured-output policy`
   - `#39 [DSPY-04] TwoStepAdapter fallback policy`
   - `#40 [DSPY-05] BestOfN grounded candidate selection`
+  - `#42 [DSPY-08] CodeAct controlled fallback for complex tabular analytics`
+  - `#43 [DSPY-06] Refine for extraction-critical steps`
   - `#41 [DSPY-07] MultiChainComparison contradiction adjudication`
+  - `#45 [DSPY-09] ProgramOfThought fallback-only hardening`
+  - `#46 [DSPY-10] CompleteAndGrounded as enforced quality gate`
+  - `#47 [DSPY-13] SIMBA optimization run with persisted artifacts`
+  - `#48 [DSPY-12] MIPROv2 optimization baseline with persisted artifacts`
+  - `#49 [DSPY-14] GEPA optimization run with persisted artifacts`
+  - `#50 [DSPY-15] Parallel/Async/Streaming execution with strict failure isolation`
   - `#44 [DSPY-11] answer_exact_match + answer_passage_match CI gates`
 - Open roadmap epics:
-  - `#33 [ROADMAP-OPS]`, `#34 [ROADMAP-QRY]`, `#35 [ROADMAP-EXT]`
+  - none
 - Open DSPy capability rollout items:
-  - `#36`, `#37`, `#42`, `#43`, `#45`, `#46`, `#47`, `#48`, `#49`, `#50`
+  - none
 
 ### Canonical control note
 
