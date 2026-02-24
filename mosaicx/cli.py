@@ -2356,12 +2356,20 @@ def verify(
             claim=claim,
             sources=source_paths,
             level=level,
+            include_debug=True,
         )
 
     # -- Human-friendly display --
     decision = str(result.get("result") or "insufficient_evidence")
+    debug_info = result.get("debug") if isinstance(result.get("debug"), dict) else {}
+
+    def _dbg(key: str, default: Any = None) -> Any:
+        if key in debug_info:
+            return debug_info.get(key, default)
+        return result.get(key, default)
+
     non_llm_issues = [
-        i for i in result.get("issues", [])
+        i for i in (_dbg("issues", []) or [])
         if str(i.get("type") or "") not in {"llm_unavailable", "rlm_unavailable"}
     ]
     n_problems = len(non_llm_issues)
@@ -2441,14 +2449,14 @@ def verify(
     # Warn if LLM was requested but unavailable
     llm_failed = any(
         str(i.get("type") or "") in {"llm_unavailable", "rlm_unavailable"}
-        for i in result.get("issues", [])
+        for i in (_dbg("issues", []) or [])
     )
     if llm_failed:
         console.print(theme.warn("LLM unavailable -- used text matching only"))
 
     # -- Big verdict line: the one thing the user needs to see --
     console.print()
-    claim_score = float(result.get("support_score", result.get("confidence", 0.0)))
+    claim_score = float(_dbg("support_score", result.get("confidence", 0.0)))
     if display_verdict == "verified" and n_problems == 0:
         if is_claim_mode:
             console.print(f"  [bold green]PASS[/bold green]  {subject} looks correct  [{theme.MUTED}](support {claim_score:.2f})[/{theme.MUTED}]")
@@ -2459,7 +2467,7 @@ def verify(
     elif display_verdict == "partially_supported":
         console.print(f"  [bold yellow]WARN[/bold yellow]  {n_problems} value{'s' if n_problems != 1 else ''} could not be confirmed in the source")
     elif display_verdict == "insufficient_evidence":
-        if verdict == "contradicted" and is_claim_mode:
+        if display_verdict == "contradicted" and is_claim_mode:
             console.print("  [bold yellow]WARN[/bold yellow]  Could not ground contradiction in source")
         else:
             console.print(f"  [bold yellow]WARN[/bold yellow]  Not enough overlap between claim and source to verify")
@@ -2472,7 +2480,7 @@ def verify(
         "spot_check": "LLM Spot-Check",
         "audit": "Full LLM Audit",
     }
-    executed_mode = str(result.get("executed_mode") or "")
+    executed_mode = str(_dbg("executed_mode") or "")
     method = _LEVEL_DISPLAY.get(executed_mode, executed_mode or "—")
     n_checked = int(field_checks.get("total") or 0)
     n_ok = int(field_checks.get("verified") or 0)
@@ -2495,7 +2503,7 @@ def verify(
         )
         meta.add_row("Claim true", claim_truth_label)
         meta.add_row("Support score", f"{claim_score:.2f}")
-        meta.add_row("Based on source", "yes" if result.get("based_on_source") else "no")
+        meta.add_row("Based on source", "yes" if bool(_dbg("based_on_source", False)) else "no")
     else:
         meta.add_row("Confidence", f"{result['confidence']:.0%}")
     if n_checked and not is_claim_mode:
@@ -2513,7 +2521,7 @@ def verify(
         comparison.add_row("Evidence", _esc(_compact_text(claim_evidence or "(not available)", max_len=140)))
         console.print(Padding(comparison, (0, 0, 0, 2)))
 
-    verify_citations = result.get("citations") or []
+    verify_citations = _dbg("citations", []) or []
     if verify_citations:
         console.print()
         console.print(f"  [bold {theme.CORAL}]Evidence[/bold {theme.CORAL}]")
@@ -2571,10 +2579,11 @@ def verify(
     diagnostics.add_column("Value", style=theme.MUTED)
     model_name = get_config().lm.split("/", 1)[-1] if "/" in get_config().lm else get_config().lm
     diagnostics.add_row("Model", model_name)
-    if result.get("fallback_used"):
+    if bool(_dbg("fallback_used", False)):
         diagnostics.add_row("Fallback", "yes")
-        if result.get("fallback_reason"):
-            diagnostics.add_row("Fallback why", _compact_text(result.get("fallback_reason"), max_len=120))
+        fallback_reason = _dbg("fallback_reason")
+        if fallback_reason:
+            diagnostics.add_row("Fallback why", _compact_text(fallback_reason, max_len=120))
     else:
         diagnostics.add_row("Fallback", "none")
     console.print(Padding(diagnostics, (0, 0, 0, 2)))

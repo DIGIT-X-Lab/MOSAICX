@@ -51,25 +51,24 @@ class TestSDKVerifyQuick:
             extraction={"findings": []},
             source_text="Normal report.",
             level="quick",
+            include_debug=True,
         )
         assert isinstance(result, dict)
+        for key in ("result", "confidence", "field_checks", "debug"):
+            assert key in result, f"Missing key: {key}"
         for key in (
-            "result",
-            "claim_is_true",
-            "confidence",
             "support_score",
             "based_on_source",
             "verify_type",
-            "issues",
-            "field_checks",
             "requested_mode",
             "executed_mode",
             "fallback_used",
             "fallback_reason",
+            "issues",
             "citations",
             "sources_consulted",
         ):
-            assert key in result, f"Missing key: {key}"
+            assert key in result["debug"], f"Missing debug key: {key}"
 
     def test_verify_extraction_correct_values(self):
         """Verify that correct extraction values are detected as verified."""
@@ -79,11 +78,12 @@ class TestSDKVerifyQuick:
             extraction=SAMPLE_EXTRACTION,
             source_text=SAMPLE_SOURCE,
             level="quick",
+            include_debug=True,
         )
         assert result["result"] == "verified"
-        assert result["executed_mode"] == "deterministic"
+        assert result["debug"]["executed_mode"] == "deterministic"
         assert result["confidence"] > 0.5
-        assert len(result["issues"]) == 0
+        assert len(result["debug"]["issues"]) == 0
 
     def test_verify_extraction_hallucinated_value(self):
         """Hallucinated measurement should be flagged."""
@@ -96,9 +96,10 @@ class TestSDKVerifyQuick:
             extraction=bad_extraction,
             source_text=SAMPLE_SOURCE,
             level="quick",
+            include_debug=True,
         )
         assert result["result"] == "partially_supported"
-        assert any(i["type"] == "value_not_found" for i in result["issues"])
+        assert any(i["type"] == "value_not_found" for i in result["debug"]["issues"])
 
     def test_verify_claim_correct(self):
         """Correct claim should be verified."""
@@ -108,17 +109,18 @@ class TestSDKVerifyQuick:
             claim="2.3 cm nodule in the right upper lobe",
             source_text=SAMPLE_SOURCE,
             level="quick",
+            include_debug=True,
         )
         assert result["result"] == "verified"
-        assert result["executed_mode"] == "deterministic"
-        assert result["support_score"] == pytest.approx(1.0)
-        assert result["verify_type"] == "claim"
+        assert result["debug"]["executed_mode"] == "deterministic"
+        assert result["debug"]["support_score"] == pytest.approx(1.0)
+        assert result["debug"]["verify_type"] == "claim"
         assert result["claim_is_true"] is True
         assert result["claim"]
-        assert result["based_on_source"] is True
-        assert isinstance(result.get("citations"), list)
-        assert result["citations"]
-        assert result["citations"][0].get("evidence_type")
+        assert result["debug"]["based_on_source"] is True
+        assert isinstance(result["debug"].get("citations"), list)
+        assert result["debug"]["citations"]
+        assert result["debug"]["citations"][0].get("evidence_type")
 
     def test_verify_claim_wrong_number(self):
         """Claim with wrong number should not be verified."""
@@ -143,9 +145,10 @@ class TestSDKVerifyQuick:
             claim="2.3 cm spiculated nodule",
             document=CT_CHEST,
             level="quick",
+            include_debug=True,
         )
         assert result["result"] == "verified"
-        assert result["executed_mode"] == "deterministic"
+        assert result["debug"]["executed_mode"] == "deterministic"
 
 
 class TestSDKVerifyFallback:
@@ -160,11 +163,12 @@ class TestSDKVerifyFallback:
                 claim="2.3 cm nodule",
                 source_text=SAMPLE_SOURCE,
                 level="standard",
+                include_debug=True,
             )
-        assert result["executed_mode"] == "deterministic"
-        assert any(i["type"] == "llm_unavailable" for i in result["issues"])
-        assert result["fallback_used"] is True
-        assert "fallback_reason" in result
+        assert result["debug"]["executed_mode"] == "deterministic"
+        assert any(i["type"] == "llm_unavailable" for i in result["debug"]["issues"])
+        assert result["debug"]["fallback_used"] is True
+        assert "fallback_reason" in result["debug"]
 
     def test_thorough_falls_back_on_llm_failure(self):
         from mosaicx.sdk import verify
@@ -175,9 +179,10 @@ class TestSDKVerifyFallback:
                 extraction=SAMPLE_EXTRACTION,
                 source_text=SAMPLE_SOURCE,
                 level="thorough",
+                include_debug=True,
             )
-        assert result["executed_mode"] == "deterministic"
-        assert any(i["type"] == "llm_unavailable" for i in result["issues"])
+        assert result["debug"]["executed_mode"] == "deterministic"
+        assert any(i["type"] == "llm_unavailable" for i in result["debug"]["issues"])
 
     def test_fallback_still_detects_hallucination(self):
         """Even on LLM failure, deterministic checks should detect bad values."""
@@ -191,9 +196,10 @@ class TestSDKVerifyFallback:
                 extraction=bad_extraction,
                 source_text=SAMPLE_SOURCE,
                 level="standard",
+                include_debug=True,
             )
         # Should have both value_not_found AND llm_unavailable
-        issue_types = {i["type"] for i in result["issues"]}
+        issue_types = {i["type"] for i in result["debug"]["issues"]}
         assert "value_not_found" in issue_types
         assert "llm_unavailable" in issue_types
 
@@ -215,11 +221,13 @@ class TestSDKVerifyFallback:
                 claim="patient BP is 120/82",
                 source_text="Vitals: BP 128/82 measured at triage.",
                 level="quick",
+                include_debug=True,
             )
 
         assert result["result"] == "contradicted"
         assert result["claim_is_true"] is False
-        assert any(i["type"] == "claim_value_conflict" for i in result["issues"])
+        assert any(i["type"] == "claim_value_conflict" for i in result["debug"]["issues"])
+        assert result["debug"]["support_score"] == pytest.approx(0.0)
 
     def test_claim_value_conflict_prefers_full_bp_pair_from_source(self):
         """BP conflicts should ground to a full BP pair, not partial numeric token."""
@@ -244,12 +252,13 @@ class TestSDKVerifyFallback:
                 claim="patient BP is 120/82",
                 source_text=source_text,
                 level="quick",
+                include_debug=True,
             )
 
         assert result["result"] == "contradicted"
         assert result["claim_is_true"] is False
         assert "128/82" in str(result["source_value"])
-        assert "128/82" in str(result["issues"][0]["message"])
+        assert "128/82" in str(result["debug"]["issues"][0]["message"])
 
     def test_claim_grounding_recovers_when_report_echoes_claim_value(self):
         """If audit echoes claim value as source, SDK must re-ground from source text."""
@@ -324,17 +333,18 @@ class TestSDKVerifyFallback:
                 claim="patient BP is 128/82",
                 source_text="Vitals: BP 128/82 measured at triage.",
                 level="thorough",
+                include_debug=True,
             )
 
         assert result["result"] == "verified"
         assert result["claim_is_true"] is True
-        assert result["support_score"] == pytest.approx(1.0)
+        assert result["debug"]["support_score"] == pytest.approx(1.0)
         assert "128/82" in str(result["source_value"])
         assert "does not contain" not in str(result["evidence"]).lower()
-        assert not any("does not contain" in str(i.get("message", "")).lower() for i in result["issues"])
-        assert result["citations"]
-        assert any("128/82" in str(c.get("snippet", "")) for c in result["citations"])
-        assert not any("does not contain" in str(c.get("snippet", "")).lower() for c in result["citations"])
+        assert not any("does not contain" in str(i.get("message", "")).lower() for i in result["debug"]["issues"])
+        assert result["debug"]["citations"]
+        assert any("128/82" in str(c.get("snippet", "")) for c in result["debug"]["citations"])
+        assert not any("does not contain" in str(c.get("snippet", "")).lower() for c in result["debug"]["citations"])
 
     def test_thorough_claim_rescue_rewrites_no_information_found_evidence(self):
         """Rescued claim should not keep 'no information found' evidence text."""
@@ -471,12 +481,13 @@ class TestSDKVerifyEdgeCases:
                 claim="patient has severe pain",
                 source_text="History: pain reported during prior visits.",
                 level="thorough",
+                include_debug=True,
             )
 
         adjudicator.assert_called_once()
         assert result["result"] == "verified"
         assert result["claim_is_true"] is True
-        assert result["adjudication"] == "dspy_mcc_bestofn"
+        assert result["debug"]["adjudication"] == "dspy_mcc_bestofn"
 
     def test_clear_claim_conflict_skips_dspy_adjudication(self):
         """Clear numeric conflicts must remain deterministic contradictions."""
@@ -508,12 +519,13 @@ class TestSDKVerifyEdgeCases:
                 claim="patient BP is 120/82",
                 source_text="Vitals: BP 128/82 measured at triage.",
                 level="thorough",
+                include_debug=True,
             )
 
         adjudicator.assert_not_called()
         assert result["result"] == "contradicted"
         assert result["claim_is_true"] is False
-        assert "adjudication" not in result
+        assert "adjudication" not in result.get("debug", {})
 
     def test_verify_claim_citations_preserve_chunk_metadata(self):
         from mosaicx.sdk import verify
@@ -545,10 +557,11 @@ class TestSDKVerifyEdgeCases:
                 claim="patient BP is 128/82",
                 source_text="Vitals: BP 128/82 measured at triage.",
                 level="thorough",
+                include_debug=True,
             )
 
-        assert result["citations"]
-        top = result["citations"][0]
+        assert result["debug"]["citations"]
+        top = result["debug"]["citations"][0]
         assert top["evidence_type"] == "text_chunk"
         assert top["chunk_id"] == 9
         assert top["source"] == "sample_patient_vitals.pdf"

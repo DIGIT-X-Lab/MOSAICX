@@ -372,6 +372,104 @@ class TestParseAuditReport:
 
 
 # ---------------------------------------------------------------------------
+# Outlines recovery wiring tests
+# ---------------------------------------------------------------------------
+
+
+class TestOutlinesRecovery:
+    """Verify Outlines fallback is used when DSPy RLM serialization fails."""
+
+    def test_claim_audit_uses_outlines_recovery_on_rlm_failure(self, monkeypatch):
+        from mosaicx.verify.audit import run_claim_audit
+
+        class _FailingRLM:
+            def __init__(self, *_args, **_kwargs):
+                pass
+
+            def __call__(self, **_kwargs):
+                raise RuntimeError("Adapter JSONAdapter failed to parse LM response")
+
+        monkeypatch.setattr("dspy.RLM", _FailingRLM)
+        monkeypatch.setattr(
+            "mosaicx.verify.audit._recover_claim_audit_with_outlines",
+            lambda **_kwargs: {
+                "field_verdicts": [
+                    {
+                        "field_path": "claim",
+                        "status": "mismatch",
+                        "source_value": "128/82",
+                        "detail": "Claim BP 120/82 conflicts with source BP 128/82",
+                        "evidence": {
+                            "excerpt": "Blood Pressure 128/82 mmHg",
+                            "chunk_id": 0,
+                            "start": 0,
+                            "end": 24,
+                            "score": 8.0,
+                            "source": "source_document",
+                            "evidence_type": "text_chunk",
+                        },
+                    }
+                ],
+                "summary": "Claim contradicted",
+            },
+        )
+
+        issues, verdicts = run_claim_audit(
+            claim="patient BP is 120/82",
+            source_text="Patient vital signs: Blood Pressure 128/82 mmHg.",
+        )
+
+        assert verdicts
+        assert verdicts[0].status == "mismatch"
+        assert verdicts[0].source_value == "128/82"
+        assert any(i.type == "audit_structured_recovery" for i in issues)
+
+    def test_extraction_audit_uses_outlines_recovery_on_rlm_failure(self, monkeypatch):
+        from mosaicx.verify.audit import run_audit
+
+        class _FailingRLM:
+            def __init__(self, *_args, **_kwargs):
+                pass
+
+            def __call__(self, **_kwargs):
+                raise RuntimeError("LM response cannot be serialized to JSON")
+
+        monkeypatch.setattr("dspy.RLM", _FailingRLM)
+        monkeypatch.setattr(
+            "mosaicx.verify.audit._recover_extraction_audit_with_outlines",
+            lambda **_kwargs: {
+                "field_verdicts": [
+                    {
+                        "field_path": "findings[0].measurement.value",
+                        "status": "verified",
+                        "source_value": "2.3",
+                        "detail": "2.3 cm present in source",
+                        "evidence": {
+                            "excerpt": "2.3 cm spiculated nodule",
+                            "chunk_id": 0,
+                            "start": 10,
+                            "end": 32,
+                            "score": 7.0,
+                            "source": "source_document",
+                            "evidence_type": "text_chunk",
+                        },
+                    }
+                ],
+                "summary": "Recovered audit",
+            },
+        )
+
+        issues, verdicts = run_audit(
+            source_text="Findings: 2.3 cm spiculated nodule in the right upper lobe.",
+            extraction={"findings": [{"measurement": {"value": 2.3, "unit": "cm"}}]},
+        )
+
+        assert verdicts
+        assert verdicts[0].status == "verified"
+        assert any(i.type == "audit_structured_recovery" for i in issues)
+
+
+# ---------------------------------------------------------------------------
 # Engine integration: verify thorough uses RLM
 # ---------------------------------------------------------------------------
 

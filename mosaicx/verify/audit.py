@@ -16,6 +16,8 @@ import logging
 import re
 from typing import Any
 
+from pydantic import BaseModel
+
 from .models import FieldVerdict, Issue
 from .parse_utils import parse_json_like
 
@@ -25,6 +27,178 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Verification tools (bound to source_text & extraction at call time)
 # ---------------------------------------------------------------------------
+
+
+class _OutlinesEvidence(BaseModel):
+    excerpt: str | None = None
+    chunk_id: int | None = None
+    start: int | None = None
+    end: int | None = None
+    score: float | None = None
+    evidence_type: str | None = None
+    source: str | None = None
+
+    model_config = {"extra": "ignore"}
+
+
+class _OutlinesFieldVerdict(BaseModel):
+    field_path: str
+    status: str
+    claimed_value: str | None = None
+    source_value: str | None = None
+    detail: str | None = None
+    evidence: _OutlinesEvidence | None = None
+
+    model_config = {"extra": "ignore"}
+
+
+class _OutlinesAuditReport(BaseModel):
+    field_verdicts: list[_OutlinesFieldVerdict]
+    omissions: list[str] = []
+    summary: str | None = None
+
+    model_config = {"extra": "ignore"}
+
+
+def _compact_text(value: Any, *, max_chars: int = 420) -> str:
+    text = " ".join(str(value or "").split())
+    if len(text) <= max_chars:
+        return text
+    return text[: max_chars - 1] + "…"
+
+
+def _normalize_local_api_base(base_url: str) -> str:
+    return (
+        str(base_url or "")
+        .replace("://localhost", "://127.0.0.1")
+        .replace("://[::1]", "://127.0.0.1")
+    )
+
+
+def _normalize_model_name_for_openai_compatible(model_name: str) -> str:
+    model_name = str(model_name or "").strip()
+    if "/" in model_name:
+        provider, rest = model_name.split("/", 1)
+        if provider.strip().lower() in {"openai", "ollama"} and rest.strip():
+            return rest.strip()
+    return model_name
+
+
+def _run_outlines_structured_report(
+    *,
+    prompt: str,
+    max_tokens: int = 1400,
+) -> dict[str, Any] | None:
+    """Generate schema-constrained JSON using Outlines over OpenAI-compatible API."""
+    try:
+        import openai
+        import outlines
+
+        from mosaicx.config import get_config
+
+        cfg = get_config()
+        base_url = _normalize_local_api_base(str(cfg.api_base or "http://127.0.0.1:8000/v1"))
+        model_name = _normalize_model_name_for_openai_compatible(str(cfg.lm or ""))
+        if not model_name:
+            model_name = "mlx-community/gpt-oss-120b-4bit"
+
+        client = openai.OpenAI(base_url=base_url, api_key=(cfg.api_key or "ollama"))
+        model = outlines.from_openai(client, model_name=model_name)
+        generator = outlines.Generator(model, outlines.json_schema(_OutlinesAuditReport))
+        raw = generator(
+            prompt,
+            temperature=0.0,
+            max_tokens=max_tokens,
+        )
+        parsed = parse_json_like(raw if isinstance(raw, str) else json.dumps(raw, ensure_ascii=False))
+        if isinstance(parsed, dict):
+            return parsed
+        logger.warning("Outlines structured report was non-dict (%s)", type(parsed).__name__)
+    except Exception as exc:
+        logger.warning("Outlines structured report generation failed: %s", exc)
+    return None
+
+
+def _recover_claim_audit_with_outlines(
+    *,
+    claim: str,
+    source_text: str,
+    source_manifest: str,
+    chunks: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    """Recover claim audit report when DSPy RLM cannot serialize JSON."""
+    search_chunks = _make_search_source_chunks(chunks)
+    queries = [claim]
+    queries.extend(re.findall(r"\b\d{2,3}\s*/\s*\d{2,3}\b", claim))
+    queries.extend(re.findall(r"\d+(?:\.\d+)?", claim))
+
+    evidence_rows: list[str] = []
+    seen: set[tuple[int, str]] = set()
+    for query in queries[:6]:
+        for hit in search_chunks(query, top_k=3):
+            if not isinstance(hit, dict):
+                continue
+            chunk_id = int(hit.get("chunk_id", -1))
+            snippet = _compact_text(hit.get("snippet") or hit.get("exact_match"), max_chars=260)
+            if chunk_id < 0 or not snippet:
+                continue
+            key = (chunk_id, snippet)
+            if key in seen:
+                continue
+            seen.add(key)
+            evidence_rows.append(
+                f"- chunk_id={chunk_id} score={hit.get('score', 0)} snippet={snippet}"
+            )
+            if len(evidence_rows) >= 12:
+                break
+        if len(evidence_rows) >= 12:
+            break
+
+    source_excerpt = _compact_text(source_text, max_chars=12000)
+    prompt = (
+        "You are a medical verification auditor. "
+        "Return ONLY a JSON object that matches the schema.\n\n"
+        "Task: Verify one claim against source evidence.\n"
+        "Rules:\n"
+        "- status must be one of verified, mismatch, unsupported, not_checked.\n"
+        "- Use mismatch only if source has a conflicting concrete value.\n"
+        "- Use unsupported if value is not found in source evidence.\n"
+        "- For blood pressure, prefer measured BP readings over reference ranges.\n"
+        "- Include evidence excerpt and source_value when available.\n\n"
+        f"Claim:\n{claim}\n\n"
+        f"Source manifest:\n{source_manifest}\n\n"
+        f"Evidence hits:\n{chr(10).join(evidence_rows) if evidence_rows else '- none'}\n\n"
+        f"Source excerpt:\n{source_excerpt}\n"
+    )
+    return _run_outlines_structured_report(prompt=prompt, max_tokens=1200)
+
+
+def _recover_extraction_audit_with_outlines(
+    *,
+    source_text: str,
+    extraction: dict[str, Any],
+    source_manifest: str,
+) -> dict[str, Any] | None:
+    """Recover extraction audit report when DSPy RLM cannot serialize JSON."""
+    extraction_json = _compact_text(
+        json.dumps(extraction, ensure_ascii=False, default=str),
+        max_chars=22000,
+    )
+    source_excerpt = _compact_text(source_text, max_chars=22000)
+    prompt = (
+        "You are a medical extraction auditor. "
+        "Return ONLY a JSON object that matches the schema.\n\n"
+        "Task: verify extraction values against source text.\n"
+        "Rules:\n"
+        "- status must be one of verified, mismatch, unsupported, not_checked.\n"
+        "- Compare concrete values (numbers, units, categorical values) exactly.\n"
+        "- Add omissions when clinically relevant source content is missing.\n"
+        "- Keep field_verdicts concise but grounded with evidence excerpts.\n\n"
+        f"Source manifest:\n{source_manifest}\n\n"
+        f"Extraction JSON:\n{extraction_json}\n\n"
+        f"Source excerpt:\n{source_excerpt}\n"
+    )
+    return _run_outlines_structured_report(prompt=prompt, max_tokens=1800)
 
 
 def _chunk_source_text(
@@ -461,9 +635,31 @@ def run_audit(
         tools=tools,
     )
 
-    prediction = rlm(source_manifest=source_manifest, extraction_json=extraction_json)
-
-    return _parse_audit_report(prediction.audit_report)
+    try:
+        prediction = rlm(source_manifest=source_manifest, extraction_json=extraction_json)
+        return _parse_audit_report(prediction.audit_report)
+    except Exception as exc:
+        logger.warning("DSPy RLM extraction audit failed; attempting Outlines recovery: %s", exc)
+        recovered = _recover_extraction_audit_with_outlines(
+            source_text=source_text,
+            extraction=extraction,
+            source_manifest=source_manifest,
+        )
+        if recovered is None:
+            raise
+        issues, verdicts = _parse_audit_report(json.dumps(recovered, ensure_ascii=False))
+        issues.append(
+            Issue(
+                type="audit_structured_recovery",
+                field="verify.audit",
+                detail=(
+                    "Recovered audit output with Outlines constrained JSON generation "
+                    f"after DSPy RLM serialization failure: {exc}"
+                ),
+                severity="warning",
+            )
+        )
+        return issues, verdicts
 
 
 def _parse_audit_report(
@@ -704,6 +900,29 @@ def run_claim_audit(
         tools=tools,
     )
 
-    prediction = rlm(source_manifest=source_manifest, claim=claim)
-
-    return _parse_audit_report(prediction.audit_report)
+    try:
+        prediction = rlm(source_manifest=source_manifest, claim=claim)
+        return _parse_audit_report(prediction.audit_report)
+    except Exception as exc:
+        logger.warning("DSPy RLM claim audit failed; attempting Outlines recovery: %s", exc)
+        recovered = _recover_claim_audit_with_outlines(
+            claim=claim,
+            source_text=source_text,
+            source_manifest=source_manifest,
+            chunks=chunks,
+        )
+        if recovered is None:
+            raise
+        issues, verdicts = _parse_audit_report(json.dumps(recovered, ensure_ascii=False))
+        issues.append(
+            Issue(
+                type="audit_structured_recovery",
+                field="claim",
+                detail=(
+                    "Recovered claim audit output with Outlines constrained JSON generation "
+                    f"after DSPy RLM serialization failure: {exc}"
+                ),
+                severity="warning",
+            )
+        )
+        return issues, verdicts

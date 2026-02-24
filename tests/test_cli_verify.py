@@ -212,8 +212,8 @@ class TestVerifyOutputSave:
         data = json.loads(output_file.read_text())
         assert "result" in data
         assert "confidence" in data
-        assert "executed_mode" in data
-        assert data["executed_mode"] == "deterministic"
+        assert "debug" in data
+        assert data["debug"]["executed_mode"] == "deterministic"
 
     def test_output_json_has_issues_array(self, tmp_path):
         from mosaicx.cli import cli
@@ -230,8 +230,8 @@ class TestVerifyOutputSave:
         ])
         assert result.exit_code == 0
         data = json.loads(output_file.read_text())
-        assert isinstance(data["issues"], list)
-        assert len(data["issues"]) > 0  # should detect 99mm not in source
+        assert isinstance(data["debug"]["issues"], list)
+        assert len(data["debug"]["issues"]) > 0  # should detect 99mm not in source
 
 
 class TestVerifyClaimComparison:

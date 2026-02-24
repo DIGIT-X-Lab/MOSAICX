@@ -1939,6 +1939,7 @@ def verify(
     sources: list[str | Path] | None = None,
     document: str | Path | None = None,
     level: str = "quick",
+    include_debug: bool = False,
 ) -> dict[str, Any]:
     """Verify an extraction or claim against source text.
 
@@ -1959,6 +1960,8 @@ def verify(
         Path to source document file. Text is loaded automatically.
     level:
         Verification level: "quick", "standard", or "thorough".
+    include_debug:
+        Include verbose diagnostics (`issues`, `citations`, routing metadata).
 
     Returns
     -------
@@ -2185,20 +2188,10 @@ def verify(
 
     result: dict[str, Any] = {
         "result": str(decision or "insufficient_evidence"),
-        "claim_is_true": claim_truth if verification_mode == "claim" else None,
         "confidence": float(out.get("confidence") or 0.0),
-        "support_score": float(out.get("support_score") or out.get("confidence") or 0.0),
-        "based_on_source": bool(grounded),
-        "verify_type": verification_mode,
-        "requested_mode": level,
-        "executed_mode": str(effective_level or out.get("level") or ""),
-        "fallback_used": bool(fallback_used),
-        "fallback_reason": fallback_reason,
-        "issues": compact_issues,
-        "citations": list(out.get("citations") or []),
-        "sources_consulted": sources_consulted,
     }
     if verification_mode == "claim":
+        result["claim_is_true"] = claim_truth
         result["claim"] = str(claim or "").strip()
         source_value = _compact_text((claim_comparison or {}).get("source"))
         evidence_value = _compact_text((claim_comparison or {}).get("evidence"))
@@ -2211,8 +2204,6 @@ def verify(
                 evidence_value = f"Source contains {source_value}."
         result["source_value"] = source_value
         result["evidence"] = evidence_value
-        if adjudication_method:
-            result["adjudication"] = adjudication_method
     else:
         field_verdicts = [
             fv for fv in out.get("field_verdicts", [])
@@ -2222,6 +2213,26 @@ def verify(
             "verified": sum(1 for fv in field_verdicts if str(fv.get("status")) == "verified"),
             "total": len(field_verdicts),
         }
+
+    if include_debug:
+        support_score = out.get("support_score")
+        if support_score is None:
+            support_score = out.get("confidence")
+        debug_payload: dict[str, Any] = {
+            "support_score": float(support_score or 0.0),
+            "based_on_source": bool(grounded),
+            "verify_type": verification_mode,
+            "requested_mode": level,
+            "executed_mode": str(effective_level or out.get("level") or ""),
+            "fallback_used": bool(fallback_used),
+            "fallback_reason": fallback_reason,
+            "issues": compact_issues,
+            "citations": list(out.get("citations") or []),
+            "sources_consulted": sources_consulted,
+        }
+        if adjudication_method:
+            debug_payload["adjudication"] = adjudication_method
+        result["debug"] = debug_payload
 
     return result
 
