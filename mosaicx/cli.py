@@ -75,31 +75,12 @@ def _configure_dspy() -> None:
     Raises ``click.ClickException`` if DSPy cannot be imported or the
     API key is missing.
     """
-    from .runtime_env import ensure_runtime_env
-
-    ensure_runtime_env()
-
     import os
 
     cfg = get_config()
-    cache_dir = cfg.home_dir / ".dspy_cache"
-    try:
-        cache_dir.mkdir(parents=True, exist_ok=True)
-    except OSError:
-        cache_dir = Path("/tmp/mosaicx_dspy_cache")
-        cache_dir.mkdir(parents=True, exist_ok=True)
-    os.environ.setdefault("DSPY_CACHEDIR", str(cache_dir))
-    os.environ.setdefault("LITELLM_LOCAL_MODEL_COST_MAP", "True")
-
     if not cfg.api_key:
         raise click.ClickException(
             "No API key configured. Set MOSAICX_API_KEY or add api_key to your config."
-        )
-    try:
-        import dspy
-    except ImportError:
-        raise click.ClickException(
-            "DSPy is required for this command. Install with: pip install dspy"
         )
     import logging
 
@@ -110,26 +91,18 @@ def _configure_dspy() -> None:
     os.environ.setdefault("LITELLM_LOG", "ERROR")
 
     from .metrics import TokenTracker, make_harmony_lm, set_tracker
+    from .runtime_env import configure_dspy_lm
 
     lm = make_harmony_lm(cfg.lm, api_key=cfg.api_key, api_base=cfg.api_base, temperature=cfg.lm_temperature)
-    adapter = None
     try:
-        adapter = dspy.JSONAdapter()
-    except Exception:
-        adapter = None
-    try:
-        if adapter is not None:
-            dspy.configure(lm=lm, adapter=adapter)
-        else:
-            dspy.configure(lm=lm)
-    except TypeError:
-        # Backward-compat path for DSPy versions without adapter kwarg.
-        dspy.configure(lm=lm)
-        if adapter is not None:
-            try:
-                dspy.settings.adapter = adapter
-            except Exception:
-                pass
+        dspy, _adapter_name = configure_dspy_lm(
+            lm,
+            preferred_cache_dir=cfg.home_dir / ".dspy_cache",
+        )
+    except ImportError as exc:
+        raise click.ClickException(
+            "DSPy is required for this command. Install with: pip install dspy"
+        ) from exc
 
     # Install token usage tracker
 

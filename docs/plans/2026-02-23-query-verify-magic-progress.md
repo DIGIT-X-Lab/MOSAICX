@@ -4,6 +4,8 @@ Last updated: 2026-02-23
 Branch: `feat/dspy-rlm-evolution`
 Owner: Codex
 Mode: Execute + verify + push
+Status: Historical execution tracker (non-canonical)
+Canonical status board: `docs/plans/2026-02-24-roadmap-status-audit.md`
 
 ## Goal
 Make `verify --level thorough` and `query` evidence behavior robust, chunk-aware, and consistently interpretable for developers.

@@ -1,8 +1,9 @@
 # MOSAICX Evolution: DSPy 3.x + RLM Integration Design
 
 **Date:** 2026-02-22
-**Status:** Draft
+**Status:** Historical design reference (non-canonical)
 **Scope:** Architecture redesign to add Verify, Query, and DSPy 3.x upgrades
+**Canonical Status Board:** `docs/plans/2026-02-24-roadmap-status-audit.md`
 
 ---
 

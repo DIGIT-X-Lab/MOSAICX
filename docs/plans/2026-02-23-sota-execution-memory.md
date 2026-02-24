@@ -1,9 +1,9 @@
 # MOSAICX SOTA Execution Memory
 
 Date: 2026-02-23
-Status: Active
+Status: Execution ledger (non-canonical)
 Owner: Core platform
-Primary blueprint: docs/plans/2026-02-23-mosaicx-sota-blueprint.md
+Primary blueprint: docs/plans/2026-02-23-dspy-full-capability-rollout.md
 Progress tag: [SOTA Rollout: 10%]
 Canonical status board: docs/plans/2026-02-24-roadmap-status-audit.md
 
@@ -17,7 +17,7 @@ Note:
 
 Every coding session must start with:
 
-1. Read `docs/plans/2026-02-23-mosaicx-sota-blueprint.md`.
+1. Read `docs/plans/2026-02-23-dspy-full-capability-rollout.md`.
 2. Read this file and continue from first unchecked task.
 3. Run `git status --short` and avoid unrelated files.
 4. Execute only one atomic task group at a time.

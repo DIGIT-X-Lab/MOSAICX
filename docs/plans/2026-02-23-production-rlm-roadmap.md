@@ -1,8 +1,9 @@
 # MOSAICX Production RLM Roadmap
 
 **Date:** 2026-02-23  
-**Status:** Proposed  
+**Status:** Historical roadmap reference (non-canonical)  
 **Owner:** Core platform (query + verify)
+**Canonical Status Board:** `docs/plans/2026-02-24-roadmap-status-audit.md`
 
 ## Goal
 

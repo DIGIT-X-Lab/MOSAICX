@@ -1,5 +1,8 @@
 # MOSAICX DSPy 3.x + RLM Evolution — Implementation Plan
 
+**Status:** Historical implementation plan (non-canonical)
+**Canonical Status Board:** `docs/plans/2026-02-24-roadmap-status-audit.md`
+
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
 **Goal:** Evolve MOSAICX into a medical document intelligence platform with self-healing extraction, verification, provenance tracking, and conversational query — all powered by DSPy 3.x and RLM.

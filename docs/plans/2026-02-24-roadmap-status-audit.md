@@ -6,15 +6,27 @@ Status: Active
 Owner: Core platform
 Authoritative: Yes (single source of truth for rollout status)
 
-## 0) Canonical Status (Updated 2026-02-24 17:40)
+## 0) Canonical Status (Updated 2026-02-24 23:20)
 
 This file is the canonical status board for DSPy roadmap execution.
 Other plan files are design/history logs and must link here for status.
 
 ### Issue state
 
-- Closed: `QRY-001`, `VER-001`, `VER-002`, `EXT-001`, `EXT-002`, `OPS-001`, `EVAL-001`, `#17`, `#18`, `#19`
-- In progress/completed in branch and ready to close after push: `QRY-002`, `EVAL-002`, `DOC-001`
+- Closed roadmap delivery items:
+  - `QRY-001`, `QRY-002`, `VER-001`, `VER-002`, `EXT-001`, `EXT-002`, `OPS-001`, `EVAL-001`, `EVAL-002`, `DOC-001`
+  - legacy bugs: `#17`, `#18`, `#19`
+  - closed duplicates: `#22`, `#27`
+- Open roadmap epics:
+  - `#33 [ROADMAP-OPS]`, `#34 [ROADMAP-QRY]`, `#35 [ROADMAP-EXT]`
+- Open DSPy capability rollout items:
+  - `#36 [DSPY-01]` through `#50 [DSPY-15]`
+
+### Canonical control note
+
+- Use this file as the only status authority for roadmap completion.
+- Treat all other plan docs in `docs/plans/` as design/history/reference only.
+- If status here conflicts with another file, this file wins.
 
 ### Evidence highlights
 

@@ -85,11 +85,8 @@ def _ensure_dspy() -> None:
     if _dspy_configured:
         return
 
-    from .runtime_env import ensure_runtime_env
-
-    ensure_runtime_env()
-
     from .config import get_config
+    from .runtime_env import configure_dspy_lm
 
     cfg = get_config()
     if not cfg.api_key:
@@ -97,17 +94,18 @@ def _ensure_dspy() -> None:
             "No API key configured. Set MOSAICX_API_KEY or add api_key to your config."
         )
 
-    try:
-        import dspy
-    except ImportError:
-        raise RuntimeError(
-            "DSPy is required for MOSAICX pipelines. Install with: pip install dspy"
-        )
-
     from .metrics import TokenTracker, make_harmony_lm, set_tracker
 
     lm = make_harmony_lm(cfg.lm, api_key=cfg.api_key, api_base=cfg.api_base, temperature=cfg.lm_temperature)
-    dspy.configure(lm=lm)
+    try:
+        dspy, _adapter_name = configure_dspy_lm(
+            lm,
+            preferred_cache_dir=cfg.home_dir / ".dspy_cache",
+        )
+    except ImportError as exc:
+        raise RuntimeError(
+            "DSPy is required for MOSAICX pipelines. Install with: pip install dspy"
+        ) from exc
 
     tracker = TokenTracker()
     set_tracker(tracker)
