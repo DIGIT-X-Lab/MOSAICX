@@ -1217,6 +1217,102 @@ class TestQueryEngineConversation:
         )
         assert conf < 0.6
 
+    def test_confidence_high_for_tabular_distribution_with_computed_values(self, tmp_path: Path):
+        """Computed table value evidence should boost tabular distribution confidence."""
+        from mosaicx.query.engine import QueryEngine
+        from mosaicx.query.session import QuerySession
+
+        f = tmp_path / "cohort.csv"
+        f.write_text("Subject,Sex\nS1,M\nS2,F\nS3,M\n")
+        session = QuerySession(sources=[f])
+        engine = QueryEngine(session=session)
+        citations = [
+            {
+                "source": "cohort.csv",
+                "snippet": "Computed unique_count of Sex from 1079 rows: 2 (engine=duckdb)",
+                "score": 88,
+                "rank": 88,
+                "evidence_type": "table_stat",
+                "operation": "nunique",
+                "column": "Sex",
+                "value": 2,
+            },
+            {
+                "source": "cohort.csv",
+                "snippet": "Distinct Sex: M (count=700, engine=duckdb)",
+                "score": 86,
+                "rank": 86,
+                "evidence_type": "table_value",
+                "column": "Sex",
+                "value": "M",
+                "count": 700,
+            },
+            {
+                "source": "cohort.csv",
+                "snippet": "Distinct Sex: F (count=379, engine=duckdb)",
+                "score": 86,
+                "rank": 86,
+                "evidence_type": "table_value",
+                "column": "Sex",
+                "value": "F",
+                "count": 379,
+            },
+        ]
+        conf = engine._citation_confidence(
+            "what is the distribution of male and female in the cohort?",
+            "Sex distribution (2 groups): M=700, F=379.",
+            citations,
+        )
+        assert conf >= 0.75
+
+    def test_confidence_not_overboosted_for_unbacked_tabular_label(self, tmp_path: Path):
+        """Unsupported category labels should suppress tabular confidence boost."""
+        from mosaicx.query.engine import QueryEngine
+        from mosaicx.query.session import QuerySession
+
+        f = tmp_path / "cohort.csv"
+        f.write_text("Subject,Sex\nS1,M\nS2,F\nS3,M\n")
+        session = QuerySession(sources=[f])
+        engine = QueryEngine(session=session)
+        citations = [
+            {
+                "source": "cohort.csv",
+                "snippet": "Computed unique_count of Sex from 1079 rows: 2 (engine=duckdb)",
+                "score": 88,
+                "rank": 88,
+                "evidence_type": "table_stat",
+                "operation": "nunique",
+                "column": "Sex",
+                "value": 2,
+            },
+            {
+                "source": "cohort.csv",
+                "snippet": "Distinct Sex: M (count=700, engine=duckdb)",
+                "score": 86,
+                "rank": 86,
+                "evidence_type": "table_value",
+                "column": "Sex",
+                "value": "M",
+                "count": 700,
+            },
+            {
+                "source": "cohort.csv",
+                "snippet": "Distinct Sex: F (count=379, engine=duckdb)",
+                "score": 86,
+                "rank": 86,
+                "evidence_type": "table_value",
+                "column": "Sex",
+                "value": "F",
+                "count": 379,
+            },
+        ]
+        conf = engine._citation_confidence(
+            "how many genders are there and what are they?",
+            "There are 3 distinct Sex values: M, F, X.",
+            citations,
+        )
+        assert conf < 0.75
+
     def test_build_citations_filters_generic_delta_noise(self, tmp_path: Path, monkeypatch):
         """Delta citation ranking should suppress generic headers when measured lines exist."""
         from mosaicx.query.engine import QueryEngine

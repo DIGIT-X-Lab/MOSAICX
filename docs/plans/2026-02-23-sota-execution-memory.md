@@ -317,3 +317,25 @@ When completing `DSPY-*` items, append:
 - Remaining blockers:
   - Continue `QRY-002` by surfacing explicit planner/execution trace fields in structured payload.
   - Continue DSPy roadmap items (`DSPY-01`, `DSPY-03`, `DSPY-04`) with end-to-end integration evidence.
+
+### Update 2026-02-24 10:35
+- Tasks completed:
+  - Improved grounding confidence calibration for deterministic tabular answers with computed evidence.
+  - Added explicit computed-evidence boost when counts/values in answer are directly supported by `table_stat`/`table_value` citations.
+  - Added guard to suppress over-boost when answer introduces unsupported category labels.
+- Files changed:
+  - `mosaicx/query/engine.py`
+  - `tests/test_query_engine.py`
+- Tests run:
+  - `PYTHONPATH=. .venv/bin/pytest -q tests/test_query_engine.py -k "planner_recovers_missing_column_via_llm_before_fallback or confidence_high_for_tabular_distribution_with_computed_values or confidence_not_overboosted_for_unbacked_tabular_label or confidence_high_for_short_modality_answers or confidence_drops_for_answer_not_in_evidence"`
+  - `PYTHONPATH=. .venv/bin/pytest -q tests/test_query_engine.py -k "planner or count_values or schema_followup_how_many_are_there_refers_to_columns or ask_structured_count_values_accepts_table_value_computed_evidence or confidence"`
+  - `PYTHONPATH=. .venv/bin/mosaicx query --document "...ALL_data_complete_SUVbw+SUVlbm_N1079.csv" -q "what is the distribution of male and female in the cohort?" --eda --trace --max-iterations 2`
+- Results:
+  - Confidence regressions pass.
+  - Planner/count-values/confidence subset passes.
+  - Live local 120B run now reports `Grounding: high (0.82)` for sex-distribution answer with computed citations.
+- Commit:
+  - pending
+- Remaining blockers:
+  - Add explicit planner/execution trace fields to query structured payload.
+  - Continue DSPy roadmap execution (`DSPY-01`, `DSPY-03`, `DSPY-04`) with integration evidence.

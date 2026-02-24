@@ -2435,6 +2435,83 @@ class QueryEngine:
         if answer_term_support is not None and answer_term_support < 0.2:
             confidence *= 0.85
 
+        # Reward deterministic tabular answers when computed evidence explicitly
+        # supports both counts and category values.
+        computed_citations = [
+            c
+            for c in citations
+            if str(c.get("evidence_type") or "").strip().lower() in {"table_stat", "table_value", "table_sql"}
+        ]
+        if computed_citations:
+            computed_blob = " ".join(
+                " ".join(str(c.get("snippet") or "").split()).lower()
+                for c in computed_citations
+            )
+            answer_numbers = re.findall(r"\d+(?:\.\d+)?", answer)
+            numeric_support = None
+            if answer_numbers:
+                numeric_support = sum(1 for n in answer_numbers if n in computed_blob) / len(answer_numbers)
+
+            def _norm_value(value: str) -> str:
+                return " ".join(str(value or "").lower().split())
+
+            table_value_citations = [
+                c for c in computed_citations
+                if str(c.get("evidence_type") or "").strip().lower() == "table_value"
+            ]
+            citation_values: list[str] = []
+            for c in table_value_citations:
+                value = str(c.get("value") or "").strip()
+                if not value:
+                    snippet = str(c.get("snippet") or "")
+                    match = re.search(r"Distinct\s+.+?:\s+(.+?)\s+\(count=", snippet)
+                    value = match.group(1).strip() if match else ""
+                if value:
+                    citation_values.append(value)
+
+            answer_lc = answer.lower()
+            matched_values = 0
+            if citation_values:
+                for value in citation_values:
+                    value_lc = value.lower()
+                    if value_lc and value_lc in answer_lc:
+                        matched_values += 1
+            table_value_coverage = (
+                matched_values / len(citation_values)
+                if citation_values
+                else None
+            )
+
+            # When answer provides explicit category labels, suppress boost
+            # if labels are not grounded in value-level computed evidence.
+            answer_labels: set[str] = set()
+            for match in re.finditer(r"\b([A-Za-z][A-Za-z0-9_/-]{0,24})\s*=", answer):
+                answer_labels.add(_norm_value(match.group(1)))
+            list_match = re.search(r"(?i)distinct\s+[^:]{1,80}\s+values:\s*(.+)", answer)
+            if list_match:
+                raw_items = re.split(r",|\band\b", list_match.group(1))
+                for item in raw_items:
+                    cleaned = re.sub(r"\(.*?\)", "", item).strip(" .;:-")
+                    if cleaned:
+                        answer_labels.add(_norm_value(cleaned))
+
+            citation_value_norms = {_norm_value(v) for v in citation_values if _norm_value(v)}
+            if answer_labels and citation_value_norms:
+                unsupported = {v for v in answer_labels if v and v not in citation_value_norms}
+                if unsupported and table_value_coverage is not None:
+                    table_value_coverage = min(table_value_coverage, 0.25)
+
+            if table_value_coverage is not None:
+                if table_value_coverage >= 0.8:
+                    confidence = max(confidence, 0.82)
+                elif table_value_coverage >= 0.5:
+                    confidence = max(confidence, 0.74)
+            elif numeric_support is not None:
+                if numeric_support >= 0.8:
+                    confidence = max(confidence, 0.78)
+                elif numeric_support >= 0.5:
+                    confidence = max(confidence, 0.68)
+
         return max(0.0, min(1.0, confidence))
 
     def _chunk_literal_support(
