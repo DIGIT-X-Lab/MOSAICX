@@ -142,6 +142,11 @@ class TestQueryEngineConversation:
         assert 0.0 <= payload["confidence"] <= 1.0
         assert payload["fallback_used"] is False
         assert payload["rescue_used"] is False
+        assert payload["execution_path"] == "llm_generation"
+        assert payload["planner_used"] is False
+        assert payload["planner_executed"] is False
+        assert payload["planner_column_recovered"] is False
+        assert "target_resolution" in payload
         # user + assistant turn
         assert len(session.conversation) == 2
 
@@ -678,6 +683,13 @@ class TestQueryEngineConversation:
         assert "F" in answer
         assert payload["deterministic_used"] is True
         assert payload["deterministic_intent"] in {"count_values", "count_distinct"}
+        assert payload["planner_used"] is True
+        assert payload["planner_executed"] is True
+        assert payload["planner_intent"] == "count_distinct"
+        assert payload["planner_source"] == "cohort.csv"
+        assert payload["planner_column"] == "Sex"
+        assert payload["execution_path"] == "planned_executor"
+        assert payload["target_resolution"] == "planner"
 
     def test_planner_recovers_missing_column_via_llm_before_fallback(self, tmp_path: Path, monkeypatch):
         """Planner path should recover a missing column instead of dropping to lexical routing."""
@@ -720,6 +732,11 @@ class TestQueryEngineConversation:
         assert "F" in answer
         assert payload["deterministic_used"] is True
         assert payload["deterministic_intent"] in {"count_values", "count_distinct"}
+        assert payload["planner_used"] is True
+        assert payload["planner_executed"] is True
+        assert payload["planner_column_recovered"] is True
+        assert payload["planner_column"] == "Sex"
+        assert payload["execution_path"] == "planned_executor"
 
     def test_deterministic_count_values_not_overwritten_by_reconciler(self, tmp_path: Path, monkeypatch):
         """Deterministic table answers should not be degraded by reconciler rewrites."""

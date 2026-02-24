@@ -260,6 +260,7 @@ class QueryEngine:
         self._react_planner = ReActTabularPlanner()
         self._programmatic_analyst = ProgrammaticTableAnalyst()
         self._evidence_verifier = EvidenceVerifier()
+        self._last_tabular_trace: dict[str, Any] = {}
 
     # ------------------------------------------------------------------
     # Properties
@@ -1573,6 +1574,7 @@ class QueryEngine:
         intent = str(plan.intent or "").strip().lower()
         if intent not in {"schema", "count_rows", "count_distinct", "list_values", "aggregate", "mixed"}:
             return None
+        column_recovered = False
         if intent not in {"schema", "count_rows", "mixed"} and not column:
             column = self._resolve_planned_column_with_llm(
                 question=question.strip(),
@@ -1581,6 +1583,7 @@ class QueryEngine:
                 df=df,
                 table_profiles=table_profiles,
             )
+            column_recovered = bool(column)
         if intent not in {"schema", "count_rows", "mixed"} and not column:
             return None
 
@@ -1594,6 +1597,7 @@ class QueryEngine:
             "column": column,
             "operation": operation,
             "include_values": bool(plan.include_values),
+            "column_recovered": column_recovered,
         }
 
     def _execute_planned_tabular_answer(
@@ -1832,10 +1836,21 @@ class QueryEngine:
         question: str,
     ) -> tuple[str, list[dict[str, Any]], str] | None:
         if not self._has_tabular_sources():
+            self._last_tabular_trace = {}
             return None
 
         schema = self._try_deterministic_schema_answer(question)
         if schema is not None:
+            self._last_tabular_trace = {
+                "planner_used": False,
+                "planner_executed": False,
+                "planner_intent": None,
+                "planner_source": None,
+                "planner_column": None,
+                "planner_column_recovered": False,
+                "target_resolution": "schema",
+                "execution_path": "schema_executor",
+            }
             return schema
 
         from mosaicx.query.tools import (
@@ -1852,14 +1867,38 @@ class QueryEngine:
             history=self._recent_history_text(turns=6, max_chars=220),
             has_tabular_sources=self._has_tabular_sources(),
         )
+        trace: dict[str, Any] = {
+            "planner_used": False,
+            "planner_executed": False,
+            "planner_intent": None,
+            "planner_source": None,
+            "planner_column": None,
+            "planner_column_recovered": False,
+            "target_resolution": None,
+            "execution_path": None,
+        }
+        self._last_tabular_trace = dict(trace)
 
         llm_plan = self._plan_tabular_question_with_llm(resolved_q)
         if llm_plan is not None:
+            trace.update(
+                {
+                    "planner_used": True,
+                    "planner_intent": str(llm_plan.get("intent") or "").strip() or None,
+                    "planner_source": str(llm_plan.get("source") or "").strip() or None,
+                    "planner_column": str(llm_plan.get("column") or "").strip() or None,
+                    "planner_column_recovered": bool(llm_plan.get("column_recovered")),
+                    "target_resolution": "planner",
+                }
+            )
             planned = self._execute_planned_tabular_answer(
                 question=resolved_q,
                 plan=llm_plan,
             )
             if planned is not None:
+                trace["planner_executed"] = True
+                trace["execution_path"] = "planned_executor"
+                self._last_tabular_trace = dict(trace)
                 return planned
         wants_count = route.wants_count or ("how many" in q) or ("number of" in q) or ("count" in q)
         wants_values = (
@@ -1902,11 +1941,13 @@ class QueryEngine:
             aggregate_op = None
 
         if not wants_count and not wants_values and not aggregate_op:
+            self._last_tabular_trace = dict(trace)
             return None
 
         if llm_plan and str(llm_plan.get("source") or "") and str(llm_plan.get("column") or ""):
             source = str(llm_plan.get("source"))
             column = str(llm_plan.get("column"))
+            trace["target_resolution"] = "planner"
             top = {
                 "source": source,
                 "column": column,
@@ -1919,6 +1960,7 @@ class QueryEngine:
             llm_target = self._resolve_tabular_target_with_llm(resolved_q)
             if llm_target is not None:
                 source, column = llm_target
+                trace["target_resolution"] = "llm_resolved"
                 top = {
                     "source": source,
                     "column": column,
@@ -1934,12 +1976,15 @@ class QueryEngine:
                     top_k=6,
                 )
                 if not column_hits:
+                    self._last_tabular_trace = dict(trace)
                     return None
                 top = column_hits[0]
                 source = str(top.get("source") or "")
                 column = str(top.get("column") or "")
                 if not source or not column:
+                    self._last_tabular_trace = dict(trace)
                     return None
+                trace["target_resolution"] = "lexical"
 
         seed_hits: list[dict[str, Any]] = [top]
         distinct_rows: list[dict[str, Any]] = []
@@ -1956,8 +2001,10 @@ class QueryEngine:
                     operation=aggregate_op,
                 )
             except Exception:
+                self._last_tabular_trace = dict(trace)
                 return None
             if not agg_rows:
+                self._last_tabular_trace = dict(trace)
                 return None
             row = agg_rows[0]
             value = str(row.get("value"))
@@ -1986,6 +2033,8 @@ class QueryEngine:
                 last_intent=deterministic_intent,
             )
             answer = f"{aggregate_op} of {column}: {value}."
+            trace["execution_path"] = "deterministic_aggregate"
+            self._last_tabular_trace = dict(trace)
             return answer, self._merge_hits(seed_hits, max_hits=16), deterministic_intent
 
         if wants_count:
@@ -2060,6 +2109,7 @@ class QueryEngine:
                 )
 
         if not seed_hits:
+            self._last_tabular_trace = dict(trace)
             return None
 
         wants_breakdown = self._is_category_count_breakdown_request(
@@ -2087,6 +2137,7 @@ class QueryEngine:
         elif wants_count and count_value is not None:
             answer = f"There are {count_value} distinct {column} values."
         else:
+            self._last_tabular_trace = dict(trace)
             return None
 
         self._session.set_state(
@@ -2094,7 +2145,8 @@ class QueryEngine:
             last_tabular_column=column,
             last_intent=deterministic_intent,
         )
-
+        trace["execution_path"] = "deterministic_tabular"
+        self._last_tabular_trace = dict(trace)
         return answer, self._merge_hits(seed_hits, max_hits=16), deterministic_intent
 
     def _attempt_programmatic_sql_answer(
@@ -2945,6 +2997,7 @@ class QueryEngine:
         deterministic_used = False
         deterministic_intent: str | None = None
         longdoc_literal_support: float | None = None
+        planner_trace: dict[str, Any] = {}
 
         resolved_question = self._resolve_followup_question(question.strip())
         route = self._intent_router.route(
@@ -2971,12 +3024,23 @@ class QueryEngine:
             if sql_primary is not None:
                 answer, seed_hits, deterministic_intent = sql_primary
                 deterministic_used = True
+                planner_trace = {
+                    "planner_used": False,
+                    "planner_executed": False,
+                    "planner_intent": None,
+                    "planner_source": None,
+                    "planner_column": None,
+                    "planner_column_recovered": False,
+                    "target_resolution": "sql_program",
+                    "execution_path": "programmatic_sql_primary",
+                }
 
         if not answer:
             deterministic = self._try_deterministic_tabular_answer(question.strip())
             if deterministic is not None:
                 answer, seed_hits, deterministic_intent = deterministic
                 deterministic_used = True
+                planner_trace = dict(self._last_tabular_trace or {})
             else:
                 run_error: Exception | None = None
                 attempt_questions = [
@@ -3388,6 +3452,17 @@ class QueryEngine:
             "intent": effective_intent,
             "route_intent": route.intent,
             "longdoc_literal_support": longdoc_literal_support,
+            "execution_path": planner_trace.get(
+                "execution_path",
+                "deterministic_tabular" if deterministic_used else "llm_generation",
+            ),
+            "target_resolution": planner_trace.get("target_resolution"),
+            "planner_used": bool(planner_trace.get("planner_used")),
+            "planner_executed": bool(planner_trace.get("planner_executed")),
+            "planner_intent": planner_trace.get("planner_intent"),
+            "planner_source": planner_trace.get("planner_source"),
+            "planner_column": planner_trace.get("planner_column"),
+            "planner_column_recovered": bool(planner_trace.get("planner_column_recovered")),
         }
 
     def ask(self, question: str) -> str:
