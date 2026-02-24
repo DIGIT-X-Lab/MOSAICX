@@ -36,6 +36,21 @@ Other plan files are design/history logs and must link here for status.
 
 ### Evidence highlights
 
+- Verify contract simplification + structured recovery hardening (`2026-02-26`, commit `81fad8f`):
+  - SDK `verify()` now returns compact top-level fields by default:
+    - claim mode: `result`, `claim_is_true`, `confidence`, `claim`, `source_value`, `evidence`
+    - extraction mode: `result`, `confidence`, `field_checks`
+  - Verbose diagnostics moved to `debug` (opt-in in SDK via `include_debug=True`, enabled by CLI for rich rendering).
+  - Added Outlines structured recovery in `mosaicx/verify/audit.py` for RLM/JSON parse failures before deterministic fallback.
+  - Added regression tests for Outlines recovery and compact-output CLI/SDK behavior.
+  - Validation:
+    - `PYTHONPATH=. .venv/bin/pytest -q tests/test_verify_audit.py tests/test_verify_engine.py` -> `44 passed`
+    - `PYTHONPATH=. .venv/bin/pytest -q tests/test_sdk_verify.py` -> `20 passed, 1 skipped`
+    - `PYTHONPATH=. .venv/bin/pytest -q tests/test_cli_verify.py` -> `16 passed`
+  - Live local `vllm-mlx` checks (thorough):
+    - true claim (`BP 128/82`) -> `result=verified`, `claim_is_true=true`, `debug.executed_mode=audit`, `debug.fallback_used=false`
+    - false claim (`BP 120/82`) -> `result=contradicted`, `claim_is_true=false`, `debug.executed_mode=audit`, `debug.support_score=0.00`
+
 - Query planner-first hardening (`QRY-002`) implemented and tested:
   - Non-integration: `PYTHONPATH=. .venv/bin/pytest -q tests/test_query_engine.py tests/test_query_control_plane.py -m 'not integration'` -> `73 passed, 4 deselected`
   - Integration with local `vllm-mlx`: `PYTHONPATH=. .venv/bin/pytest -q tests/test_query_engine.py -m integration` -> `5 passed, 68 deselected`
