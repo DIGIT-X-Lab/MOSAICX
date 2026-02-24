@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -287,6 +288,23 @@ class TestQueryEngineConversation:
         assert "F=2" in answer or "female=2" in answer.lower()
         assert any(c.get("evidence_type") == "table_value" for c in payload["citations"])
 
+    def test_ask_structured_how_many_male_and_female_returns_group_counts(self, tmp_path: Path):
+        """How-many category prompts should report value counts, not only distinct labels."""
+        from mosaicx.query.engine import QueryEngine
+        from mosaicx.query.session import QuerySession
+
+        f = tmp_path / "cohort.csv"
+        f.write_text("Subject,Sex\nS1,M\nS2,F\nS3,M\nS4,F\nS5,M\n")
+        session = QuerySession(sources=[f])
+        engine = QueryEngine(session=session)
+
+        payload = engine.ask_structured("how many male and female?")
+        answer = str(payload["answer"])
+        assert "distribution" in answer.lower()
+        assert "M=3" in answer or "male=3" in answer.lower()
+        assert "F=2" in answer or "female=2" in answer.lower()
+        assert any(c.get("evidence_type") == "table_value" for c in payload["citations"])
+
     def test_semantic_count_values_prefers_programmatic_first(self, tmp_path: Path, monkeypatch):
         """Semantic category questions should use programmatic SQL before lexical fallback."""
         from mosaicx.query.engine import QueryEngine
@@ -473,6 +491,25 @@ class TestQueryEngineConversation:
         assert payload.get("deterministic_intent") == "schema_count"
         assert "row" not in answer
 
+    def test_schema_count_citations_stay_schema_focused(self, tmp_path: Path):
+        """Schema count citations should avoid unrelated computed/value evidence."""
+        from mosaicx.query.engine import QueryEngine
+        from mosaicx.query.session import QuerySession
+
+        f = tmp_path / "cohort.csv"
+        f.write_text("Subject,Ethnicity,Sex,Age\nS1,Japanese,M,50\nS2,German,F,52\n")
+        session = QuerySession(sources=[f])
+        engine = QueryEngine(session=session)
+
+        _ = engine.ask_structured("what are the column names?")
+        payload = engine.ask_structured("how many are there?")
+        evidence_types = {str(c.get("evidence_type") or "") for c in payload["citations"]}
+
+        assert payload.get("deterministic_intent") == "schema_count"
+        assert "table_schema" in evidence_types
+        assert "table_stat" not in evidence_types
+        assert "table_value" not in evidence_types
+
     def test_schema_count_handles_typo_colum_names(self, tmp_path: Path):
         """Schema count detection should handle common column-name typos."""
         from mosaicx.query.engine import QueryEngine
@@ -636,7 +673,49 @@ class TestQueryEngineConversation:
 
         payload = engine.ask_structured("how many genders are there and what are they?")
         answer = str(payload["answer"])
-        assert "2 distinct Sex values" in answer
+        assert ("2 distinct Sex values" in answer) or ("distribution" in answer.lower())
+        assert "M" in answer
+        assert "F" in answer
+        assert payload["deterministic_used"] is True
+        assert payload["deterministic_intent"] in {"count_values", "count_distinct"}
+
+    def test_planner_recovers_missing_column_via_llm_before_fallback(self, tmp_path: Path, monkeypatch):
+        """Planner path should recover a missing column instead of dropping to lexical routing."""
+        from mosaicx.query.control_plane import TabularPlan
+        from mosaicx.query.engine import QueryEngine
+        from mosaicx.query.session import QuerySession
+
+        f = tmp_path / "cohort.csv"
+        f.write_text("Subject,Sex\nS1,M\nS2,F\nS3,M\n")
+        session = QuerySession(sources=[f])
+        engine = QueryEngine(session=session)
+
+        monkeypatch.setattr(engine, "_should_try_programmatic_first", lambda **kwargs: False)
+        monkeypatch.setattr(
+            engine._react_planner,
+            "plan",
+            lambda **kwargs: TabularPlan(
+                intent="count_distinct",
+                source="cohort.csv",
+                column=None,
+                operation=None,
+                include_values=True,
+            ),
+        )
+        monkeypatch.setattr(
+            engine,
+            "_resolve_planned_column_with_llm",
+            lambda **kwargs: "Sex",
+        )
+        monkeypatch.setattr(
+            engine,
+            "_build_citations",
+            lambda **kwargs: kwargs.get("seed_hits", []),
+        )
+
+        payload = engine.ask_structured("how many genders are there and what are they?")
+        answer = str(payload["answer"])
+        assert ("2 distinct Sex values" in answer) or ("distribution" in answer.lower())
         assert "M" in answer
         assert "F" in answer
         assert payload["deterministic_used"] is True
@@ -963,6 +1042,72 @@ class TestQueryEngineConversation:
         assert payload["fallback_used"] is False
         assert payload["fallback_code"] is None
         assert "5mm nodule" in payload["answer"]
+
+    def test_run_query_once_retries_with_twostep_adapter_on_parse_error(self, tmp_path: Path, monkeypatch):
+        """Core RLM call should retry with TwoStepAdapter on parse-style errors."""
+        from mosaicx.query.engine import QueryEngine
+        from mosaicx.query.session import QuerySession
+
+        f = tmp_path / "report.txt"
+        f.write_text("Patient has a 5mm nodule in the right upper lobe.")
+        session = QuerySession(sources=[f])
+        engine = QueryEngine(session=session)
+
+        class _FakeDSPY:
+            def __init__(self) -> None:
+                self.settings = SimpleNamespace(lm=object())
+                self._active_adapter = None
+                self.adapter_trace: list[str] = []
+
+            class TwoStepAdapter:
+                pass
+
+            class Tool:
+                def __init__(self, fn, name=None, desc=None):  # noqa: ANN001
+                    self.fn = fn
+                    self.name = name
+                    self.desc = desc
+
+            class _Context:
+                def __init__(self, owner, adapter):  # noqa: ANN001
+                    self._owner = owner
+                    self._adapter = adapter
+                    self._prev = None
+
+                def __enter__(self):
+                    self._prev = self._owner._active_adapter
+                    self._owner._active_adapter = self._adapter
+                    return None
+
+                def __exit__(self, exc_type, exc, tb):  # noqa: ANN001
+                    self._owner._active_adapter = self._prev
+                    return False
+
+            def context(self, **kwargs):  # noqa: ANN003
+                return self._Context(self, kwargs.get("adapter"))
+
+            class RLM:
+                def __init__(self, _signature, **_kwargs):  # noqa: ANN001
+                    self._calls = 0
+
+                def __call__(self, **_kwargs):  # noqa: ANN003
+                    self._calls += 1
+                    fake.adapter_trace.append(
+                        type(fake._active_adapter).__name__ if fake._active_adapter is not None else "none"
+                    )
+                    if self._calls == 1 and fake._active_adapter is None:
+                        raise RuntimeError(
+                            "AdapterParseError: LM response cannot be serialized to a JSON object."
+                        )
+                    return SimpleNamespace(answer="Recovered with TwoStepAdapter.")
+
+        fake = _FakeDSPY()
+        monkeypatch.setattr("mosaicx.query.engine.import_dspy", lambda: fake)
+
+        answer, _hits = engine._run_query_once("What is the nodule size?")
+        assert "Recovered with TwoStepAdapter" in answer
+        assert fake.adapter_trace[0] == "none"
+        assert fake.adapter_trace[1] == "TwoStepAdapter"
 
     def test_reconciler_corrects_unsupported_draft_answer(self, tmp_path: Path, monkeypatch):
         """Evidence reconciler should correct unsupported draft answers."""

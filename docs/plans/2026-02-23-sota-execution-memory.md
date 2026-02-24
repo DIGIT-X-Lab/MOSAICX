@@ -294,3 +294,26 @@ When completing `DSPY-*` items, append:
 - Remaining blockers:
   - Finish and land `QRY-001` direct-answer contract improvements for count+values prompts.
   - Continue DSPy roadmap staging (`DSPY-01`, `DSPY-03`, `DSPY-04`, `B1`) and log integration evidence per item.
+
+### Update 2026-02-24 10:05
+- Tasks completed:
+  - Advanced `QRY-002` planner-first behavior in query engine.
+  - Added planner column-recovery path so valid ReAct intent/source plans are not discarded when `column` is omitted.
+  - Column recovery now uses LM-guided selection with session-state fallback for follow-up/coreference prompts.
+  - Reduced lexical routing pressure by keeping execution on planned path when recovered column is available.
+- Files changed:
+  - `mosaicx/query/engine.py`
+  - `tests/test_query_engine.py`
+- Tests run:
+  - `PYTHONPATH=. .venv/bin/pytest -q tests/test_query_engine.py -k "planner_executes_count_values_plan_before_lexical_fallback or planner_recovers_missing_column_via_llm_before_fallback"`
+  - `PYTHONPATH=. .venv/bin/pytest -q tests/test_query_engine.py -k "planner or count_values_after_schema_turns_uses_topic_not_prior_column_dump or schema_followup_how_many_are_there_refers_to_columns or ask_structured_count_values_accepts_table_value_computed_evidence"`
+  - `PYTHONPATH=. .venv/bin/mosaicx query --document "...ALL_data_complete_SUVbw+SUVlbm_N1079.csv" -q "how many genders are there and what are they?" --eda --trace --max-iterations 2`
+- Results:
+  - New planner regression test passes.
+  - Planner/count-values regression subset passes.
+  - Live local 120B run returns grounded distribution answer (`M=700, F=379`) with computed evidence.
+- Commit:
+  - pending
+- Remaining blockers:
+  - Continue `QRY-002` by surfacing explicit planner/execution trace fields in structured payload.
+  - Continue DSPy roadmap items (`DSPY-01`, `DSPY-03`, `DSPY-04`) with end-to-end integration evidence.

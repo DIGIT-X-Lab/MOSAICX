@@ -16,6 +16,7 @@ import json
 import re
 from typing import TYPE_CHECKING, Any
 
+from mosaicx.runtime_env import import_dspy
 from mosaicx.query.control_plane import (
     EvidenceVerifier,
     IntentDecision,
@@ -133,6 +134,32 @@ _QUERY_STOPWORDS = {
     "kind", "used", "use", "throughout", "across", "overall", "imaging",
     "image", "images", "imaged",
 }
+
+
+def _is_adapter_parse_exception(exc: Exception) -> bool:
+    text = f"{type(exc).__name__}: {exc}"
+    lowered = text.lower()
+    return (
+        "adapterparseerror" in lowered
+        or "jsonadapter" in lowered
+        or "cannot be serialized to a json object" in lowered
+    )
+
+
+def _build_twostep_adapter(dspy: Any) -> Any | None:
+    """Construct TwoStepAdapter across DSPy versions."""
+    if not hasattr(dspy, "TwoStepAdapter"):
+        return None
+    lm = getattr(getattr(dspy, "settings", None), "lm", None)
+    try:
+        return dspy.TwoStepAdapter(extraction_model=lm)
+    except TypeError:
+        try:
+            return dspy.TwoStepAdapter()
+        except Exception:
+            return None
+    except Exception:
+        return None
 
 
 def _text_for_data(value: Any) -> str:
@@ -321,7 +348,7 @@ class QueryEngine:
         return self._document_chunk_index
 
     def _run_query_once(self, question: str) -> tuple[str, list[dict[str, Any]]]:
-        import dspy
+        dspy = import_dspy()
 
         from mosaicx.query.tools import (
             analyze_table_question,
@@ -568,13 +595,23 @@ class QueryEngine:
             **rlm_kwargs,
         )
 
-        prediction = rlm(
-            guidance=guidance,
-            catalog=catalog_text,
-            history=history_text,
-            retrieval=retrieval_text,
-            question=question.strip(),
-        )
+        def _invoke_rlm():
+            return rlm(
+                guidance=guidance,
+                catalog=catalog_text,
+                history=history_text,
+                retrieval=retrieval_text,
+                question=question.strip(),
+            )
+
+        try:
+            prediction = _invoke_rlm()
+        except Exception as exc:
+            adapter = _build_twostep_adapter(dspy)
+            if not _is_adapter_parse_exception(exc) or adapter is None:
+                raise
+            with dspy.context(adapter=adapter):
+                prediction = _invoke_rlm()
 
         answer = str(prediction.answer).strip()
         return answer, seed_hits
@@ -609,6 +646,11 @@ class QueryEngine:
             or ("number of" in question.lower())
             or ("count" in question.lower())
         )
+        is_schema_question = self._is_schema_question(question)
+        is_schema_count = (
+            self._is_schema_count_question(question)
+            or self._looks_like_schema_count_answer(answer)
+        )
         tabular_evidence_types = {
             "table_row",
             "table_stat",
@@ -617,6 +659,17 @@ class QueryEngine:
             "table_schema",
             "table_column",
         }
+        if is_schema_question:
+            allowed = {"table_schema", "table_column", "text_chunk"}
+            if is_schema_count:
+                allowed = {"table_schema"}
+            schema_hits = [
+                h
+                for h in seed_hits
+                if str(h.get("evidence_type") or "").strip().lower() in allowed
+            ]
+            if schema_hits:
+                return self._merge_hits(schema_hits, max_hits=max(top_k, 6))[: max(1, top_k)]
 
         focus_source = ""
         focus_column = ""
@@ -634,6 +687,10 @@ class QueryEngine:
             focus_source = str(self._session.get_state("last_tabular_source", "")).strip()
         if not focus_column:
             focus_column = str(self._session.get_state("last_tabular_column", "")).strip()
+        is_category_breakdown = self._is_category_count_breakdown_request(
+            question,
+            column=focus_column,
+        )
 
         def _citation_rank(snippet: str, base_score: int, evidence_type: str) -> int:
             snip = " ".join(str(snippet).split())
@@ -758,7 +815,7 @@ class QueryEngine:
             selected.append(item)
             selected_keys.add(key)
 
-        if is_count_plus_values:
+        if is_count_plus_values or is_category_breakdown:
             focused_value_items = [
                 item
                 for item in combined
@@ -967,7 +1024,7 @@ class QueryEngine:
         state_json = json.dumps(state_payload, ensure_ascii=False)
 
         try:
-            import dspy
+            dspy = import_dspy()
 
             if getattr(dspy.settings, "lm", None) is not None:
                 predictor = dspy.Predict(
@@ -1100,7 +1157,7 @@ class QueryEngine:
 
         # Optional DSPy pass to maintain compact semantic memory across turns.
         try:
-            import dspy
+            dspy = import_dspy()
 
             if getattr(dspy.settings, "lm", None) is not None:
                 citation_summary = "\n".join(
@@ -1231,6 +1288,7 @@ class QueryEngine:
 
     def _detect_aggregate_operation(self, question: str) -> str | None:
         q = " ".join(question.lower().split())
+        q = re.sub(r"\bi\s+mean\b", " ", q)
         if "average" in q or "mean" in q or "avg" in q:
             return "mean"
         if "median" in q:
@@ -1248,6 +1306,52 @@ class QueryEngine:
     def _is_distribution_request(self, question: str) -> bool:
         q = " ".join(question.lower().split())
         return any(marker in q for marker in _DISTRIBUTION_MARKERS)
+
+    def _is_category_count_breakdown_request(
+        self,
+        question: str,
+        *,
+        column: str = "",
+        distinct_rows: list[dict[str, Any]] | None = None,
+    ) -> bool:
+        q = " ".join(question.lower().split())
+        has_count = ("how many" in q) or ("number of" in q) or ("count" in q)
+        if not has_count:
+            return False
+        if self._is_distribution_request(question):
+            return True
+        if any(
+            marker in q
+            for marker in (
+                "male",
+                "female",
+                "sex",
+                "gender",
+                "ethnicity",
+                "race",
+                "group",
+                "groups",
+                "category",
+                "categories",
+            )
+        ):
+            return True
+        if column:
+            col_text = re.sub(r"[^a-z0-9]+", " ", str(column).lower()).strip()
+            if col_text and col_text in q and " and " in q:
+                return True
+        values = distinct_rows or []
+        if values and " and " in q:
+            matched = 0
+            for row in values[:10]:
+                value = str(row.get("value") or "").strip().lower()
+                if not value:
+                    continue
+                if re.search(rf"\b{re.escape(value)}\b", q):
+                    matched += 1
+                if matched >= 2:
+                    return True
+        return False
 
     def _tabular_source_names(self) -> list[str]:
         out: list[str] = []
@@ -1334,6 +1438,99 @@ class QueryEngine:
             "schema_count" if wants_schema_count else "schema",
         )
 
+    def _normalize_planned_column_name(self, df: Any, column: str) -> str:
+        """Normalize planner-returned column names to exact dataframe headers."""
+        value = str(column or "").strip()
+        if not value:
+            return ""
+        col_map = {str(c): str(c) for c in df.columns}
+        if value in col_map:
+            return col_map[value]
+        col_norm_map = {
+            re.sub(r"[^a-z0-9]+", "_", str(c).lower()).strip("_"): str(c)
+            for c in df.columns
+        }
+        value_norm = re.sub(r"[^a-z0-9]+", "_", value.lower()).strip("_")
+        return col_norm_map.get(value_norm, "")
+
+    def _resolve_planned_column_with_llm(
+        self,
+        *,
+        question: str,
+        source: str,
+        intent: str,
+        df: Any,
+        table_profiles: dict[str, dict[str, Any]],
+    ) -> str:
+        """Recover missing planner column using LM + session state."""
+        available_columns = [str(c) for c in df.columns]
+        if not available_columns:
+            return ""
+
+        state_column = str(self._session.get_state("last_tabular_column", "")).strip()
+        if state_column in available_columns and (
+            self._is_coreference_followup(question)
+            or self._has_value_list_marker(question)
+            or self._is_ambiguous_count_question(question)
+        ):
+            return state_column
+
+        try:
+            dspy = import_dspy()
+        except Exception:
+            return ""
+        if getattr(dspy.settings, "lm", None) is None:
+            return ""
+
+        profile = table_profiles.get(source, {})
+        col_lines: list[str] = []
+        for col in profile.get("columns", [])[:140]:
+            if not isinstance(col, dict):
+                continue
+            name = str(col.get("name") or "").strip()
+            if not name:
+                continue
+            role = str(col.get("role") or "unknown")
+            preview_values: list[str] = []
+            top_values = col.get("top_values")
+            if isinstance(top_values, list):
+                for item in top_values[:3]:
+                    if isinstance(item, dict) and item.get("value") is not None:
+                        preview_values.append(str(item.get("value")))
+            if preview_values:
+                col_lines.append(f"- {name} [{role}] values={','.join(preview_values)}")
+            else:
+                col_lines.append(f"- {name} [{role}]")
+
+        if not col_lines:
+            col_lines = [f"- {name}" for name in available_columns[:120]]
+
+        guidance = (
+            "Select exactly one existing column name from the provided list. "
+            "For count_distinct/list_values/mixed intents, prefer categorical/boolean fields over identifier keys. "
+            "For aggregate intents, prefer numeric fields. "
+            "Return only the column name."
+        )
+        try:
+            pred = dspy.Predict(
+                "guidance, question, intent, source, columns, last_column -> column"
+            )(
+                guidance=guidance,
+                question=question.strip(),
+                intent=str(intent).strip(),
+                source=source,
+                columns="\n".join(col_lines)[:16000],
+                last_column=state_column,
+            )
+        except Exception:
+            return ""
+
+        candidate = self._normalize_planned_column_name(
+            df,
+            str(getattr(pred, "column", "")).strip(),
+        )
+        return candidate
+
     def _plan_tabular_question_with_llm(self, question: str) -> dict[str, Any] | None:
         """Use DSPy ReAct planning to route tabular questions."""
         if not self._has_tabular_sources():
@@ -1371,22 +1568,19 @@ class QueryEngine:
         if not isinstance(df, pd.DataFrame):
             return None
 
-        column = str(plan.column or "").strip()
-        if column:
-            col_map = {str(c): str(c) for c in df.columns}
-            col_norm_map = {
-                re.sub(r"[^a-z0-9]+", "_", str(c).lower()).strip("_"): str(c)
-                for c in df.columns
-            }
-            if column in col_map:
-                column = col_map[column]
-            else:
-                column_norm = re.sub(r"[^a-z0-9]+", "_", column.lower()).strip("_")
-                column = col_norm_map.get(column_norm, "")
+        column = self._normalize_planned_column_name(df, str(plan.column or "").strip())
 
         intent = str(plan.intent or "").strip().lower()
         if intent not in {"schema", "count_rows", "count_distinct", "list_values", "aggregate", "mixed"}:
             return None
+        if intent not in {"schema", "count_rows", "mixed"} and not column:
+            column = self._resolve_planned_column_with_llm(
+                question=question.strip(),
+                source=source,
+                intent=intent,
+                df=df,
+                table_profiles=table_profiles,
+            )
         if intent not in {"schema", "count_rows", "mixed"} and not column:
             return None
 
@@ -1584,7 +1778,19 @@ class QueryEngine:
         if count_value is None and not distinct_rows:
             return None
 
+        wants_breakdown = self._is_category_count_breakdown_request(
+            question,
+            column=column,
+            distinct_rows=distinct_rows,
+        )
         if wants_distribution and distinct_rows:
+            distribution_preview = ", ".join(
+                f"{r.get('value')}={int(r.get('count') or 0)}"
+                for r in distinct_rows[:10]
+            )
+            answer = f"{column} distribution ({count_value} groups): {distribution_preview}."
+            deterministic_intent = "count_values"
+        elif wants_count and wants_breakdown and distinct_rows:
             distribution_preview = ", ".join(
                 f"{r.get('value')}={int(r.get('count') or 0)}"
                 for r in distinct_rows[:10]
@@ -1742,12 +1948,15 @@ class QueryEngine:
 
         if aggregate_op:
             deterministic_intent = "aggregate"
-            agg_rows = compute_table_stat(
-                source,
-                data=self._session.data,
-                column=column,
-                operation=aggregate_op,
-            )
+            try:
+                agg_rows = compute_table_stat(
+                    source,
+                    data=self._session.data,
+                    column=column,
+                    operation=aggregate_op,
+                )
+            except Exception:
+                return None
             if not agg_rows:
                 return None
             row = agg_rows[0]
@@ -1853,10 +2062,15 @@ class QueryEngine:
         if not seed_hits:
             return None
 
+        wants_breakdown = self._is_category_count_breakdown_request(
+            q_raw,
+            column=column,
+            distinct_rows=distinct_rows,
+        )
         if wants_count and distinct_rows:
             if count_value is None:
                 count_value = str(len(distinct_rows))
-            if wants_distribution:
+            if wants_distribution or wants_breakdown:
                 distribution_preview = ", ".join(
                     f"{r.get('value')}={int(r.get('count') or 0)}"
                     for r in distinct_rows[:10]
@@ -2364,6 +2578,16 @@ class QueryEngine:
         a = " ".join(str(answer).lower().split())
         return any(marker in a for marker in ("column", "columns", "field", "fields", "header", "headers"))
 
+    def _looks_like_schema_count_answer(self, answer: str) -> bool:
+        a = " ".join(str(answer).lower().split())
+        has_schema_term = any(
+            marker in a for marker in ("column", "columns", "field", "fields", "header", "headers")
+        )
+        has_count_term = any(
+            marker in a for marker in ("there are", "number of", "count", "total")
+        )
+        return has_schema_term and has_count_term
+
     def _is_delta_question(self, question: str) -> bool:
         q = " ".join(question.lower().split())
         return any(marker in q for marker in _DELTA_QUESTION_MARKERS)
@@ -2497,7 +2721,7 @@ class QueryEngine:
             pass
 
         try:
-            import dspy
+            dspy = import_dspy()
         except Exception:
             return None
 
@@ -2593,7 +2817,7 @@ class QueryEngine:
             return None
 
         try:
-            import dspy
+            dspy = import_dspy()
         except Exception:
             return self._fallback_answer_from_citations(question=question, citations=citations)
 
