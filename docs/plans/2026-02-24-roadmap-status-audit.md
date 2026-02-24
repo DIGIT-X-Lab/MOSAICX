@@ -54,6 +54,10 @@ Other plan files are design/history logs and must link here for status.
     - `PYTHONPATH=. .venv/bin/pytest -q tests/test_cli_extract.py tests/test_report.py` -> `60 passed`
   - Live local model smoke on `s50184397.txt` with custom MIMIC-like schema succeeded via local `vllm-mlx`:
     - output parsed into typed schema object (`ok=True`) and no extraction crash.
+- Fresh full hard-test matrix run (LLM+integration enabled) completed successfully:
+  - `MOSAICX_HARDTEST_LLM=1 MOSAICX_HARDTEST_INTEGRATION=1 MOSAICX_HARDTEST_QUERY_ENGINE_INT=1 scripts/run_hard_test_matrix.sh`
+  - run artifact: `docs/runs/2026-02-24-171602-hard-test-matrix.md`
+  - summary: deterministic/unit packs passed, integration packs passed, local vLLM-MLX preflight passed, verify-thorough true/false checks passed, query temporal/tabular checks passed.
 
 ### Operational note
 

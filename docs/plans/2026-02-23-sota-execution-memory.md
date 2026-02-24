@@ -620,3 +620,25 @@ When completing `DSPY-*` items, append:
   - pending
 - Remaining blockers:
   - Close GitHub issues `#17/#18/#19` after commit/push and include links to this test evidence.
+
+### Update 2026-02-24 17:50
+- Tasks completed:
+  - Ran full hard-test matrix with local LLM + integration enabled after extraction hardening.
+  - Confirmed end-to-end verify and query paths using live `vllm-mlx` preflight and CLI checks.
+  - Closed GitHub issues `#17`, `#18`, `#19` with linked validation evidence.
+- Files changed:
+  - `docs/runs/2026-02-24-171602-hard-test-matrix.md`
+  - `docs/plans/2026-02-24-roadmap-status-audit.md`
+  - `docs/plans/2026-02-23-sota-execution-memory.md`
+- Tests run:
+  - `MOSAICX_HARDTEST_LLM=1 MOSAICX_HARDTEST_INTEGRATION=1 MOSAICX_HARDTEST_QUERY_ENGINE_INT=1 scripts/run_hard_test_matrix.sh`
+- Results:
+  - Hard matrix status: completed (`docs/runs/2026-02-24-171602-hard-test-matrix.md`).
+  - Unit/integration packs in matrix passed.
+  - LLM preflight passed (`/v1/models`, `/v1/chat/completions`).
+  - Verify thorough true/false BP claims both rendered correct grounded decisions.
+  - Query tabular and temporal checks returned grounded outputs with evidence.
+- Commit:
+  - pending
+- Remaining blockers:
+  - Continue DSPy roadmap hardening items outside this bugfix slice (planner primacy expansion, deeper long-doc stress set, broader optimizer datasets).
