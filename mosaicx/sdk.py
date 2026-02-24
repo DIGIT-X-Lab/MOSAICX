@@ -708,6 +708,162 @@ def _claim_comparison_from_report(
     }
 
 
+def _normalize_claim_decision(value: Any) -> str | None:
+    text = " ".join(str(value or "").lower().split())
+    if text in {"verified", "supported", "support", "match", "true"}:
+        return "verified"
+    if text in {"contradicted", "conflict", "mismatch", "false"}:
+        return "contradicted"
+    if text in {"insufficient_evidence", "insufficient", "unknown", "inconclusive", "uncertain"}:
+        return "insufficient_evidence"
+    return None
+
+
+def _adjudicate_claim_decision_with_dspy(
+    *,
+    claim: str,
+    claim_comparison: dict[str, Any],
+    current_decision: str,
+    citations: list[dict[str, Any]],
+) -> str | None:
+    """Adjudicate ambiguous claim outcomes with DSPy comparison modules.
+
+    This stage is only used when claim values are grounded but neither clearly
+    matching nor clearly conflicting. It uses ``MultiChainComparison`` and
+    ``BestOfN`` when available, with deterministic constraints on output labels.
+    """
+    try:
+        import dspy
+    except Exception:
+        return None
+
+    if getattr(dspy.settings, "lm", None) is None:
+        return None
+
+    claimed = _compact_text(claim_comparison.get("claimed")) or claim
+    source = _compact_text(claim_comparison.get("source"))
+    evidence = _compact_text(claim_comparison.get("evidence"))
+    if not source and not evidence:
+        return None
+
+    supporting = []
+    for c in citations[:4]:
+        if not isinstance(c, dict):
+            continue
+        snippet = _compact_text(c.get("snippet"))
+        if not snippet:
+            continue
+        supporting.append(f"{c.get('source', 'source_document')}: {snippet}")
+    evidence_blob = "\n".join(
+        p for p in [
+            f"claimed={claimed}",
+            f"source={source}" if source else "",
+            f"evidence={evidence}" if evidence else "",
+            *supporting,
+        ]
+        if p
+    )
+
+    guidance = (
+        "Adjudicate claim truth from grounded evidence. "
+        "Return final_decision as one of: verified, contradicted, insufficient_evidence."
+    )
+    base = dspy.ChainOfThought(
+        "guidance, claim, evidence, current_decision -> final_decision, rationale"
+    )
+
+    attempts: list[dict[str, Any]] = []
+    for idx in range(3):
+        try:
+            lm = dspy.settings.lm
+            if lm is not None:
+                with dspy.context(lm=lm.copy(rollout_id=idx + 1, temperature=1.0)):
+                    pred = base(
+                        guidance=guidance,
+                        claim=claim.strip(),
+                        evidence=evidence_blob,
+                        current_decision=current_decision,
+                    )
+            else:
+                pred = base(
+                    guidance=guidance,
+                    claim=claim.strip(),
+                    evidence=evidence_blob,
+                    current_decision=current_decision,
+                )
+            try:
+                attempts.append(_prediction_to_dict(pred))
+            except Exception:
+                attempts.append(
+                    {
+                        "final_decision": getattr(pred, "final_decision", ""),
+                        "rationale": getattr(pred, "rationale", ""),
+                    }
+                )
+        except Exception:
+            continue
+
+    mcc_decision: str | None = None
+    if len(attempts) == 3 and hasattr(dspy, "MultiChainComparison"):
+        try:
+            mcc = dspy.MultiChainComparison(
+                "claim, evidence -> final_decision",
+                M=3,
+                temperature=0.2,
+            )
+            mcc_pred = mcc(
+                completions=attempts,
+                claim=claim.strip(),
+                evidence=evidence_blob,
+            )
+            mcc_decision = _normalize_claim_decision(getattr(mcc_pred, "final_decision", ""))
+        except Exception:
+            mcc_decision = None
+
+    best_decision: str | None = None
+    if hasattr(dspy, "BestOfN"):
+        def reward_fn(_args: dict[str, Any], pred: Any) -> float:
+            decision = _normalize_claim_decision(getattr(pred, "final_decision", ""))
+            if decision is None:
+                return 0.0
+            score = 0.0
+            if source and _claim_values_clearly_match(claimed, source):
+                score = 1.0 if decision == "verified" else 0.0
+            elif source and _claim_values_clearly_conflict(claimed, source):
+                score = 1.0 if decision == "contradicted" else 0.0
+            else:
+                # For ambiguous grounded cases, prefer stable non-hallucinated labels.
+                if decision == current_decision:
+                    score = 0.9
+                elif decision == "insufficient_evidence":
+                    score = 0.8
+                else:
+                    score = 0.5
+            return score
+
+        try:
+            best_mod = dspy.BestOfN(
+                module=base,
+                N=3,
+                reward_fn=reward_fn,
+                threshold=0.8,
+            )
+            best_pred = best_mod(
+                guidance=guidance,
+                claim=claim.strip(),
+                evidence=evidence_blob,
+                current_decision=current_decision,
+            )
+            best_decision = _normalize_claim_decision(getattr(best_pred, "final_decision", ""))
+        except Exception:
+            best_decision = None
+
+    for candidate in (mcc_decision, best_decision):
+        if candidate in {"verified", "contradicted", "insufficient_evidence"}:
+            return candidate
+    return None
+
+
 def _verification_citations_from_report(
     *,
     report: dict[str, Any],
@@ -1814,6 +1970,7 @@ def verify(
     decision = out.get("verdict")
     out["claim_truth"] = None
     out["claim_true"] = None
+    out["adjudication_method"] = None
     if verification_mode == "claim" and claim is not None:
         claim_comparison = _claim_comparison_from_report(
             claim=claim,
@@ -1904,6 +2061,25 @@ def verify(
                             "source_value": _compact_text(claim_comparison.get("source")),
                         }
                     ] + list(out["citations"])
+
+        # DSPy adjudication is only allowed for ambiguous grounded claims.
+        ambiguous_grounded = (
+            grounded
+            and not claim_conflict
+            and not claim_match
+            and str(decision or "") in {"partially_supported", "insufficient_evidence", "inconclusive"}
+        )
+        if ambiguous_grounded:
+            adjudicated = _adjudicate_claim_decision_with_dspy(
+                claim=claim,
+                claim_comparison=claim_comparison,
+                current_decision=str(decision or "insufficient_evidence"),
+                citations=list(out.get("citations") or []),
+            )
+            if adjudicated in {"verified", "contradicted", "insufficient_evidence"} and adjudicated != decision:
+                decision = adjudicated
+                out["adjudication_method"] = "dspy_mcc_bestofn"
+                out["adjudication_applied"] = True
 
         if not out.get("citations"):
             fallback_snippet = _compact_text(

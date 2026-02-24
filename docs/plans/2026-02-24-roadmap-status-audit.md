@@ -6,7 +6,7 @@ Status: Active
 Owner: Core platform
 Authoritative: Yes (single source of truth for rollout status)
 
-## 0) Canonical Status (Updated 2026-02-24 23:55)
+## 0) Canonical Status (Updated 2026-02-25 00:20)
 
 This file is the canonical status board for DSPy roadmap execution.
 Other plan files are design/history logs and must link here for status.
@@ -20,11 +20,13 @@ Other plan files are design/history logs and must link here for status.
 - Closed DSPy capability items:
   - `#38 [DSPY-03] JSONAdapter default structured-output policy`
   - `#39 [DSPY-04] TwoStepAdapter fallback policy`
+  - `#40 [DSPY-05] BestOfN grounded candidate selection`
+  - `#41 [DSPY-07] MultiChainComparison contradiction adjudication`
   - `#44 [DSPY-11] answer_exact_match + answer_passage_match CI gates`
 - Open roadmap epics:
   - `#33 [ROADMAP-OPS]`, `#34 [ROADMAP-QRY]`, `#35 [ROADMAP-EXT]`
 - Open DSPy capability rollout items:
-  - `#36`, `#37`, `#40`, `#41`, `#42`, `#43`, `#45`, `#46`, `#47`, `#48`, `#49`, `#50`
+  - `#36`, `#37`, `#42`, `#43`, `#45`, `#46`, `#47`, `#48`, `#49`, `#50`
 
 ### Canonical control note
 
@@ -78,6 +80,12 @@ Other plan files are design/history logs and must link here for status.
   - New regression: `tests/test_query_engine.py::test_build_citations_count_values_excludes_profile_text_chunk_noise`.
   - Validation: `PYTHONPATH=. .venv/bin/pytest -q tests/test_query_engine.py -m 'not integration'` -> `69 passed, 5 deselected`.
   - Live check: count+values CLI output now surfaces computed rows + planner column match without profile noise.
+- Claim adjudication hardening (`DSPY-05`, `DSPY-07`) implemented in SDK verify finalization:
+  - Added DSPy ambiguity adjudicator with `MultiChainComparison` + `BestOfN` for grounded claim cases where values are neither clearly matched nor clearly conflicting.
+  - Applied only in bounded ambiguous paths; deterministic conflict/match guards remain authoritative.
+  - Files: `mosaicx/sdk.py`, `tests/test_sdk_verify.py`.
+  - Validation:
+    - `PYTHONPATH=. .venv/bin/pytest -q tests/test_sdk_verify.py -k "dspy_adjudicator_prefers_multichain_output_when_available or ambiguous_grounded_claim_uses_dspy_adjudication or clear_claim_conflict_skips_dspy_adjudication or claim_value_conflict_overrides_verified_decision or thorough_claim_matching_source_rescues_partial_verdict"` -> `5 passed`.
 - Adapter policy hardening (`DSPY-03`, `DSPY-04`) now unified across CLI/SDK/MCP initialization:
   - CLI and MCP initialization now route through `runtime_env.configure_dspy_lm` (JSONAdapter-first with TwoStep fallback).
   - Files: `mosaicx/cli.py`, `mosaicx/mcp_server.py`, `mosaicx/runtime_env.py`.
@@ -170,17 +178,17 @@ Legend:
 - Implemented parse-fallback in query/verify.
 - Parse and runtime failures still surface in live runs.
 
-5. `DSPY-05 BestOfN grounded selection`: **partial**
-- Implemented in query evidence verifier.
-- Live behavior can still collapse to generic rescue summaries.
+5. `DSPY-05 BestOfN grounded selection`: **done**
+- Implemented in query evidence verifier and claim-level SDK adjudicator.
+- Validated via targeted SDK regression tests plus existing query control-plane usage.
 
 6. `DSPY-06 Refine for extraction-critical steps`: **done (module-level)**
 - Present in radiology/pathology pipelines.
 - End-to-end extraction reliability still affected by environment/model plumbing.
 
-7. `DSPY-07 MultiChainComparison contradiction adjudication`: **partial**
-- Used in query verifier flow.
-- Not yet a consistent final adjudication contract across verify outputs.
+7. `DSPY-07 MultiChainComparison contradiction adjudication`: **done**
+- Implemented in query verifier flow and SDK claim adjudication flow for contradiction-sensitive finalization.
+- Bounded to ambiguous grounded claim cases with deterministic guards preserved.
 
 8. `DSPY-08 CodeAct fallback`: **partial**
 - Implemented in tabular programmatic analyst.

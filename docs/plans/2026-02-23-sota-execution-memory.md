@@ -58,9 +58,9 @@ Each item requires code path + tests + integration evidence before check-off.
 - [ ] `DSPY-02` `RLM` executor for long-context document reasoning in query and verify-thorough.
 - [ ] `DSPY-03` `JSONAdapter` default for structured stages with explicit fallback policy.
 - [ ] `DSPY-04` `TwoStepAdapter` fallback for reasoning-heavy parse-unstable stages.
-- [ ] `DSPY-05` `BestOfN` candidate selection in evidence verification / grounded answer revision.
+- [x] `DSPY-05` `BestOfN` candidate selection in evidence verification / grounded answer revision.
 - [ ] `DSPY-06` `Refine` self-improvement for extraction-critical steps (findings/impression/diagnosis).
-- [ ] `DSPY-07` `MultiChainComparison` contradiction adjudication where multiple candidates exist.
+- [x] `DSPY-07` `MultiChainComparison` contradiction adjudication where multiple candidates exist.
 - [ ] `DSPY-08` `CodeAct` controlled fallback for complex tabular/program synthesis.
 - [ ] `DSPY-09` `ProgramOfThought` fallback-only with strict safety/timeout/error boundaries.
 - [ ] `DSPY-10` `CompleteAndGrounded` in evaluation gates for grounding quality.

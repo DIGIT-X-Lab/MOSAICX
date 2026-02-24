@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -311,6 +313,143 @@ class TestSDKVerifyFallback:
 
 
 class TestSDKVerifyEdgeCases:
+    def test_dspy_adjudicator_prefers_multichain_output_when_available(self, monkeypatch):
+        """DSPy adjudicator should accept MultiChainComparison decisions."""
+        from mosaicx import sdk as sdk_mod
+
+        class _FakeLM:
+            def copy(self, **_kwargs):
+                return self
+
+        class _Ctx:
+            def __enter__(self):
+                return None
+
+            def __exit__(self, exc_type, exc, tb):  # noqa: ANN001
+                return False
+
+        class _FakeDSPY:
+            settings = SimpleNamespace(lm=_FakeLM())
+
+            @staticmethod
+            def context(**_kwargs):
+                return _Ctx()
+
+            @staticmethod
+            def ChainOfThought(_sig):  # noqa: ANN001
+                class _Base:
+                    def __call__(self, **_kwargs):
+                        return SimpleNamespace(final_decision="insufficient_evidence", rationale="base")
+
+                return _Base()
+
+            @staticmethod
+            def MultiChainComparison(_sig, M=3, temperature=0.2):  # noqa: ANN001, ARG004
+                class _MCC:
+                    def __call__(self, **_kwargs):
+                        return SimpleNamespace(final_decision="verified")
+
+                return _MCC()
+
+            @staticmethod
+            def BestOfN(module, N=3, reward_fn=None, threshold=0.8):  # noqa: ANN001, ARG004
+                class _Best:
+                    def __call__(self, **_kwargs):
+                        return SimpleNamespace(final_decision="contradicted")
+
+                return _Best()
+
+        monkeypatch.setitem(sys.modules, "dspy", _FakeDSPY())
+
+        decision = sdk_mod._adjudicate_claim_decision_with_dspy(
+            claim="patient has severe pain",
+            claim_comparison={
+                "claimed": "patient has severe pain",
+                "source": "pain reported in history",
+                "evidence": "History: pain reported during prior visits.",
+                "grounded": True,
+            },
+            current_decision="insufficient_evidence",
+            citations=[{"source": "source_document", "snippet": "History: pain reported during prior visits."}],
+        )
+
+        assert decision == "verified"
+
+    def test_ambiguous_grounded_claim_uses_dspy_adjudication(self):
+        """Ambiguous grounded claim can be finalized by DSPy adjudication."""
+        from mosaicx.sdk import verify
+        from mosaicx.verify.models import FieldVerdict, VerificationReport
+
+        mocked_report = VerificationReport(
+            verdict="partially_supported",
+            confidence=0.42,
+            level="audit",
+            issues=[],
+            field_verdicts=[
+                FieldVerdict(
+                    status="unsupported",
+                    field_path="claim",
+                    claimed_value="patient has severe pain",
+                    source_value="pain reported in clinical history",
+                    evidence_excerpt="History: pain reported during prior visits.",
+                    evidence_source="source_document",
+                )
+            ],
+        )
+
+        with patch("mosaicx.verify.engine.verify", return_value=mocked_report), patch(
+            "mosaicx.sdk._adjudicate_claim_decision_with_dspy",
+            return_value="verified",
+        ) as adjudicator:
+            result = verify(
+                claim="patient has severe pain",
+                source_text="History: pain reported during prior visits.",
+                level="thorough",
+            )
+
+        adjudicator.assert_called_once()
+        assert result["decision"] == "verified"
+        assert result["claim_true"] is True
+        assert result["adjudication_method"] == "dspy_mcc_bestofn"
+        assert result.get("adjudication_applied") is True
+
+    def test_clear_claim_conflict_skips_dspy_adjudication(self):
+        """Clear numeric conflicts must remain deterministic contradictions."""
+        from mosaicx.sdk import verify
+        from mosaicx.verify.models import FieldVerdict, VerificationReport
+
+        mocked_report = VerificationReport(
+            verdict="partially_supported",
+            confidence=0.33,
+            level="audit",
+            issues=[],
+            field_verdicts=[
+                FieldVerdict(
+                    status="mismatch",
+                    field_path="claim",
+                    claimed_value="patient BP is 120/82",
+                    source_value="128/82",
+                    evidence_excerpt="Vitals: BP 128/82 measured at triage.",
+                    evidence_source="source_document",
+                )
+            ],
+        )
+
+        with patch("mosaicx.verify.engine.verify", return_value=mocked_report), patch(
+            "mosaicx.sdk._adjudicate_claim_decision_with_dspy",
+            return_value="verified",
+        ) as adjudicator:
+            result = verify(
+                claim="patient BP is 120/82",
+                source_text="Vitals: BP 128/82 measured at triage.",
+                level="thorough",
+            )
+
+        adjudicator.assert_not_called()
+        assert result["decision"] == "contradicted"
+        assert result["claim_true"] is False
+        assert result["adjudication_method"] is None
+
     def test_verify_claim_citations_preserve_chunk_metadata(self):
         from mosaicx.sdk import verify
         from mosaicx.verify.models import FieldVerdict, VerificationReport
