@@ -6,16 +6,15 @@ Status: Active
 Owner: Core platform
 Authoritative: Yes (single source of truth for rollout status)
 
-## 0) Canonical Status (Updated 2026-02-24 16:40)
+## 0) Canonical Status (Updated 2026-02-24 17:40)
 
 This file is the canonical status board for DSPy roadmap execution.
 Other plan files are design/history logs and must link here for status.
 
 ### Issue state
 
-- Closed: `QRY-001`, `VER-001`, `VER-002`, `EXT-001`, `EXT-002`, `OPS-001`, `EVAL-001`
+- Closed: `QRY-001`, `VER-001`, `VER-002`, `EXT-001`, `EXT-002`, `OPS-001`, `EVAL-001`, `#17`, `#18`, `#19`
 - In progress/completed in branch and ready to close after push: `QRY-002`, `EVAL-002`, `DOC-001`
-- Open and addressed in current branch (pending close after push/verification note): `#17`, `#18`, `#19`
 
 ### Evidence highlights
 
@@ -58,6 +57,11 @@ Other plan files are design/history logs and must link here for status.
   - `MOSAICX_HARDTEST_LLM=1 MOSAICX_HARDTEST_INTEGRATION=1 MOSAICX_HARDTEST_QUERY_ENGINE_INT=1 scripts/run_hard_test_matrix.sh`
   - run artifact: `docs/runs/2026-02-24-171602-hard-test-matrix.md`
   - summary: deterministic/unit packs passed, integration packs passed, local vLLM-MLX preflight passed, verify-thorough true/false checks passed, query temporal/tabular checks passed.
+- Query citation signal cleanup for tabular analytics:
+  - `mosaicx/query/engine.py` now suppresses `__eda_profile__.json` text evidence for strict tabular numeric/count+values prompts.
+  - New regression: `tests/test_query_engine.py::test_build_citations_count_values_excludes_profile_text_chunk_noise`.
+  - Validation: `PYTHONPATH=. .venv/bin/pytest -q tests/test_query_engine.py -m 'not integration'` -> `69 passed, 5 deselected`.
+  - Live check: count+values CLI output now surfaces computed rows + planner column match without profile noise.
 
 ### Operational note
 

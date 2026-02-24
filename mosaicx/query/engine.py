@@ -698,6 +698,8 @@ class QueryEngine:
         }
         is_delta_question = self._is_delta_question(question)
         is_count_plus_values = self._is_count_plus_values_request(question)
+        is_distribution_question = self._is_distribution_request(question)
+        needs_numeric_stat_evidence = self._requires_numeric_stat_evidence(question)
         needs_count_evidence = (
             ("how many" in question.lower())
             or ("number of" in question.lower())
@@ -747,6 +749,16 @@ class QueryEngine:
         is_category_breakdown = self._is_category_count_breakdown_request(
             question,
             column=focus_column,
+        )
+        strict_tabular_numeric = bool(
+            focus_source
+            and (
+                needs_count_evidence
+                or is_count_plus_values
+                or is_category_breakdown
+                or is_distribution_question
+                or needs_numeric_stat_evidence
+            )
         )
 
         def _citation_rank(snippet: str, base_score: int, evidence_type: str) -> int:
@@ -815,6 +827,12 @@ class QueryEngine:
             evidence_type_lc = evidence_type.strip().lower()
             key = (source, snippet[:120])
             if not source or not snippet or key in seen:
+                continue
+            # Tabular numeric answers should not be polluted by profile artifact text.
+            if (
+                strict_tabular_numeric
+                and source == "__eda_profile__.json"
+            ):
                 continue
             rank = _citation_rank(snippet, score, evidence_type)
             if rank < 0:
@@ -919,12 +937,13 @@ class QueryEngine:
                     _add_selected(count_item)
 
         # Keep at least one chunk-level citation when available for long-document grounding.
-        chunk_item = next(
-            (item for item in combined if str(item.get("evidence_type") or "") == "text_chunk"),
-            None,
-        )
-        if chunk_item is not None and len(selected) < top_k:
-            _add_selected(chunk_item)
+        if not strict_tabular_numeric:
+            chunk_item = next(
+                (item for item in combined if str(item.get("evidence_type") or "") == "text_chunk"),
+                None,
+            )
+            if chunk_item is not None and len(selected) < top_k:
+                _add_selected(chunk_item)
 
         # First pass: maximize source diversity.
         seen_sources: set[str] = {str(item.get("source") or "") for item in selected}

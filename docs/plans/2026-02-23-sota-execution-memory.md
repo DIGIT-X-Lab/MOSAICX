@@ -642,3 +642,24 @@ When completing `DSPY-*` items, append:
   - pending
 - Remaining blockers:
   - Continue DSPy roadmap hardening items outside this bugfix slice (planner primacy expansion, deeper long-doc stress set, broader optimizer datasets).
+
+### Update 2026-02-24 17:40
+- Tasks completed:
+  - Hardened query citation selection for tabular numeric/count+values answers to suppress profile-artifact noise.
+  - Prevented `__eda_profile__.json` text evidence from appearing as primary support when computed table evidence exists.
+  - Preserved long-document chunk citation behavior for non-tabular flows.
+- Files changed:
+  - `mosaicx/query/engine.py`
+  - `tests/test_query_engine.py`
+- Tests run:
+  - `PYTHONPATH=. .venv/bin/pytest -q tests/test_query_engine.py -k "build_citations_count_values"`
+  - `PYTHONPATH=. .venv/bin/pytest -q tests/test_query_engine.py -m 'not integration'`
+  - `PYTHONPATH=. .venv/bin/mosaicx query --document tests/datasets/generated_hardcases/cohort_edge_cases.csv --question "how many ethnicities are there and what are they?" --eda --trace --max-iterations 2`
+- Results:
+  - Query engine tests pass (`69 passed, 5 deselected`).
+  - Count+values evidence now shows computed/stat/value rows without profile text-chunk/text-match noise.
+  - Execution trace remains planner-first (`execution_mode=hybrid_planner_deterministic`, `planner_used=true`, `planner_executed=true`).
+- Commit:
+  - pending
+- Remaining blockers:
+  - Continue planner-primacy hardening for broader ambiguous prompts and long-document adversarial set.
