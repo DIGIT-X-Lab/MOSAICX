@@ -16,7 +16,7 @@ Other plan files are design/history logs and must link here for status.
 - Closed roadmap delivery items:
   - `QRY-001`, `QRY-002`, `VER-001`, `VER-002`, `EXT-001`, `EXT-002`, `OPS-001`, `EVAL-001`, `EVAL-002`, `DOC-001`
   - legacy bugs: `#17`, `#18`, `#19`
-  - current bug fixes: `#52`, `#53`, `#55`
+  - current bug fixes: `#52`, `#53`, `#54`, `#55`
   - closed duplicates: `#22`, `#27`
 - Closed DSPy capability items:
   - `#38 [DSPY-03] JSONAdapter default structured-output policy`
