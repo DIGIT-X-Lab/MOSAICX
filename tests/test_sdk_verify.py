@@ -231,6 +231,36 @@ class TestSDKVerifyFallback:
         assert result["claim_true"] is False
         assert any(i["type"] == "claim_value_conflict" for i in result["issues"])
 
+    def test_claim_value_conflict_prefers_full_bp_pair_from_source(self):
+        """BP conflicts should ground to a full BP pair, not partial numeric token."""
+        from mosaicx.sdk import verify
+        from mosaicx.verify.models import VerificationReport
+
+        mocked_report = VerificationReport(
+            verdict="verified",
+            confidence=0.9,
+            level="deterministic",
+            issues=[],
+            field_verdicts=[],
+        )
+
+        source_text = (
+            "Measurements Vital Sign Reading Normal Range Status "
+            "Blood Pressure 128/82 mmHg 120/80 mmHg Slightly Elevated."
+        )
+
+        with patch("mosaicx.verify.engine.verify", return_value=mocked_report):
+            result = verify(
+                claim="patient BP is 120/82",
+                source_text=source_text,
+                level="quick",
+            )
+
+        assert result["decision"] == "contradicted"
+        assert result["claim_true"] is False
+        assert "128/82" in str(result["claim_comparison"]["source"])
+        assert "128/82" in str(result["issues"][0]["detail"])
+
     def test_thorough_claim_matching_source_rescues_partial_verdict(self):
         """Matching grounded claim/source values should resolve to verified."""
         from mosaicx.sdk import verify

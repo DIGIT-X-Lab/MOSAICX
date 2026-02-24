@@ -339,3 +339,43 @@ When completing `DSPY-*` items, append:
 - Remaining blockers:
   - Add explicit planner/execution trace fields to query structured payload.
   - Continue DSPy roadmap execution (`DSPY-01`, `DSPY-03`, `DSPY-04`) with integration evidence.
+
+### Update 2026-02-24 11:05
+- Tasks completed:
+  - Exposed planner/execution trace fields in `query` structured payload for easier developer debugging.
+  - Added trace outputs: `execution_path`, `target_resolution`, `planner_used`, `planner_executed`, `planner_intent`, `planner_source`, `planner_column`, `planner_column_recovered`.
+  - Verified full query engine suite including integration tests against local 120B endpoint.
+- Files changed:
+  - `mosaicx/query/engine.py`
+  - `tests/test_query_engine.py`
+- Tests run:
+  - `PYTHONPATH=. .venv/bin/pytest -x -vv tests/test_query_engine.py`
+- Results:
+  - Full query engine suite passes (`62 passed`, including integration tests).
+- Commit:
+  - `6094678` Expose planner/target trace fields in structured query payload
+- Remaining blockers:
+  - Continue `VER-002` contract hardening and claim comparison coherence.
+  - Continue DSPy roadmap execution and integration logging.
+
+### Update 2026-02-24 11:30
+- Tasks completed:
+  - Fixed claim comparison grounding bug where BP conflicts could collapse to partial numeric tokens (`120`) instead of full BP pairs (`128/82`).
+  - Added BP-aware source selection with context scoring to prefer measured values over nearby reference ranges.
+  - Added regression coverage for quick-verify contradiction output to ensure full grounded BP value is preserved in `claim_comparison` and issue detail.
+  - Confirmed local `vllm-mlx` endpoint health before/after verification runs.
+- Files changed:
+  - `mosaicx/sdk.py`
+  - `tests/test_sdk_verify.py`
+- Tests run:
+  - `curl -sS --max-time 5 http://127.0.0.1:8000/v1/models`
+  - `PYTHONPATH=. .venv/bin/pytest -q tests/test_sdk_verify.py -k "claim_value_conflict_overrides_verified_decision or claim_value_conflict_prefers_full_bp_pair_from_source or thorough_claim_matching_source_rescues_partial_verdict"`
+  - `PYTHONPATH=. .venv/bin/mosaicx verify --sources tests/datasets/extract/sample_patient_vitals.pdf --claim "patient BP is 120/82" --level quick -o /tmp/verify_false_quick_after.json`
+- Results:
+  - Targeted SDK verify tests pass.
+  - Quick verify output now reports `source=128/82` and conflict detail references the full grounded value.
+- Commit:
+  - pending
+- Remaining blockers:
+  - Land/close `VER-002` with any remaining CLI/JSON contract cleanup.
+  - Continue roadmap issues: `QRY-001`, `EXT-001`, `EXT-002`, `OPS-001`, `EVAL-001`.

@@ -449,6 +449,55 @@ def _source_snippet_for(source_text: str, needle: str) -> tuple[str, str] | None
     return matched, snippet
 
 
+def _best_bp_value_from_text(text: str, *, claim_bp: str | None = None) -> str | None:
+    """Return the most relevant BP-style value from text.
+
+    Uses light context scoring so we prefer actual measured values over
+    nearby reference ranges when both appear together.
+    """
+    text_value = str(text or "")
+    if not text_value.strip():
+        return None
+
+    matches = list(re.finditer(r"\b\d{2,3}\s*/\s*\d{2,3}\b", text_value))
+    if not matches:
+        return None
+
+    claim_norm = _normalize_numeric_text(claim_bp or "")
+    claim_parts = claim_norm.split("/") if claim_norm else []
+    best_score: int | None = None
+    best_value: str | None = None
+
+    for match in matches:
+        candidate = " ".join(match.group(0).split())
+        cand_norm = _normalize_numeric_text(candidate)
+        cand_parts = cand_norm.split("/")
+        ctx_start = max(0, match.start() - 72)
+        ctx_end = min(len(text_value), match.end() + 72)
+        context = text_value[ctx_start:ctx_end].lower()
+
+        score = 0
+        if ("blood pressure" in context) or re.search(r"\bbp\b", context):
+            score += 5
+        if any(marker in context for marker in ("vital", "reading", "measured", "measurement", "status")):
+            score += 2
+        if any(marker in context for marker in ("normal range", "reference", "target", "goal")):
+            score -= 2
+        if claim_parts and len(claim_parts) == 2 and len(cand_parts) == 2:
+            if cand_parts[1] == claim_parts[1]:
+                score += 2
+            if cand_parts[0] == claim_parts[0]:
+                score += 1
+            if cand_norm == claim_norm:
+                score += 3
+
+        if best_score is None or score > best_score:
+            best_score = score
+            best_value = candidate
+
+    return best_value
+
+
 def _normalize_numeric_text(value: str) -> str:
     return re.sub(r"\s+", "", str(value or ""))
 
@@ -520,6 +569,9 @@ def _claim_comparison_from_report(
     field_verdicts = report.get("field_verdicts", [])
     issues = report.get("issues", [])
     evidence_items = report.get("evidence", [])
+
+    claim_bp_match = re.search(r"\b\d{2,3}\s*/\s*\d{2,3}\b", str(claim or ""))
+    claim_bp = claim_bp_match.group(0) if claim_bp_match else None
 
     claimed_val: str | None = None
     source_val: str | None = None
@@ -612,6 +664,24 @@ def _claim_comparison_from_report(
                 if evidence_val is None:
                     evidence_val = snippet
                 break
+
+    # If claim is BP-like, prefer a full BP pair from evidence/source text
+    # over partial numeric tokens (e.g., "120").
+    if claim_bp:
+        preferred_bp = None
+        if source_val:
+            preferred_bp = _best_bp_value_from_text(source_val, claim_bp=claim_bp)
+        if preferred_bp is None and evidence_val:
+            preferred_bp = _best_bp_value_from_text(evidence_val, claim_bp=claim_bp)
+        if preferred_bp is None:
+            preferred_bp = _best_bp_value_from_text(source_text, claim_bp=claim_bp)
+        if preferred_bp is not None:
+            source_val = preferred_bp
+            if evidence_val is None or _looks_like_absence_statement(evidence_val):
+                result = _source_snippet_for(source_text, preferred_bp)
+                if result is not None:
+                    _matched, snippet = result
+                    evidence_val = snippet
 
     if evidence_val is None and source_val is not None:
         result = _source_snippet_for(source_text, source_val)
