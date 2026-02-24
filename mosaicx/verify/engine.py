@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from .models import Issue, VerificationReport
+from .models import FieldVerdict, Issue, VerificationReport
 
 
 def verify(
@@ -15,33 +15,7 @@ def verify(
     source_text: str,
     level: str = "quick",
 ) -> VerificationReport:
-    """Verify an extraction or claim against source text.
-
-    Parameters
-    ----------
-    extraction:
-        Structured extraction dict to verify. Used for structured verification.
-    claim:
-        A single claim string to verify. Used for claim-based verification.
-        Exactly one of extraction or claim must be provided.
-    source_text:
-        The original document text to verify against.
-    level:
-        Verification level:
-        - "quick" -- Level 1 deterministic only (no LLM, < 1s)
-        - "standard" -- Level 1 + Level 2 LLM spot-check (3-10s)
-        - "thorough" -- Level 1 + Level 2 + Level 3 RLM audit (30-90s)
-
-    Returns
-    -------
-    VerificationReport
-        Complete verification result.
-
-    Raises
-    ------
-    ValueError
-        If level is unknown or neither extraction nor claim is provided.
-    """
+    """Verify an extraction or claim against source text."""
     valid_levels = {"quick", "standard", "thorough"}
     if level not in valid_levels:
         raise ValueError(
@@ -52,34 +26,201 @@ def verify(
     if extraction is None and claim is None:
         raise ValueError("Must provide either extraction or claim")
 
-    # Claim-based verification: simple text search
     if claim is not None:
-        return _verify_claim(claim, source_text)
+        if level == "quick":
+            return _verify_claim(claim, source_text)
+        if level == "standard":
+            return _verify_claim_with_spot_check(claim, source_text)
+        return _verify_claim_with_audit(claim, source_text)
 
-    # Extraction-based verification
     from .deterministic import verify_deterministic
 
     report = verify_deterministic(extraction, source_text)
+    if level == "quick":
+        return report
+    if level == "standard":
+        return _enhance_with_spot_check(report, extraction, source_text)
+    return _enhance_with_audit(report, extraction, source_text)
 
-    # Level 2 and 3 require LLM -- not implemented yet, return Level 1 result.
-    # Future: if level in ("standard", "thorough"):
-    #     report = _enhance_with_spot_check(report, extraction, source_text)
-    # if level == "thorough":
-    #     report = _enhance_with_audit(report, extraction, source_text)
 
-    return report
+def _merge_extraction_report(
+    base_report: VerificationReport,
+    *,
+    issues: list[Issue],
+    field_verdicts: list[FieldVerdict],
+    level: str,
+) -> VerificationReport:
+    merged_issues = [*base_report.issues, *issues]
+    merged_fv = [*base_report.field_verdicts, *field_verdicts]
+    statuses = {fv.status for fv in merged_fv}
+
+    if "mismatch" in statuses:
+        verdict = "contradicted"
+        confidence = min(base_report.confidence, 0.2)
+    elif "unsupported" in statuses:
+        verdict = "partially_supported"
+        confidence = min(base_report.confidence, 0.6)
+    elif "verified" in statuses:
+        verdict = "verified"
+        confidence = max(base_report.confidence, 0.85)
+    else:
+        verdict = base_report.verdict
+        confidence = base_report.confidence
+
+    return VerificationReport(
+        verdict=verdict,
+        confidence=max(0.0, min(1.0, confidence)),
+        level=level,
+        issues=merged_issues,
+        field_verdicts=merged_fv,
+        evidence=list(base_report.evidence),
+        missed_content=list(base_report.missed_content),
+    )
+
+
+def _build_claim_report(
+    *,
+    issues: list[Issue],
+    field_verdicts: list[FieldVerdict],
+    level: str,
+) -> VerificationReport:
+    statuses = {fv.status for fv in field_verdicts}
+    if "mismatch" in statuses:
+        verdict = "contradicted"
+        confidence = 0.8
+    elif "verified" in statuses:
+        verdict = "verified"
+        confidence = 0.85
+    elif "unsupported" in statuses:
+        verdict = "insufficient_evidence"
+        confidence = 0.35
+    else:
+        critical = any(i.severity == "critical" for i in issues)
+        verdict = "contradicted" if critical else "insufficient_evidence"
+        confidence = 0.25 if critical else 0.3
+
+    return VerificationReport(
+        verdict=verdict,
+        confidence=confidence,
+        level=level,
+        issues=issues,
+        field_verdicts=field_verdicts,
+    )
+
+
+def _enhance_with_spot_check(
+    base_report: VerificationReport,
+    extraction: dict[str, Any],
+    source_text: str,
+) -> VerificationReport:
+    from .spot_check import run_spot_check, select_high_risk_fields
+
+    try:
+        high_risk_paths = select_high_risk_fields(extraction)
+        issues, field_verdicts = run_spot_check(source_text, extraction, high_risk_paths)
+        return _merge_extraction_report(
+            base_report,
+            issues=issues,
+            field_verdicts=field_verdicts,
+            level="spot_check",
+        )
+    except Exception as exc:
+        return VerificationReport(
+            verdict=base_report.verdict,
+            confidence=base_report.confidence,
+            level="deterministic",
+            issues=[
+                *base_report.issues,
+                Issue(
+                    type="llm_unavailable",
+                    field="verify.spot_check",
+                    detail=f"LLM spot-check unavailable: {exc}",
+                    severity="warning",
+                ),
+            ],
+            field_verdicts=list(base_report.field_verdicts),
+            evidence=list(base_report.evidence),
+            missed_content=list(base_report.missed_content),
+        )
+
+
+def _enhance_with_audit(
+    base_report: VerificationReport,
+    extraction: dict[str, Any],
+    source_text: str,
+) -> VerificationReport:
+    from .audit import run_audit
+
+    try:
+        issues, field_verdicts = run_audit(source_text, extraction)
+        return _merge_extraction_report(
+            base_report,
+            issues=issues,
+            field_verdicts=field_verdicts,
+            level="audit",
+        )
+    except Exception as exc:
+        fallback = _enhance_with_spot_check(base_report, extraction, source_text)
+        fallback.issues.append(
+            Issue(
+                type="rlm_unavailable",
+                field="verify.audit",
+                detail=f"RLM audit unavailable: {exc}",
+                severity="warning",
+            )
+        )
+        return fallback
+
+
+def _verify_claim_with_spot_check(claim: str, source_text: str) -> VerificationReport:
+    from .spot_check import verify_claim_with_llm
+
+    try:
+        return verify_claim_with_llm(claim, source_text)
+    except Exception as exc:
+        report = _verify_claim(claim, source_text)
+        report.issues.append(
+            Issue(
+                type="llm_unavailable",
+                field="claim",
+                detail=f"LLM spot-check unavailable: {exc}",
+                severity="warning",
+            )
+        )
+        return report
+
+
+def _verify_claim_with_audit(claim: str, source_text: str) -> VerificationReport:
+    from .audit import run_claim_audit
+
+    try:
+        issues, field_verdicts = run_claim_audit(claim, source_text)
+        return _build_claim_report(
+            issues=issues,
+            field_verdicts=field_verdicts,
+            level="audit",
+        )
+    except Exception as exc:
+        report = _verify_claim_with_spot_check(claim, source_text)
+        report.issues.append(
+            Issue(
+                type="rlm_unavailable",
+                field="claim",
+                detail=f"RLM audit unavailable: {exc}",
+                severity="warning",
+            )
+        )
+        return report
 
 
 def _verify_claim(claim: str, source_text: str) -> VerificationReport:
-    """Simple claim verification by checking if the claim text appears in source."""
+    """Deterministic claim verification by textual overlap and numeric checks."""
     claim_lower = claim.lower()
     source_lower = source_text.lower()
 
-    # Find numbers in claim
     numbers = re.findall(r"\d+(?:\.\d+)?", claim)
     terms_found = all(n in source_text for n in numbers)
 
-    # Tokenize by extracting alphanumeric sequences for robust comparison
     claim_words = set(re.findall(r"[a-z0-9]+", claim_lower))
     source_words = set(re.findall(r"[a-z0-9]+", source_lower))
     overlap = claim_words & source_words

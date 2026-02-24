@@ -7,6 +7,8 @@ deterministic data-plane execution in ``mosaicx.query.tools``.
 from __future__ import annotations
 
 import difflib
+import logging
+import os
 import re
 from dataclasses import dataclass
 from typing import Any
@@ -523,6 +525,35 @@ class ProgrammaticTableAnalyst:
         "insert", "update", "delete", "drop", "alter", "create", "truncate", "attach",
         "detach", "copy", "export", "import", "vacuum", "pragma", "call",
     }
+    _SIMPLE_MARKERS = (
+        "how many",
+        "count",
+        "distribution",
+        "breakdown",
+        "column name",
+        "column names",
+        "list columns",
+        "mean",
+        "average",
+        "median",
+        "minimum",
+        "maximum",
+        "sum",
+    )
+    _COMPLEX_MARKERS = (
+        "regression",
+        "correlation",
+        "anova",
+        "interaction",
+        "multivariate",
+        "confound",
+        "stratif",
+        "adjusted model",
+        "effect size",
+        "odds ratio",
+        "hazard ratio",
+        "time series",
+    )
 
     def propose_sql(
         self,
@@ -551,6 +582,9 @@ class ProgrammaticTableAnalyst:
         if codeact_plan is not None:
             return codeact_plan
 
+        if not self._should_attempt_program_of_thought(question=question, history=history):
+            return None
+
         return self._propose_sql_with_program_of_thought(
             dspy=dspy,
             question=question,
@@ -577,6 +611,28 @@ class ProgrammaticTableAnalyst:
                 lines.append(f"- {col_name} [{role}]{preview}")
             schema_blocks.append("\n".join(lines))
         return "\n\n".join(schema_blocks)[:18000]
+
+    def _should_attempt_program_of_thought(self, *, question: str, history: str) -> bool:
+        policy = " ".join(
+            str(os.environ.get("MOSAICX_PROGRAM_OF_THOUGHT", "auto")).lower().split()
+        )
+        if policy in {"off", "false", "0", "no"}:
+            return False
+        if policy in {"on", "true", "1", "yes"}:
+            return True
+
+        text = " ".join(str(question or "").lower().split())
+        if not text:
+            return False
+        if any(marker in text for marker in self._COMPLEX_MARKERS):
+            return True
+        if any(marker in text for marker in self._SIMPLE_MARKERS):
+            return False
+
+        # Auto mode: reserve PoT for broader, likely analytical prompts.
+        history_text = " ".join(str(history or "").lower().split())
+        combined_len = len(text) + len(history_text)
+        return combined_len >= 220
 
     def _normalize_sql_plan(
         self,
@@ -617,7 +673,12 @@ class ProgrammaticTableAnalyst:
             "For count-distinct questions, use COUNT(DISTINCT ...) with alias `count`. "
             "Return source as one table name from schema and sql as executable query."
         )
+        pot_logger = logging.getLogger("dspy.predict.program_of_thought")
+        prev_level = pot_logger.level
         try:
+            # PoT can emit noisy syntax/runtime logs during exploratory attempts.
+            # Keep fallback silent in user-facing CLI unless explicitly enabled by DSPy internals.
+            pot_logger.setLevel(logging.CRITICAL)
             pot = dspy.ProgramOfThought(
                 "guidance, question, history, table_schema -> source, sql, rationale"
             )
@@ -629,6 +690,8 @@ class ProgrammaticTableAnalyst:
             )
         except Exception:
             return None
+        finally:
+            pot_logger.setLevel(prev_level)
 
         return self._normalize_sql_plan(
             source=getattr(pred, "source", ""),

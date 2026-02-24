@@ -2359,12 +2359,13 @@ def verify(
         )
 
     # -- Human-friendly display --
-    verdict = result["verdict"]
-    decision = result.get("decision", verdict)
-    non_llm_issues = [i for i in result["issues"] if i["type"] != "llm_unavailable"]
+    decision = str(result.get("result") or "insufficient_evidence")
+    non_llm_issues = [
+        i for i in result.get("issues", [])
+        if str(i.get("type") or "") not in {"llm_unavailable", "rlm_unavailable"}
+    ]
     n_problems = len(non_llm_issues)
-    field_verdicts = result.get("field_verdicts", [])
-    mismatches = [fv for fv in field_verdicts if fv.get("status") in ("mismatch", "unsupported")]
+    field_checks = result.get("field_checks") or {}
     is_claim_mode = claim is not None and extraction_data is None
     subject = "Claim" if claim is not None and extraction_data is None else "Extraction"
 
@@ -2376,10 +2377,9 @@ def verify(
             return text
         return text[: max_len - 1] + "…"
 
-    def _extract_claim_comparison() -> tuple[str | None, str | None, str | None]:
+    def _extract_claim_comparison() -> tuple[str | None, str | None]:
         claimed_val: str | None = None
         source_val: str | None = None
-        evidence_val: str | None = None
 
         def _snippet_for(needle: str) -> tuple[str, str] | None:
             if not source_text_for_display.strip() or not needle.strip():
@@ -2400,70 +2400,6 @@ def verify(
             snippet = " ".join(source_text_for_display[start:end].split())
             return matched, snippet
 
-        # Prefer structured claim verdict payload first.
-        claim_rows = []
-        for fv in field_verdicts:
-            fp = (fv.get("field_path") or "").lower()
-            if fp in ("", "claim"):
-                claim_rows.append(fv)
-        if not claim_rows and len(field_verdicts) == 1:
-            claim_rows = list(field_verdicts)
-
-        preferred_rows = (
-            [fv for fv in claim_rows if fv.get("status") in ("mismatch", "unsupported")]
-            + [fv for fv in claim_rows if fv.get("status") == "verified"]
-            + [fv for fv in claim_rows if fv.get("status") not in ("mismatch", "unsupported", "verified")]
-        )
-        for fv in preferred_rows:
-            if claimed_val is None and fv.get("claimed_value"):
-                claimed_val = str(fv.get("claimed_value"))
-            if source_val is None and fv.get("source_value"):
-                source_val = str(fv.get("source_value"))
-            if evidence_val is None and fv.get("evidence_excerpt"):
-                evidence_val = str(fv.get("evidence_excerpt"))
-
-        # Fall back to issue detail parsing when the model only emits prose.
-        for issue in non_llm_issues:
-            detail = str(issue.get("detail") or "")
-            if not detail:
-                continue
-            if evidence_val is None:
-                evidence_val = detail
-
-            m = re.search(
-                r"(?i)(?:claim(?:ed| states?)\s+)(.+?)(?:,?\s+but\s+source(?:\s+\w+)?\s+|"
-                r"\s+does not match source\s+)(.+?)(?:[.]|$)",
-                detail,
-            )
-            if m:
-                if claimed_val is None:
-                    claimed_val = m.group(1).strip()
-                if source_val is None:
-                    source_val = m.group(2).strip()
-                break
-
-        if (source_val is None or evidence_val is None) and isinstance(result.get("evidence"), list):
-            for ev in result["evidence"]:
-                if not isinstance(ev, dict):
-                    continue
-                if source_val is None and ev.get("excerpt"):
-                    source_val = str(ev.get("excerpt"))
-                if evidence_val is None:
-                    evidence_val = str(
-                        ev.get("supports")
-                        or ev.get("contradicts")
-                        or ev.get("excerpt")
-                        or ""
-                    ) or None
-                if source_val is not None and evidence_val is not None:
-                    break
-
-        # Last resort: infer BP-style value from evidence snippets.
-        if source_val is None and evidence_val:
-            bp = re.search(r"\b\d{2,3}\s*/\s*\d{2,3}\b", evidence_val)
-            if bp:
-                source_val = bp.group(0)
-
         # Backfill from loaded source text so verified claims can still show grounding.
         if source_val is None and source_text_for_display:
             seed_text = claimed_val or claim or ""
@@ -2481,45 +2417,38 @@ def verify(
                 if match_result:
                     matched_source, source_snippet = match_result
                     source_val = matched_source
-                    if evidence_val is None:
-                        evidence_val = source_snippet
-
-        if evidence_val is None and source_val is not None:
-            match_result = _snippet_for(source_val)
-            if match_result:
-                _matched_source, source_snippet = match_result
-                evidence_val = source_snippet
+                    return claimed_val, source_val
 
         if claimed_val is None and claim:
             claimed_val = claim
 
-        return claimed_val, source_val, evidence_val
+        return claimed_val, source_val
 
     claim_claimed, claim_source, claim_evidence = (None, None, None)
     if is_claim_mode:
-        claim_comparison = result.get("claim_comparison")
-        if isinstance(claim_comparison, dict):
-            claim_claimed = claim_comparison.get("claimed")
-            claim_source = claim_comparison.get("source")
-            claim_evidence = claim_comparison.get("evidence")
-        if not any((claim_claimed, claim_source, claim_evidence)):
-            claim_claimed, claim_source, claim_evidence = _extract_claim_comparison()
+        claim_claimed = result.get("claim") or claim
+        claim_source = result.get("source_value")
+        claim_evidence = result.get("evidence")
+        if not (claim_source and str(claim_source).strip()):
+            inferred_claim, inferred_source = _extract_claim_comparison()
+            claim_claimed = claim_claimed or inferred_claim
+            claim_source = claim_source or inferred_source
+        if not (claim_evidence and str(claim_evidence).strip()) and claim_source:
+            claim_evidence = f"Source contains {claim_source}."
 
     display_verdict = decision
-    if is_claim_mode and "decision" not in result and verdict == "contradicted":
-        # Do not present contradiction unless there is grounded source-side evidence.
-        grounded = bool((claim_source and claim_source.strip()) or (claim_evidence and claim_evidence.strip()))
-        if not grounded:
-            display_verdict = "insufficient_evidence"
 
     # Warn if LLM was requested but unavailable
-    llm_failed = any(i["type"] == "llm_unavailable" for i in result["issues"])
+    llm_failed = any(
+        str(i.get("type") or "") in {"llm_unavailable", "rlm_unavailable"}
+        for i in result.get("issues", [])
+    )
     if llm_failed:
         console.print(theme.warn("LLM unavailable -- used text matching only"))
 
     # -- Big verdict line: the one thing the user needs to see --
     console.print()
-    claim_score = float(result.get("support_score", result["confidence"]))
+    claim_score = float(result.get("support_score", result.get("confidence", 0.0)))
     if display_verdict == "verified" and n_problems == 0:
         if is_claim_mode:
             console.print(f"  [bold green]PASS[/bold green]  {subject} looks correct  [{theme.MUTED}](support {claim_score:.2f})[/{theme.MUTED}]")
@@ -2543,9 +2472,10 @@ def verify(
         "spot_check": "LLM Spot-Check",
         "audit": "Full LLM Audit",
     }
-    method = _LEVEL_DISPLAY.get(result["level"], result["level"])
-    n_checked = len(field_verdicts)
-    n_ok = sum(1 for fv in field_verdicts if fv.get("status") == "verified")
+    executed_mode = str(result.get("executed_mode") or "")
+    method = _LEVEL_DISPLAY.get(executed_mode, executed_mode or "—")
+    n_checked = int(field_checks.get("total") or 0)
+    n_ok = int(field_checks.get("verified") or 0)
 
     console.print()
     console.print(f"  [bold {theme.CORAL}]Adjudication[/bold {theme.CORAL}]")
@@ -2555,20 +2485,17 @@ def verify(
     meta.add_row("Source", source_label)
     meta.add_row("Requested", _LEVEL_HINT.get(level, level))
     meta.add_row("Effective", method)
-    meta.add_row("Decision", display_verdict)
+    meta.add_row("Result", display_verdict)
     if is_claim_mode:
-        claim_truth = result.get("claim_truth")
-        if claim_truth is None and "claim_true" in result:
-            claim_truth = result.get("claim_true")
+        claim_truth = result.get("claim_is_true")
         claim_truth_label = (
-            "true" if claim_truth is True
-            else "false" if claim_truth is False
+            "yes" if claim_truth is True
+            else "no" if claim_truth is False
             else "inconclusive"
         )
-        meta.add_row("Truth", claim_truth_label)
+        meta.add_row("Claim true", claim_truth_label)
         meta.add_row("Support score", f"{claim_score:.2f}")
-        if "grounded" in result:
-            meta.add_row("Grounded", "yes" if result["grounded"] else "no")
+        meta.add_row("Based on source", "yes" if result.get("based_on_source") else "no")
     else:
         meta.add_row("Confidence", f"{result['confidence']:.0%}")
     if n_checked and not is_claim_mode:
@@ -2627,38 +2554,15 @@ def verify(
             console.print(f"  [bold {theme.CORAL}]Why[/bold {theme.CORAL}]")
         for issue in non_llm_issues:
             severity_color = {"info": "blue", "warning": "yellow", "critical": "red"}.get(
-                issue["severity"], "white"
+                str(issue.get("severity") or "warning"), "white"
             )
             # Make the detail more readable
-            detail = _compact_text(issue["detail"], max_len=160)
-            field = issue["field"]
+            detail = _compact_text(issue.get("message"), max_len=160)
+            field = issue.get("field")
             if field and field != "claim":
                 console.print(f"  [{severity_color}]x[/{severity_color}] [{theme.CORAL}]{_esc(field)}[/{theme.CORAL}]: {_esc(detail)}")
             else:
                 console.print(f"  [{severity_color}]x[/{severity_color}] {_esc(detail)}")
-
-    # -- Field-level detail table (extraction mode only) --
-    if mismatches and extraction_data is not None:
-        console.print()
-        console.print(f"  [{theme.MUTED}]LLM field checks:[/{theme.MUTED}]")
-        table = theme.make_clean_table()
-        table.add_column("Field", style=f"bold {theme.CORAL}", no_wrap=True)
-        table.add_column("Status", no_wrap=True)
-        table.add_column("Claimed")
-        table.add_column("Evidence")
-        for fv in mismatches[:10]:
-            status = fv.get("status")
-            status_label = "[red]Mismatch[/red]" if status == "mismatch" else "[yellow]Not found[/yellow]"
-            field = _compact_text(fv.get("field_path") or "—", max_len=36)
-            claimed = _compact_text(fv.get("claimed_value"), max_len=44)
-            evidence = _compact_text(
-                fv.get("source_value") or fv.get("evidence_excerpt"),
-                max_len=64,
-            )
-            table.add_row(_esc(field), status_label, _esc(claimed), _esc(evidence))
-        console.print(Padding(table, (0, 0, 0, 2)))
-        if len(mismatches) > 10:
-            console.print(theme.info(f"Showing 10 of {len(mismatches)} field mismatches"))
 
     console.print()
     console.print(f"  [bold {theme.CORAL}]Diagnostics[/bold {theme.CORAL}]")
@@ -2667,25 +2571,10 @@ def verify(
     diagnostics.add_column("Value", style=theme.MUTED)
     model_name = get_config().lm.split("/", 1)[-1] if "/" in get_config().lm else get_config().lm
     diagnostics.add_row("Model", model_name)
-    expected_effective = {
-        "quick": "deterministic",
-        "standard": "spot_check",
-        "thorough": "audit",
-    }.get(level)
-    if expected_effective and result["level"] != expected_effective:
-        diagnostics.add_row(
-            "Fallback",
-            f"{_LEVEL_HINT.get(level, level)} -> {_LEVEL_DISPLAY.get(result['level'], result['level'])}",
-        )
-        fallback_issue = next(
-            (
-                i for i in result.get("issues", [])
-                if i.get("type") in {"llm_unavailable", "rlm_unavailable"}
-            ),
-            None,
-        )
-        if fallback_issue is not None:
-            diagnostics.add_row("Fallback why", _compact_text(fallback_issue.get("detail"), max_len=120))
+    if result.get("fallback_used"):
+        diagnostics.add_row("Fallback", "yes")
+        if result.get("fallback_reason"):
+            diagnostics.add_row("Fallback why", _compact_text(result.get("fallback_reason"), max_len=120))
     else:
         diagnostics.add_row("Fallback", "none")
     console.print(Padding(diagnostics, (0, 0, 0, 2)))

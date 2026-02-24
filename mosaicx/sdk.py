@@ -516,6 +516,26 @@ def _looks_like_absence_statement(text: str | None) -> bool:
         "unable to find",
         "cannot find",
         "missing",
+        "no information found",
+    )
+    if any(cue in lowered for cue in cues):
+        return True
+    # Covers variants like "No blood pressure information found in source."
+    return bool(re.search(r"\bno\b[^.]{0,100}\bfound\b", lowered))
+
+
+def _looks_like_runtime_failure(text: str | None) -> bool:
+    """Return True when text is transport/adapter failure prose, not evidence."""
+    lowered = " ".join(str(text or "").lower().split())
+    if not lowered:
+        return False
+    cues = (
+        "unavailable",
+        "connection error",
+        "adapter jsonadapter failed",
+        "failed to parse",
+        "lm response cannot be serialized",
+        "internalservererror",
     )
     return any(cue in lowered for cue in cues)
 
@@ -699,7 +719,37 @@ def _claim_comparison_from_report(
     if claimed_val is None:
         claimed_val = claim
 
-    grounded = bool((source_val and source_val.strip()) or (evidence_val and evidence_val.strip()))
+    grounded_source = False
+    if source_val:
+        source_match = _source_snippet_for(source_text, source_val)
+        if source_match is not None:
+            grounded_source = True
+            if evidence_val is None or _looks_like_absence_statement(evidence_val) or _looks_like_runtime_failure(evidence_val):
+                _matched, snippet = source_match
+                evidence_val = snippet
+        else:
+            # If model-emitted source value is not in source text, re-ground from source.
+            if claim_bp:
+                recovered_bp = _best_bp_value_from_text(source_text, claim_bp=claim_bp)
+                if recovered_bp is not None:
+                    recovered_match = _source_snippet_for(source_text, recovered_bp)
+                    if recovered_match is not None:
+                        grounded_source = True
+                        source_val = recovered_bp
+                        _matched, snippet = recovered_match
+                        evidence_val = snippet
+            if not grounded_source:
+                source_val = None
+
+    grounded = bool(
+        grounded_source
+        or (
+            evidence_val
+            and evidence_val.strip()
+            and not _looks_like_absence_statement(evidence_val)
+            and not _looks_like_runtime_failure(evidence_val)
+        )
+    )
     return {
         "claimed": claimed_val,
         "source": source_val,
@@ -1913,7 +1963,7 @@ def verify(
     Returns
     -------
     dict
-        Verification report with keys: verdict, confidence, level, issues.
+        Canonical verification payload with self-explanatory fields.
     """
     combined_source_text, _source_names = _resolve_verification_sources(
         source_text=source_text,
@@ -1942,17 +1992,13 @@ def verify(
     effective_level = out.get("level")
     fallback_used = bool(expected_effective and effective_level != expected_effective)
 
-    out["requested_level"] = level
-    out["effective_level"] = effective_level
-    out["fallback_used"] = fallback_used
     verification_mode = "claim" if claim is not None and extraction is None else "extraction"
-    out["verification_mode"] = verification_mode
-    out["confidence_score"] = out.get("confidence")
     out["citations"] = _verification_citations_from_report(
         report=out,
         verification_mode=verification_mode,
     )
 
+    fallback_reason: str | None = None
     if fallback_used:
         fallback_issue = next(
             (
@@ -1961,25 +2007,24 @@ def verify(
             ),
             None,
         )
-        out["fallback_reason"] = (
+        fallback_reason = (
             fallback_issue.get("detail")
                 if fallback_issue is not None
                 else f"Requested {level} but executed {effective_level}"
         )
 
     decision = out.get("verdict")
-    out["claim_truth"] = None
-    out["claim_true"] = None
-    out["adjudication_method"] = None
+    claim_truth: bool | None = None
+    grounded = bool(out.get("citations"))
+    claim_comparison: dict[str, Any] | None = None
+    adjudication_method: str | None = None
     if verification_mode == "claim" and claim is not None:
         claim_comparison = _claim_comparison_from_report(
             claim=claim,
             source_text=combined_source_text,
             report=out,
         )
-        out["claim_comparison"] = claim_comparison
         grounded = bool(claim_comparison.get("grounded"))
-        out["grounded"] = grounded
 
         claim_conflict = grounded and _claim_values_clearly_conflict(
             claim_comparison.get("claimed"),
@@ -2020,6 +2065,7 @@ def verify(
             }:
                 decision = "verified"
                 out["match_rescued"] = True
+                out["confidence"] = max(float(out.get("confidence") or 0.0), 0.85)
                 filtered_issues: list[dict[str, Any]] = []
                 for issue in out.get("issues", []):
                     if not isinstance(issue, dict):
@@ -2078,8 +2124,7 @@ def verify(
             )
             if adjudicated in {"verified", "contradicted", "insufficient_evidence"} and adjudicated != decision:
                 decision = adjudicated
-                out["adjudication_method"] = "dspy_mcc_bestofn"
-                out["adjudication_applied"] = True
+                adjudication_method = "dspy_mcc_bestofn"
 
         if not out.get("citations"):
             fallback_snippet = _compact_text(
@@ -2112,20 +2157,12 @@ def verify(
         }
         out["support_score"] = support_map.get(decision, out.get("confidence", 0.0))
         if decision == "verified":
-            out["claim_truth"] = True
+            claim_truth = True
         elif decision == "contradicted":
-            out["claim_truth"] = False
-        out["claim_true"] = out["claim_truth"]
+            claim_truth = False
     else:
         out["support_score"] = out.get("confidence")
-
-    out["decision"] = decision
-    if verification_mode == "claim":
-        # Keep machine-facing verdict semantics consistent for claim checks.
-        out["verdict"] = decision
-    out["is_verified"] = decision == "verified"
-    out["is_contradicted"] = decision == "contradicted"
-    out["sources_consulted"] = sorted(
+    sources_consulted = sorted(
         {
             str(c.get("source") or "")
             for c in out.get("citations", [])
@@ -2133,7 +2170,60 @@ def verify(
         }
     )
 
-    return out
+    compact_issues: list[dict[str, Any]] = []
+    for issue in out.get("issues", []):
+        if not isinstance(issue, dict):
+            continue
+        compact_issues.append(
+            {
+                "type": str(issue.get("type") or "issue"),
+                "severity": str(issue.get("severity") or "warning"),
+                "field": str(issue.get("field") or ""),
+                "message": str(issue.get("detail") or "").strip(),
+            }
+        )
+
+    result: dict[str, Any] = {
+        "result": str(decision or "insufficient_evidence"),
+        "claim_is_true": claim_truth if verification_mode == "claim" else None,
+        "confidence": float(out.get("confidence") or 0.0),
+        "support_score": float(out.get("support_score") or out.get("confidence") or 0.0),
+        "based_on_source": bool(grounded),
+        "verify_type": verification_mode,
+        "requested_mode": level,
+        "executed_mode": str(effective_level or out.get("level") or ""),
+        "fallback_used": bool(fallback_used),
+        "fallback_reason": fallback_reason,
+        "issues": compact_issues,
+        "citations": list(out.get("citations") or []),
+        "sources_consulted": sources_consulted,
+    }
+    if verification_mode == "claim":
+        result["claim"] = str(claim or "").strip()
+        source_value = _compact_text((claim_comparison or {}).get("source"))
+        evidence_value = _compact_text((claim_comparison or {}).get("evidence"))
+        if source_value and _looks_like_runtime_failure(evidence_value):
+            snippet_match = _source_snippet_for(combined_source_text, source_value)
+            if snippet_match is not None:
+                _matched, snippet = snippet_match
+                evidence_value = snippet
+            else:
+                evidence_value = f"Source contains {source_value}."
+        result["source_value"] = source_value
+        result["evidence"] = evidence_value
+        if adjudication_method:
+            result["adjudication"] = adjudication_method
+    else:
+        field_verdicts = [
+            fv for fv in out.get("field_verdicts", [])
+            if isinstance(fv, dict) and str(fv.get("status") or "").strip()
+        ]
+        result["field_checks"] = {
+            "verified": sum(1 for fv in field_verdicts if str(fv.get("status")) == "verified"),
+            "total": len(field_verdicts),
+        }
+
+    return result
 
 
 def verify_batch(

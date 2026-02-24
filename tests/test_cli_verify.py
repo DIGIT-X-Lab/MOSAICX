@@ -210,10 +210,10 @@ class TestVerifyOutputSave:
         assert output_file.exists()
 
         data = json.loads(output_file.read_text())
-        assert "verdict" in data
+        assert "result" in data
         assert "confidence" in data
-        assert "level" in data
-        assert data["level"] == "deterministic"
+        assert "executed_mode" in data
+        assert data["executed_mode"] == "deterministic"
 
     def test_output_json_has_issues_array(self, tmp_path):
         from mosaicx.cli import cli
@@ -246,21 +246,22 @@ class TestVerifyClaimComparison:
 
         def fake_verify(**_kwargs):
             return {
-                "verdict": "verified",
+                "result": "verified",
+                "claim_is_true": True,
                 "confidence": 1.0,
-                "level": "audit",
+                "support_score": 1.0,
+                "based_on_source": True,
+                "verify_type": "claim",
+                "requested_mode": "quick",
+                "executed_mode": "audit",
+                "fallback_used": False,
+                "fallback_reason": None,
                 "issues": [],
-                "field_verdicts": [
-                    {
-                        "status": "verified",
-                        "field_path": "claim",
-                        "claimed_value": "patient BP is 128/82",
-                        "source_value": "BP 128/82",
-                        "evidence_excerpt": "Vitals section records BP 128/82.",
-                    }
-                ],
-                "evidence": [],
-                "missed_content": [],
+                "claim": "patient BP is 128/82",
+                "source_value": "BP 128/82",
+                "evidence": "Vitals section records BP 128/82.",
+                "citations": [],
+                "sources_consulted": ["source_document"],
             }
 
         monkeypatch.setattr(sdk_mod, "verify", fake_verify)
@@ -286,21 +287,22 @@ class TestVerifyClaimComparison:
 
         def fake_verify(**_kwargs):
             return {
-                "verdict": "verified",
+                "result": "verified",
+                "claim_is_true": True,
                 "confidence": 1.0,
-                "level": "audit",
+                "support_score": 1.0,
+                "based_on_source": True,
+                "verify_type": "claim",
+                "requested_mode": "quick",
+                "executed_mode": "audit",
+                "fallback_used": False,
+                "fallback_reason": None,
                 "issues": [],
-                "field_verdicts": [
-                    {
-                        "status": "verified",
-                        "field_path": "claim",
-                        "claimed_value": "patient BP is 128/82",
-                        "source_value": None,
-                        "evidence_excerpt": None,
-                    }
-                ],
-                "evidence": [],
-                "missed_content": [],
+                "claim": "patient BP is 128/82",
+                "source_value": None,
+                "evidence": None,
+                "citations": [],
+                "sources_consulted": ["source_document"],
             }
 
         monkeypatch.setattr(sdk_mod, "verify", fake_verify)
@@ -326,20 +328,20 @@ class TestVerifyClaimComparison:
 
         def fake_verify(**_kwargs):
             return {
-                "verdict": "verified",
-                "decision": "verified",
+                "result": "verified",
+                "claim_is_true": True,
                 "confidence": 1.0,
-                "level": "audit",
+                "support_score": 1.0,
+                "based_on_source": True,
+                "verify_type": "claim",
+                "requested_mode": "quick",
+                "executed_mode": "audit",
+                "fallback_used": False,
+                "fallback_reason": None,
                 "issues": [],
-                "field_verdicts": [
-                    {
-                        "status": "verified",
-                        "field_path": "claim",
-                        "claimed_value": "patient BP is 128/82",
-                        "source_value": "BP 128/82",
-                        "evidence_excerpt": "Vitals: BP 128/82 measured at triage.",
-                    }
-                ],
+                "claim": "patient BP is 128/82",
+                "source_value": "BP 128/82",
+                "evidence": "Vitals: BP 128/82 measured at triage.",
                 "citations": [
                     {
                         "source": "sample_patient_vitals.pdf",
@@ -349,8 +351,7 @@ class TestVerifyClaimComparison:
                         "chunk_id": 9,
                     }
                 ],
-                "evidence": [],
-                "missed_content": [],
+                "sources_consulted": ["sample_patient_vitals.pdf"],
             }
 
         monkeypatch.setattr(sdk_mod, "verify", fake_verify)

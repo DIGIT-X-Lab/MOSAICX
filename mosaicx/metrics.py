@@ -11,6 +11,7 @@ before DSPy's adapter parses them.
 
 from __future__ import annotations
 
+import os
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -238,6 +239,20 @@ def make_harmony_lm(model: str, **kwargs: object) -> object:
 
     dspy = import_dspy()
     lm_kwargs = dict(kwargs)
+    # Local on-prem inference (vLLM/vLLM-MLX) can run long RLM turns.
+    # Keep transport timeouts/retries generous unless explicitly overridden.
+    lm_timeout = os.environ.get("MOSAICX_LLM_TIMEOUT_S", "").strip()
+    lm_retries = os.environ.get("MOSAICX_LLM_NUM_RETRIES", "").strip()
+    if "timeout" not in lm_kwargs:
+        try:
+            lm_kwargs["timeout"] = float(lm_timeout) if lm_timeout else 180.0
+        except ValueError:
+            lm_kwargs["timeout"] = 180.0
+    if "num_retries" not in lm_kwargs:
+        try:
+            lm_kwargs["num_retries"] = int(lm_retries) if lm_retries else 6
+        except ValueError:
+            lm_kwargs["num_retries"] = 6
     if "api_base" in lm_kwargs:
         lm_kwargs["api_base"] = _normalize_local_api_base(lm_kwargs.get("api_base"))
     if "base_url" in lm_kwargs:

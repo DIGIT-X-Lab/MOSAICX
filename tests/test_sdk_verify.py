@@ -54,22 +54,18 @@ class TestSDKVerifyQuick:
         )
         assert isinstance(result, dict)
         for key in (
-            "verdict",
-            "decision",
-            "claim_truth",
-            "claim_true",
-            "is_verified",
-            "is_contradicted",
+            "result",
+            "claim_is_true",
             "confidence",
-            "confidence_score",
-            "level",
-            "issues",
-            "field_verdicts",
-            "requested_level",
-            "effective_level",
-            "fallback_used",
             "support_score",
-            "verification_mode",
+            "based_on_source",
+            "verify_type",
+            "issues",
+            "field_checks",
+            "requested_mode",
+            "executed_mode",
+            "fallback_used",
+            "fallback_reason",
             "citations",
             "sources_consulted",
         ):
@@ -84,8 +80,8 @@ class TestSDKVerifyQuick:
             source_text=SAMPLE_SOURCE,
             level="quick",
         )
-        assert result["verdict"] == "verified"
-        assert result["level"] == "deterministic"
+        assert result["result"] == "verified"
+        assert result["executed_mode"] == "deterministic"
         assert result["confidence"] > 0.5
         assert len(result["issues"]) == 0
 
@@ -101,7 +97,7 @@ class TestSDKVerifyQuick:
             source_text=SAMPLE_SOURCE,
             level="quick",
         )
-        assert result["verdict"] == "partially_supported"
+        assert result["result"] == "partially_supported"
         assert any(i["type"] == "value_not_found" for i in result["issues"])
 
     def test_verify_claim_correct(self):
@@ -113,18 +109,13 @@ class TestSDKVerifyQuick:
             source_text=SAMPLE_SOURCE,
             level="quick",
         )
-        assert result["verdict"] == "verified"
-        assert result["decision"] == "verified"
-        assert result["level"] == "deterministic"
+        assert result["result"] == "verified"
+        assert result["executed_mode"] == "deterministic"
         assert result["support_score"] == pytest.approx(1.0)
-        assert result["verification_mode"] == "claim"
-        assert result["claim_truth"] is True
-        assert result["claim_true"] is True
-        assert result["is_verified"] is True
-        assert result["is_contradicted"] is False
-        assert "claim_comparison" in result
-        assert result["claim_comparison"]["claimed"]
-        assert result["claim_comparison"]["grounded"] is True
+        assert result["verify_type"] == "claim"
+        assert result["claim_is_true"] is True
+        assert result["claim"]
+        assert result["based_on_source"] is True
         assert isinstance(result.get("citations"), list)
         assert result["citations"]
         assert result["citations"][0].get("evidence_type")
@@ -138,11 +129,8 @@ class TestSDKVerifyQuick:
             source_text=SAMPLE_SOURCE,
             level="quick",
         )
-        assert result["verdict"] != "verified"
-        assert result["decision"] != "verified"
-        assert result["claim_truth"] in (None, False)
-        assert result["claim_true"] in (None, False)
-        assert result["is_verified"] is False
+        assert result["result"] != "verified"
+        assert result["claim_is_true"] in (None, False)
 
     def test_verify_with_document_path(self):
         """Verify should accept a document path and load the file."""
@@ -156,8 +144,8 @@ class TestSDKVerifyQuick:
             document=CT_CHEST,
             level="quick",
         )
-        assert result["verdict"] == "verified"
-        assert result["level"] == "deterministic"
+        assert result["result"] == "verified"
+        assert result["executed_mode"] == "deterministic"
 
 
 class TestSDKVerifyFallback:
@@ -173,7 +161,7 @@ class TestSDKVerifyFallback:
                 source_text=SAMPLE_SOURCE,
                 level="standard",
             )
-        assert result["level"] == "deterministic"
+        assert result["executed_mode"] == "deterministic"
         assert any(i["type"] == "llm_unavailable" for i in result["issues"])
         assert result["fallback_used"] is True
         assert "fallback_reason" in result
@@ -188,7 +176,7 @@ class TestSDKVerifyFallback:
                 source_text=SAMPLE_SOURCE,
                 level="thorough",
             )
-        assert result["level"] == "deterministic"
+        assert result["executed_mode"] == "deterministic"
         assert any(i["type"] == "llm_unavailable" for i in result["issues"])
 
     def test_fallback_still_detects_hallucination(self):
@@ -229,9 +217,8 @@ class TestSDKVerifyFallback:
                 level="quick",
             )
 
-        assert result["verdict"] == "contradicted"
-        assert result["decision"] == "contradicted"
-        assert result["claim_true"] is False
+        assert result["result"] == "contradicted"
+        assert result["claim_is_true"] is False
         assert any(i["type"] == "claim_value_conflict" for i in result["issues"])
 
     def test_claim_value_conflict_prefers_full_bp_pair_from_source(self):
@@ -259,10 +246,49 @@ class TestSDKVerifyFallback:
                 level="quick",
             )
 
-        assert result["decision"] == "contradicted"
-        assert result["claim_true"] is False
-        assert "128/82" in str(result["claim_comparison"]["source"])
-        assert "128/82" in str(result["issues"][0]["detail"])
+        assert result["result"] == "contradicted"
+        assert result["claim_is_true"] is False
+        assert "128/82" in str(result["source_value"])
+        assert "128/82" in str(result["issues"][0]["message"])
+
+    def test_claim_grounding_recovers_when_report_echoes_claim_value(self):
+        """If audit echoes claim value as source, SDK must re-ground from source text."""
+        from mosaicx.sdk import verify
+        from mosaicx.verify.models import FieldVerdict, VerificationReport
+
+        mocked_report = VerificationReport(
+            verdict="verified",
+            confidence=0.95,
+            level="audit",
+            issues=[],
+            field_verdicts=[
+                FieldVerdict(
+                    status="verified",
+                    field_path="claim",
+                    claimed_value="patient BP is 120/82",
+                    source_value="120/82",
+                    evidence_excerpt="Claim BP 120/82, source BP values found: []",
+                    evidence_source="source_document",
+                )
+            ],
+        )
+
+        source_text = (
+            "Measurements Vital Sign Reading Normal Range Status "
+            "Blood Pressure 128/82 mmHg 120/80 mmHg Slightly Elevated."
+        )
+
+        with patch("mosaicx.verify.engine.verify", return_value=mocked_report):
+            result = verify(
+                claim="patient BP is 120/82",
+                source_text=source_text,
+                level="thorough",
+            )
+
+        assert result["result"] == "contradicted"
+        assert result["claim_is_true"] is False
+        assert result["source_value"] == "128/82"
+        assert "120/82" not in str(result["evidence"])
 
     def test_thorough_claim_matching_source_rescues_partial_verdict(self):
         """Matching grounded claim/source values should resolve to verified."""
@@ -300,16 +326,56 @@ class TestSDKVerifyFallback:
                 level="thorough",
             )
 
-        assert result["decision"] == "verified"
-        assert result["claim_true"] is True
-        assert result.get("match_rescued") is True
+        assert result["result"] == "verified"
+        assert result["claim_is_true"] is True
         assert result["support_score"] == pytest.approx(1.0)
-        assert "128/82" in str(result["claim_comparison"]["source"])
-        assert "does not contain" not in str(result["claim_comparison"]["evidence"]).lower()
-        assert not any("does not contain" in str(i.get("detail", "")).lower() for i in result["issues"])
+        assert "128/82" in str(result["source_value"])
+        assert "does not contain" not in str(result["evidence"]).lower()
+        assert not any("does not contain" in str(i.get("message", "")).lower() for i in result["issues"])
         assert result["citations"]
         assert any("128/82" in str(c.get("snippet", "")) for c in result["citations"])
         assert not any("does not contain" in str(c.get("snippet", "")).lower() for c in result["citations"])
+
+    def test_thorough_claim_rescue_rewrites_no_information_found_evidence(self):
+        """Rescued claim should not keep 'no information found' evidence text."""
+        from mosaicx.sdk import verify
+        from mosaicx.verify.models import FieldVerdict, Issue, VerificationReport
+
+        mocked_report = VerificationReport(
+            verdict="insufficient_evidence",
+            confidence=0.35,
+            level="audit",
+            issues=[
+                Issue(
+                    type="audit_unsupported",
+                    field="claim",
+                    detail="No blood pressure information found in source.",
+                    severity="warning",
+                )
+            ],
+            field_verdicts=[
+                FieldVerdict(
+                    status="unsupported",
+                    field_path="claim",
+                    claimed_value="patient BP is 128/82",
+                    source_value="128/82",
+                    evidence_excerpt="No blood pressure information found in source.",
+                    evidence_source="sample_patient_vitals.pdf",
+                )
+            ],
+        )
+
+        with patch("mosaicx.verify.engine.verify", return_value=mocked_report):
+            result = verify(
+                claim="patient BP is 128/82",
+                source_text="Patient vital signs: Blood Pressure 128/82 mmHg.",
+                level="thorough",
+            )
+
+        assert result["result"] == "verified"
+        assert result["claim_is_true"] is True
+        assert result["confidence"] >= 0.85
+        assert "no blood pressure information found" not in str(result["evidence"]).lower()
 
 
 class TestSDKVerifyEdgeCases:
@@ -408,10 +474,9 @@ class TestSDKVerifyEdgeCases:
             )
 
         adjudicator.assert_called_once()
-        assert result["decision"] == "verified"
-        assert result["claim_true"] is True
-        assert result["adjudication_method"] == "dspy_mcc_bestofn"
-        assert result.get("adjudication_applied") is True
+        assert result["result"] == "verified"
+        assert result["claim_is_true"] is True
+        assert result["adjudication"] == "dspy_mcc_bestofn"
 
     def test_clear_claim_conflict_skips_dspy_adjudication(self):
         """Clear numeric conflicts must remain deterministic contradictions."""
@@ -446,9 +511,9 @@ class TestSDKVerifyEdgeCases:
             )
 
         adjudicator.assert_not_called()
-        assert result["decision"] == "contradicted"
-        assert result["claim_true"] is False
-        assert result["adjudication_method"] is None
+        assert result["result"] == "contradicted"
+        assert result["claim_is_true"] is False
+        assert "adjudication" not in result
 
     def test_verify_claim_citations_preserve_chunk_metadata(self):
         from mosaicx.sdk import verify
