@@ -227,6 +227,7 @@ class TestSDKVerifyFallback:
                 level="quick",
             )
 
+        assert result["verdict"] == "contradicted"
         assert result["decision"] == "contradicted"
         assert result["claim_true"] is False
         assert any(i["type"] == "claim_value_conflict" for i in result["issues"])

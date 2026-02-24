@@ -379,3 +379,25 @@ When completing `DSPY-*` items, append:
 - Remaining blockers:
   - Land/close `VER-002` with any remaining CLI/JSON contract cleanup.
   - Continue roadmap issues: `QRY-001`, `EXT-001`, `EXT-002`, `OPS-001`, `EVAL-001`.
+
+### Update 2026-02-24 11:45
+- Tasks completed:
+  - Unified claim-mode machine contract by aligning `verdict` with final `decision`.
+  - Eliminated conflicting states where `verdict` and `decision` could disagree for claim checks.
+  - Preserved canonical `claim_true` while keeping `decision/verdict` synchronized for SDK and CLI consumers.
+- Files changed:
+  - `mosaicx/sdk.py`
+  - `tests/test_sdk_verify.py`
+- Tests run:
+  - `PYTHONPATH=. .venv/bin/pytest -q tests/test_sdk_verify.py`
+  - `PYTHONPATH=. .venv/bin/mosaicx verify --sources tests/datasets/extract/sample_patient_vitals.pdf --claim "patient BP is 120/82" --level quick -o /tmp/verify_false_quick_after2.json`
+- Results:
+  - SDK verify test suite passes (`16 passed`).
+  - Quick verify now yields coherent machine output:
+    - `verdict=contradicted`, `decision=contradicted`, `claim_true=false`,
+    - `claim_comparison.source=128/82`.
+- Commit:
+  - pending
+- Remaining blockers:
+  - Continue `QRY-001` direct-answer contract hardening and close `QRY-002`/`VER-002` issues after final sweep.
+  - Advance roadmap items `EXT-001`, `EXT-002`, `OPS-001`, `EVAL-001`.

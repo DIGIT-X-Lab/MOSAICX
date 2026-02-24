@@ -1944,6 +1944,9 @@ def verify(
         out["support_score"] = out.get("confidence")
 
     out["decision"] = decision
+    if verification_mode == "claim":
+        # Keep machine-facing verdict semantics consistent for claim checks.
+        out["verdict"] = decision
     out["is_verified"] = decision == "verified"
     out["is_contradicted"] = decision == "contradicted"
     out["sources_consulted"] = sorted(
