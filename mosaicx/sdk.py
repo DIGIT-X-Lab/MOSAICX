@@ -2186,9 +2186,20 @@ def verify(
             }
         )
 
+    top_support_score = out.get("support_score")
+    if top_support_score is None:
+        top_support_score = out.get("confidence")
+
     result: dict[str, Any] = {
         "result": str(decision or "insufficient_evidence"),
         "confidence": float(out.get("confidence") or 0.0),
+        "verify_type": verification_mode,
+        "requested_mode": level,
+        "executed_mode": str(effective_level or out.get("level") or ""),
+        "fallback_used": bool(fallback_used),
+        "fallback_reason": fallback_reason,
+        "based_on_source": bool(grounded),
+        "support_score": float(top_support_score or 0.0),
     }
     if verification_mode == "claim":
         result["claim_is_true"] = claim_truth

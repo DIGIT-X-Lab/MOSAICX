@@ -36,6 +36,23 @@ Other plan files are design/history logs and must link here for status.
 
 ### Evidence highlights
 
+- Verify audit recovery gating hardened (`2026-02-24`, `BUG-VER-001`):
+  - `mosaicx/verify/audit.py` now attempts Outlines recovery only for structured serialization/JSON parse failures.
+  - LM-unconfigured failures (`No LM is loaded ... dspy.configure(lm=...)`) now bubble to engine fallback instead of being force-recovered, restoring expected `thorough -> standard/deterministic` semantics.
+  - Added regression tests:
+    - `tests/test_verify_audit.py::test_claim_audit_skips_outlines_when_lm_unconfigured`
+    - `tests/test_verify_audit.py::test_extraction_audit_skips_outlines_when_lm_unconfigured`
+  - Validation:
+    - `PYTHONPATH=. .venv/bin/pytest -q tests/test_verify_audit.py tests/test_verify_engine.py tests/test_sdk_verify.py` -> `66 passed, 1 skipped`
+
+- Hard-test pipeline reliability (`ROADMAP-OPS`):
+  - `scripts/run_hard_test_matrix.sh` now enforces DSPy cache clears between major packs and before LLM checks via `scripts/clear_dspy_cache.sh`.
+  - Added strict LLM preflight mode (`MOSAICX_HARDTEST_STRICT_LLM=1` default): hard-test run aborts if local model endpoint health-check fails.
+  - Added local helpers required by matrix runner:
+    - `scripts/ensure_vllm_mlx_server.sh`
+    - `scripts/generate_hard_test_fixtures.py`
+    - `scripts/clear_dspy_cache.sh`
+
 - Verify contract simplification + structured recovery hardening (`2026-02-26`, commit `81fad8f`):
   - SDK `verify()` now returns compact top-level fields by default:
     - claim mode: `result`, `claim_is_true`, `confidence`, `claim`, `source_value`, `evidence`

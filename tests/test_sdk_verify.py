@@ -54,7 +54,19 @@ class TestSDKVerifyQuick:
             include_debug=True,
         )
         assert isinstance(result, dict)
-        for key in ("result", "confidence", "field_checks", "debug"):
+        for key in (
+            "result",
+            "confidence",
+            "field_checks",
+            "verify_type",
+            "requested_mode",
+            "executed_mode",
+            "fallback_used",
+            "fallback_reason",
+            "based_on_source",
+            "support_score",
+            "debug",
+        ):
             assert key in result, f"Missing key: {key}"
         for key in (
             "support_score",
@@ -226,6 +238,7 @@ class TestSDKVerifyFallback:
 
         assert result["result"] == "contradicted"
         assert result["claim_is_true"] is False
+        assert result["support_score"] == pytest.approx(0.0)
         assert any(i["type"] == "claim_value_conflict" for i in result["debug"]["issues"])
         assert result["debug"]["support_score"] == pytest.approx(0.0)
 

@@ -119,6 +119,41 @@ def _run_outlines_structured_report(
     return None
 
 
+def _looks_like_lm_unconfigured_error(exc: Exception) -> bool:
+    msg = str(exc or "").lower()
+    markers = (
+        "no lm is loaded",
+        "please configure the lm",
+        "dspy.configure(lm=",
+        "no lm configured",
+    )
+    return any(marker in msg for marker in markers)
+
+
+def _is_structured_parse_failure(exc: Exception) -> bool:
+    msg = str(exc or "").lower()
+    markers = (
+        "jsonadapter",
+        "adapterparseerror",
+        "cannot be serialized to a json object",
+        "cannot be serialized to json",
+        "failed to parse lm response",
+        "parse",
+    )
+    return any(marker in msg for marker in markers)
+
+
+def _should_attempt_outlines_recovery(exc: Exception) -> bool:
+    """Use Outlines only when DSPy failed at structured serialization/parsing.
+
+    Non-serialization failures (e.g. LM not configured) should bubble so engine
+    fallback semantics remain stable.
+    """
+    if _looks_like_lm_unconfigured_error(exc):
+        return False
+    return _is_structured_parse_failure(exc)
+
+
 def _recover_claim_audit_with_outlines(
     *,
     claim: str,
@@ -639,6 +674,8 @@ def run_audit(
         prediction = rlm(source_manifest=source_manifest, extraction_json=extraction_json)
         return _parse_audit_report(prediction.audit_report)
     except Exception as exc:
+        if not _should_attempt_outlines_recovery(exc):
+            raise
         logger.warning("DSPy RLM extraction audit failed; attempting Outlines recovery: %s", exc)
         recovered = _recover_extraction_audit_with_outlines(
             source_text=source_text,
@@ -904,6 +941,8 @@ def run_claim_audit(
         prediction = rlm(source_manifest=source_manifest, claim=claim)
         return _parse_audit_report(prediction.audit_report)
     except Exception as exc:
+        if not _should_attempt_outlines_recovery(exc):
+            raise
         logger.warning("DSPy RLM claim audit failed; attempting Outlines recovery: %s", exc)
         recovered = _recover_claim_audit_with_outlines(
             claim=claim,

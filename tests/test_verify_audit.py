@@ -468,6 +468,68 @@ class TestOutlinesRecovery:
         assert verdicts[0].status == "verified"
         assert any(i.type == "audit_structured_recovery" for i in issues)
 
+    def test_claim_audit_skips_outlines_when_lm_unconfigured(self, monkeypatch):
+        from mosaicx.verify.audit import run_claim_audit
+
+        class _FailingRLM:
+            def __init__(self, *_args, **_kwargs):
+                pass
+
+            def __call__(self, **_kwargs):
+                raise RuntimeError(
+                    "No LM is loaded. Please configure the LM using dspy.configure(lm=dspy.LM(...))"
+                )
+
+        called = {"recovery": 0}
+
+        def _recovery_stub(**_kwargs):
+            called["recovery"] += 1
+            return {"field_verdicts": []}
+
+        monkeypatch.setattr("dspy.RLM", _FailingRLM)
+        monkeypatch.setattr(
+            "mosaicx.verify.audit._recover_claim_audit_with_outlines",
+            _recovery_stub,
+        )
+
+        with pytest.raises(RuntimeError, match="No LM is loaded"):
+            run_claim_audit(
+                claim="patient BP is 120/82",
+                source_text="Patient vital signs: Blood Pressure 128/82 mmHg.",
+            )
+        assert called["recovery"] == 0
+
+    def test_extraction_audit_skips_outlines_when_lm_unconfigured(self, monkeypatch):
+        from mosaicx.verify.audit import run_audit
+
+        class _FailingRLM:
+            def __init__(self, *_args, **_kwargs):
+                pass
+
+            def __call__(self, **_kwargs):
+                raise RuntimeError(
+                    "No LM is loaded. Please configure the LM using dspy.configure(lm=dspy.LM(...))"
+                )
+
+        called = {"recovery": 0}
+
+        def _recovery_stub(**_kwargs):
+            called["recovery"] += 1
+            return {"field_verdicts": []}
+
+        monkeypatch.setattr("dspy.RLM", _FailingRLM)
+        monkeypatch.setattr(
+            "mosaicx.verify.audit._recover_extraction_audit_with_outlines",
+            _recovery_stub,
+        )
+
+        with pytest.raises(RuntimeError, match="No LM is loaded"):
+            run_audit(
+                source_text="Findings: 2.3 cm spiculated nodule in the right upper lobe.",
+                extraction={"findings": [{"measurement": {"value": 2.3, "unit": "cm"}}]},
+            )
+        assert called["recovery"] == 0
+
 
 # ---------------------------------------------------------------------------
 # Engine integration: verify thorough uses RLM
