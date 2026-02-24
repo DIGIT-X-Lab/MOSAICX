@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+import json
 import os
 import platform
 import shutil
 import subprocess
 from dataclasses import asdict, dataclass
 from pathlib import Path
+from typing import Any
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
 
 
 @dataclass
@@ -30,10 +34,81 @@ class DenoRuntimeStatus:
         return asdict(self)
 
 
+@dataclass
+class LLMEndpointStatus:
+    """Readiness snapshot for OpenAI-compatible LLM endpoints."""
+
+    ok: bool
+    api_base: str
+    models_ok: bool
+    chat_ok: bool
+    model_id: str | None
+    reason: str | None = None
+
+    def to_dict(self) -> dict[str, object]:
+        return asdict(self)
+
+
 def _default_deno_dir(home: Path | None = None) -> Path:
     if home is None:
         home = Path.home()
     return home / ".cache" / "deno"
+
+
+def _workspace_deno_dir() -> Path:
+    return Path.cwd() / ".mosaicx_runtime" / "deno"
+
+
+def _tmp_deno_dir() -> Path:
+    return Path("/tmp") / "mosaicx" / "deno"
+
+
+def _default_dspy_cache_dir(home: Path | None = None) -> Path:
+    if home is None:
+        home = Path.home()
+    return home / ".dspy_cache"
+
+
+def _workspace_dspy_cache_dir() -> Path:
+    return Path.cwd() / ".mosaicx_runtime" / "dspy_cache"
+
+
+def _tmp_dspy_cache_dir() -> Path:
+    return Path("/tmp") / "mosaicx" / "dspy_cache"
+
+
+def _normalize_api_base_for_http(api_base: str) -> str:
+    value = str(api_base or "").strip()
+    if not value:
+        return value
+    value = value.replace("://localhost", "://127.0.0.1").replace("://[::1]", "://127.0.0.1")
+    return value.rstrip("/")
+
+
+def _strip_provider_prefix(model: str) -> str:
+    model_text = " ".join(str(model or "").split())
+    if "/" not in model_text:
+        return model_text
+    provider = model_text.split("/", 1)[0].strip().lower()
+    known = {
+        "openai",
+        "azure",
+        "anthropic",
+        "ollama",
+        "gemini",
+        "google",
+        "vertex_ai",
+        "bedrock",
+        "cohere",
+        "mistral",
+        "huggingface",
+        "together_ai",
+        "groq",
+        "xai",
+    }
+    if provider in known:
+        return model_text.split("/", 1)[1]
+    return model_text
 
 
 def _resolve_deno_executable() -> str | None:
@@ -91,15 +166,263 @@ def ensure_runtime_env() -> None:
             f"{deno_bin_dir}{os.pathsep}{path}" if path else str(deno_bin_dir)
         )
 
-    deno_dir = os.environ.get("DENO_DIR", "").strip()
-    if not deno_dir:
-        default_deno_dir = _default_deno_dir(home)
+    env_deno_dir = os.environ.get("DENO_DIR", "").strip()
+    candidates: list[Path] = []
+    if env_deno_dir:
+        candidates.append(Path(env_deno_dir))
+    candidates.extend([
+        _default_deno_dir(home),
+        _workspace_deno_dir(),
+        _tmp_deno_dir(),
+    ])
+
+    for candidate in candidates:
+        if _ensure_writable_dir(candidate):
+            os.environ["DENO_DIR"] = str(candidate)
+            break
+    else:
+        # Surface the conventional location even if writes fail.
+        os.environ["DENO_DIR"] = str(_default_deno_dir(home))
+
+
+def ensure_dspy_cache_env(*, preferred_dir: Path | str | None = None) -> str:
+    """Ensure DSPy cache directory points to a writable location.
+
+    Returns the cache directory path used.
+    """
+    home = Path.home()
+    candidates: list[Path] = []
+
+    env_cache = os.environ.get("DSPY_CACHEDIR", "").strip()
+    if env_cache:
+        candidates.append(Path(env_cache))
+    if preferred_dir is not None:
+        candidates.append(Path(preferred_dir))
+    candidates.extend([
+        _default_dspy_cache_dir(home),
+        _workspace_dspy_cache_dir(),
+        _tmp_dspy_cache_dir(),
+    ])
+
+    for candidate in candidates:
+        if _ensure_writable_dir(candidate):
+            cache_path = str(candidate)
+            os.environ["DSPY_CACHEDIR"] = cache_path
+            return cache_path
+
+    fallback = str(_default_dspy_cache_dir(home))
+    os.environ["DSPY_CACHEDIR"] = fallback
+    return fallback
+
+
+def ensure_dspy_runtime_env(*, preferred_cache_dir: Path | str | None = None) -> None:
+    """Prepare runtime env for DSPy modules and interpreters.
+
+    This must run before importing ``dspy`` so cache initialization uses
+    a writable location in constrained environments.
+    """
+    ensure_runtime_env()
+    ensure_dspy_cache_env(preferred_dir=preferred_cache_dir)
+    os.environ.setdefault("LITELLM_LOCAL_MODEL_COST_MAP", "True")
+
+
+def import_dspy(*, preferred_cache_dir: Path | str | None = None):
+    """Import DSPy after runtime env bootstrap."""
+    ensure_dspy_runtime_env(preferred_cache_dir=preferred_cache_dir)
+    import dspy
+
+    return dspy
+
+
+def _adapter_policy_sequence(dspy: Any, policy: str, lm: Any) -> list[tuple[str, Any | None]]:
+    policy_norm = " ".join(str(policy or "auto").lower().split())
+    if policy_norm not in {"auto", "json", "twostep", "none"}:
+        policy_norm = "auto"
+
+    order = {
+        "auto": ["json", "twostep", "none"],
+        "json": ["json", "twostep", "none"],
+        "twostep": ["twostep", "json", "none"],
+        "none": ["none"],
+    }[policy_norm]
+
+    sequence: list[tuple[str, Any | None]] = []
+    for item in order:
+        if item == "none":
+            sequence.append(("none", None))
+            continue
+        if item == "json":
+            try:
+                sequence.append(("json", dspy.JSONAdapter()))
+            except Exception:
+                continue
+            continue
+        if item == "twostep":
+            try:
+                try:
+                    sequence.append(("twostep", dspy.TwoStepAdapter(extraction_model=lm)))
+                except TypeError:
+                    sequence.append(("twostep", dspy.TwoStepAdapter()))
+            except Exception:
+                continue
+    if not sequence:
+        sequence.append(("none", None))
+    return sequence
+
+
+def configure_dspy_lm(
+    lm: Any,
+    *,
+    preferred_cache_dir: Path | str | None = None,
+    adapter_policy: str | None = None,
+) -> tuple[Any, str]:
+    """Configure DSPy LM with adapter fallback policy.
+
+    Returns
+    -------
+    tuple[Any, str]
+        ``(dspy_module, adapter_name)``, where adapter_name is one of
+        ``json``, ``twostep``, or ``none``.
+    """
+    dspy = import_dspy(preferred_cache_dir=preferred_cache_dir)
+    policy = adapter_policy or os.environ.get("MOSAICX_DSPY_ADAPTER_POLICY", "auto")
+    sequence = _adapter_policy_sequence(dspy, policy, lm)
+    last_error: Exception | None = None
+
+    for adapter_name, adapter in sequence:
         try:
-            default_deno_dir.mkdir(parents=True, exist_ok=True)
-        except OSError:
-            # If directory creation fails, still expose the conventional path.
-            pass
-        os.environ["DENO_DIR"] = str(default_deno_dir)
+            if adapter is not None:
+                try:
+                    dspy.configure(lm=lm, adapter=adapter)
+                except TypeError:
+                    # Compatibility path for DSPy versions without adapter kwarg.
+                    dspy.configure(lm=lm)
+                    try:
+                        dspy.settings.adapter = adapter
+                    except Exception:
+                        pass
+            else:
+                dspy.configure(lm=lm)
+            os.environ["MOSAICX_DSPY_ADAPTER_ACTIVE"] = adapter_name
+            return dspy, adapter_name
+        except Exception as exc:
+            last_error = exc
+            continue
+
+    if last_error is not None:
+        raise RuntimeError(
+            f"Unable to configure DSPy LM with adapter policy '{policy}': {last_error}"
+        ) from last_error
+    raise RuntimeError(f"Unable to configure DSPy LM with adapter policy '{policy}'")
+
+
+def check_openai_endpoint_ready(
+    *,
+    api_base: str,
+    api_key: str | None = None,
+    ping_model: str | None = None,
+    timeout_s: float = 5.0,
+) -> LLMEndpointStatus:
+    """Validate `/models` and `/chat/completions` for an OpenAI-compatible endpoint."""
+    base = _normalize_api_base_for_http(api_base)
+    if not base:
+        return LLMEndpointStatus(
+            ok=False,
+            api_base="",
+            models_ok=False,
+            chat_ok=False,
+            model_id=None,
+            reason="api_base is empty",
+        )
+
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {api_key or 'ollama'}",
+    }
+    models_url = f"{base}/models"
+    chat_url = f"{base}/chat/completions"
+
+    try:
+        req = Request(models_url, headers=headers, method="GET")
+        with urlopen(req, timeout=timeout_s) as resp:  # noqa: S310
+            payload = json.loads(resp.read().decode("utf-8", errors="ignore") or "{}")
+    except HTTPError as exc:
+        return LLMEndpointStatus(
+            ok=False,
+            api_base=base,
+            models_ok=False,
+            chat_ok=False,
+            model_id=None,
+            reason=f"/models HTTP {exc.code}",
+        )
+    except (URLError, OSError, TimeoutError, json.JSONDecodeError) as exc:
+        return LLMEndpointStatus(
+            ok=False,
+            api_base=base,
+            models_ok=False,
+            chat_ok=False,
+            model_id=None,
+            reason=f"/models unreachable: {type(exc).__name__}: {exc}",
+        )
+
+    data = payload.get("data", []) if isinstance(payload, dict) else []
+    model_ids = [
+        str(item.get("id"))
+        for item in data
+        if isinstance(item, dict) and str(item.get("id") or "").strip()
+    ]
+    if not model_ids:
+        return LLMEndpointStatus(
+            ok=False,
+            api_base=base,
+            models_ok=True,
+            chat_ok=False,
+            model_id=None,
+            reason="/models returned no model ids",
+        )
+
+    preferred = _strip_provider_prefix(str(ping_model or ""))
+    model_id = preferred if preferred in model_ids else model_ids[0]
+
+    body = json.dumps(
+        {
+            "model": model_id,
+            "messages": [{"role": "user", "content": "Reply with OK only."}],
+            "temperature": 0.0,
+            "max_tokens": 4,
+        }
+    ).encode("utf-8")
+    try:
+        req = Request(chat_url, data=body, headers=headers, method="POST")
+        with urlopen(req, timeout=timeout_s) as resp:  # noqa: S310
+            _ = resp.read(1024)
+    except HTTPError as exc:
+        return LLMEndpointStatus(
+            ok=False,
+            api_base=base,
+            models_ok=True,
+            chat_ok=False,
+            model_id=model_id,
+            reason=f"/chat/completions HTTP {exc.code}",
+        )
+    except (URLError, OSError, TimeoutError) as exc:
+        return LLMEndpointStatus(
+            ok=False,
+            api_base=base,
+            models_ok=True,
+            chat_ok=False,
+            model_id=model_id,
+            reason=f"/chat/completions unreachable: {type(exc).__name__}: {exc}",
+        )
+
+    return LLMEndpointStatus(
+        ok=True,
+        api_base=base,
+        models_ok=True,
+        chat_ok=True,
+        model_id=model_id,
+        reason=None,
+    )
 
 
 def get_deno_runtime_status() -> DenoRuntimeStatus:

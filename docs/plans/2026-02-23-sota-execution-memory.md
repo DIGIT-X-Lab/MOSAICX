@@ -428,3 +428,28 @@ When completing `DSPY-*` items, append:
   - Close `EXT-001` and `EXT-002` issues after commit + push.
   - Implement `OPS-001` LLM endpoint preflight gating for LLM-dependent integration tests.
   - Implement `EVAL-001` quality-gate metrics expansion.
+
+### Update 2026-02-24 13:05
+- Tasks completed:
+  - Implemented `OPS-001` endpoint preflight utility for OpenAI-compatible LLM servers.
+  - Added `check_openai_endpoint_ready` in `runtime_env` to validate both `/models` and `/chat/completions`, with explicit failure reasons and selected model id.
+  - Wired query integration fixture to gate on endpoint preflight and skip with actionable reason when endpoint is unreachable.
+  - Strengthened hard-test matrix preflight to verify both endpoints (not just `/models`) before LLM-specific checks.
+- Files changed:
+  - `mosaicx/runtime_env.py`
+  - `tests/test_runtime_env.py`
+  - `tests/test_query_engine.py`
+  - `scripts/run_hard_test_matrix.sh`
+- Tests run:
+  - `PYTHONPATH=. .venv/bin/pytest -q tests/test_runtime_env.py` (`13 passed`)
+  - `PYTHONPATH=. .venv/bin/pytest -q tests/test_query_engine.py -m integration -k ask_returns_string` (sandbox: skipped with explicit preflight reason)
+  - escalated: `PYTHONPATH=. .venv/bin/pytest -q tests/test_query_engine.py -m integration -k ask_returns_string` (`1 passed`)
+- Results:
+  - Preflight now fails fast with explicit reason in constrained/sandboxed runs.
+  - With local vllm-mlx reachable, integration test passes end-to-end.
+- Commit:
+  - pending
+- Remaining blockers:
+  - Close `OPS-001` issue after commit + push.
+  - Implement `EVAL-001` and `EVAL-002` quality/optimizer steps.
+  - Continue `QRY-001` and remaining lexical-routing cleanup on `QRY-002`.

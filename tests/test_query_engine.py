@@ -1682,10 +1682,19 @@ def _configure_dspy_for_test():
 
     from mosaicx.config import get_config
     from mosaicx.metrics import make_harmony_lm
+    from mosaicx.runtime_env import check_openai_endpoint_ready
 
     cfg = get_config()
     if not cfg.api_key or not cfg.lm:
         pytest.skip("No MOSAICX_API_KEY/LM configured")
+    status = check_openai_endpoint_ready(
+        api_base=cfg.api_base,
+        api_key=cfg.api_key,
+        ping_model=cfg.lm,
+        timeout_s=4.0,
+    )
+    if not status.ok:
+        pytest.skip(f"LLM preflight failed: {status.reason}")
     lm = make_harmony_lm(cfg.lm, api_key=cfg.api_key, api_base=cfg.api_base, temperature=cfg.lm_temperature)
     dspy.configure(lm=lm)
     yield
