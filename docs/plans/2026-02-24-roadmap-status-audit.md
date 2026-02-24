@@ -54,6 +54,12 @@ Other plan files are design/history logs and must link here for status.
     - `scripts/generate_hard_test_fixtures.py`
     - `scripts/clear_dspy_cache.sh`
 
+- Primary-path guard for verify route semantics (`BUG-QA-001`):
+  - Added SDK regression asserting primary `thorough -> audit` route remains explicit and non-fallback:
+    - `tests/test_sdk_verify.py::test_thorough_claim_reports_primary_audit_route_without_fallback`
+  - Validation:
+    - `PYTHONPATH=. .venv/bin/pytest -q tests/test_sdk_verify.py tests/test_verify_engine.py tests/test_verify_audit.py` -> `67 passed, 1 skipped`
+
 - Verify contract simplification + structured recovery hardening (`2026-02-26`, commit `81fad8f`):
   - SDK `verify()` now returns compact top-level fields by default:
     - claim mode: `result`, `claim_is_true`, `confidence`, `claim`, `source_value`, `evidence`

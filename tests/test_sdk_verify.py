@@ -146,6 +146,43 @@ class TestSDKVerifyQuick:
         assert result["result"] != "verified"
         assert result["claim_is_true"] in (None, False)
 
+    def test_thorough_claim_reports_primary_audit_route_without_fallback(self):
+        """Primary-path audit runs must be explicit and not look like fallback."""
+        from mosaicx.sdk import verify
+        from mosaicx.verify.models import FieldVerdict, VerificationReport
+
+        mocked_report = VerificationReport(
+            verdict="verified",
+            confidence=0.9,
+            level="audit",
+            issues=[],
+            field_verdicts=[
+                FieldVerdict(
+                    status="verified",
+                    field_path="claim",
+                    claimed_value="patient BP is 128/82",
+                    source_value="128/82",
+                    evidence_excerpt="Vitals: BP 128/82 measured at triage.",
+                    evidence_source="source_document",
+                )
+            ],
+        )
+
+        with patch("mosaicx.verify.engine.verify", return_value=mocked_report):
+            result = verify(
+                claim="patient BP is 128/82",
+                source_text="Vitals: BP 128/82 measured at triage.",
+                level="thorough",
+                include_debug=False,
+            )
+
+        assert result["requested_mode"] == "thorough"
+        assert result["executed_mode"] == "audit"
+        assert result["fallback_used"] is False
+        assert result["result"] == "verified"
+        assert result["claim_is_true"] is True
+        assert result["source_value"] == "128/82"
+
     def test_verify_with_document_path(self):
         """Verify should accept a document path and load the file."""
         from mosaicx.sdk import verify
