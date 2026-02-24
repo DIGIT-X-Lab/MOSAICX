@@ -29,6 +29,13 @@ Other plan files are design/history logs and must link here for status.
   - `docs/runs/2026-02-24-query-optimizer-seq-tiny/gepa_optimized.json`
   - Baseline metrics persisted: `docs/runs/2026-02-24-query-optimizer-seq-tiny/baseline_metrics.json`
   - Run report with command provenance: `docs/runs/2026-02-24-eval-002-optimizer-sequence-report.md`
+  - Verify pipeline artifact run:
+    - `docs/runs/2026-02-24T155229Z-verify-optimizer-seq/optimizer_sequence_manifest.json`
+    - `docs/runs/2026-02-24T155229Z-verify-optimizer-seq/baseline_metrics.json`
+    - `docs/runs/2026-02-24T155229Z-verify-optimizer-seq/miprov2_optimized.json`
+    - `docs/runs/2026-02-24T155229Z-verify-optimizer-seq/simba_optimized.json`
+    - `docs/runs/2026-02-24T155229Z-verify-optimizer-seq/gepa_optimized.json`
+    - Run report: `docs/runs/2026-02-24-eval-002-verify-optimizer-sequence-report.md`
 - DOC canonicalization (`DOC-001`) applied:
   - `docs/plans/2026-02-23-dspy-full-capability-rollout.md` marked as historical/superseded.
   - `docs/plans/2026-02-23-sota-execution-memory.md` marked as execution ledger with canonical pointer.

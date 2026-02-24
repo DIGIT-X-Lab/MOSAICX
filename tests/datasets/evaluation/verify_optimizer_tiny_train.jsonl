@@ -1,0 +1,3 @@
+{"claim":"patient BP is 128/82","source_text":"Patient Vital Signs: Blood Pressure 128/82 mmHg. Pulse 76 bpm.","verdict":"verified","response":"verified"}
+{"claim":"patient BP is 120/82","source_text":"Patient Vital Signs: Blood Pressure 128/82 mmHg. Pulse 76 bpm.","verdict":"contradicted","response":"contradicted"}
+{"claim":"modality is CT","source_text":"Radiology Report: Modality CT Chest/Abdomen/Pelvis with contrast.","verdict":"verified","response":"verified"}

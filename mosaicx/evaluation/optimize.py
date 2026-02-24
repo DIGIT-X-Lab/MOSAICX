@@ -386,15 +386,40 @@ def run_optimization_with_strategy(
     elif valset is None:
         valset = trainset
 
-    optimizer = _build_optimizer(str(strategy), config, metric)
-    optimized = _compile_optimizer(
-        optimizer=optimizer,
-        module=module,
-        trainset=trainset,
-        valset=valset,
-        strategy=str(strategy),
-        config=config,
-    )
+    strategy_name = str(strategy)
+    optimizer = _build_optimizer(strategy_name, config, metric)
+    effective_strategy = strategy_name
+    compile_error: str | None = None
+    try:
+        optimized = _compile_optimizer(
+            optimizer=optimizer,
+            module=module,
+            trainset=trainset,
+            valset=valset,
+            strategy=strategy_name,
+            config=config,
+        )
+    except Exception as exc:
+        compile_error = f"{type(exc).__name__}: {exc}"
+        logger.warning(
+            "Optimizer %s compile failed; falling back to BootstrapFewShot: %s",
+            strategy_name,
+            compile_error,
+        )
+        fallback_cfg = {
+            "num_candidates": config.get("num_candidates", 5),
+            "max_iterations": config.get("max_iterations", 10),
+        }
+        fallback = _build_optimizer("BootstrapFewShot", fallback_cfg, metric)
+        optimized = _compile_optimizer(
+            optimizer=fallback,
+            module=module,
+            trainset=trainset,
+            valset=valset,
+            strategy="BootstrapFewShot",
+            config=fallback_cfg,
+        )
+        effective_strategy = f"{strategy_name}->BootstrapFewShot"
 
     evaluator = dspy.Evaluate(
         devset=trainset,
@@ -420,7 +445,9 @@ def run_optimization_with_strategy(
         "val_score": val_score,
         "num_train": len(trainset),
         "num_val": len(valset),
-        "strategy": str(strategy),
+        "strategy": strategy_name,
+        "effective_strategy": effective_strategy,
+        "compile_error": compile_error,
     }
     return optimized, results
 
@@ -487,11 +514,13 @@ def run_optimizer_sequence(
         runs.append(
             {
                 "strategy": str(strategy),
+                "effective_strategy": str(result.get("effective_strategy") or str(strategy)),
                 "train_score": float(result["train_score"]),
                 "val_score": float(result["val_score"]),
                 "num_train": int(result["num_train"]),
                 "num_val": int(result["num_val"]),
                 "artifact": str(save_path),
+                "compile_error": result.get("compile_error"),
             }
         )
 

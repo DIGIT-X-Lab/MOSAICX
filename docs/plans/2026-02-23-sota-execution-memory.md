@@ -567,3 +567,30 @@ When completing `DSPY-*` items, append:
 - Remaining blockers:
   - Close roadmap issues in GitHub after final commit/push (`QRY-002`, `EVAL-002`, `DOC-001`).
   - Optional: run bounded optimizer sequence for `verify` pipeline dataset to extend artifact coverage.
+
+### Update 2026-02-24 16:55
+- Tasks completed:
+  - Extended `EVAL-002` coverage by running bounded optimizer artifacts for `verify` pipeline on local `vllm-mlx`.
+  - Added strategy-level compile fallback in optimizer runner to handle DSPy multi-LM incompatibility (`SIMBA` on verify pipeline).
+  - Persisted verify optimizer artifacts + baseline metrics + run report.
+- Files changed:
+  - `mosaicx/evaluation/optimize.py`
+  - `scripts/run_eval_optimizer_artifacts.sh`
+  - `docs/runs/2026-02-24-eval-002-verify-optimizer-sequence-report.md`
+  - `docs/runs/2026-02-24T155229Z-verify-optimizer-seq/optimizer_sequence_manifest.json`
+  - `docs/runs/2026-02-24T155229Z-verify-optimizer-seq/baseline_metrics.json`
+  - `docs/runs/2026-02-24T155229Z-verify-optimizer-seq/miprov2_optimized.json`
+  - `docs/runs/2026-02-24T155229Z-verify-optimizer-seq/simba_optimized.json`
+  - `docs/runs/2026-02-24T155229Z-verify-optimizer-seq/gepa_optimized.json`
+  - `docs/plans/2026-02-24-roadmap-status-audit.md`
+- Tests run:
+  - `PYTHONPATH=. .venv/bin/pytest -q tests/test_optimize.py`
+  - `MOSAICX_OPT_PROFILE=quick scripts/run_eval_optimizer_artifacts.sh verify` (escalated)
+- Results:
+  - Optimize tests pass (`7 passed`).
+  - Verify optimizer sequence completed with artifacts.
+  - SIMBA strategy uses fallback path on verify module due multi-LM DSPy limitation; fallback is recorded in manifest (`effective_strategy`, `compile_error`).
+- Commit:
+  - pending
+- Remaining blockers:
+  - None for this extension slice; optional follow-up is broadening eval datasets for stronger optimizer signal.
