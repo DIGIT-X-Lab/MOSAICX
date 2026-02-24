@@ -6,7 +6,7 @@ Status: Active
 Owner: Core platform
 Authoritative: Yes (single source of truth for rollout status)
 
-## 0) Canonical Status (Updated 2026-02-24 23:20)
+## 0) Canonical Status (Updated 2026-02-24 23:55)
 
 This file is the canonical status board for DSPy roadmap execution.
 Other plan files are design/history logs and must link here for status.
@@ -17,10 +17,14 @@ Other plan files are design/history logs and must link here for status.
   - `QRY-001`, `QRY-002`, `VER-001`, `VER-002`, `EXT-001`, `EXT-002`, `OPS-001`, `EVAL-001`, `EVAL-002`, `DOC-001`
   - legacy bugs: `#17`, `#18`, `#19`
   - closed duplicates: `#22`, `#27`
+- Closed DSPy capability items:
+  - `#38 [DSPY-03] JSONAdapter default structured-output policy`
+  - `#39 [DSPY-04] TwoStepAdapter fallback policy`
+  - `#44 [DSPY-11] answer_exact_match + answer_passage_match CI gates`
 - Open roadmap epics:
   - `#33 [ROADMAP-OPS]`, `#34 [ROADMAP-QRY]`, `#35 [ROADMAP-EXT]`
 - Open DSPy capability rollout items:
-  - `#36 [DSPY-01]` through `#50 [DSPY-15]`
+  - `#36`, `#37`, `#40`, `#41`, `#42`, `#43`, `#45`, `#46`, `#47`, `#48`, `#49`, `#50`
 
 ### Canonical control note
 
@@ -74,6 +78,17 @@ Other plan files are design/history logs and must link here for status.
   - New regression: `tests/test_query_engine.py::test_build_citations_count_values_excludes_profile_text_chunk_noise`.
   - Validation: `PYTHONPATH=. .venv/bin/pytest -q tests/test_query_engine.py -m 'not integration'` -> `69 passed, 5 deselected`.
   - Live check: count+values CLI output now surfaces computed rows + planner column match without profile noise.
+- Adapter policy hardening (`DSPY-03`, `DSPY-04`) now unified across CLI/SDK/MCP initialization:
+  - CLI and MCP initialization now route through `runtime_env.configure_dspy_lm` (JSONAdapter-first with TwoStep fallback).
+  - Files: `mosaicx/cli.py`, `mosaicx/mcp_server.py`, `mosaicx/runtime_env.py`.
+  - Validation:
+    - `PYTHONPATH=. .venv/bin/pytest -q tests/test_cli_dspy_config.py tests/test_mcp_server_dspy_config.py tests/test_runtime_env.py` -> `17 passed`.
+- Query quality-gate expansion (`DSPY-11`) wired:
+  - Added `answer_exact_match_metric` and `answer_passage_match_metric` wrappers with DSPy-evaluate path + deterministic fallback.
+  - Query components now emit `exact_match` and `passage_match`; quality gates enforce `exact_match_mean` and `passage_match_mean` when present.
+  - Files: `mosaicx/evaluation/grounding.py`, `mosaicx/evaluation/quality_gates.py`, `mosaicx/evaluation/__init__.py`, `mosaicx/cli.py`.
+  - Validation:
+    - `PYTHONPATH=. .venv/bin/pytest -q tests/test_evaluation_grounding.py tests/test_evaluation_quality_gates.py` -> `16 passed`.
 
 ### Operational note
 

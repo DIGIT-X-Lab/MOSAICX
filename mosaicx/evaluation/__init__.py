@@ -11,6 +11,8 @@ Submodules:
 from .dataset import PIPELINE_INPUT_FIELDS, load_jsonl
 from .metrics import get_metric, list_metrics
 from .grounding import (
+    answer_exact_match_metric,
+    answer_passage_match_metric,
     complete_and_grounded_metric,
     numeric_exactness_metric,
     query_metric_components,
@@ -38,6 +40,8 @@ from .optimize import (
 __all__ = [
     "OPTIMIZATION_STRATEGY",
     "PIPELINE_INPUT_FIELDS",
+    "answer_exact_match_metric",
+    "answer_passage_match_metric",
     "complete_and_grounded_metric",
     "DEFAULT_QUERY_GATES",
     "DEFAULT_VERIFY_GATES",

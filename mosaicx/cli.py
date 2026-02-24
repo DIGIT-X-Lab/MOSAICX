@@ -2881,6 +2881,8 @@ def optimize(
                         comp = {
                             "grounding": 0.0,
                             "numeric": 0.0,
+                            "exact_match": 0.0,
+                            "passage_match": 0.0,
                             "has_numeric_target": bool(getattr(ex, "expected_numeric", None) is not None),
                             "score": 0.0,
                         }
@@ -2931,7 +2933,16 @@ def optimize(
         gate_table.add_row("Passed", "yes" if quality_gate_report.get("passed") else "no")
         summary = quality_gate_report.get("summary", {})
         if isinstance(summary, dict):
-            for key in ("mean_score", "grounding_mean", "numeric_mean", "numeric_pass_rate", "verdict_accuracy", "confidence_mean"):
+            for key in (
+                "mean_score",
+                "grounding_mean",
+                "numeric_mean",
+                "numeric_pass_rate",
+                "exact_match_mean",
+                "passage_match_mean",
+                "verdict_accuracy",
+                "confidence_mean",
+            ):
                 if key not in summary:
                     continue
                 value = summary.get(key)
@@ -3060,6 +3071,8 @@ def eval_cmd(
                             {
                                 "grounding": 0.0,
                                 "numeric": 0.0,
+                                "exact_match": 0.0,
+                                "passage_match": 0.0,
                                 "has_numeric_target": bool(getattr(example, "expected_numeric", None) is not None),
                                 "score": 0.0,
                             }
@@ -3122,7 +3135,16 @@ def eval_cmd(
         gate_table.add_row("Passed", "yes" if quality_gate_report.get("passed") else "no")
         summary = quality_gate_report.get("summary", {})
         if isinstance(summary, dict):
-            for key in ("mean_score", "grounding_mean", "numeric_mean", "numeric_pass_rate", "verdict_accuracy", "confidence_mean"):
+            for key in (
+                "mean_score",
+                "grounding_mean",
+                "numeric_mean",
+                "numeric_pass_rate",
+                "exact_match_mean",
+                "passage_match_mean",
+                "verdict_accuracy",
+                "confidence_mean",
+            ):
                 if key not in summary:
                     continue
                 val = summary.get(key)

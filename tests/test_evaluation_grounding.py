@@ -58,6 +58,8 @@ def test_query_metric_components_expose_grounding_and_numeric_parts():
     assert parts["has_numeric_target"] is True
     assert 0.0 <= parts["grounding"] <= 1.0
     assert 0.0 <= parts["numeric"] <= 1.0
+    assert 0.0 <= parts["exact_match"] <= 1.0
+    assert 0.0 <= parts["passage_match"] <= 1.0
     assert 0.0 <= parts["score"] <= 1.0
 
 
@@ -70,3 +72,24 @@ def test_verify_metric_components_expose_verdict_match_and_confidence():
     assert parts["verdict_match"] == 0.0
     assert 0.0 <= parts["confidence"] <= 1.0
     assert 0.0 <= parts["score"] <= 1.0
+
+
+def test_answer_exact_match_metric_fallback_path():
+    from mosaicx.evaluation.grounding import answer_exact_match_metric
+
+    example = SimpleNamespace(question="Modality?", response="CT")
+    prediction = SimpleNamespace(response="CT")
+    assert answer_exact_match_metric(example, prediction) == 1.0
+
+
+def test_answer_passage_match_metric_fallback_path():
+    from mosaicx.evaluation.grounding import answer_passage_match_metric
+
+    example = SimpleNamespace(question="Modality?", response="CT")
+    prediction = SimpleNamespace(
+        response="CT",
+        context="Imaging report states: Modality CT was used throughout.",
+    )
+    score = answer_passage_match_metric(example, prediction)
+    assert 0.0 <= score <= 1.0
+    assert score > 0.0

@@ -139,6 +139,73 @@ def complete_and_grounded_metric(
     return _heuristic_grounded_score(question, response, context)
 
 
+def answer_exact_match_metric(
+    example: Any,
+    prediction: Any,
+    trace: Any = None,
+) -> float:
+    """Score exact answer match.
+
+    Uses ``dspy.evaluate.answer_exact_match`` when available.
+    Falls back to normalized string equality.
+    """
+    question = _as_text(getattr(example, "question", ""))
+    reference = _as_text(getattr(example, "response", ""))
+    response = _as_text(getattr(prediction, "response", getattr(prediction, "answer", "")))
+
+    try:
+        import dspy
+
+        evaluator = getattr(getattr(dspy, "evaluate", None), "answer_exact_match", None)
+        if evaluator is not None:
+            ex = SimpleNamespace(question=question, response=reference)
+            pred = SimpleNamespace(response=response)
+            value = evaluator(ex, pred, trace=trace)
+            return float(value)
+    except Exception:
+        pass
+
+    lhs = " ".join(reference.lower().split())
+    rhs = " ".join(response.lower().split())
+    return 1.0 if lhs and lhs == rhs else 0.0
+
+
+def answer_passage_match_metric(
+    example: Any,
+    prediction: Any,
+    trace: Any = None,
+) -> float:
+    """Score whether answer is supported by retrieved passage/context.
+
+    Uses ``dspy.evaluate.answer_passage_match`` when available.
+    Falls back to lexical support overlap between answer and context.
+    """
+    question = _as_text(getattr(example, "question", ""))
+    reference = _as_text(getattr(example, "response", ""))
+    response = _as_text(getattr(prediction, "response", getattr(prediction, "answer", "")))
+    context = _extract_context(prediction)
+
+    try:
+        import dspy
+
+        evaluator = getattr(getattr(dspy, "evaluate", None), "answer_passage_match", None)
+        if evaluator is not None:
+            ex = SimpleNamespace(question=question, response=reference)
+            pred = SimpleNamespace(response=response, context=context)
+            value = evaluator(ex, pred, trace=trace)
+            return float(value)
+    except Exception:
+        pass
+
+    response_terms = _tokens(response)
+    context_terms = _tokens(context)
+    if not response_terms:
+        return 0.0
+    if not context_terms:
+        return 0.0
+    return float(len(response_terms & context_terms) / len(response_terms))
+
+
 def query_grounded_numeric_metric(
     example: Any,
     prediction: Any,
@@ -169,10 +236,14 @@ def query_metric_components(
     Keys:
     - ``grounding``: complete+grounded score in [0,1]
     - ``numeric``: numeric exactness score in [0,1] (1.0 when no numeric target)
+    - ``exact_match``: exact answer match score in [0,1]
+    - ``passage_match``: passage support score in [0,1]
     - ``has_numeric_target``: bool
     - ``score``: blended final score in [0,1]
     """
     grounding = complete_and_grounded_metric(example, prediction, trace=trace)
+    exact_match = answer_exact_match_metric(example, prediction, trace=trace)
+    passage_match = answer_passage_match_metric(example, prediction, trace=trace)
 
     expected_numeric = getattr(example, "expected_numeric", None)
     has_numeric_target = expected_numeric is not None or _NUM_RE.search(
@@ -182,6 +253,8 @@ def query_metric_components(
         return {
             "grounding": float(grounding),
             "numeric": 1.0,
+            "exact_match": float(exact_match),
+            "passage_match": float(passage_match),
             "has_numeric_target": False,
             "score": float(grounding),
         }
@@ -191,6 +264,8 @@ def query_metric_components(
     return {
         "grounding": float(grounding),
         "numeric": float(numeric),
+        "exact_match": float(exact_match),
+        "passage_match": float(passage_match),
         "has_numeric_target": True,
         "score": float(score),
     }

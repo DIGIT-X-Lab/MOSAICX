@@ -11,6 +11,8 @@ DEFAULT_QUERY_GATES: dict[str, float] = {
     "min_numeric_mean": 0.90,
     "min_numeric_pass_rate": 0.85,
     "numeric_pass_threshold": 0.95,
+    "min_exact_match_mean": 0.60,
+    "min_passage_match_mean": 0.60,
 }
 
 DEFAULT_VERIFY_GATES: dict[str, float] = {
@@ -49,6 +51,10 @@ def evaluate_query_quality_gates(
     grounding = [float(r.get("grounding", 0.0) or 0.0) for r in rows]
     numeric_rows = [r for r in rows if bool(r.get("has_numeric_target"))]
     numeric_scores = [float(r.get("numeric", 0.0) or 0.0) for r in numeric_rows]
+    has_exact = any("exact_match" in r for r in rows)
+    has_passage = any("passage_match" in r for r in rows)
+    exact_scores = [float(r.get("exact_match", 0.0) or 0.0) for r in rows] if has_exact else []
+    passage_scores = [float(r.get("passage_match", 0.0) or 0.0) for r in rows] if has_passage else []
 
     summary: dict[str, Any] = {
         "count": len(rows),
@@ -57,6 +63,8 @@ def evaluate_query_quality_gates(
         "numeric_count": len(numeric_rows),
         "numeric_mean": _mean(numeric_scores) if numeric_scores else None,
         "numeric_pass_rate": None,
+        "exact_match_mean": _mean(exact_scores) if exact_scores else None,
+        "passage_match_mean": _mean(passage_scores) if passage_scores else None,
     }
     if numeric_scores:
         pass_threshold = float(cfg["numeric_pass_threshold"])
@@ -76,6 +84,18 @@ def evaluate_query_quality_gates(
                 "numeric_pass_rate",
                 float(summary["numeric_pass_rate"] or 0.0),
                 float(cfg["min_numeric_pass_rate"]),
+            )
+        )
+    if exact_scores:
+        checks.append(
+            _build_check("exact_match_mean", float(summary["exact_match_mean"] or 0.0), float(cfg["min_exact_match_mean"]))
+        )
+    if passage_scores:
+        checks.append(
+            _build_check(
+                "passage_match_mean",
+                float(summary["passage_match_mean"] or 0.0),
+                float(cfg["min_passage_match_mean"]),
             )
         )
 
@@ -137,4 +157,3 @@ def evaluate_quality_gates(
     if name == "verify":
         return evaluate_verify_quality_gates(rows, thresholds=thresholds)
     raise ValueError("Quality gates are currently supported only for 'query' and 'verify'.")
-
