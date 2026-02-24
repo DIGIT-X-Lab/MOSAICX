@@ -1144,6 +1144,7 @@ class QueryEngine:
         q = question.strip()
         last_intent = str(self._session.get_state("last_intent", "")).strip().lower()
         state_source = str(self._session.get_state("last_tabular_source", "")).strip()
+        state_column = str(self._session.get_state("last_tabular_column", "")).strip()
         if last_intent in {"schema", "schema_count"}:
             if self._is_ambiguous_count_question(q):
                 if state_source:
@@ -1153,6 +1154,17 @@ class QueryEngine:
                 if state_source:
                     return f"What are the column names in {state_source}?"
                 return "What are the column names?"
+        if last_intent in {"count_values", "count_distinct", "list_values"}:
+            if self._is_ambiguous_count_question(q):
+                if state_column and state_source:
+                    return f"How many distinct values are there for {state_column} in {state_source}?"
+                if state_column:
+                    return f"How many distinct values are there for {state_column}?"
+            if self._has_value_list_marker(q) and self._is_coreference_followup(q):
+                if state_column and state_source:
+                    return f"What are the distinct values of {state_column} in {state_source}?"
+                if state_column:
+                    return f"What are the distinct values of {state_column}?"
 
         if not self._is_coreference_followup(q):
             return q
@@ -1161,7 +1173,6 @@ class QueryEngine:
         if not isinstance(query_state, dict):
             query_state = {}
 
-        state_column = str(self._session.get_state("last_tabular_column", "")).strip()
         if state_source:
             query_state.setdefault("active_sources", [])
             if isinstance(query_state.get("active_sources"), list):

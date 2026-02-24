@@ -2126,3 +2126,32 @@ class TestQueryEngineIntegration:
         assert payload.get("planner_executed") is True
         assert payload.get("target_resolution") == "planner"
         assert any(c.get("evidence_type") in {"table_stat", "table_value"} for c in payload.get("citations", []))
+
+    def test_tabular_gender_count_followup_what_are_they_keeps_column_context(
+        self,
+        tmp_path: Path,
+        _configure_dspy_for_test,
+    ):
+        """After a gender/sex count turn, 'what are they?' must resolve to category values, not schema."""
+        from mosaicx.query.session import QuerySession
+
+        f = tmp_path / "cohort.csv"
+        f.write_text("Subject,Sex\nS1,M\nS2,F\nS3,M\nS4,Other\nS5,F\n")
+        session = QuerySession(sources=[f])
+
+        first = session.ask_structured(
+            "how many male and female?",
+            max_iterations=2,
+            top_k_citations=3,
+        )
+        assert str(first.get("answer") or "")
+
+        second = session.ask_structured(
+            "what are they?",
+            max_iterations=2,
+            top_k_citations=3,
+        )
+        answer = str(second.get("answer") or "").lower()
+        assert any(tok in answer for tok in ("m", "f", "other", "distinct", "distribution"))
+        assert not any(tok in answer for tok in ("columns in", "column names"))
+        assert any(c.get("evidence_type") == "table_value" for c in second.get("citations", []))

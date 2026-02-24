@@ -6,7 +6,7 @@ Status: Active
 Owner: Core platform
 Authoritative: Yes (single source of truth for rollout status)
 
-## 0) Canonical Status (Updated 2026-02-25 00:20)
+## 0) Canonical Status (Updated 2026-02-24 23:58)
 
 This file is the canonical status board for DSPy roadmap execution.
 Other plan files are design/history logs and must link here for status.
@@ -16,7 +16,7 @@ Other plan files are design/history logs and must link here for status.
 - Closed roadmap delivery items:
   - `QRY-001`, `QRY-002`, `VER-001`, `VER-002`, `EXT-001`, `EXT-002`, `OPS-001`, `EVAL-001`, `EVAL-002`, `DOC-001`
   - legacy bugs: `#17`, `#18`, `#19`
-  - current bug fixes: `#52`, `#53`, `#54`, `#55`
+  - current bug fixes: `#51`, `#52`, `#53`, `#54`, `#55`
   - closed duplicates: `#22`, `#27`
 - Closed DSPy capability items:
   - `#38 [DSPY-03] JSONAdapter default structured-output policy`
@@ -79,6 +79,12 @@ Other plan files are design/history logs and must link here for status.
   - Non-integration: `PYTHONPATH=. .venv/bin/pytest -q tests/test_query_engine.py tests/test_query_control_plane.py -m 'not integration'` -> `73 passed, 4 deselected`
   - Integration with local `vllm-mlx`: `PYTHONPATH=. .venv/bin/pytest -q tests/test_query_engine.py -m integration` -> `5 passed, 68 deselected`
   - Multi-turn live CSV verification confirmed planner path for implicit category count asks.
+- Query follow-up drift fix (`BUG-QRY-001`, `#51`) implemented:
+  - `_resolve_followup_question` now preserves `last_tabular_column` for `count_values`/`count_distinct`/`list_values` turns, so follow-ups like `what are they?` map to distinct category values instead of schema/irrelevant columns.
+  - Added regression:
+    - `tests/test_query_engine.py::test_tabular_gender_count_followup_what_are_they_keeps_column_context`
+  - Validation:
+    - `PYTHONPATH=. .venv/bin/pytest -q tests/test_query_engine.py -k "tabular_gender_count_followup_what_are_they_keeps_column_context or tabular_coreference_followup_preserves_entity_context or tabular_typo_prompt_returns_grounded_count_values"` -> `3 passed, 72 deselected`
 - Optimizer artifacts (`EVAL-002`) produced with real local model execution:
   - `docs/runs/2026-02-24-query-optimizer-seq-tiny/optimizer_sequence_manifest.json`
   - `docs/runs/2026-02-24-query-optimizer-seq-tiny/miprov2_optimized.json`
