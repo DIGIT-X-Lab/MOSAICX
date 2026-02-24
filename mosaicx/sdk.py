@@ -72,9 +72,7 @@ def _ensure_configured() -> None:
     if _configured:
         return
 
-    from .runtime_env import ensure_runtime_env
-
-    ensure_runtime_env()
+    from .runtime_env import configure_dspy_lm
 
     from .config import get_config
 
@@ -85,33 +83,18 @@ def _ensure_configured() -> None:
             "to your config."
         )
 
-    try:
-        import dspy  # noqa: F401
-    except ImportError:
-        raise RuntimeError(
-            "DSPy is required for SDK functions. Install with: pip install dspy"
-        )
-
     from .metrics import TokenTracker, make_harmony_lm, set_tracker
 
     lm = make_harmony_lm(cfg.lm, api_key=cfg.api_key, api_base=cfg.api_base, temperature=cfg.lm_temperature)
-    adapter = None
     try:
-        adapter = dspy.JSONAdapter()
-    except Exception:
-        adapter = None
-    try:
-        if adapter is not None:
-            dspy.configure(lm=lm, adapter=adapter)
-        else:
-            dspy.configure(lm=lm)
-    except TypeError:
-        dspy.configure(lm=lm)
-        if adapter is not None:
-            try:
-                dspy.settings.adapter = adapter
-            except Exception:
-                pass
+        dspy, _adapter_name = configure_dspy_lm(
+            lm,
+            preferred_cache_dir=cfg.home_dir / ".dspy_cache",
+        )
+    except ImportError as exc:
+        raise RuntimeError(
+            "DSPy is required for SDK functions. Install with: pip install dspy"
+        ) from exc
 
     tracker = TokenTracker()
     set_tracker(tracker)
@@ -466,6 +449,67 @@ def _source_snippet_for(source_text: str, needle: str) -> tuple[str, str] | None
     return matched, snippet
 
 
+def _normalize_numeric_text(value: str) -> str:
+    return re.sub(r"\s+", "", str(value or ""))
+
+
+def _looks_like_absence_statement(text: str | None) -> bool:
+    value = _compact_text(text)
+    if not value:
+        return False
+    lowered = value.lower()
+    cues = (
+        "does not contain",
+        "not contain",
+        "not found",
+        "no evidence",
+        "not present",
+        "unable to find",
+        "cannot find",
+        "missing",
+    )
+    return any(cue in lowered for cue in cues)
+
+
+def _claim_values_clearly_conflict(claimed: Any, source: Any) -> bool:
+    claimed_text = _compact_text(claimed) or ""
+    source_text = _compact_text(source) or ""
+    if not claimed_text or not source_text:
+        return False
+
+    c_bp = re.search(r"\b\d{2,3}\s*/\s*\d{2,3}\b", claimed_text)
+    s_bp = re.search(r"\b\d{2,3}\s*/\s*\d{2,3}\b", source_text)
+    if c_bp and s_bp:
+        return _normalize_numeric_text(c_bp.group(0)) != _normalize_numeric_text(s_bp.group(0))
+
+    c_nums = re.findall(r"\d+(?:\.\d+)?", claimed_text)
+    s_nums = re.findall(r"\d+(?:\.\d+)?", source_text)
+    if c_nums and s_nums and c_nums != s_nums:
+        return True
+
+    return False
+
+
+def _claim_values_clearly_match(claimed: Any, source: Any) -> bool:
+    """Return True when claim/source carry the same concrete value signal."""
+    claimed_text = _compact_text(claimed) or ""
+    source_text = _compact_text(source) or ""
+    if not claimed_text or not source_text:
+        return False
+
+    c_bp = re.search(r"\b\d{2,3}\s*/\s*\d{2,3}\b", claimed_text)
+    s_bp = re.search(r"\b\d{2,3}\s*/\s*\d{2,3}\b", source_text)
+    if c_bp and s_bp:
+        return _normalize_numeric_text(c_bp.group(0)) == _normalize_numeric_text(s_bp.group(0))
+
+    c_nums = re.findall(r"\d+(?:\.\d+)?", claimed_text)
+    s_nums = re.findall(r"\d+(?:\.\d+)?", source_text)
+    if c_nums and s_nums:
+        return c_nums == s_nums
+
+    return False
+
+
 def _claim_comparison_from_report(
     *,
     claim: str,
@@ -570,6 +614,13 @@ def _claim_comparison_from_report(
                 break
 
     if evidence_val is None and source_val is not None:
+        result = _source_snippet_for(source_text, source_val)
+        if result is not None:
+            _matched, snippet = result
+            evidence_val = snippet
+    elif source_val is not None and _looks_like_absence_statement(evidence_val):
+        # If grounded source text exists but prose says "not found", prefer
+        # an actual source snippet to keep claim comparison coherent.
         result = _source_snippet_for(source_text, source_val)
         if result is not None:
             _matched, snippet = result
@@ -1702,6 +1753,87 @@ def verify(
         out["claim_comparison"] = claim_comparison
         grounded = bool(claim_comparison.get("grounded"))
         out["grounded"] = grounded
+
+        claim_conflict = grounded and _claim_values_clearly_conflict(
+            claim_comparison.get("claimed"),
+            claim_comparison.get("source"),
+        )
+        claim_match = grounded and _claim_values_clearly_match(
+            claim_comparison.get("claimed"),
+            claim_comparison.get("source"),
+        )
+
+        if claim_conflict:
+            decision = "contradicted"
+            has_conflict_issue = any(
+                isinstance(i, dict) and str(i.get("type") or "") in {"claim_value_conflict", "audit_mismatch"}
+                for i in out.get("issues", [])
+            )
+            if not has_conflict_issue:
+                out.setdefault("issues", []).append(
+                    {
+                        "type": "claim_value_conflict",
+                        "field": "claim",
+                        "detail": (
+                            f"Claimed value ({_compact_text(claim_comparison.get('claimed'))}) "
+                            f"conflicts with grounded source value ({_compact_text(claim_comparison.get('source'))})."
+                        ),
+                        "severity": "critical",
+                    }
+                )
+        else:
+            has_critical_issue = any(
+                isinstance(i, dict) and str(i.get("severity") or "").lower() == "critical"
+                for i in out.get("issues", [])
+            )
+            if claim_match and not has_critical_issue and str(decision or "") in {
+                "partially_supported",
+                "insufficient_evidence",
+                "inconclusive",
+            }:
+                decision = "verified"
+                out["match_rescued"] = True
+                filtered_issues: list[dict[str, Any]] = []
+                for issue in out.get("issues", []):
+                    if not isinstance(issue, dict):
+                        filtered_issues.append(issue)
+                        continue
+                    if str(issue.get("severity") or "").lower() == "critical":
+                        filtered_issues.append(issue)
+                        continue
+                    field = str(issue.get("field") or "").strip().lower()
+                    detail = str(issue.get("detail") or "")
+                    if field in {"", "claim"} and _looks_like_absence_statement(detail):
+                        continue
+                    filtered_issues.append(issue)
+                out["issues"] = filtered_issues
+                filtered_citations: list[dict[str, Any]] = []
+                for citation in out.get("citations", []):
+                    if (
+                        isinstance(citation, dict)
+                        and _looks_like_absence_statement(str(citation.get("snippet") or ""))
+                    ):
+                        continue
+                    filtered_citations.append(citation)
+                out["citations"] = filtered_citations
+                grounded_snippet = _compact_text(
+                    claim_comparison.get("evidence")
+                    or claim_comparison.get("source")
+                )
+                if grounded_snippet:
+                    out.setdefault("citations", [])
+                    out["citations"] = [
+                        {
+                            "source": "source_document",
+                            "snippet": grounded_snippet,
+                            "evidence_type": "claim_evidence",
+                            "score": 92,
+                            "rank": 92,
+                            "relevance": "high",
+                            "claimed_value": _compact_text(claim_comparison.get("claimed")),
+                            "source_value": _compact_text(claim_comparison.get("source")),
+                        }
+                    ] + list(out["citations"])
 
         if not out.get("citations"):
             fallback_snippet = _compact_text(

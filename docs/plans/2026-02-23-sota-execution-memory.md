@@ -4,7 +4,7 @@ Date: 2026-02-23
 Status: Active
 Owner: Core platform
 Primary blueprint: docs/plans/2026-02-23-mosaicx-sota-blueprint.md
-Progress tag: [SOTA Rollout: 6%]
+Progress tag: [SOTA Rollout: 10%]
 
 ## 1) Session Boot Protocol (anti-context-rot)
 
@@ -196,3 +196,101 @@ When completing `DSPY-*` items, append:
   - pending
 - Remaining blockers:
   - Production validation of `mosaicx template create --from-radreport` on real report IDs still pending.
+
+### Update 2026-02-23 19:08
+- Tasks completed:
+  - Established persistent hard-test framework for edge-case coverage.
+  - Added synthetic multi-format fixture generator for adversarial cases.
+  - Added reproducible hard-test runner with deterministic/integration/LLM modes.
+  - Logged deterministic and partial LLM preflight runs in `docs/runs/`.
+- Files changed:
+  - `docs/testing/edge-case-matrix.md`
+  - `scripts/generate_hard_test_fixtures.py`
+  - `scripts/run_hard_test_matrix.sh`
+  - `docs/runs/2026-02-23-190126-hard-test-matrix.md`
+  - `docs/runs/2026-02-23-190535-hard-test-matrix.md`
+  - `docs/runs/2026-02-23-190703-hard-test-matrix.md`
+- Tests run:
+  - `MOSAICX_HARDTEST_INTEGRATION=1 MOSAICX_HARDTEST_LLM=0 scripts/run_hard_test_matrix.sh`
+  - `MOSAICX_HARDTEST_INTEGRATION=0 MOSAICX_HARDTEST_LLM=0 scripts/run_hard_test_matrix.sh`
+  - `MOSAICX_HARDTEST_INTEGRATION=0 MOSAICX_HARDTEST_LLM=1 scripts/run_hard_test_matrix.sh`
+- Results:
+  - Deterministic suite passes cleanly (`68 + 56 + 47 + 24` tests across packs).
+  - Integration pack (`tests/integration/test_full_pipeline.py`) passes.
+  - LLM preflight currently fails when local server is not listening on `127.0.0.1:8000`; runner now records this and skips LLM checks instead of aborting.
+  - Fixture generator produced 11 artifacts across text/tabular/image/pdf; DOCX/PPTX generation skipped if optional deps missing.
+- Commit:
+  - pending
+- Remaining blockers:
+  - Need full LLM-mode pass while `vllm-mlx` server is live for `verify/query` runtime assertions.
+  - Need expansion of adversarial integration tests for Query V3 stateful follow-ups (`B5`).
+
+### Update 2026-02-23 19:45
+- Tasks completed:
+  - Hardened query loaders for real-world tabular/text ingestion (`csv/tsv`, multiline JSONL, decode fallback, large-file guard, multi-sheet Excel).
+  - Fixed verify deterministic truth semantics for empty/uncheckable extraction (`insufficient_evidence` instead of false-positive `verified`).
+  - Added query control-plane guardrails for conversational phrasing (`i mean ...`) and safer aggregate-op detection.
+  - Added robust runtime fallback for writable `DENO_DIR` in sandboxed environments.
+  - Validated live `vllm-mlx` behavior against the OCELOT CSV with local 120B model using `PYTHONPATH=. .venv/bin/mosaicx ...`.
+- Files changed:
+  - `mosaicx/query/loaders.py`
+  - `mosaicx/query/control_plane.py`
+  - `mosaicx/query/engine.py`
+  - `mosaicx/query/tools.py`
+  - `mosaicx/verify/deterministic.py`
+  - `mosaicx/verify/engine.py`
+  - `mosaicx/runtime_env.py`
+  - `tests/test_query_loaders.py`
+  - `tests/test_query_control_plane.py`
+  - `tests/test_query_engine.py`
+  - `tests/test_query_tools.py`
+  - `tests/test_verify_deterministic.py`
+  - `tests/test_verify_engine.py`
+  - `tests/test_runtime_env.py`
+- Tests run:
+  - `.venv/bin/pytest -q tests/test_query_loaders.py`
+  - `.venv/bin/pytest -q tests/test_verify_deterministic.py tests/test_verify_engine.py`
+  - `.venv/bin/pytest -q tests/test_query_control_plane.py tests/test_query_engine.py -m 'not integration'`
+  - `.venv/bin/pytest -q tests/test_query_loaders.py tests/test_verify_deterministic.py tests/test_verify_engine.py tests/test_query_control_plane.py tests/test_query_tools.py tests/test_query_engine.py -m 'not integration'`
+  - `.venv/bin/pytest -q tests/test_runtime_env.py`
+- Results:
+  - All listed packs pass (`159 passed, 2 deselected` for combined regression set; runtime env tests pass).
+  - Live LLM checks on real CSV now return correct values for:
+    - sex distribution (`M=700, F=379`)
+    - ethnicity values (`Japanese, Caucasian`)
+    - schema count follow-up (`127 columns`) with typo/filler phrasing.
+  - Outstanding runtime warning remains from DSPy disk cache path (`memory-only cache fallback`) and will be normalized next.
+- Commit:
+  - pending
+- Remaining blockers:
+  - Normalize DSPy disk-cache directory to a guaranteed writable path in this environment.
+  - Run full hard test matrix with server-first gate active and record final overnight run artifacts.
+  - Continue DSPy roadmap implementation items (`DSPY-01`, `DSPY-03`, `DSPY-04`, `B1`, `B5`) with integration evidence logs.
+
+### Update 2026-02-24 09:10
+- Tasks completed:
+  - Created/normalized roadmap GitHub issues and deduplicated duplicates.
+  - Implemented `VER-001` coherence guard for claim verification:
+    - matching grounded claim/source values now rescue inconclusive partial verdicts to `verified`,
+    - contradiction path remains strict and unchanged.
+  - Fixed post-rescue coherence so claim evidence/citations no longer show "not found" prose when grounded source value is present.
+  - Added regression coverage for the exact failure mode (unsupported verdict + matching source value).
+- Files changed:
+  - `mosaicx/sdk.py`
+  - `tests/test_sdk_verify.py`
+- Tests run:
+  - `PYTHONPATH=. .venv/bin/pytest -q tests/test_sdk_verify.py -k "claim_value_conflict_overrides_verified_decision or thorough_claim_matching_source_rescues_partial_verdict"`
+  - `PYTHONPATH=. .venv/bin/pytest -q tests/test_verify_engine.py tests/test_verify_audit.py tests/test_sdk_verify.py`
+  - `curl -sS --max-time 5 http://127.0.0.1:8000/v1/models`
+  - `PYTHONPATH=. .venv/bin/mosaicx verify --sources tests/datasets/extract/sample_patient_vitals.pdf --claim "patient BP is 128/82" --level thorough`
+- Results:
+  - Regression tests pass.
+  - Verify-focused suite passes (`85 passed`).
+  - Live local 120B verify run now returns coherent output:
+    - `Decision: verified`, `Truth: true`, `Support score: 1.00`,
+    - `Claim Comparison` and `Evidence` both grounded on the same BP source signal.
+- Commit:
+  - pending
+- Remaining blockers:
+  - Finish and land `QRY-001` direct-answer contract improvements for count+values prompts.
+  - Continue DSPy roadmap staging (`DSPY-01`, `DSPY-03`, `DSPY-04`, `B1`) and log integration evidence per item.

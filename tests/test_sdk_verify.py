@@ -179,7 +179,8 @@ class TestSDKVerifyFallback:
     def test_thorough_falls_back_on_llm_failure(self):
         from mosaicx.sdk import verify
 
-        with patch("mosaicx.verify.spot_check.SpotChecker", side_effect=RuntimeError("LLM down")):
+        with patch("mosaicx.verify.spot_check.SpotChecker", side_effect=RuntimeError("LLM down")), \
+             patch("mosaicx.verify.audit.run_audit", side_effect=RuntimeError("RLM down")):
             result = verify(
                 extraction=SAMPLE_EXTRACTION,
                 source_text=SAMPLE_SOURCE,
@@ -205,6 +206,77 @@ class TestSDKVerifyFallback:
         issue_types = {i["type"] for i in result["issues"]}
         assert "value_not_found" in issue_types
         assert "llm_unavailable" in issue_types
+
+    def test_claim_value_conflict_overrides_verified_decision(self):
+        """Grounded claimed/source mismatch should force contradicted decision."""
+        from mosaicx.sdk import verify
+        from mosaicx.verify.models import VerificationReport
+
+        mocked_report = VerificationReport(
+            verdict="verified",
+            confidence=0.9,
+            level="deterministic",
+            issues=[],
+            field_verdicts=[],
+        )
+
+        with patch("mosaicx.verify.engine.verify", return_value=mocked_report):
+            result = verify(
+                claim="patient BP is 120/82",
+                source_text="Vitals: BP 128/82 measured at triage.",
+                level="quick",
+            )
+
+        assert result["decision"] == "contradicted"
+        assert result["claim_true"] is False
+        assert any(i["type"] == "claim_value_conflict" for i in result["issues"])
+
+    def test_thorough_claim_matching_source_rescues_partial_verdict(self):
+        """Matching grounded claim/source values should resolve to verified."""
+        from mosaicx.sdk import verify
+        from mosaicx.verify.models import FieldVerdict, Issue, VerificationReport
+
+        mocked_report = VerificationReport(
+            verdict="partially_supported",
+            confidence=0.34,
+            level="audit",
+            issues=[
+                Issue(
+                    type="audit_inconclusive",
+                    field="claim",
+                    detail="The source document does not contain any blood pressure reading.",
+                    severity="warning",
+                )
+            ],
+            field_verdicts=[
+                FieldVerdict(
+                    status="unsupported",
+                    field_path="claim",
+                    claimed_value="patient BP is 128/82",
+                    source_value="BP 128/82",
+                    evidence_excerpt="Vitals: BP 128/82 measured at triage.",
+                    evidence_source="sample_patient_vitals.pdf",
+                )
+            ],
+        )
+
+        with patch("mosaicx.verify.engine.verify", return_value=mocked_report):
+            result = verify(
+                claim="patient BP is 128/82",
+                source_text="Vitals: BP 128/82 measured at triage.",
+                level="thorough",
+            )
+
+        assert result["decision"] == "verified"
+        assert result["claim_true"] is True
+        assert result.get("match_rescued") is True
+        assert result["support_score"] == pytest.approx(1.0)
+        assert "128/82" in str(result["claim_comparison"]["source"])
+        assert "does not contain" not in str(result["claim_comparison"]["evidence"]).lower()
+        assert not any("does not contain" in str(i.get("detail", "")).lower() for i in result["issues"])
+        assert result["citations"]
+        assert any("128/82" in str(c.get("snippet", "")) for c in result["citations"])
+        assert not any("does not contain" in str(c.get("snippet", "")).lower() for c in result["citations"])
 
 
 class TestSDKVerifyEdgeCases:
