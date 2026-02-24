@@ -15,6 +15,7 @@ Other plan files are design/history logs and must link here for status.
 
 - Closed: `QRY-001`, `VER-001`, `VER-002`, `EXT-001`, `EXT-002`, `OPS-001`, `EVAL-001`
 - In progress/completed in branch and ready to close after push: `QRY-002`, `EVAL-002`, `DOC-001`
+- Open and addressed in current branch (pending close after push/verification note): `#17`, `#18`, `#19`
 
 ### Evidence highlights
 
@@ -39,6 +40,20 @@ Other plan files are design/history logs and must link here for status.
 - DOC canonicalization (`DOC-001`) applied:
   - `docs/plans/2026-02-23-dspy-full-capability-rollout.md` marked as historical/superseded.
   - `docs/plans/2026-02-23-sota-execution-memory.md` marked as execution ledger with canonical pointer.
+- Extraction robustness for legacy MIMIC failures (`#17/#18/#19`) implemented:
+  - Added schema coercion + JSON-like recovery path in schema-mode extraction:
+    - `mosaicx/pipelines/extraction.py`
+  - Added regression tests for three failure classes:
+    - scalar -> nested `LabelAssessment`
+    - nested `{value,...}` -> literal trinary field
+    - prose-wrapped JSON recovery
+    - `tests/test_extraction_schema_coercion.py`
+  - Test evidence:
+    - `PYTHONPATH=. .venv/bin/pytest -q tests/test_extraction_schema_coercion.py` -> `4 passed`
+    - `PYTHONPATH=. .venv/bin/pytest -q tests/test_extraction_pipeline.py tests/test_cli_display.py` -> `8 passed`
+    - `PYTHONPATH=. .venv/bin/pytest -q tests/test_cli_extract.py tests/test_report.py` -> `60 passed`
+  - Live local model smoke on `s50184397.txt` with custom MIMIC-like schema succeeded via local `vllm-mlx`:
+    - output parsed into typed schema object (`ok=True`) and no extraction crash.
 
 ### Operational note
 

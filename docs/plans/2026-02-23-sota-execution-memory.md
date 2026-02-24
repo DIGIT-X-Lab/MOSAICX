@@ -594,3 +594,29 @@ When completing `DSPY-*` items, append:
   - pending
 - Remaining blockers:
   - None for this extension slice; optional follow-up is broadening eval datasets for stronger optimizer signal.
+
+### Update 2026-02-24 17:20
+- Tasks completed:
+  - Implemented generic schema-mode extraction hardening for legacy MIMIC failures (`#17/#18/#19`) without field-name monkey patches.
+  - Added recursive coercion for mixed scalar/model/literal outputs before final Pydantic validation.
+  - Added JSON-like recovery path when structured extraction output is prose-wrapped or parser-unstable.
+  - Added dedicated regression tests reproducing all three reported failure classes.
+- Files changed:
+  - `mosaicx/pipelines/extraction.py`
+  - `tests/test_extraction_schema_coercion.py`
+  - `docs/plans/2026-02-24-roadmap-status-audit.md`
+  - `docs/plans/2026-02-23-sota-execution-memory.md`
+- Tests run:
+  - `PYTHONPATH=. .venv/bin/pytest -q tests/test_extraction_schema_coercion.py`
+  - `PYTHONPATH=. .venv/bin/pytest -q tests/test_extraction_pipeline.py tests/test_cli_display.py`
+  - `PYTHONPATH=. .venv/bin/pytest -q tests/test_cli_extract.py tests/test_report.py`
+  - Live local LLM smoke (escalated network path): custom MIMIC-like schema extraction on `tests/datasets/extract/s50184397.txt` via `vllm-mlx`.
+- Results:
+  - New regression suite: `4 passed`.
+  - Extraction pipeline + display checks: `8 passed`.
+  - CLI/report extraction regressions: `60 passed`.
+  - Live custom-schema extraction returns typed object (`ok=True`) and no crash on `s50184397.txt`.
+- Commit:
+  - pending
+- Remaining blockers:
+  - Close GitHub issues `#17/#18/#19` after commit/push and include links to this test evidence.

@@ -15,8 +15,10 @@ Convenience functions:
     - extract_with_schema(): Load a saved schema by name and extract.
     - extract_with_mode(): Run a registered extraction mode pipeline.
 """
+import json
+import types
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal, Union, get_args, get_origin
 
 from pydantic import BaseModel
 
@@ -62,6 +64,220 @@ def _prediction_to_dict(prediction: Any) -> dict[str, Any]:
         else:
             output[key] = val
     return output
+
+
+def _is_basemodel_type(annotation: Any) -> bool:
+    """Return True when *annotation* is a Pydantic BaseModel subclass."""
+    return isinstance(annotation, type) and issubclass(annotation, BaseModel)
+
+
+def _map_trinary_label(value: Any, *, allow_unknown: bool) -> float:
+    """Map flexible label-like values into a CheXpert-style trinary score."""
+    if isinstance(value, bool):
+        return 1.0 if value else 0.0
+    if isinstance(value, (int, float)):
+        num = float(value)
+        if num > 0:
+            return 1.0
+        if num < 0 and allow_unknown:
+            return -1.0
+        return 0.0
+
+    text = str(value or "").strip().lower()
+    if not text:
+        return -1.0 if allow_unknown else 0.0
+
+    if any(
+        token in text
+        for token in (
+            "uncertain",
+            "indeterminate",
+            "equivocal",
+            "possible",
+            "cannot exclude",
+        )
+    ):
+        return -1.0 if allow_unknown else 1.0
+
+    if any(
+        token in text
+        for token in (
+            "no ",
+            "without",
+            "negative for",
+            "absent",
+            "not seen",
+            "none",
+        )
+    ):
+        return 0.0
+
+    return 1.0
+
+
+def _coerce_literal_value(value: Any, annotation: Any) -> Any:
+    """Coerce value for ``typing.Literal`` annotations."""
+    options = tuple(get_args(annotation))
+    if not options:
+        return value
+
+    unwrapped = value.get("value") if isinstance(value, dict) and "value" in value else value
+    option_scalars = [o for o in options if isinstance(o, (int, float))]
+
+    if option_scalars:
+        allow_unknown = any(float(o) < 0 for o in option_scalars)
+        mapped = _map_trinary_label(unwrapped, allow_unknown=allow_unknown)
+        for option in option_scalars:
+            if float(option) == mapped:
+                return option
+        if isinstance(unwrapped, (int, float)):
+            return float(unwrapped)
+
+    if isinstance(unwrapped, str):
+        probe = unwrapped.strip().lower()
+        for option in options:
+            if isinstance(option, str) and option.lower() == probe:
+                return option
+            if str(option).strip().lower() == probe:
+                return option
+
+    for option in options:
+        if unwrapped == option:
+            return option
+
+    return unwrapped
+
+
+def _coerce_value_for_annotation(value: Any, annotation: Any) -> Any:
+    """Recursively coerce a value to better fit the target annotation."""
+    if annotation in (Any, object) or annotation is None:
+        return value
+    if value is None:
+        return None
+
+    origin = get_origin(annotation)
+
+    if origin in (Union, types.UnionType):
+        options = [a for a in get_args(annotation) if a is not type(None)]
+        for option in options:
+            try:
+                coerced = _coerce_value_for_annotation(value, option)
+                if _is_basemodel_type(option):
+                    option.model_validate(coerced)
+                return coerced
+            except Exception:
+                continue
+        return value
+
+    if origin is Literal:
+        return _coerce_literal_value(value, annotation)
+
+    if _is_basemodel_type(annotation):
+        model_cls: type[BaseModel] = annotation
+        if isinstance(value, model_cls):
+            return value
+
+        if isinstance(value, dict):
+            payload: dict[str, Any] = {}
+            for field_name, field_info in model_cls.model_fields.items():
+                if field_name in value:
+                    payload[field_name] = _coerce_value_for_annotation(
+                        value[field_name], field_info.annotation
+                    )
+            if payload:
+                return payload
+
+        if "value" in model_cls.model_fields:
+            value_field = model_cls.model_fields["value"]
+            payload = {
+                "value": _coerce_value_for_annotation(value, value_field.annotation),
+            }
+            if isinstance(value, str) and "supporting_text" in model_cls.model_fields:
+                payload["supporting_text"] = value
+            return payload
+
+        return value
+
+    if origin in (list, tuple, set):
+        item_type = get_args(annotation)[0] if get_args(annotation) else Any
+        seq = value if isinstance(value, (list, tuple, set)) else [value]
+        coerced = [_coerce_value_for_annotation(item, item_type) for item in seq]
+        if origin is tuple:
+            return tuple(coerced)
+        if origin is set:
+            return set(coerced)
+        return coerced
+
+    if origin is dict:
+        key_type, val_type = get_args(annotation) if get_args(annotation) else (Any, Any)
+        if not isinstance(value, dict):
+            return value
+        return {
+            _coerce_value_for_annotation(k, key_type): _coerce_value_for_annotation(v, val_type)
+            for k, v in value.items()
+        }
+
+    if isinstance(annotation, type):
+        if annotation is bool:
+            if isinstance(value, str):
+                probe = value.strip().lower()
+                if probe in {"true", "yes", "y", "1", "positive"}:
+                    return True
+                if probe in {"false", "no", "n", "0", "negative"}:
+                    return False
+            return bool(value)
+        if annotation in (int, float):
+            raw = value.get("value") if isinstance(value, dict) and "value" in value else value
+            if isinstance(raw, bool):
+                return 1.0 if annotation is float else int(raw)
+            try:
+                return annotation(raw)
+            except Exception:
+                return raw
+        if annotation is str:
+            if isinstance(value, (dict, list)):
+                return json.dumps(value, default=str, ensure_ascii=False)
+            return str(value)
+
+    return value
+
+
+def _coerce_payload_to_schema(payload: Any, schema_class: type[BaseModel]) -> dict[str, Any]:
+    """Coerce extracted payload into a dict better aligned with *schema_class*."""
+    if isinstance(payload, schema_class):
+        return payload.model_dump()
+    if not isinstance(payload, dict):
+        raise ValueError(
+            f"Expected dict payload for {schema_class.__name__}, got {type(payload).__name__}"
+        )
+
+    out: dict[str, Any] = {}
+    for field_name, field_info in schema_class.model_fields.items():
+        if field_name not in payload:
+            continue
+        out[field_name] = _coerce_value_for_annotation(
+            payload[field_name], field_info.annotation
+        )
+    return out
+
+
+def _recover_schema_instance_from_raw(
+    raw_output: str, schema_class: type[BaseModel]
+) -> BaseModel:
+    """Parse JSON-like model output and coerce/validate into *schema_class*."""
+    from mosaicx.verify.parse_utils import parse_json_like
+
+    parsed = parse_json_like(raw_output or "")
+    if not isinstance(parsed, dict):
+        preview = " ".join(str(raw_output or "").split())
+        if len(preview) > 220:
+            preview = preview[:217] + "..."
+        raise ValueError(
+            f"Model output is not valid JSON object for {schema_class.__name__}: {preview or '<empty>'}"
+        )
+
+    coerced = _coerce_payload_to_schema(parsed, schema_class)
+    return schema_class.model_validate(coerced)
 
 
 def extract_with_mode(document_text: str, mode_name: str) -> tuple[dict[str, Any], "PipelineMetrics | None"]:
@@ -136,6 +352,7 @@ def _build_dspy_classes():
 
         def __init__(self, output_schema: type[BaseModel] | None = None) -> None:
             super().__init__()
+            self._output_schema = output_schema
 
             if output_schema is not None:
                 # Schema mode: single extraction step
@@ -155,6 +372,22 @@ def _build_dspy_classes():
                     type_=output_schema,
                 )
                 self.extract_custom = dspy.ChainOfThought(custom_sig)
+                fallback_sig = dspy.Signature(
+                    "document_text -> extracted_json",
+                    instructions=(
+                        f"Extract structured data matching the {output_schema.__name__} schema "
+                        "from the document. Return ONLY a JSON object with no markdown and no commentary."
+                    ),
+                ).with_updated_fields(
+                    "document_text",
+                    desc="Full text of the document",
+                    type_=str,
+                ).with_updated_fields(
+                    "extracted_json",
+                    desc="Strict JSON object as text",
+                    type_=str,
+                )
+                self.extract_json_fallback = dspy.Predict(fallback_sig)
             else:
                 # Auto mode: infer schema then extract
                 self.infer_schema = dspy.ChainOfThought(InferSchemaFromDocument)
@@ -169,10 +402,28 @@ def _build_dspy_classes():
 
             if hasattr(self, "extract_custom") and not hasattr(self, "infer_schema"):
                 # Schema mode: single step
+                schema = self._output_schema
+                assert schema is not None
+
                 with track_step(metrics, "Extract", tracker):
-                    result = self.extract_custom(document_text=document_text)
+                    try:
+                        result = self.extract_custom(document_text=document_text)
+                        extracted = getattr(result, "extracted", result)
+                        if isinstance(extracted, schema):
+                            model_instance = extracted
+                        elif isinstance(extracted, dict):
+                            coerced = _coerce_payload_to_schema(extracted, schema)
+                            model_instance = schema.model_validate(coerced)
+                        else:
+                            model_instance = schema.model_validate(extracted)
+                    except Exception:
+                        fallback = self.extract_json_fallback(document_text=document_text)
+                        model_instance = _recover_schema_instance_from_raw(
+                            getattr(fallback, "extracted_json", ""),
+                            schema,
+                        )
                 self._last_metrics = metrics
-                return dspy.Prediction(extracted=result.extracted)
+                return dspy.Prediction(extracted=model_instance)
 
             # Auto mode: infer schema, compile, extract
             with track_step(metrics, "Infer schema", tracker):
