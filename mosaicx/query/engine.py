@@ -43,9 +43,12 @@ _NON_ANSWER_MARKERS = (
     "not specified",
     "not provided",
     "not mentioned",
-    "unknown",
     "insufficient information",
     "no further details are available",
+)
+_NON_ANSWER_REGEXES = (
+    r"\b(?:is|are|was|were)\s+unknown\b",
+    r"\bunknown\s+at\s+(?:this\s+)?time\b",
 )
 _DELTA_QUESTION_MARKERS = (
     "how much",
@@ -144,6 +147,20 @@ def _is_adapter_parse_exception(exc: Exception) -> bool:
         or "jsonadapter" in lowered
         or "cannot be serialized to a json object" in lowered
     )
+
+
+def _is_transient_lm_exception(exc: Exception) -> bool:
+    text = f"{type(exc).__name__}: {exc}".lower()
+    transient_markers = (
+        "connection error",
+        "apiconnectionerror",
+        "connection reset",
+        "read timeout",
+        "timed out",
+        "temporarily unavailable",
+        "service unavailable",
+    )
+    return any(marker in text for marker in transient_markers)
 
 
 def _build_twostep_adapter(dspy: Any) -> Any | None:
@@ -596,23 +613,62 @@ class QueryEngine:
             **rlm_kwargs,
         )
 
-        def _invoke_rlm():
+        def _invoke_rlm(*, history_payload: str, retrieval_payload: str):
             return rlm(
                 guidance=guidance,
                 catalog=catalog_text,
-                history=history_text,
-                retrieval=retrieval_text,
+                history=history_payload,
+                retrieval=retrieval_payload,
                 question=question.strip(),
             )
 
-        try:
-            prediction = _invoke_rlm()
-        except Exception as exc:
-            adapter = _build_twostep_adapter(dspy)
-            if not _is_adapter_parse_exception(exc) or adapter is None:
+        attempt_payloads: list[tuple[str, str]] = [(history_text, retrieval_text)]
+        if len(retrieval_text) > 2200 or len(history_text) > 900:
+            attempt_payloads.append(
+                (
+                    self._compact_history_content(history_text, max_chars=900),
+                    self._compact_history_content(retrieval_text, max_chars=2400),
+                )
+            )
+        attempt_payloads.append(
+            (
+                self._compact_history_content(history_text, max_chars=600),
+                self._compact_history_content(retrieval_text, max_chars=1200),
+            )
+        )
+
+        prediction = None
+        last_exc: Exception | None = None
+        for idx, (history_payload, retrieval_payload) in enumerate(attempt_payloads):
+            try:
+                prediction = _invoke_rlm(
+                    history_payload=history_payload,
+                    retrieval_payload=retrieval_payload,
+                )
+                last_exc = None
+                break
+            except Exception as exc:
+                adapter = _build_twostep_adapter(dspy)
+                if _is_adapter_parse_exception(exc) and adapter is not None:
+                    try:
+                        with dspy.context(adapter=adapter):
+                            prediction = _invoke_rlm(
+                                history_payload=history_payload,
+                                retrieval_payload=retrieval_payload,
+                            )
+                        last_exc = None
+                        break
+                    except Exception as inner_exc:
+                        exc = inner_exc
+                last_exc = exc
+                if _is_transient_lm_exception(exc) and idx + 1 < len(attempt_payloads):
+                    continue
                 raise
-            with dspy.context(adapter=adapter):
-                prediction = _invoke_rlm()
+
+        if prediction is None:
+            if last_exc is not None:
+                raise last_exc
+            raise RuntimeError("RLM produced no prediction.")
 
         answer = str(prediction.answer).strip()
         return answer, seed_hits
@@ -1874,6 +1930,7 @@ class QueryEngine:
             "planner_source": None,
             "planner_column": None,
             "planner_column_recovered": False,
+            "planner_error": None,
             "target_resolution": None,
             "execution_path": None,
         }
@@ -1900,6 +1957,8 @@ class QueryEngine:
                 trace["execution_path"] = "planned_executor"
                 self._last_tabular_trace = dict(trace)
                 return planned
+        elif getattr(self._react_planner, "last_error", None):
+            trace["planner_error"] = str(getattr(self._react_planner, "last_error"))
         wants_count = route.wants_count or ("how many" in q) or ("number of" in q) or ("count" in q)
         wants_values = (
             route.wants_values
@@ -1970,6 +2029,14 @@ class QueryEngine:
                     "evidence_type": "table_column",
                 }
             else:
+                if self._planner_first_required_for_ambiguous_tabular(
+                    question=resolved_q,
+                    route=route,
+                ):
+                    trace["target_resolution"] = "planner_required"
+                    trace["execution_path"] = "planner_required_no_fallback"
+                    self._last_tabular_trace = dict(trace)
+                    return None
                 column_hits = suggest_table_columns(
                     resolved_q,
                     data=self._session.data,
@@ -2345,6 +2412,79 @@ class QueryEngine:
                     return True
         return False
 
+    def _has_configured_lm(self) -> bool:
+        try:
+            dspy = import_dspy()
+        except Exception:
+            return False
+        return getattr(dspy.settings, "lm", None) is not None
+
+    def _planner_first_required_for_ambiguous_tabular(
+        self,
+        *,
+        question: str,
+        route: IntentDecision,
+    ) -> bool:
+        """Prefer planner/LM resolution over lexical routing for ambiguous tabular asks."""
+        if not self._has_tabular_sources():
+            return False
+        if not self._has_configured_lm():
+            return False
+        if route.intent not in {"count", "count_values", "aggregate", "mixed"}:
+            return False
+        if self._is_schema_question(question):
+            return False
+        if self._is_coreference_followup(question):
+            return True
+        explicit_column = self._question_mentions_explicit_column(question)
+        if route.intent == "count":
+            if self._is_row_count_only_count_question(question=question, route=route):
+                return False
+            if not explicit_column:
+                return True
+            if self._is_ambiguous_count_question(question):
+                return True
+            return False
+        if route.intent == "aggregate" and not explicit_column:
+            return True
+        if route.intent in {"count_values", "mixed"} and (
+            self._has_value_list_marker(question) or not explicit_column
+        ):
+            return True
+        return False
+
+    def _is_row_count_only_count_question(
+        self,
+        *,
+        question: str,
+        route: IntentDecision,
+    ) -> bool:
+        if route.intent != "count":
+            return False
+        q = " ".join(question.lower().split())
+        q_terms = {
+            self._normalize_term(t)
+            for t in re.findall(r"[a-z0-9]+", q)
+            if len(t) >= 2
+        }
+        row_count_markers = {
+            "row",
+            "rows",
+            "record",
+            "records",
+            "entry",
+            "entries",
+            "observation",
+            "observations",
+            "sample",
+            "samples",
+        }
+        return (
+            bool(q_terms & row_count_markers)
+            and not self._has_value_list_marker(question)
+            and not self._is_distribution_request(question)
+        )
+
     def _should_try_programmatic_first(
         self,
         *,
@@ -2357,18 +2497,9 @@ class QueryEngine:
             return False
         if route.intent == "schema":
             return False
-        q = " ".join(question.lower().split())
-        row_count_markers = {"row", "rows", "record", "records", "entry", "entries", "observation", "observations", "sample", "samples"}
-        q_terms = {
-            self._normalize_term(t)
-            for t in re.findall(r"[a-z0-9]+", q)
-            if len(t) >= 2
-        }
-        is_row_count_only = (
-            route.intent == "count"
-            and bool(q_terms & row_count_markers)
-            and not self._has_value_list_marker(question)
-            and not self._is_distribution_request(question)
+        is_row_count_only = self._is_row_count_only_count_question(
+            question=question,
+            route=route,
         )
         if is_row_count_only:
             return False
@@ -2723,10 +2854,17 @@ class QueryEngine:
 
     def _requires_computed_evidence(self, question: str) -> bool:
         q = " ".join(question.lower().split())
-        analytic_markers = (
+        phrase_markers = (
             "how many",
             "number of",
+            "standard deviation",
+        )
+        if any(marker in q for marker in phrase_markers):
+            return True
+
+        token_markers = {
             "count",
+            "total",
             "average",
             "mean",
             "median",
@@ -2743,12 +2881,44 @@ class QueryEngine:
             "correlation",
             "change",
             "difference",
-        )
-        return any(marker in q for marker in analytic_markers)
+        }
+        tokens = set(re.findall(r"[a-z0-9]+", q))
+        return bool(tokens & token_markers)
 
     def _requires_numeric_stat_evidence(self, question: str) -> bool:
         q = " ".join(question.lower().split())
-        return any(marker in q for marker in _NUMERIC_STAT_MARKERS)
+        phrase_markers = (
+            "standard deviation",
+            "how many",
+            "number of",
+        )
+        if any(marker in q for marker in phrase_markers):
+            return True
+        if "%" in q:
+            return True
+
+        tokens = set(re.findall(r"[a-z0-9]+", q))
+        token_markers = {
+            "count",
+            "total",
+            "average",
+            "mean",
+            "median",
+            "min",
+            "minimum",
+            "max",
+            "maximum",
+            "sum",
+            "std",
+            "percent",
+            "percentile",
+            "quantile",
+            "ratio",
+            "correlation",
+            "change",
+            "difference",
+        }
+        return bool(tokens & token_markers)
 
     def _has_tabular_sources(self) -> bool:
         return any(getattr(meta, "source_type", "") == "dataframe" for meta in self._session.catalog)
@@ -2893,7 +3063,117 @@ class QueryEngine:
         text = " ".join(answer.lower().split())
         if not text:
             return True
-        return any(marker in text for marker in _NON_ANSWER_MARKERS)
+        if any(marker in text for marker in _NON_ANSWER_MARKERS):
+            return True
+        if any(re.search(pattern, text) for pattern in _NON_ANSWER_REGEXES):
+            return True
+        normalized = re.sub(r"[^\w\s]", "", text).strip()
+        return normalized == "unknown"
+
+    def _tabular_direct_answer_from_computed_evidence(
+        self,
+        *,
+        question: str,
+        deterministic_intent: str | None,
+        citations: list[dict[str, Any]],
+    ) -> str | None:
+        intent = str(deterministic_intent or "").strip().lower()
+        if intent not in {"count_distinct", "count_values", "list_values", "sql_analytic"}:
+            return None
+
+        computed = [
+            c
+            for c in citations
+            if str(c.get("evidence_type") or "").strip().lower() in {"table_stat", "table_value", "table_sql"}
+        ]
+        if not computed:
+            return None
+
+        col_scores: dict[str, int] = {}
+        for c in computed:
+            col = str(c.get("column") or "").strip()
+            if not col or col == "__rows__":
+                continue
+            evidence_type = str(c.get("evidence_type") or "").strip().lower()
+            weight = 3 if evidence_type == "table_value" else 2
+            col_scores[col] = col_scores.get(col, 0) + weight
+        if not col_scores:
+            return None
+        column = max(col_scores.items(), key=lambda kv: kv[1])[0]
+
+        distinct_rows: list[dict[str, Any]] = []
+        seen_values: set[str] = set()
+        for c in computed:
+            if str(c.get("evidence_type") or "").strip().lower() != "table_value":
+                continue
+            if str(c.get("column") or "").strip() != column:
+                continue
+            value_text = str(c.get("value") or "").strip()
+            if not value_text:
+                snippet = str(c.get("snippet") or "")
+                match = re.search(r"Distinct\s+.+?:\s+(.+?)\s+\(count=", snippet)
+                value_text = match.group(1).strip() if match else ""
+            if not value_text:
+                continue
+            try:
+                count_val = int(c.get("count")) if c.get("count") is not None else 0
+            except Exception:
+                count_val = 0
+            key = value_text.lower()
+            if key in seen_values:
+                continue
+            seen_values.add(key)
+            distinct_rows.append({"value": value_text, "count": count_val})
+
+        count_value: int | None = None
+        for c in computed:
+            if str(c.get("evidence_type") or "").strip().lower() != "table_stat":
+                continue
+            if str(c.get("column") or "").strip() != column:
+                continue
+            op = str(c.get("operation") or "").strip().lower()
+            if op not in {"nunique", "count_distinct", "distinct_count", "count_values"}:
+                continue
+            try:
+                count_value = int(c.get("value"))
+            except Exception:
+                pass
+            if count_value is not None:
+                break
+        if count_value is None and distinct_rows:
+            count_value = len(distinct_rows)
+
+        if not distinct_rows and count_value is None:
+            return None
+
+        q = " ".join(question.lower().split())
+        wants_count = ("how many" in q) or ("number of" in q) or ("count" in q) or intent in {"count_distinct", "count_values"}
+        wants_values = self._has_value_list_marker(question) or self._is_count_plus_values_request(question) or intent in {"count_values", "list_values"}
+        wants_distribution = self._is_distribution_request(question)
+        wants_breakdown = self._is_category_count_breakdown_request(
+            question,
+            column=column,
+            distinct_rows=distinct_rows,
+        )
+
+        if distinct_rows and (wants_distribution or (wants_count and wants_breakdown)):
+            group_count = count_value if count_value is not None else len(distinct_rows)
+            pairs = ", ".join(f"{row['value']}={int(row['count'])}" for row in distinct_rows[:10])
+            return f"{column} distribution ({group_count} groups): {pairs}."
+
+        if distinct_rows and wants_count and wants_values:
+            values_preview = ", ".join(str(row.get("value")) for row in distinct_rows[:8])
+            if count_value is None:
+                count_value = len(distinct_rows)
+            return f"There are {count_value} distinct {column} values: {values_preview}."
+
+        if distinct_rows and wants_values:
+            values_preview = ", ".join(str(row.get("value")) for row in distinct_rows[:12])
+            return f"Distinct {column} values: {values_preview}."
+
+        if wants_count and count_value is not None:
+            return f"There are {count_value} distinct {column} values."
+        return None
 
     def _fallback_answer_from_citations(
         self,
@@ -3042,6 +3322,8 @@ class QueryEngine:
                 deterministic_used = True
                 planner_trace = dict(self._last_tabular_trace or {})
             else:
+                if not planner_trace:
+                    planner_trace = dict(self._last_tabular_trace or {})
                 run_error: Exception | None = None
                 attempt_questions = [
                     resolved_question,
@@ -3209,9 +3491,16 @@ class QueryEngine:
                     top_k=effective_top_k,
                 )
 
-        requires_computed = self._has_tabular_sources() and not self._is_schema_question(resolved_question) and (
-            route.intent in {"count", "count_values", "aggregate", "mixed"}
-            or self._requires_computed_evidence(resolved_question)
+        explicit_numeric_request = (
+            self._requires_computed_evidence(resolved_question)
+            or self._requires_numeric_stat_evidence(resolved_question)
+            or self._is_distribution_request(resolved_question)
+            or self._is_count_plus_values_request(resolved_question)
+        )
+        requires_computed = (
+            self._has_tabular_sources()
+            and not self._is_schema_question(resolved_question)
+            and explicit_numeric_request
         )
         requires_numeric_stat = route.needs_numeric_stat or self._requires_numeric_stat_evidence(resolved_question)
         if requires_computed and not self._has_computed_citations(
@@ -3405,6 +3694,23 @@ class QueryEngine:
                     top_k=max(effective_top_k, 4),
                 )
 
+        if deterministic_used and self._has_computed_citations(citations):
+            direct_answer = self._tabular_direct_answer_from_computed_evidence(
+                question=resolved_question,
+                deterministic_intent=deterministic_intent,
+                citations=citations,
+            )
+            if direct_answer and direct_answer.strip() != answer.strip():
+                answer = direct_answer.strip()
+                rescue_used = True
+                rescue_reason = "tabular_direct_answer_contract"
+                citations = self._build_citations(
+                    question=resolved_question,
+                    answer=answer,
+                    seed_hits=seed_hits,
+                    top_k=effective_top_k,
+                )
+
         confidence = self._citation_confidence(resolved_question, answer, citations)
 
         self._session.add_turn("user", question.strip())
@@ -3434,6 +3740,16 @@ class QueryEngine:
         )
 
         effective_intent = deterministic_intent or route.intent
+        planner_used = bool(planner_trace.get("planner_used"))
+        planner_executed = bool(planner_trace.get("planner_executed"))
+        execution_mode = "llm_generation"
+        if deterministic_used:
+            if planner_used or planner_executed:
+                execution_mode = "hybrid_planner_deterministic"
+            else:
+                execution_mode = "deterministic_truth"
+        elif fallback_used:
+            execution_mode = "deterministic_fallback"
 
         return {
             "question": question.strip(),
@@ -3449,6 +3765,8 @@ class QueryEngine:
             "rescue_reason": rescue_reason,
             "deterministic_used": deterministic_used,
             "deterministic_intent": deterministic_intent,
+            "execution_mode": execution_mode,
+            "llm_primary_used": execution_mode in {"llm_generation", "hybrid_planner_deterministic"},
             "intent": effective_intent,
             "route_intent": route.intent,
             "longdoc_literal_support": longdoc_literal_support,
@@ -3457,12 +3775,13 @@ class QueryEngine:
                 "deterministic_tabular" if deterministic_used else "llm_generation",
             ),
             "target_resolution": planner_trace.get("target_resolution"),
-            "planner_used": bool(planner_trace.get("planner_used")),
-            "planner_executed": bool(planner_trace.get("planner_executed")),
+            "planner_used": planner_used,
+            "planner_executed": planner_executed,
             "planner_intent": planner_trace.get("planner_intent"),
             "planner_source": planner_trace.get("planner_source"),
             "planner_column": planner_trace.get("planner_column"),
             "planner_column_recovered": bool(planner_trace.get("planner_column_recovered")),
+            "planner_error": planner_trace.get("planner_error"),
         }
 
     def ask(self, question: str) -> str:

@@ -1,0 +1,3 @@
+{"question":"What blood pressure is reported?","source_text":"Vitals: Blood pressure 128/82 mmHg. Pulse 76 bpm.","response":"128/82","expected_numeric":128}
+{"question":"What is the pulse rate?","source_text":"Vitals: Blood pressure 128/82 mmHg. Pulse 76 bpm.","response":"76","expected_numeric":76}
+{"question":"What modality was used?","source_text":"Imaging: Study Date 2025-08-01. Modality CT.","response":"CT"}

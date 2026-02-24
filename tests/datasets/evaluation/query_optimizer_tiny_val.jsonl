@@ -1,0 +1,1 @@
+{"question":"What is the documented blood pressure?","source_text":"Vitals note: Blood pressure 132/84 mmHg, pulse 72 bpm.","response":"132/84","expected_numeric":132}

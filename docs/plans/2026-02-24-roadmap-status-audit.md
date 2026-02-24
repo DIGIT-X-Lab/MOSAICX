@@ -1,0 +1,249 @@
+# MOSAICX Roadmap Status Audit
+
+Date: 2026-02-24
+Branch: `feat/dspy-rlm-evolution`
+Status: Active
+Owner: Core platform
+Authoritative: Yes (single source of truth for rollout status)
+
+## 0) Canonical Status (Updated 2026-02-24 16:40)
+
+This file is the canonical status board for DSPy roadmap execution.
+Other plan files are design/history logs and must link here for status.
+
+### Issue state
+
+- Closed: `QRY-001`, `VER-001`, `VER-002`, `EXT-001`, `EXT-002`, `OPS-001`, `EVAL-001`
+- In progress/completed in branch and ready to close after push: `QRY-002`, `EVAL-002`, `DOC-001`
+
+### Evidence highlights
+
+- Query planner-first hardening (`QRY-002`) implemented and tested:
+  - Non-integration: `PYTHONPATH=. .venv/bin/pytest -q tests/test_query_engine.py tests/test_query_control_plane.py -m 'not integration'` -> `73 passed, 4 deselected`
+  - Integration with local `vllm-mlx`: `PYTHONPATH=. .venv/bin/pytest -q tests/test_query_engine.py -m integration` -> `5 passed, 68 deselected`
+  - Multi-turn live CSV verification confirmed planner path for implicit category count asks.
+- Optimizer artifacts (`EVAL-002`) produced with real local model execution:
+  - `docs/runs/2026-02-24-query-optimizer-seq-tiny/optimizer_sequence_manifest.json`
+  - `docs/runs/2026-02-24-query-optimizer-seq-tiny/miprov2_optimized.json`
+  - `docs/runs/2026-02-24-query-optimizer-seq-tiny/simba_optimized.json`
+  - `docs/runs/2026-02-24-query-optimizer-seq-tiny/gepa_optimized.json`
+  - Baseline metrics persisted: `docs/runs/2026-02-24-query-optimizer-seq-tiny/baseline_metrics.json`
+  - Run report with command provenance: `docs/runs/2026-02-24-eval-002-optimizer-sequence-report.md`
+- DOC canonicalization (`DOC-001`) applied:
+  - `docs/plans/2026-02-23-dspy-full-capability-rollout.md` marked as historical/superseded.
+  - `docs/plans/2026-02-23-sota-execution-memory.md` marked as execution ledger with canonical pointer.
+
+### Operational note
+
+- LLM-backed integration/eval commands must run outside sandbox in this environment to access local `127.0.0.1:8000` reliably.
+- Preflight requirement remains: validate both `/v1/models` and `/v1/chat/completions`.
+
+### Historical sections below
+
+The remaining sections in this document are retained as historical audit context from earlier checkpoints.
+
+## 1) Snapshot
+
+This audit reconciles roadmap claims against actual code paths, tests, and live CLI behavior.
+
+Key finding:
+
+- `docs/plans/2026-02-23-dspy-full-capability-rollout.md` claims `[Overall Progress: 100%]`.
+- `docs/plans/2026-02-23-sota-execution-memory.md` still has nearly all `DSPY-*` and epic checkboxes unchecked.
+- Real code/test/runtime evidence supports **partial** completion, not 100%.
+
+## 2) Evidence Collected (this audit block)
+
+Commands and outcomes:
+
+1. `PYTHONPATH=. .venv/bin/pytest -q tests/test_query_engine.py tests/test_query_control_plane.py tests/test_query_tools.py -m 'not integration'`
+- Result: `92 passed, 2 deselected`
+
+2. `PYTHONPATH=. .venv/bin/pytest -q tests/integration/test_full_pipeline.py tests/integration/test_e2e.py`
+- Result: `18 passed`
+
+3. `PYTHONPATH=. .venv/bin/pytest -q tests/test_design_doc_compliance.py tests/test_mcp_verify.py tests/test_sdk_verify.py`
+- Result: `45 passed`
+
+4. `PYTHONPATH=. .venv/bin/pytest -q tests/test_query_loaders.py tests/test_verify_deterministic.py tests/test_verify_engine.py tests/test_cli_extract.py`
+- Result: `80 passed, 1 failed`
+- Failure: `tests/test_cli_extract.py::TestExtractAPIKeyCheck::test_extract_fails_without_api_key`
+
+5. `PYTHONPATH=. .venv/bin/pytest -q tests/test_schema_gen.py tests/test_report.py`
+- Result: `68 passed`
+
+6. Local model probes:
+- `curl -sS --max-time 5 http://127.0.0.1:8000/v1/models` -> model listed (`mlx-community/gpt-oss-120b-4bit`)
+- `curl -sS --max-time 120 http://127.0.0.1:8000/v1/chat/completions ...` -> successful response (token usage returned)
+
+7. Live query check:
+- `mosaicx query --document tests/datasets/generated_hardcases/cohort_edge_cases.csv -q "what is the distribution of male and female?" --eda --trace --max-iterations 2`
+- Correct output: `Sex distribution (3 groups): F=2, M=2, Other=1.`
+
+8. Live query check (harder phrasing):
+- `mosaicx query --document tests/datasets/generated_hardcases/cohort_edge_cases.csv -q "how many ethnicities are there and what are they?" --eda --trace --max-iterations 2`
+- Output is technically grounded but poorly narrated:
+  - returns generic "Grounded summary..." instead of direct answer sentence.
+
+9. Live verify thorough (escalated local LLM path):
+- `mosaicx verify --sources tests/datasets/extract/sample_patient_vitals.pdf --claim "patient BP is 128/82" --level thorough`
+- Output: `Decision partially_supported`, `Truth inconclusive`, despite `Claimed: 128/82` and `Source: 128/82`.
+- Evidence text contradictory: "source document does not contain any blood pressure reading."
+
+## 3) DSPy Capability Ledger (Reality)
+
+Legend:
+- `done`: clearly implemented and validated
+- `partial`: implemented in some paths but not primary/consistent/reliable
+- `missing`: not implemented or not wired into gates/artifacts
+
+1. `DSPY-01 ReAct planner primary`: **partial**
+- Exists in `mosaicx/query/control_plane.py`.
+- Not primary globally because deterministic lexical routing/fallbacks still dominate many query paths.
+
+2. `DSPY-02 RLM executor (query + verify thorough)`: **partial**
+- Exists in `mosaicx/query/engine.py` and `mosaicx/verify/audit.py`.
+- Live thorough verify still produces inconsistent adjudication in a simple truth case.
+
+3. `DSPY-03 JSONAdapter default policy`: **partial**
+- Adapter policy exists in `mosaicx/runtime_env.py`.
+- Not uniformly robust across all CLI paths in practice.
+
+4. `DSPY-04 TwoStepAdapter fallback`: **partial**
+- Implemented parse-fallback in query/verify.
+- Parse and runtime failures still surface in live runs.
+
+5. `DSPY-05 BestOfN grounded selection`: **partial**
+- Implemented in query evidence verifier.
+- Live behavior can still collapse to generic rescue summaries.
+
+6. `DSPY-06 Refine for extraction-critical steps`: **done (module-level)**
+- Present in radiology/pathology pipelines.
+- End-to-end extraction reliability still affected by environment/model plumbing.
+
+7. `DSPY-07 MultiChainComparison contradiction adjudication`: **partial**
+- Used in query verifier flow.
+- Not yet a consistent final adjudication contract across verify outputs.
+
+8. `DSPY-08 CodeAct fallback`: **partial**
+- Implemented in tabular programmatic analyst.
+- Needs stronger runtime boundaries and success criteria in live workloads.
+
+9. `DSPY-09 ProgramOfThought fallback-only with strict guards`: **partial**
+- Gated fallback exists.
+- Syntax/runtime instability still appears in user-facing runs.
+
+10. `DSPY-10 CompleteAndGrounded in quality gates`: **partial**
+- Metric wrapper present.
+- Not a strict release blocker across all key flows.
+
+11. `DSPY-11 answer_exact_match + answer_passage_match CI`: **missing**
+- No code usage found.
+
+12. `DSPY-12 MIPROv2 artifacts`: **missing**
+- Optimizer scaffolding exists, no persisted run artifacts found.
+
+13. `DSPY-13 SIMBA artifacts`: **missing**
+- Same as above.
+
+14. `DSPY-14 GEPA artifacts`: **missing**
+- Same as above.
+
+15. `DSPY-15 Parallel/Async/Streaming with failure isolation`: **missing/limited**
+- No clear end-to-end staged parallel architecture with isolation in query/verify runtime.
+
+## 4) Bug Report Reconciliation (`docs/bugs/2026-02-23-systematic-test-results.md`)
+
+### Likely fixed
+
+- Loader robustness set:
+  - empty CSV handling
+  - latin1/cp1252 fallback decode
+  - malformed JSON clear error
+  - multiline JSONL parsing
+  - semicolon CSV detection
+  - TSV dataframe loading
+  - multi-sheet Excel merge behavior
+  - large file guard
+
+Evidence:
+- `tests/test_query_loaders.py` passes.
+
+- Verify deterministic crash/pass-through issues:
+  - malformed findings now tolerated
+  - no-check cases now return `insufficient_evidence` rather than false `verified`
+
+Evidence:
+- `tests/test_verify_deterministic.py`, `tests/test_verify_engine.py` pass.
+
+- Nested list-object template bug:
+
+Evidence:
+- `tests/test_schema_gen.py`, `tests/test_report.py` pass.
+
+### Still open / re-opened
+
+1. Verify thorough adjudication inconsistency on simple true claim:
+- Reproduced live.
+
+2. Query narrative quality on tabular count+values:
+- Reproduced live (`ethnicity` ask returns "Grounded summary..." instead of direct answer format).
+
+3. Extract model-provider/runtime plumbing:
+- Live `extract` path fails in current environment with model/provider mismatch or connection errors.
+
+4. API-key check test instability:
+- `tests/test_cli_extract.py::TestExtractAPIKeyCheck` currently failing.
+
+## 5) Worktree Execution Plan (Parallel)
+
+Use isolated worktrees to avoid cross-feature churn:
+
+1. `wt-query-controlplane`
+- Focus: Route/Plan/Execute/Verify/Narrate cleanup and tabular narration contract.
+- Files: `mosaicx/query/engine.py`, `mosaicx/query/control_plane.py`, `mosaicx/query/tools.py`, query tests.
+
+2. `wt-verify-adjudication`
+- Focus: claim truth contract and thorough audit consistency.
+- Files: `mosaicx/verify/engine.py`, `mosaicx/verify/audit.py`, `mosaicx/sdk.py`, `mosaicx/cli.py`, verify tests.
+
+3. `wt-extract-runtime`
+- Focus: extract LM/provider resolution, fallback behavior, enum rendering contract.
+- Files: `mosaicx/cli.py`, `mosaicx/pipelines/extraction.py`, config/runtime paths, extract tests.
+
+4. `wt-eval-optimize`
+- Focus: wire `answer_exact_match` + `answer_passage_match`, enforce CI gates, produce optimizer artifacts.
+- Files: `mosaicx/evaluation/*.py`, CI config, docs artifacts.
+
+5. `wt-docs-ops`
+- Focus: single source of truth docs + runbooks + bug status sync.
+- Files: `README.md`, `docs/*`, plan trackers.
+
+## 6) Issue Backlog (ready to create)
+
+`gh` status currently blocked:
+- token invalid (`gh auth status` fails).
+
+Create these issues once auth is fixed:
+
+1. `QRY-001` Query direct-answer contract for count+values questions.
+2. `QRY-002` Remove/contain lexical routing debt; ReAct primary for ambiguous tabular asks.
+3. `VER-001` Verify thorough true-claim inconsistency (`128/82` case).
+4. `VER-002` Unified claim truth schema + contradiction-first rendering.
+5. `EXT-001` Extract LM provider/base resolution hardening for local vLLM-MLX.
+6. `EXT-002` Enum/internal-label rendering contract for template outputs.
+7. `EVAL-001` Wire `answer_exact_match` and `answer_passage_match` into gates.
+8. `EVAL-002` Run and store optimizer artifacts (`MIPROv2`, `SIMBA`, `GEPA`).
+9. `OPS-001` LLM preflight gate before integration tests (hard fail on missing `/chat/completions`).
+10. `DOC-001` Resolve roadmap doc contradictions and keep single authoritative progress board.
+
+## 7) Immediate Next Step (highest leverage)
+
+Execute in order:
+
+1. Fix `VER-001` (truth inconsistency in thorough verify).
+2. Fix `QRY-001` (tabular direct-answer contract).
+3. Fix `EXT-001` (extract runtime provider/base robustness).
+4. Add `EVAL-001` gates and baseline artifact generation.
+
+Only then mark roadmap progress upward from current partial state.

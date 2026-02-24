@@ -1,0 +1,6 @@
+{
+  "train_score": 100.0,
+  "val_score": 100.0,
+  "num_train": 3,
+  "num_val": 1
+}

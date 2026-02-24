@@ -1,0 +1,6 @@
+{"claim":"patient BP is 128/82","source_text":"Patient Vital Signs: Blood Pressure 128/82 mmHg. Pulse 76 bpm.","verdict":"verified","response":"verified"}
+{"claim":"patient BP is 120/82","source_text":"Patient Vital Signs: Blood Pressure 128/82 mmHg. Pulse 76 bpm.","verdict":"contradicted","response":"contradicted"}
+{"claim":"modality is CT","source_text":"Radiology Report: Modality CT Chest/Abdomen/Pelvis with contrast.","verdict":"verified","response":"verified"}
+{"claim":"modality is MRI","source_text":"Radiology Report: Modality CT Chest/Abdomen/Pelvis with contrast.","verdict":"contradicted","response":"contradicted"}
+{"claim":"lesion size increased from 12 mm to 16 mm","source_text":"Follow-up: Node was 12 mm on 2025-08-01 and 16 mm on 2025-09-10.","verdict":"verified","response":"verified"}
+{"claim":"there is new visceral metastasis","source_text":"Impression: No new visceral lesions identified.","verdict":"contradicted","response":"contradicted"}

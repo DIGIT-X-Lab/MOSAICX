@@ -1,0 +1,10 @@
+{"question":"What blood pressure is reported?","source_text":"Patient Vital Signs: Blood Pressure 128/82 mmHg. Pulse 76 bpm. Temperature 37.0 C.","response":"128/82","expected_numeric":128}
+{"question":"What is the pulse rate?","source_text":"Patient Vital Signs: Blood Pressure 128/82 mmHg. Pulse 76 bpm. Temperature 37.0 C.","response":"76","expected_numeric":76}
+{"question":"What imaging modality was used?","source_text":"Radiology Report: Study Date 2025-08-01. Modality: CT Chest/Abdomen/Pelvis with contrast.","response":"CT"}
+{"question":"What is the study date?","source_text":"Radiology Report: Study Date 2025-08-01. Modality: CT Chest/Abdomen/Pelvis with contrast.","response":"2025-08-01"}
+{"question":"How much did lesion size change?","source_text":"Follow-up Summary: Right external iliac node measured 12 mm on 2025-08-01 and 16 mm on 2025-09-10.","response":"4 mm","expected_numeric":4}
+{"question":"What was the lesion size on 2025-09-10?","source_text":"Follow-up Summary: Right external iliac node measured 12 mm on 2025-08-01 and 16 mm on 2025-09-10.","response":"16 mm","expected_numeric":16}
+{"question":"How many distinct ethnicity values are listed?","source_text":"Cohort summary: Ethnicity values are Japanese, Japanese, Caucasian, Japanese.","response":"2","expected_numeric":2}
+{"question":"Which ethnicity values appear in the cohort summary?","source_text":"Cohort summary: Ethnicity values are Japanese, Japanese, Caucasian, Japanese.","response":"Japanese and Caucasian"}
+{"question":"What finding was stable across both scans?","source_text":"Findings: No suspicious pulmonary nodules on both scans. No pleural effusion on both scans.","response":"No suspicious pulmonary nodules"}
+{"question":"Was there new visceral metastasis?","source_text":"Impression: No new visceral lesions identified. Isolated nodal progression only.","response":"No"}

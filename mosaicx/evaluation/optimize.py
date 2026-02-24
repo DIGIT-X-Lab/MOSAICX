@@ -1,10 +1,15 @@
-"""Optimization workflow — progressive GEPA strategy."""
+"""Optimization workflow — progressive DSPy optimizer strategy."""
 
 from __future__ import annotations
 
+import json
 import logging
+import inspect
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
+
+from mosaicx.runtime_env import import_dspy
 
 logger = logging.getLogger(__name__)
 
@@ -21,12 +26,30 @@ _BUDGET_PRESETS: dict[str, dict[str, Any]] = {
               "reflection_lm": None, "candidate_selection_strategy": "pareto", "use_merge": True},
 }
 
+_STRATEGY_DEFAULTS: dict[str, dict[str, Any]] = {
+    "BootstrapFewShot": {"max_iterations": 10, "num_candidates": 5},
+    "MIPROv2": {"max_iterations": 50, "num_candidates": 10},
+    "SIMBA": {"max_iterations": 50, "num_candidates": 10},
+    "GEPA": {"max_iterations": 150, "num_candidates": 20,
+             "reflection_lm": None, "candidate_selection_strategy": "pareto", "use_merge": True},
+}
+
 
 def get_optimizer_config(budget: str) -> dict[str, Any]:
     """Get optimizer configuration for a budget preset."""
     if budget not in _BUDGET_PRESETS:
         raise ValueError(f"Unknown budget: {budget}. Choose from: {list(_BUDGET_PRESETS)}")
     return dict(_BUDGET_PRESETS[budget])
+
+
+def get_strategy_config(strategy: str) -> dict[str, Any]:
+    """Get optimizer configuration for an explicit DSPy strategy name."""
+    name = str(strategy).strip()
+    if name not in _STRATEGY_DEFAULTS:
+        raise ValueError(f"Unknown strategy: {name}. Choose from: {list(_STRATEGY_DEFAULTS)}")
+    cfg = dict(_STRATEGY_DEFAULTS[name])
+    cfg["strategy"] = name
+    return cfg
 
 
 def save_optimized(module: Any, path: Path) -> None:
@@ -98,9 +121,21 @@ def _build_optimizer(strategy: str, config: dict[str, Any], metric: Callable) ->
     Falls back to BootstrapFewShot if the requested optimizer is
     unavailable.
     """
-    import dspy
+    dspy = import_dspy()
 
     max_rounds = config.get("max_iterations", 10)
+
+    def _instantiate(ctor: Any, **kwargs: Any) -> Any:
+        """Instantiate optimizer while filtering kwargs to supported params."""
+        sig = inspect.signature(ctor)
+        accepts_var_kwargs = any(
+            p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values()
+        )
+        if accepts_var_kwargs:
+            filtered = kwargs
+        else:
+            filtered = {k: v for k, v in kwargs.items() if k in sig.parameters}
+        return ctor(**filtered)
 
     if strategy == "BootstrapFewShot":
         return dspy.BootstrapFewShot(
@@ -119,13 +154,22 @@ def _build_optimizer(strategy: str, config: dict[str, Any], metric: Callable) ->
                 max_rounds=max_rounds,
             )
         try:
-            return simba_cls(
+            simba_steps = int(
+                config.get(
+                    "max_steps",
+                    max(2, min(int(max_rounds // 10), 8)),
+                )
+            )
+            return _instantiate(
+                simba_cls,
                 metric=metric,
                 num_candidates=config.get("num_candidates", 10),
-                max_bootstrapped_demos=4,
-                max_labeled_demos=4,
+                bsize=min(int(config.get("num_candidates", 10)), 32),
+                max_steps=max(1, simba_steps),
+                max_demos=4,
+                num_threads=1,
             )
-        except (AttributeError, TypeError):
+        except (AttributeError, TypeError, ValueError):
             logger.warning("SIMBA init failed, falling back to BootstrapFewShot")
             return dspy.BootstrapFewShot(
                 metric=metric,
@@ -135,19 +179,34 @@ def _build_optimizer(strategy: str, config: dict[str, Any], metric: Callable) ->
 
     if strategy == "MIPROv2":
         try:
-            return dspy.MIPROv2(
+            # Newer DSPy raises when auto != None and num_candidates is set.
+            return _instantiate(
+                dspy.MIPROv2,
                 metric=metric,
+                auto=None,
                 num_candidates=config.get("num_candidates", 10),
                 max_bootstrapped_demos=4,
                 max_labeled_demos=4,
+                num_threads=1,
             )
-        except (AttributeError, TypeError):
-            logger.warning("MIPROv2 unavailable, falling back to BootstrapFewShot")
-            return dspy.BootstrapFewShot(
-                metric=metric,
-                max_bootstrapped_demos=config.get("num_candidates", 5),
-                max_rounds=max_rounds,
-            )
+        except (AttributeError, TypeError, ValueError):
+            try:
+                # Compatibility fallback for older/newer constructor signatures.
+                return _instantiate(
+                    dspy.MIPROv2,
+                    metric=metric,
+                    auto="light",
+                    max_bootstrapped_demos=4,
+                    max_labeled_demos=4,
+                    num_threads=1,
+                )
+            except (AttributeError, TypeError, ValueError):
+                logger.warning("MIPROv2 unavailable, falling back to BootstrapFewShot")
+                return dspy.BootstrapFewShot(
+                    metric=metric,
+                    max_bootstrapped_demos=config.get("num_candidates", 5),
+                    max_rounds=max_rounds,
+                )
 
     if strategy == "GEPA":
         # GEPA may not be available in all DSPy versions
@@ -156,12 +215,18 @@ def _build_optimizer(strategy: str, config: dict[str, Any], metric: Callable) ->
             logger.warning("GEPA unavailable, falling back to MIPROv2")
             return _build_optimizer("MIPROv2", config, metric)
         try:
-            return gepa_cls(
+            return _instantiate(
+                gepa_cls,
                 metric=metric,
+                auto=None,
                 max_bootstrapped_demos=config.get("num_candidates", 20),
+                num_candidate_programs=config.get("num_candidates", 20),
                 num_threads=1,
+                candidate_selection_strategy=config.get("candidate_selection_strategy", "pareto"),
+                reflection_lm=config.get("reflection_lm"),
+                use_merge=bool(config.get("use_merge", True)),
             )
-        except TypeError:
+        except (TypeError, ValueError):
             logger.warning("GEPA init failed, falling back to BootstrapFewShot")
             return dspy.BootstrapFewShot(
                 metric=metric,
@@ -170,6 +235,45 @@ def _build_optimizer(strategy: str, config: dict[str, Any], metric: Callable) ->
             )
 
     raise ValueError(f"Unknown optimizer strategy: {strategy}")
+
+
+def _compile_optimizer(
+    *,
+    optimizer: Any,
+    module: Any,
+    trainset: list,
+    valset: list | None,
+    strategy: str,
+    config: dict[str, Any],
+) -> Any:
+    """Compile optimizer with signature-aware kwargs across DSPy versions."""
+    compile_sig = inspect.signature(optimizer.compile)
+    kwargs: dict[str, Any] = {}
+
+    if "trainset" in compile_sig.parameters:
+        kwargs["trainset"] = trainset
+    if valset is not None and "valset" in compile_sig.parameters:
+        kwargs["valset"] = valset
+    if "seed" in compile_sig.parameters:
+        kwargs["seed"] = 9
+
+    if strategy == "MIPROv2":
+        if "num_trials" in compile_sig.parameters:
+            kwargs["num_trials"] = max(
+                int(config.get("num_trials", config.get("max_iterations", 10))),
+                1,
+            )
+        if "max_bootstrapped_demos" in compile_sig.parameters:
+            kwargs["max_bootstrapped_demos"] = 4
+        if "max_labeled_demos" in compile_sig.parameters:
+            kwargs["max_labeled_demos"] = 4
+        if "minibatch_size" in compile_sig.parameters:
+            val_size = len(valset) if isinstance(valset, list) else len(trainset)
+            kwargs["minibatch_size"] = max(1, min(4, int(val_size)))
+        if "minibatch_full_eval_steps" in compile_sig.parameters:
+            kwargs["minibatch_full_eval_steps"] = 1
+
+    return optimizer.compile(module, **kwargs)
 
 
 def run_optimization(
@@ -203,7 +307,7 @@ def run_optimization(
         ``results_dict`` has keys ``train_score``, ``val_score``,
         ``num_train``, ``num_val``, ``strategy``.
     """
-    import dspy
+    dspy = import_dspy()
 
     config = get_optimizer_config(budget)
     strategy = config["strategy"]
@@ -218,7 +322,14 @@ def run_optimization(
 
     # Build and run optimizer
     optimizer = _build_optimizer(strategy, config, metric)
-    optimized = optimizer.compile(module, trainset=trainset)
+    optimized = _compile_optimizer(
+        optimizer=optimizer,
+        module=module,
+        trainset=trainset,
+        valset=valset,
+        strategy=str(strategy),
+        config=config,
+    )
 
     # Evaluate on train + val sets
     evaluator = dspy.Evaluate(
@@ -250,3 +361,149 @@ def run_optimization(
     }
 
     return optimized, results
+
+
+def run_optimization_with_strategy(
+    module: Any,
+    trainset: list,
+    valset: list | None,
+    metric: Callable,
+    strategy: str,
+    save_path: Path | str | None = None,
+    config_override: dict[str, Any] | None = None,
+) -> tuple[Any, dict[str, Any]]:
+    """Run optimization with an explicit DSPy strategy (e.g. MIPROv2/SIMBA/GEPA)."""
+    dspy = import_dspy()
+
+    config = get_strategy_config(strategy)
+    if config_override:
+        config.update({k: v for k, v in config_override.items() if v is not None})
+
+    if valset is None and len(trainset) >= 5:
+        split = int(len(trainset) * 0.8)
+        valset = trainset[split:]
+        trainset = trainset[:split]
+    elif valset is None:
+        valset = trainset
+
+    optimizer = _build_optimizer(str(strategy), config, metric)
+    optimized = _compile_optimizer(
+        optimizer=optimizer,
+        module=module,
+        trainset=trainset,
+        valset=valset,
+        strategy=str(strategy),
+        config=config,
+    )
+
+    evaluator = dspy.Evaluate(
+        devset=trainset,
+        metric=metric,
+        num_threads=1,
+        display_progress=True,
+    )
+    train_score = evaluator(optimized)
+
+    evaluator_val = dspy.Evaluate(
+        devset=valset,
+        metric=metric,
+        num_threads=1,
+        display_progress=True,
+    )
+    val_score = evaluator_val(optimized)
+
+    if save_path:
+        save_optimized(optimized, Path(save_path))
+
+    results = {
+        "train_score": train_score,
+        "val_score": val_score,
+        "num_train": len(trainset),
+        "num_val": len(valset),
+        "strategy": str(strategy),
+    }
+    return optimized, results
+
+
+def run_optimizer_sequence(
+    *,
+    module_factory: Callable[[], Any],
+    trainset: list,
+    valset: list | None,
+    metric: Callable,
+    out_dir: Path | str,
+    strategies: tuple[str, ...] = ("MIPROv2", "SIMBA", "GEPA"),
+    strategy_overrides: dict[str, dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Run and persist a full optimizer sequence, returning manifest metadata."""
+    out_path = Path(out_dir)
+    out_path.mkdir(parents=True, exist_ok=True)
+
+    baseline: dict[str, Any] | None = None
+    baseline_artifact: str | None = None
+    try:
+        dspy = import_dspy()
+        baseline_module = module_factory()
+        evaluator_train = dspy.Evaluate(
+            devset=trainset,
+            metric=metric,
+            num_threads=1,
+            display_progress=True,
+        )
+        baseline_train = float(evaluator_train(baseline_module))
+        effective_valset = valset if valset is not None else trainset
+        evaluator_val = dspy.Evaluate(
+            devset=effective_valset,
+            metric=metric,
+            num_threads=1,
+            display_progress=True,
+        )
+        baseline_val = float(evaluator_val(baseline_module))
+        baseline = {
+            "train_score": baseline_train,
+            "val_score": baseline_val,
+            "num_train": len(trainset),
+            "num_val": len(effective_valset),
+        }
+        baseline_path = out_path / "baseline_metrics.json"
+        baseline_path.write_text(json.dumps(baseline, indent=2))
+        baseline_artifact = str(baseline_path)
+    except Exception as exc:
+        logger.warning("Baseline evaluation failed; continuing optimizer sequence: %s", exc)
+
+    runs: list[dict[str, Any]] = []
+    for strategy in strategies:
+        save_path = out_path / f"{str(strategy).lower()}_optimized.json"
+        module = module_factory()
+        _, result = run_optimization_with_strategy(
+            module=module,
+            trainset=trainset,
+            valset=valset,
+            metric=metric,
+            strategy=str(strategy),
+            save_path=save_path,
+            config_override=(strategy_overrides or {}).get(str(strategy)),
+        )
+        runs.append(
+            {
+                "strategy": str(strategy),
+                "train_score": float(result["train_score"]),
+                "val_score": float(result["val_score"]),
+                "num_train": int(result["num_train"]),
+                "num_val": int(result["num_val"]),
+                "artifact": str(save_path),
+            }
+        )
+
+    manifest = {
+        "created_at_utc": datetime.now(timezone.utc).isoformat(),
+        "strategies": [str(s) for s in strategies],
+        "strategy_overrides": strategy_overrides or {},
+        "baseline": baseline,
+        "baseline_artifact": baseline_artifact,
+        "runs": runs,
+    }
+    manifest_path = out_path / "optimizer_sequence_manifest.json"
+    manifest_path.write_text(json.dumps(manifest, indent=2))
+    manifest["manifest_path"] = str(manifest_path)
+    return manifest

@@ -47,6 +47,10 @@ test-integration: ## Run integration tests only
 test-cov: ## Run tests with coverage report
 	pytest tests/ --cov=mosaicx --cov-report=term-missing
 
+.PHONY: optimize-artifacts
+optimize-artifacts: ## Run bounded DSPy optimizer artifact sequence (query tiny dataset)
+	scripts/run_eval_optimizer_artifacts.sh query
+
 # ── Combined ───────────────────────────────────────────────
 
 .PHONY: check

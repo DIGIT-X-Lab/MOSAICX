@@ -1,0 +1,57 @@
+{
+  "created_at_utc": "2026-02-24T15:35:35.948369+00:00",
+  "strategies": [
+    "MIPROv2",
+    "SIMBA",
+    "GEPA"
+  ],
+  "strategy_overrides": {
+    "MIPROv2": {
+      "max_iterations": 2,
+      "num_trials": 2,
+      "num_candidates": 2
+    },
+    "SIMBA": {
+      "max_iterations": 4,
+      "num_candidates": 2,
+      "max_steps": 2
+    },
+    "GEPA": {
+      "max_iterations": 4,
+      "num_candidates": 2
+    }
+  },
+  "runs": [
+    {
+      "strategy": "MIPROv2",
+      "train_score": 100.0,
+      "val_score": 100.0,
+      "num_train": 3,
+      "num_val": 1,
+      "artifact": "docs/runs/2026-02-24-query-optimizer-seq-tiny/miprov2_optimized.json"
+    },
+    {
+      "strategy": "SIMBA",
+      "train_score": 100.0,
+      "val_score": 100.0,
+      "num_train": 3,
+      "num_val": 1,
+      "artifact": "docs/runs/2026-02-24-query-optimizer-seq-tiny/simba_optimized.json"
+    },
+    {
+      "strategy": "GEPA",
+      "train_score": 100.0,
+      "val_score": 100.0,
+      "num_train": 3,
+      "num_val": 1,
+      "artifact": "docs/runs/2026-02-24-query-optimizer-seq-tiny/gepa_optimized.json"
+    }
+  ],
+  "baseline": {
+    "train_score": 100.0,
+    "val_score": 100.0,
+    "num_train": 3,
+    "num_val": 1
+  },
+  "baseline_artifact": "docs/runs/2026-02-24-query-optimizer-seq-tiny/baseline_metrics.json"
+}

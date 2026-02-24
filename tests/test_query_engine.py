@@ -738,6 +738,119 @@ class TestQueryEngineConversation:
         assert payload["planner_column"] == "Sex"
         assert payload["execution_path"] == "planned_executor"
 
+    def test_ambiguous_count_values_requires_planner_before_lexical_fallback(
+        self,
+        tmp_path: Path,
+        monkeypatch,
+    ):
+        """When LM is available, ambiguous count+values prompts should not use lexical fallback first."""
+        from mosaicx.query.engine import QueryEngine
+        from mosaicx.query.session import QuerySession
+
+        f = tmp_path / "cohort.csv"
+        f.write_text("Subject,Sex\nS1,M\nS2,F\nS3,M\n")
+        session = QuerySession(sources=[f])
+        engine = QueryEngine(session=session)
+
+        called = {"lexical": False}
+
+        def _lexical(*_args, **_kwargs):
+            called["lexical"] = True
+            return [{"source": "cohort.csv", "column": "Subject", "score": 99}]
+
+        monkeypatch.setattr(engine, "_has_configured_lm", lambda: True)
+        monkeypatch.setattr(engine, "_plan_tabular_question_with_llm", lambda _q: None)
+        monkeypatch.setattr(engine, "_resolve_tabular_target_with_llm", lambda _q: None)
+        monkeypatch.setattr("mosaicx.query.tools.suggest_table_columns", _lexical)
+
+        result = engine._try_deterministic_tabular_answer("how many gendres are there and what are they?")
+        assert result is None
+        assert called["lexical"] is False
+        assert engine._last_tabular_trace.get("target_resolution") == "planner_required"
+        assert engine._last_tabular_trace.get("execution_path") == "planner_required_no_fallback"
+
+    def test_ambiguous_count_values_allows_lexical_fallback_without_lm(
+        self,
+        tmp_path: Path,
+        monkeypatch,
+    ):
+        """Without configured LM, deterministic lexical fallback remains available."""
+        from mosaicx.query.engine import QueryEngine
+        from mosaicx.query.session import QuerySession
+
+        f = tmp_path / "cohort.csv"
+        f.write_text("Subject,Sex\nS1,M\nS2,F\nS3,M\n")
+        session = QuerySession(sources=[f])
+        engine = QueryEngine(session=session)
+
+        monkeypatch.setattr(engine, "_has_configured_lm", lambda: False)
+        monkeypatch.setattr(engine, "_plan_tabular_question_with_llm", lambda _q: None)
+        monkeypatch.setattr(engine, "_resolve_tabular_target_with_llm", lambda _q: None)
+
+        result = engine._try_deterministic_tabular_answer("how many male and female?")
+        assert result is not None
+        answer, _, _intent = result
+        assert "distribution" in answer.lower()
+        assert engine._last_tabular_trace.get("target_resolution") == "lexical"
+
+    def test_count_without_explicit_column_requires_planner_before_lexical_fallback(
+        self,
+        tmp_path: Path,
+        monkeypatch,
+    ):
+        """Count-only category asks should prefer planner over lexical guessing when LM is available."""
+        from mosaicx.query.engine import QueryEngine
+        from mosaicx.query.session import QuerySession
+
+        f = tmp_path / "cohort.csv"
+        f.write_text("Subject,Sex\nS1,M\nS2,F\nS3,M\n")
+        session = QuerySession(sources=[f])
+        engine = QueryEngine(session=session)
+
+        called = {"lexical": False}
+
+        def _lexical(*_args, **_kwargs):
+            called["lexical"] = True
+            return [{"source": "cohort.csv", "column": "Subject", "score": 99}]
+
+        monkeypatch.setattr(engine, "_has_configured_lm", lambda: True)
+        monkeypatch.setattr(engine, "_plan_tabular_question_with_llm", lambda _q: None)
+        monkeypatch.setattr(engine, "_resolve_tabular_target_with_llm", lambda _q: None)
+        monkeypatch.setattr("mosaicx.query.tools.suggest_table_columns", _lexical)
+
+        result = engine._try_deterministic_tabular_answer("how many male and female?")
+        assert result is None
+        assert called["lexical"] is False
+        assert engine._last_tabular_trace.get("target_resolution") == "planner_required"
+        assert engine._last_tabular_trace.get("execution_path") == "planner_required_no_fallback"
+
+    def test_row_count_count_question_still_allows_lexical_fallback_with_lm(
+        self,
+        tmp_path: Path,
+        monkeypatch,
+    ):
+        """Row-count asks should keep deterministic lexical execution even when LM is configured."""
+        from mosaicx.query.engine import QueryEngine
+        from mosaicx.query.session import QuerySession
+
+        f = tmp_path / "cohort.csv"
+        f.write_text("Subject,Sex\nS1,M\nS2,F\nS3,M\n")
+        session = QuerySession(sources=[f])
+        engine = QueryEngine(session=session)
+
+        monkeypatch.setattr(engine, "_has_configured_lm", lambda: True)
+        monkeypatch.setattr(engine, "_plan_tabular_question_with_llm", lambda _q: None)
+        monkeypatch.setattr(engine, "_resolve_tabular_target_with_llm", lambda _q: None)
+        monkeypatch.setattr(
+            "mosaicx.query.tools.suggest_table_columns",
+            lambda *_args, **_kwargs: [{"source": "cohort.csv", "column": "Subject", "score": 99}],
+        )
+
+        result = engine._try_deterministic_tabular_answer("how many rows are there?")
+        assert result is not None
+        _answer, _citations, _intent = result
+        assert engine._last_tabular_trace.get("target_resolution") == "lexical"
+
     def test_deterministic_count_values_not_overwritten_by_reconciler(self, tmp_path: Path, monkeypatch):
         """Deterministic table answers should not be degraded by reconciler rewrites."""
         from mosaicx.query.engine import QueryEngine
@@ -771,6 +884,102 @@ class TestQueryEngineConversation:
         assert "Japanese" in answer
         assert "German" in answer
         assert payload.get("rescue_reason") != "evidence_reconciler"
+
+    def test_count_values_with_unknown_category_is_not_treated_as_non_answer(self, tmp_path: Path):
+        """Valid category value 'Unknown' must not trigger non-answer rescue."""
+        from mosaicx.query.engine import QueryEngine
+        from mosaicx.query.session import QuerySession
+
+        f = tmp_path / "cohort.csv"
+        f.write_text("Subject,Ethnicity\nS1,Japanese\nS2,Unknown\nS3,Korean\nS4,Japanese\n")
+        session = QuerySession(sources=[f])
+        engine = QueryEngine(session=session)
+
+        payload = engine.ask_structured("how many ethnicities are there and what are they?")
+        answer = str(payload["answer"]).lower()
+        assert "grounded summary from loaded sources" not in answer
+        assert ("distinct ethnicity values" in answer) or ("distribution" in answer)
+        assert "unknown" in answer
+        assert payload.get("rescue_reason") != "non_answer_with_evidence"
+
+    def test_direct_answer_contract_restores_count_values_from_computed_citations(self, tmp_path: Path, monkeypatch):
+        """Computed table evidence should force a direct count+values answer shape."""
+        from mosaicx.query.engine import QueryEngine
+        from mosaicx.query.session import QuerySession
+
+        f = tmp_path / "cohort.csv"
+        f.write_text("Subject,Ethnicity\nS1,Japanese\nS2,Unknown\nS3,Korean\nS4,Japanese\n")
+        session = QuerySession(sources=[f])
+        engine = QueryEngine(session=session)
+
+        seed_hits = [
+            {
+                "source": "cohort.csv",
+                "snippet": "Computed unique_count of Ethnicity from 4 rows: 3 (engine=duckdb)",
+                "score": 90,
+                "evidence_type": "table_stat",
+                "operation": "nunique",
+                "column": "Ethnicity",
+                "value": 3,
+                "backend": "duckdb",
+            },
+            {
+                "source": "cohort.csv",
+                "snippet": "Distinct Ethnicity: Japanese (count=2, engine=duckdb)",
+                "score": 88,
+                "evidence_type": "table_value",
+                "operation": "distinct_values",
+                "column": "Ethnicity",
+                "value": "Japanese",
+                "count": 2,
+                "backend": "duckdb",
+            },
+            {
+                "source": "cohort.csv",
+                "snippet": "Distinct Ethnicity: Korean (count=1, engine=duckdb)",
+                "score": 88,
+                "evidence_type": "table_value",
+                "operation": "distinct_values",
+                "column": "Ethnicity",
+                "value": "Korean",
+                "count": 1,
+                "backend": "duckdb",
+            },
+            {
+                "source": "cohort.csv",
+                "snippet": "Distinct Ethnicity: Unknown (count=1, engine=duckdb)",
+                "score": 88,
+                "evidence_type": "table_value",
+                "operation": "distinct_values",
+                "column": "Ethnicity",
+                "value": "Unknown",
+                "count": 1,
+                "backend": "duckdb",
+            },
+        ]
+
+        monkeypatch.setattr(
+            engine,
+            "_try_deterministic_tabular_answer",
+            lambda _q: (
+                "Grounded summary from loaded sources.",
+                seed_hits,
+                "count_values",
+            ),
+        )
+        monkeypatch.setattr(
+            engine,
+            "_build_citations",
+            lambda **kwargs: kwargs.get("seed_hits", []),
+        )
+
+        payload = engine.ask_structured("how many ethnicities are there and what are they?")
+        answer = str(payload["answer"]).lower()
+        assert "there are 3 distinct ethnicity values" in answer
+        assert "japanese" in answer
+        assert "korean" in answer
+        assert "unknown" in answer
+        assert payload.get("rescue_reason") == "tabular_direct_answer_contract"
 
     def test_build_citations_count_values_prefers_focused_value_rows(self, tmp_path: Path, monkeypatch):
         """Count+values citations should keep multiple value rows for the focused column."""
@@ -961,6 +1170,58 @@ class TestQueryEngineConversation:
         payload = engine.ask_structured("how many reports were reviewed?")
         assert payload["answer"] == "There were two reports."
         assert payload["rescue_reason"] != "missing_computed_evidence"
+
+    def test_analytic_guard_not_applied_for_tabular_narrative_without_numeric_request(
+        self,
+        tmp_path: Path,
+        monkeypatch,
+    ):
+        """Tabular narrative asks should not fail-closed when no numeric contract is requested."""
+        from mosaicx.query.engine import QueryEngine
+        from mosaicx.query.session import QuerySession
+
+        f = tmp_path / "cohort.csv"
+        f.write_text("Sex,Ethnicity\nM,Japanese\nF,Korean\nF,Japanese\n")
+        session = QuerySession(sources=[f])
+        engine = QueryEngine(session=session)
+
+        seed_hits = [
+            {
+                "source": "cohort.csv",
+                "snippet": "Sex and Ethnicity columns are present in the cohort table.",
+                "score": 7,
+                "evidence_type": "table_schema",
+            }
+        ]
+        monkeypatch.setattr(
+            engine,
+            "_run_query_once",
+            lambda q: ("The cohort includes both male and female participants with mixed ethnicities.", seed_hits),
+        )
+        monkeypatch.setattr(
+            engine,
+            "_build_citations",
+            lambda **kwargs: seed_hits,
+        )
+
+        payload = engine.ask_structured("give a concise narrative summary of this cohort")
+        assert "male and female" in payload["answer"].lower()
+        assert payload["rescue_reason"] != "missing_computed_evidence"
+
+    def test_requires_computed_evidence_avoids_summary_false_positive(self, tmp_path: Path):
+        """'summary' should not trigger numeric-compute guard via 'sum' substring."""
+        from mosaicx.query.engine import QueryEngine
+        from mosaicx.query.session import QuerySession
+
+        f = tmp_path / "cohort.csv"
+        f.write_text("Sex,Ethnicity\nM,Japanese\nF,Korean\n")
+        session = QuerySession(sources=[f])
+        engine = QueryEngine(session=session)
+
+        assert engine._requires_computed_evidence("give a concise narrative summary") is False
+        assert engine._requires_computed_evidence("what is the sum of BMI?") is True
+        assert engine._requires_numeric_stat_evidence("give a concise narrative summary") is False
+        assert engine._requires_numeric_stat_evidence("what is the 95th percentile bmi?") is True
 
     def test_analytic_guard_fail_closed_for_tabular_without_computed_evidence(self, tmp_path: Path, monkeypatch):
         """Tabular analytics should fail closed when no computed citation is available."""
@@ -1736,3 +1997,69 @@ class TestQueryEngineIntegration:
         assert len(conv) == 2
         assert conv[0]["role"] == "user"
         assert conv[1]["role"] == "assistant"
+
+    def test_tabular_typo_prompt_returns_grounded_count_values(
+        self,
+        tmp_path: Path,
+        _configure_dspy_for_test,
+    ):
+        """Typo prompts still return grounded count+values evidence for tabular asks."""
+        from mosaicx.query.engine import QueryEngine
+        from mosaicx.query.session import QuerySession
+
+        f = tmp_path / "cohort.csv"
+        f.write_text("Subject,Sex\nS1,M\nS2,F\nS3,M\nS4,F\nS5,M\n")
+        session = QuerySession(sources=[f])
+        engine = QueryEngine(session=session, max_iterations=2)
+
+        payload = engine.ask_structured("how many gendres are there and what are they?")
+        answer = str(payload.get("answer") or "")
+        assert answer
+        assert any(tok in answer.lower() for tok in ("distinct", "distribution", "there are"))
+        assert any(c.get("evidence_type") in {"table_stat", "table_value"} for c in payload["citations"])
+
+    def test_tabular_coreference_followup_preserves_entity_context(
+        self,
+        tmp_path: Path,
+        _configure_dspy_for_test,
+    ):
+        """Coreference follow-ups should stay on the prior entity in multi-turn tabular QA."""
+        from mosaicx.query.engine import QueryEngine
+        from mosaicx.query.session import QuerySession
+
+        f = tmp_path / "cohort.csv"
+        f.write_text("Subject,Ethnicity\nS1,Japanese\nS2,Korean\nS3,Japanese\nS4,Unknown\n")
+        session = QuerySession(sources=[f])
+        engine = QueryEngine(session=session, max_iterations=2)
+
+        first = engine.ask_structured("how many ethnicities are there?")
+        assert any(c.get("evidence_type") in {"table_stat", "table_value"} for c in first["citations"])
+
+        second = engine.ask_structured("what are they?")
+        answer = str(second.get("answer") or "").lower()
+        assert any(tok in answer for tok in ("japanese", "korean", "unknown", "distinct", "distribution"))
+        assert any(c.get("evidence_type") == "table_value" for c in second["citations"])
+
+    def test_tabular_implicit_category_count_prefers_planner_path(
+        self,
+        tmp_path: Path,
+        _configure_dspy_for_test,
+    ):
+        """Implicit category-count asks should execute through planner instead of lexical guessing."""
+        from mosaicx.query.session import QuerySession
+
+        f = tmp_path / "cohort.csv"
+        f.write_text("Subject,Sex\nS1,M\nS2,F\nS3,M\nS4,Other\nS5,F\n")
+        session = QuerySession(sources=[f])
+
+        payload = session.ask_structured(
+            "how many male and female?",
+            max_iterations=2,
+            top_k_citations=3,
+        )
+        answer = str(payload.get("answer") or "").lower()
+        assert any(tok in answer for tok in ("sex distribution", "distinct sex values", "there are"))
+        assert payload.get("planner_used") is True
+        assert payload.get("planner_executed") is True
+        assert payload.get("target_resolution") == "planner"
+        assert any(c.get("evidence_type") in {"table_stat", "table_value"} for c in payload.get("citations", []))

@@ -1,0 +1,4 @@
+{"question":"What blood pressure value is documented?","source_text":"Vitals note: Blood pressure 132/84 mmHg, pulse 72 bpm.","response":"132/84","expected_numeric":132}
+{"question":"What was the measured pulse?","source_text":"Vitals note: Blood pressure 132/84 mmHg, pulse 72 bpm.","response":"72","expected_numeric":72}
+{"question":"Which scan modality is named?","source_text":"Imaging report: Modality MRI spine without contrast.","response":"MRI"}
+{"question":"How many unique ethnicities are present?","source_text":"Cohort: Ethnicity values are Japanese, Korean, Japanese, Korean, Unknown.","response":"3","expected_numeric":3}

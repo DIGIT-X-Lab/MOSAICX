@@ -2,10 +2,15 @@
 
 **Date:** 2026-02-23  
 **Owner:** Core platform (`query`, `verify`, `evaluation`)  
-**Status:** Completed  
+**Status:** Historical plan (superseded)  
+**Canonical Status Board:** `docs/plans/2026-02-24-roadmap-status-audit.md`  
 **Coverage Target:** Use DSPy as full control plane, deterministic execution as truth plane.
 
-`[Overall Progress: 100%]`
+`[Overall Progress: moved to canonical status board]`
+
+> This document captures intended rollout design and target architecture.
+> For real implementation status, issue state, and validation evidence, use:
+> `docs/plans/2026-02-24-roadmap-status-audit.md`.
 
 ## Objective
 
@@ -142,7 +147,7 @@ Guard plane:
 
 ## Progress Tracking
 
-`[Phase 1: 100%]`  
-`[Phase 2: 100%]`  
-`[Phase 3: 100%]`  
-`[Phase 4: 100%]`
+`[Phase 1: see canonical status board]`  
+`[Phase 2: see canonical status board]`  
+`[Phase 3: see canonical status board]`  
+`[Phase 4: see canonical status board]`

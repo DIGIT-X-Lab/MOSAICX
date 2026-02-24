@@ -5,6 +5,13 @@ Status: Active
 Owner: Core platform
 Primary blueprint: docs/plans/2026-02-23-mosaicx-sota-blueprint.md
 Progress tag: [SOTA Rollout: 10%]
+Canonical status board: docs/plans/2026-02-24-roadmap-status-audit.md
+
+Note:
+- This file is a session execution ledger (append-only progress memory).
+- Do not treat checkbox totals here as canonical rollout completion.
+- Canonical project status, issue mapping, and acceptance evidence live in
+  `docs/plans/2026-02-24-roadmap-status-audit.md`.
 
 ## 1) Session Boot Protocol (anti-context-rot)
 
@@ -453,3 +460,110 @@ When completing `DSPY-*` items, append:
   - Close `OPS-001` issue after commit + push.
   - Implement `EVAL-001` and `EVAL-002` quality/optimizer steps.
   - Continue `QRY-001` and remaining lexical-routing cleanup on `QRY-002`.
+
+### Update 2026-02-24 15:05
+- Tasks completed:
+  - Hardened claim-mode contradiction normalization so contradictory outcomes do not leak secondary `unsupported` signals in machine fields.
+  - In conflict path, SDK now canonicalizes claim verdict payload to:
+    - `decision=contradicted`
+    - `claim_true=false`
+    - `field_verdicts[0].status=mismatch`
+    - claim-level non-critical absence-language issues/citations filtered out.
+  - Added absence-language cue coverage for patterns like `found: []` / `values found: []`.
+  - Added regression test for contradiction-mode canonicalization.
+  - Revalidated both false and true claim cases with live local `vllm-mlx` (`mlx-community/gpt-oss-120b-4bit`) in thorough mode.
+  - Documented execution rule for on-prem runs: do not interrupt long `thorough` jobs; wait until terminal completion.
+- Files changed:
+  - `mosaicx/sdk.py`
+  - `tests/test_sdk_verify.py`
+- Tests run:
+  - `PYTHONPATH=. .venv/bin/pytest -q tests/test_sdk_verify.py` (`18 passed`)
+  - `PYTHONPATH=. .venv/bin/mosaicx verify --sources tests/datasets/extract/sample_patient_vitals.pdf --claim "patient BP is 120/82" --level thorough -o /tmp/mosaicx_verify_false_after3.json` (live 120B)
+  - `PYTHONPATH=. .venv/bin/mosaicx verify --sources tests/datasets/extract/sample_patient_vitals.pdf --claim "patient BP is 128/82" --level thorough -o /tmp/mosaicx_verify_true_after4.json` (live 120B)
+- Results:
+  - False claim JSON is coherent and contradiction-first:
+    - `decision=contradicted`, `claim_true=false`, `support_score=0.0`, `grounded=true`
+    - `claim_comparison.source=128/82`
+    - `field_verdicts[0].status=mismatch`
+    - no claim-level `unsupported` residue.
+  - True claim JSON is coherent and verification-first:
+    - `decision=verified`, `claim_true=true`, `support_score=1.0`, `grounded=true`
+    - `claim_comparison.source=128/82`
+    - `field_verdicts[0].status=verified`
+    - `issues=[]`.
+- Ops notes:
+  - Starting `vllm-mlx` from sandboxed runs can fail or be reaped; reliable startup in this environment used detached `screen`:
+    - `screen -dmS mosaicx_vllm zsh -lc '/Users/nutellabear/.local/bin/vllm-mlx serve mlx-community/gpt-oss-120b-4bit --port 8000 --continuous-batching >/tmp/vllm_mlx_server.log 2>&1'`
+  - Health checks should include both endpoints:
+    - `/v1/models`
+    - `/v1/chat/completions`
+
+### Update 2026-02-24 15:40
+- Tasks completed:
+  - Added query execution telemetry to disambiguate deterministic-vs-LLM paths per turn.
+  - Added payload fields:
+    - `execution_mode` (`deterministic_truth`, `hybrid_planner_deterministic`, `llm_generation`, `deterministic_fallback`)
+    - `llm_primary_used` (bool)
+    - `planner_error` (string when LLM planner fails and lexical fallback is used)
+  - Extended CLI `--trace` diagnostics to render:
+    - `execution_mode`, `llm_primary_used`, `execution_path`, `target_resolution`
+    - `planner_used`, `planner_executed`, `planner_error`
+  - Added planner error capture in `ReActTabularPlanner`:
+    - explicit categories for import/config/react/predict/invalid-plan failures.
+  - Verified trace now shows root cause instead of silent fallback.
+- Files changed:
+  - `mosaicx/query/control_plane.py`
+  - `mosaicx/query/engine.py`
+  - `mosaicx/cli.py`
+- Tests run:
+  - `PYTHONPATH=. .venv/bin/pytest -q tests/test_query_control_plane.py tests/test_query_engine.py -m 'not integration'` (`71 passed`)
+  - `PYTHONPATH=. .venv/bin/mosaicx query --document tests/datasets/generated_hardcases/cohort_edge_cases.csv --question "how many ethnicities are there and what are they?" --eda --trace`
+- Results:
+  - Trace now clearly reports when LM planner is unavailable (example: `planner_error=planner_predict_error:InternalServerError`) while deterministic answer remains grounded.
+  - This removes ambiguity when GPU appears idle by showing whether LM was intentionally skipped or failed.
+
+### Update 2026-02-24 16:45
+- Tasks completed:
+  - Advanced `QRY-002` planner-first routing for count asks without explicit columns to avoid lexical mis-resolution.
+  - Added integration coverage for implicit category-count prompts using live LLM planner path.
+  - Implemented DSPy optimizer compatibility hardening across versions (`MIPROv2`, `SIMBA`, `GEPA`) with signature-aware init/compile kwargs.
+  - Executed bounded real optimizer sequence (`MIPROv2` -> `SIMBA` -> `GEPA`) on local `vllm-mlx` and persisted artifacts.
+  - Persisted baseline metrics and before/after report for `EVAL-002`.
+  - Canonicalized roadmap docs for `DOC-001` and marked historical files accordingly.
+  - Added periodic automation hook script for optimizer artifact refresh.
+- Files changed:
+  - `mosaicx/query/engine.py`
+  - `tests/test_query_engine.py`
+  - `mosaicx/evaluation/optimize.py`
+  - `scripts/run_optimizer_sequence.py`
+  - `scripts/run_eval_optimizer_artifacts.sh`
+  - `tests/datasets/evaluation/query_optimizer_train.jsonl`
+  - `tests/datasets/evaluation/query_optimizer_val.jsonl`
+  - `tests/datasets/evaluation/query_optimizer_tiny_train.jsonl`
+  - `tests/datasets/evaluation/query_optimizer_tiny_val.jsonl`
+  - `tests/datasets/evaluation/verify_optimizer_train.jsonl`
+  - `tests/datasets/evaluation/verify_optimizer_val.jsonl`
+  - `tests/test_optimize.py`
+  - `Makefile`
+  - `docs/runs/2026-02-24-query-optimizer-seq-tiny/optimizer_sequence_manifest.json`
+  - `docs/runs/2026-02-24-query-optimizer-seq-tiny/baseline_metrics.json`
+  - `docs/runs/2026-02-24-eval-002-optimizer-sequence-report.md`
+  - `docs/plans/2026-02-23-dspy-full-capability-rollout.md`
+  - `docs/plans/2026-02-23-sota-execution-memory.md`
+  - `docs/plans/2026-02-24-roadmap-status-audit.md`
+- Tests run:
+  - `PYTHONPATH=. .venv/bin/pytest -q tests/test_query_engine.py tests/test_query_control_plane.py -m 'not integration'`
+  - `PYTHONPATH=. .venv/bin/pytest -q tests/test_query_engine.py -m integration` (escalated)
+  - `PYTHONPATH=. .venv/bin/pytest -q tests/test_optimize.py`
+  - Live multi-turn query validation script on `tests/datasets/generated_hardcases/cohort_edge_cases.csv`
+  - `scripts/run_optimizer_sequence.py` on tiny query dataset with `--profile quick` (escalated)
+- Results:
+  - Query non-integration tests: `73 passed, 4 deselected`.
+  - Query integration tests with local LLM: `5 passed, 68 deselected`.
+  - Optimize tests: `7 passed`.
+  - Optimizer artifacts generated for all three strategies with manifest + baseline metrics.
+- Commit:
+  - pending
+- Remaining blockers:
+  - Close roadmap issues in GitHub after final commit/push (`QRY-002`, `EVAL-002`, `DOC-001`).
+  - Optional: run bounded optimizer sequence for `verify` pipeline dataset to extend artifact coverage.

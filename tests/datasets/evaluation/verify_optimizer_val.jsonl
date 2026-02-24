@@ -1,0 +1,2 @@
+{"claim":"pulse is 72","source_text":"Vitals note: Blood pressure 132/84 mmHg, pulse 72 bpm.","verdict":"verified","response":"verified"}
+{"claim":"pulse is 80","source_text":"Vitals note: Blood pressure 132/84 mmHg, pulse 72 bpm.","verdict":"contradicted","response":"contradicted"}

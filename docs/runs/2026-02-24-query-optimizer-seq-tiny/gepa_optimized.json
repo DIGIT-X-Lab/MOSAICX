@@ -1,0 +1,62 @@
+{
+  "narrate.predict": {
+    "traces": [],
+    "train": [],
+    "demos": [
+      {
+        "augmented": true,
+        "question": "What blood pressure is reported?",
+        "draft_response": "128/82 mmHg",
+        "evidence": "- source.txt: Vitals: Blood pressure 128/82 mmHg. Pulse 76 bpm.",
+        "reasoning": "The evidence explicitly states the blood pressure is 128/82 mmHg, directly answering the question.",
+        "response": "128/82 mmHg"
+      },
+      {
+        "augmented": true,
+        "question": "What is the pulse rate?",
+        "draft_response": "The pulse rate is 76 beats per minute.",
+        "evidence": "- source.txt: Vitals: Blood pressure 128/82 mmHg. Pulse 76 bpm.",
+        "reasoning": "The evidence explicitly states the pulse is 76 bpm, which directly answers the question about the pulse rate.",
+        "response": "76 beats per minute"
+      },
+      {
+        "question": "What modality was used?",
+        "source_text": "Imaging: Study Date 2025-08-01. Modality CT.",
+        "response": "CT"
+      }
+    ],
+    "signature": {
+      "instructions": "Produce a concise grounded answer from question + evidence.",
+      "fields": [
+        {
+          "prefix": "Question:",
+          "description": "User question"
+        },
+        {
+          "prefix": "Draft Response:",
+          "description": "Draft answer from query engine"
+        },
+        {
+          "prefix": "Evidence:",
+          "description": "Grounded evidence snippets"
+        },
+        {
+          "prefix": "Reasoning: Let's think step by step in order to",
+          "description": "${reasoning}"
+        },
+        {
+          "prefix": "Response:",
+          "description": "Final grounded answer. Be concise and do not invent facts."
+        }
+      ]
+    },
+    "lm": null
+  },
+  "metadata": {
+    "dependency_versions": {
+      "python": "3.13",
+      "dspy": "3.1.3",
+      "cloudpickle": "3.1"
+    }
+  }
+}
