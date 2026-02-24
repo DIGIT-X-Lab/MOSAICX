@@ -42,3 +42,53 @@ class TestPHILeakReward:
         from mosaicx.evaluation.rewards import phi_leak_reward
         score = phi_leak_reward("Call (555) 123-4567.")
         assert score == 0.0
+
+
+class TestHarmonyLMConfig:
+    def test_normalize_local_api_base_localhost(self):
+        from mosaicx.metrics import _normalize_local_api_base
+
+        assert _normalize_local_api_base("http://localhost:8000/v1") == "http://127.0.0.1:8000/v1"
+
+    def test_normalize_local_api_base_ipv6_loopback(self):
+        from mosaicx.metrics import _normalize_local_api_base
+
+        assert _normalize_local_api_base("http://[::1]:8000/v1") == "http://127.0.0.1:8000/v1"
+
+    def test_normalize_local_api_base_keeps_remote_hosts(self):
+        from mosaicx.metrics import _normalize_local_api_base
+
+        assert _normalize_local_api_base("https://api.example.com/v1") == "https://api.example.com/v1"
+
+    def test_normalize_model_for_local_openai_compatible_base_adds_prefix(self):
+        from mosaicx.metrics import _normalize_model_for_api_base
+
+        assert (
+            _normalize_model_for_api_base(
+                "mlx-community/gpt-oss-120b-4bit",
+                "http://127.0.0.1:8000/v1",
+            )
+            == "openai/mlx-community/gpt-oss-120b-4bit"
+        )
+
+    def test_normalize_model_for_local_base_keeps_known_provider_prefix(self):
+        from mosaicx.metrics import _normalize_model_for_api_base
+
+        assert (
+            _normalize_model_for_api_base(
+                "openai/gpt-oss:120b",
+                "http://127.0.0.1:8000/v1",
+            )
+            == "openai/gpt-oss:120b"
+        )
+
+    def test_normalize_model_for_remote_base_keeps_model_unchanged(self):
+        from mosaicx.metrics import _normalize_model_for_api_base
+
+        assert (
+            _normalize_model_for_api_base(
+                "mlx-community/gpt-oss-120b-4bit",
+                "https://api.example.com/v1",
+            )
+            == "mlx-community/gpt-oss-120b-4bit"
+        )

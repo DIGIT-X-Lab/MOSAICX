@@ -15,6 +15,7 @@ import time
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Generator
+from urllib.parse import urlparse
 
 
 # ---------------------------------------------------------------------------
@@ -168,13 +169,84 @@ def strip_harmony_tokens(text: str) -> str:
     return text
 
 
+def _normalize_local_api_base(value: object) -> object:
+    """Normalize localhost API bases to IPv4 loopback for transport stability."""
+    if not isinstance(value, str):
+        return value
+    out = value
+    out = out.replace("://localhost", "://127.0.0.1")
+    out = out.replace("://[::1]", "://127.0.0.1")
+    return out
+
+
+def _normalize_model_for_api_base(model: object, api_base: object) -> object:
+    """Normalize model/provider for local OpenAI-compatible endpoints.
+
+    If a local ``api_base`` is configured and model has no provider prefix,
+    force ``openai/`` so LiteLLM routes through the expected provider.
+    """
+    if not isinstance(model, str):
+        return model
+
+    model_name = model.strip()
+    if not model_name:
+        return model
+
+    provider_prefixes = {
+        "openai",
+        "azure",
+        "anthropic",
+        "ollama",
+        "gemini",
+        "google",
+        "vertex_ai",
+        "bedrock",
+        "cohere",
+        "mistral",
+        "huggingface",
+        "together_ai",
+        "groq",
+        "xai",
+    }
+    if "/" in model_name:
+        provider = model_name.split("/", 1)[0].strip().lower()
+        if provider in provider_prefixes:
+            return model_name
+
+    base_norm = _normalize_local_api_base(api_base)
+    if not isinstance(base_norm, str) or not base_norm.strip():
+        return model_name
+
+    parsed = urlparse(base_norm)
+    host = (parsed.hostname or "").strip().lower()
+    if host not in {"127.0.0.1", "localhost", "::1"}:
+        return model_name
+
+    # Local OpenAI-compatible servers (vLLM / vLLM-MLX / Ollama OAI mode).
+    if "openai/" not in model_name.lower():
+        return f"openai/{model_name}"
+    return model_name
+
+
 def make_harmony_lm(model: str, **kwargs: object) -> object:
     """Create a ``dspy.LM`` that strips Harmony tokens from every response.
 
     Drop-in replacement for ``dspy.LM(model, ...)`` that guarantees
     DSPy's adapter sees clean text regardless of backend.
     """
-    import dspy
+    from .runtime_env import import_dspy
+
+    dspy = import_dspy()
+    lm_kwargs = dict(kwargs)
+    if "api_base" in lm_kwargs:
+        lm_kwargs["api_base"] = _normalize_local_api_base(lm_kwargs.get("api_base"))
+    if "base_url" in lm_kwargs:
+        lm_kwargs["base_url"] = _normalize_local_api_base(lm_kwargs.get("base_url"))
+
+    effective_model = _normalize_model_for_api_base(
+        model,
+        lm_kwargs.get("api_base") if "api_base" in lm_kwargs else lm_kwargs.get("base_url"),
+    )
 
     class HarmonyLM(dspy.LM):
         """``dspy.LM`` subclass that strips gpt-oss Harmony channel tokens."""
@@ -191,4 +263,4 @@ def make_harmony_lm(model: str, **kwargs: object) -> object:
                     cleaned.append(o)
             return cleaned
 
-    return HarmonyLM(model, **kwargs)
+    return HarmonyLM(effective_model, **lm_kwargs)

@@ -401,3 +401,30 @@ When completing `DSPY-*` items, append:
 - Remaining blockers:
   - Continue `QRY-001` direct-answer contract hardening and close `QRY-002`/`VER-002` issues after final sweep.
   - Advance roadmap items `EXT-001`, `EXT-002`, `OPS-001`, `EVAL-001`.
+
+### Update 2026-02-24 12:30
+- Tasks completed:
+  - Implemented `EXT-001`: local OpenAI-compatible model/provider normalization.
+  - `make_harmony_lm` now normalizes local `api_base` hosts and auto-prefixes unqualified local model IDs as `openai/<model>` for stable LiteLLM routing.
+  - Implemented `EXT-002`: enum/internal-label rendering cleanup in extraction CLI output.
+  - Added enum humanization for internal template enum strings and Enum instances in nested/list displays.
+  - Reproduced and verified `MRICervicalReportV2` extraction output now shows clean values (`Normal`, `None`, `Disc`) instead of internal enum paths.
+- Files changed:
+  - `mosaicx/metrics.py`
+  - `mosaicx/cli_display.py`
+  - `tests/test_metrics.py`
+  - `tests/test_cli_display.py`
+  - `tests/test_cli_extract.py`
+- Tests run:
+  - `PYTHONPATH=. .venv/bin/pytest -q tests/test_metrics.py tests/test_cli_display.py`
+  - `PYTHONPATH=. .venv/bin/pytest -q tests/test_cli_extract.py tests/test_cli_display.py tests/test_metrics.py`
+  - `PYTHONPATH=. .venv/bin/mosaicx extract --document tests/datasets/standardize/Sample_Report_Cervical_Spine.pdf --template MRICervicalReportV2` (escalated, local vllm-mlx)
+- Results:
+  - Focused test suites pass (`26 passed`).
+  - End-to-end extract output confirms enum rendering fix on cervical template.
+- Commit:
+  - pending
+- Remaining blockers:
+  - Close `EXT-001` and `EXT-002` issues after commit + push.
+  - Implement `OPS-001` LLM endpoint preflight gating for LLM-dependent integration tests.
+  - Implement `EVAL-001` quality-gate metrics expansion.

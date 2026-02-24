@@ -10,6 +10,8 @@ tables, nested dicts → subsections.  Works for all extraction paths
 from __future__ import annotations
 
 import json
+import re
+from enum import Enum
 from typing import Any
 
 from rich.console import Console
@@ -209,12 +211,36 @@ def _pretty_key(key: str) -> str:
     return key.replace("_", " ").title()
 
 
+def _humanize_enum_like_value(text: str) -> str:
+    """Convert internal enum/member tokens into user-facing labels."""
+    value = " ".join(str(text or "").split())
+    if not value:
+        return value
+
+    looks_internal = "." in value and any(ch.isupper() for ch in value.split(".", 1)[0])
+    if looks_internal:
+        value = value.rsplit(".", 1)[-1]
+
+    # Convert snake/camel style labels into readable words.
+    value = re.sub(r"[_\-]+", " ", value)
+    value = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", value)
+    value = " ".join(value.split())
+    if not value:
+        return value
+    if value.isupper() and len(value) <= 4:
+        return value
+    return value[0].upper() + value[1:]
+
+
 def _format_value(val: Any) -> str:
     """Format a value for display."""
     if val is None:
         return "\u2014"
     if isinstance(val, bool):
         return f"[green]Yes[/green]" if val else f"[dim]No[/dim]"
+    if isinstance(val, Enum):
+        enum_value = getattr(val, "value", val)
+        return _humanize_enum_like_value(str(enum_value))
     if isinstance(val, dict):
         # Measurement-like: {"value": 12.0, "unit": "mm", ...}
         if "value" in val and "unit" in val:
@@ -225,7 +251,9 @@ def _format_value(val: Any) -> str:
         # Generic small dict — inline
         return json.dumps(val, default=str)
     if isinstance(val, list):
-        return ", ".join(str(v) for v in val)
+        return ", ".join(_format_value(v) for v in val)
+    if isinstance(val, str):
+        return _humanize_enum_like_value(val)
     return str(val)
 
 
