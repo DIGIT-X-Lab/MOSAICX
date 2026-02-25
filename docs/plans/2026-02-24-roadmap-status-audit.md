@@ -59,11 +59,12 @@ Other plan files are design/history logs and must link here for status.
 - Treat all other plan docs in `docs/plans/` as design/history/reference only.
 - If status here conflicts with another file, this file wins.
 
-### Outlines None→str coercion fix (2026-02-25)
+### Outlines None→primitive coercion fix (2026-02-25)
 
-- Fixed `_coerce_value_for_annotation(None, str)` returning `None` for required string fields
-- When Outlines generates `null` for a field the document genuinely doesn't have, the coercion now returns `""` (the canonical missing sentinel) instead of `None`, preventing Pydantic ValidationError in `schema_class.model_validate()`
-- Optional[str] fields are unaffected — their Union origin dispatches to the Union branch before the None check
+- Fixed `_coerce_value_for_annotation(None, T)` returning `None` for required primitive fields
+- When any extraction path generates `null` for a field the document genuinely lacks, coercion now returns the zero/empty sentinel: `str→""`, `int→0`, `float→0.0`, `bool→False`
+- Prevents Pydantic ValidationError in `schema_class.model_validate()` for non-optional primitive fields
+- Optional[T] fields are unaffected — their Union origin dispatches before the None check
 
 ### Grounding whitespace normalization fix (2026-02-25)
 

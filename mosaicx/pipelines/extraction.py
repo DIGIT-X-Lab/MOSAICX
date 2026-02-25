@@ -237,11 +237,13 @@ def _coerce_value_for_annotation(value: Any, annotation: Any) -> Any:
         absence_enum = _absence_enum_value_for_annotation(annotation)
         if absence_enum is not None:
             return absence_enum
-        # Required str fields get "" (the canonical "missing" sentinel) so that
-        # schema_class.model_validate() doesn't reject None for non-optional fields
-        # when the source document genuinely doesn't contain the value.
-        if annotation is str:
-            return ""
+        # For required primitive types, return the zero/empty value so that
+        # schema_class.model_validate() doesn't reject None when the source
+        # document genuinely doesn't contain the value.  "" is the canonical
+        # missing sentinel for str; 0/0.0/False signal absent numeric fields.
+        _PRIMITIVE_ZEROS: dict[Any, Any] = {str: "", int: 0, float: 0.0, bool: False}
+        if annotation in _PRIMITIVE_ZEROS:
+            return _PRIMITIVE_ZEROS[annotation]
         return None
 
     origin = get_origin(annotation)
