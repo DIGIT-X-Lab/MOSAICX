@@ -145,6 +145,30 @@ def test_render_verification_shows_fallback_notice():
     assert "downgraded" in out
 
 
+def test_render_verification_shows_absent_fields():
+    """When template_field_count > checked fields, show absent count and 'present fields'."""
+    from rich.console import Console
+
+    from mosaicx.cli_display import render_verification
+
+    verification = {
+        "result": "verified",
+        "confidence": 0.95,
+        "requested_mode": "thorough",
+        "executed_mode": "spot_check",
+        "fallback_used": True,
+        "field_checks": {"verified": 12, "total": 12},
+    }
+    console = Console(record=True, force_terminal=True, width=120)
+    render_verification(verification, console, template_field_count=13)
+    out = console.export_text()
+
+    assert "12/12" in out
+    assert "present fields verified" in out
+    assert "absent" in out
+    assert "not in document" in out
+
+
 def test_render_verification_shows_contradicted():
     """Contradicted verdict should appear in output."""
     from rich.console import Console
@@ -168,7 +192,7 @@ def test_render_verification_shows_contradicted():
 
 
 def test_render_extracted_data_shows_none_fields_as_missing():
-    """None-valued fields should appear as 'missing' instead of being silently skipped."""
+    """None and empty-string fields should show the missing badge."""
     from rich.console import Console
 
     from mosaicx.cli_display import render_extracted_data
@@ -177,7 +201,7 @@ def test_render_extracted_data_shows_none_fields_as_missing():
         "extracted": {
             "procedure_information": "CT Angiography",
             "impression": None,
-            "clinical_information": None,
+            "clinical_information": "",
         }
     }
     console = Console(record=True, force_terminal=True, width=120)
@@ -185,8 +209,8 @@ def test_render_extracted_data_shows_none_fields_as_missing():
     out = console.export_text()
 
     assert "CT Angiography" in out
-    assert "Impression" in out       # key should still appear
-    assert "missing" in out.lower()  # value label should be present
+    assert "Impression" in out        # key still appears
+    assert "missing" in out.lower()   # badge text present
 
 
 def test_render_list_table_keeps_sparse_level_finding_columns():

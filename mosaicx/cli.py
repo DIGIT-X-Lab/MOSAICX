@@ -891,7 +891,9 @@ def extract(
         render_completeness(asdict(comp), console)
 
     if do_verify and "_verification" in output_data:
-        render_verification(output_data["_verification"], console)
+        contract = output_data.get("_extraction_contract", {})
+        template_field_count = len(contract.get("critical_fields", [])) or None
+        render_verification(output_data["_verification"], console, template_field_count=template_field_count)
 
     if output is None:
         console.print()

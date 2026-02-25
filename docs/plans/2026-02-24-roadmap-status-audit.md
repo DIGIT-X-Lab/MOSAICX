@@ -59,6 +59,12 @@ Other plan files are design/history logs and must link here for status.
 - Treat all other plan docs in `docs/plans/` as design/history/reference only.
 - If status here conflicts with another file, this file wins.
 
+### Verification + missing field display polish (2026-02-25)
+
+- `missing` value now renders as a greige reverse badge (`[reverse #B5A89A] missing [/reverse #B5A89A]`) matching chonk/smol badge style; applies to both `None` and `""` (absent sentinel)
+- `render_verification` gains `template_field_count` param; when template has more fields than were checked, shows "12/12 present fields verified · 1 absent  not in document" using the absent badge style
+- CLI wires `template_field_count` from `_extraction_contract.critical_fields` length
+
 ### Outlines None→primitive coercion fix (2026-02-25)
 
 - Fixed `_coerce_value_for_annotation(None, T)` returning `None` for required primitive fields

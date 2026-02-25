@@ -247,7 +247,7 @@ def _humanize_enum_like_value(text: str) -> str:
 def _format_value(val: Any) -> str:
     """Format a value for display."""
     if val is None:
-        return "[dim]missing[/dim]"
+        return f"[reverse {theme.GREIGE}] missing [/reverse {theme.GREIGE}]"
     if isinstance(val, bool):
         return f"[green]Yes[/green]" if val else f"[dim]No[/dim]"
     if isinstance(val, Enum):
@@ -265,6 +265,8 @@ def _format_value(val: Any) -> str:
     if isinstance(val, list):
         return ", ".join(_format_value(v) for v in val)
     if isinstance(val, str):
+        if not val:
+            return f"[reverse {theme.GREIGE}] missing [/reverse {theme.GREIGE}]"
         return _humanize_enum_like_value(val)
     return str(val)
 
@@ -345,7 +347,11 @@ def render_completeness(completeness: dict[str, Any], console: Console) -> None:
     )
 
 
-def render_verification(verification: dict[str, Any], console: Console) -> None:
+def render_verification(
+    verification: dict[str, Any],
+    console: Console,
+    template_field_count: int | None = None,
+) -> None:
     """Render a verification panel with verdict, confidence, and level info.
 
     Parameters
@@ -355,6 +361,10 @@ def render_verification(verification: dict[str, Any], console: Console) -> None:
         ``_verification`` in extraction output.
     console:
         Rich console instance.
+    template_field_count:
+        Total fields defined in the template (including absent ones).  When
+        provided and larger than the verified field count, an "N absent from
+        document" note is appended so the display reflects completeness.
     """
     from rich import box
     from rich.panel import Panel
@@ -366,7 +376,13 @@ def render_verification(verification: dict[str, Any], console: Console) -> None:
     fallback_used = verification.get("fallback_used", False)
     field_checks = verification.get("field_checks") or {}
     verified_fields = field_checks.get("verified", 0)
-    total_fields = field_checks.get("total", 0)
+    checked_fields = field_checks.get("total", 0)
+
+    absent_fields = (
+        template_field_count - checked_fields
+        if template_field_count and template_field_count > checked_fields
+        else 0
+    )
 
     verdict_color = {
         "verified": "green",
@@ -386,11 +402,19 @@ def render_verification(verification: dict[str, Any], console: Console) -> None:
         f" [{theme.GREIGE}]confidence[/{theme.GREIGE}]"
         f"  [{theme.MUTED}]({executed_mode})[/{theme.MUTED}]"
     )
-    if total_fields:
-        lines.append(
-            f"  [{theme.CORAL}]{verified_fields}/{total_fields}[/{theme.CORAL}]"
-            f" [{theme.GREIGE}]fields verified[/{theme.GREIGE}]"
+    if checked_fields:
+        field_label = "present fields verified" if absent_fields else "fields verified"
+        line = (
+            f"  [{theme.CORAL}]{verified_fields}/{checked_fields}[/{theme.CORAL}]"
+            f" [{theme.GREIGE}]{field_label}[/{theme.GREIGE}]"
         )
+        if absent_fields:
+            line += (
+                f"  [{theme.MUTED}]·[/{theme.MUTED}]"
+                f"  [reverse {theme.GREIGE}] {absent_fields} absent [/reverse {theme.GREIGE}]"
+                f" [{theme.MUTED}]not in document[/{theme.MUTED}]"
+            )
+        lines.append(line)
     if fallback_used and requested_mode != executed_mode:
         lines.append("")
         lines.append(
