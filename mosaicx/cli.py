@@ -1294,11 +1294,13 @@ def template_create(
     )
 
     generator = SchemaGenerator()
+    runtime_dryrun = from_document is not None
     with theme.spinner("Generating template... hold my beer", console):
         result = generator(
             description=description,
             example_text=example_text,
             document_text=document_text,
+            runtime_dryrun=runtime_dryrun,
         )
 
     spec = result.schema_spec

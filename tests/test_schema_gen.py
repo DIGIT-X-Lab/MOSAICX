@@ -303,3 +303,61 @@ class TestSchemaNormalization:
         )
         issues = validate_schema_spec(spec)
         assert any("non-canonical type" in issue.lower() for issue in issues)
+
+    def test_runtime_validate_schema_passes_with_populated_required_fields(self, monkeypatch):
+        from types import SimpleNamespace
+
+        from mosaicx.pipelines import extraction as extraction_mod
+        from mosaicx.pipelines.schema_gen import (
+            FieldSpec,
+            SchemaSpec,
+            _runtime_validate_schema,
+        )
+
+        class FakeExtractor:
+            def __init__(self, output_schema=None):  # noqa: ANN001
+                self.output_schema = output_schema
+
+            def __call__(self, document_text: str):  # noqa: ARG002
+                return SimpleNamespace(extracted={"patient_id": "1234", "study_date": "2013-01-01"})
+
+        monkeypatch.setattr(extraction_mod, "DocumentExtractor", FakeExtractor)
+        spec = SchemaSpec(
+            class_name="RuntimeCheck",
+            fields=[
+                FieldSpec(name="patient_id", type="str", required=True),
+                FieldSpec(name="study_date", type="str", required=True),
+            ],
+        )
+        ok, issues = _runtime_validate_schema(spec, document_text="report text")
+        assert ok is True
+        assert issues == []
+
+    def test_runtime_validate_schema_flags_missing_required_fields(self, monkeypatch):
+        from types import SimpleNamespace
+
+        from mosaicx.pipelines import extraction as extraction_mod
+        from mosaicx.pipelines.schema_gen import (
+            FieldSpec,
+            SchemaSpec,
+            _runtime_validate_schema,
+        )
+
+        class FakeExtractor:
+            def __init__(self, output_schema=None):  # noqa: ANN001
+                self.output_schema = output_schema
+
+            def __call__(self, document_text: str):  # noqa: ARG002
+                return SimpleNamespace(extracted={"patient_id": ""})
+
+        monkeypatch.setattr(extraction_mod, "DocumentExtractor", FakeExtractor)
+        spec = SchemaSpec(
+            class_name="RuntimeCheck",
+            fields=[
+                FieldSpec(name="patient_id", type="str", required=True),
+                FieldSpec(name="study_date", type="str", required=True),
+            ],
+        )
+        ok, issues = _runtime_validate_schema(spec, document_text="report text")
+        assert ok is False
+        assert any("runtime_missing_required_fields" in issue for issue in issues)

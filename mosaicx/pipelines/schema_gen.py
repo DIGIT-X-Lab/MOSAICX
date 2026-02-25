@@ -685,6 +685,60 @@ def _coerce_schema_spec(value: Any) -> SchemaSpec:
     raise TypeError(f"Unsupported schema payload type: {type(value).__name__}")
 
 
+def _is_blank_payload_value(value: Any) -> bool:
+    if value is None:
+        return True
+    if isinstance(value, str):
+        probe = value.strip().lower()
+        return probe in {"", "none", "null", "n/a", "na"}
+    if isinstance(value, (list, tuple, set, dict)):
+        return len(value) == 0
+    return False
+
+
+def _runtime_validate_schema(
+    spec: SchemaSpec,
+    *,
+    document_text: str,
+    missing_required_threshold: float = 0.5,
+) -> tuple[bool, list[str]]:
+    """Dry-run extraction to validate runtime safety of generated schema."""
+    if not str(document_text or "").strip():
+        return True, []
+
+    issues: list[str] = []
+    try:
+        model = compile_schema(spec)
+    except Exception as exc:
+        return False, [f"runtime_compile_error: {exc}"]
+
+    try:
+        from .extraction import DocumentExtractor
+
+        extractor = DocumentExtractor(output_schema=model)
+        result = extractor(document_text=str(document_text)[:30000])
+        extracted = getattr(result, "extracted", result)
+        if hasattr(extracted, "model_dump"):
+            payload = extracted.model_dump()
+        elif isinstance(extracted, dict):
+            payload = extracted
+        else:
+            payload = {}
+
+        required = [f.name for f in spec.fields if f.required]
+        if required:
+            missing = [name for name in required if _is_blank_payload_value(payload.get(name))]
+            ratio = len(missing) / max(len(required), 1)
+            if ratio > max(0.0, min(1.0, float(missing_required_threshold))):
+                issues.append(
+                    "runtime_missing_required_fields: "
+                    + ", ".join(missing[:10])
+                )
+        return len(issues) == 0, issues
+    except Exception as exc:
+        return False, [f"runtime_extract_error: {str(exc)[:500]}"]
+
+
 def _is_structured_parse_failure(exc: Exception) -> bool:
     msg = str(exc or "").lower()
     markers = (
@@ -863,6 +917,8 @@ def _build_dspy_classes():
             example_text: str = "",
             document_text: str = "",
             max_repairs: int = 2,
+            runtime_dryrun: bool = False,
+            runtime_missing_required_threshold: float = 0.5,
         ) -> dspy.Prediction:
             """Run the schema generation pipeline."""
             from mosaicx.metrics import PipelineMetrics, get_tracker, track_step
@@ -902,17 +958,31 @@ def _build_dspy_classes():
             if spec is None:
                 raise ValueError("Schema generation returned no schema specification.")
 
-            issues = validate_schema_spec(spec)
+            structural_issues = validate_schema_spec(spec)
             compile_error: str | None = None
             compiled: type[BaseModel] | None = None
             try:
                 compiled = compile_schema(spec)
             except Exception as exc:
                 compile_error = str(exc)
-                issues.append(f"compile_error: {compile_error}")
+                structural_issues.append(f"compile_error: {compile_error}")
+
+            runtime_issues: list[str] = []
+            runtime_enabled = bool(runtime_dryrun and str(document_text or "").strip())
+            if runtime_enabled and compiled is not None:
+                runtime_ok, runtime_issues = _runtime_validate_schema(
+                    spec,
+                    document_text=document_text,
+                    missing_required_threshold=runtime_missing_required_threshold,
+                )
+                if not runtime_ok and runtime_issues:
+                    logger.info(
+                        "Schema runtime dry-run flagged issues: %s",
+                        "; ".join(runtime_issues),
+                    )
 
             repairs_remaining = max(0, int(max_repairs))
-            while (issues or compiled is None) and repairs_remaining > 0:
+            while (structural_issues or compiled is None or runtime_issues) and repairs_remaining > 0:
                 repairs_remaining -= 1
                 with track_step(metrics, "Repair schema", tracker):
                     repair_result = self.repair(
@@ -920,29 +990,44 @@ def _build_dspy_classes():
                         example_text=example_text,
                         document_text=document_text,
                         invalid_schema=spec.model_dump_json(indent=2),
-                        validation_issues="\n".join(issues[:20]) or "compile failed",
+                        validation_issues="\n".join((structural_issues + runtime_issues)[:20]) or "compile failed",
                     )
                 spec = normalize_schema_spec(
                     _coerce_schema_spec(getattr(repair_result, "repaired_schema", repair_result))
                 )
-                issues = validate_schema_spec(spec)
+                structural_issues = validate_schema_spec(spec)
                 compile_error = None
                 try:
                     compiled = compile_schema(spec)
                 except Exception as exc:
                     compile_error = str(exc)
                     compiled = None
-                    issues.append(f"compile_error: {compile_error}")
+                    structural_issues.append(f"compile_error: {compile_error}")
 
-            if compiled is None:
-                joined = "; ".join(issues[:8]) if issues else (compile_error or "unknown error")
+                runtime_issues = []
+                if runtime_enabled and compiled is not None:
+                    runtime_ok, runtime_issues = _runtime_validate_schema(
+                        spec,
+                        document_text=document_text,
+                        missing_required_threshold=runtime_missing_required_threshold,
+                    )
+                    if not runtime_ok and runtime_issues:
+                        logger.info(
+                            "Schema runtime dry-run flagged issues after repair: %s",
+                            "; ".join(runtime_issues),
+                        )
+
+            if compiled is None or structural_issues or runtime_issues:
+                all_issues = structural_issues + runtime_issues
+                joined = "; ".join(all_issues[:8]) if all_issues else (compile_error or "unknown error")
                 raise ValueError(f"Schema generation failed after repair attempts: {joined}")
 
             self._last_metrics = metrics
             return dspy.Prediction(
                 schema_spec=spec,
                 compiled_model=compiled,
-                schema_issues=issues,
+                schema_issues=structural_issues + runtime_issues,
+                runtime_dryrun_used=runtime_enabled,
             )
 
     class RefineSchemaSpec(dspy.Signature):

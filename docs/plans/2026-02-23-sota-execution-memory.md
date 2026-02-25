@@ -715,3 +715,25 @@ When completing `DSPY-*` items, append:
   - pending
 - Remaining blockers:
   - Add explicit quality gate that scores generated templates using extraction dry-runs across an adversarial schema benchmark set.
+
+### Update 2026-02-25 07:49
+- Tasks completed:
+  - Added extraction-aware runtime dry-run gate to schema generation when `template create --from-document` is used.
+  - Runtime gate now feeds repair loop with extraction-readiness issues (missing required fields / extraction runtime errors).
+  - Added targeted tests for runtime validation helper behavior.
+- Files changed:
+  - `mosaicx/pipelines/schema_gen.py`
+  - `mosaicx/cli.py`
+  - `tests/test_schema_gen.py`
+- Tests run:
+  - `PYTHONPATH=. .venv/bin/pytest -q tests/test_schema_gen.py`
+  - `PYTHONPATH=. .venv/bin/pytest -q tests/test_extraction_schema_coercion.py tests/test_extraction_pipeline.py tests/test_cli_extract.py`
+- Results:
+  - Tests pass (`24 passed` in schema tests; `22 passed` in extraction-targeted pack).
+  - Live local-LLM check confirms runtime-gated schema generation + extraction:
+    - `template create --from-document ... --name RobustCSpineDocV5` generated a richer, extraction-safe schema (`17` fields).
+    - `extract --template /tmp/robust_cspine_doc_v5.yaml` succeeded and produced grounded structured output.
+- Commit:
+  - pending
+- Remaining blockers:
+  - Apply runtime-gated scoring to describe-only generation through synthetic probes/adversarial benchmark, since no source document is provided there.

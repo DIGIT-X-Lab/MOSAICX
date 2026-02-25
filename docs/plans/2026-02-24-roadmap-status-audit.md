@@ -77,6 +77,18 @@ Other plan files are design/history logs and must link here for status.
       - `PYTHONPATH=. .venv/bin/pytest -q tests/test_extraction_schema_coercion.py tests/test_extraction_pipeline.py tests/test_cli_extract.py` -> `22 passed`
     - Live local `vllm-mlx` repro fix:
       - previously failing `mosaicx extract --template /tmp/robust_cspine_v4.yaml ...` now succeeds and saves `/tmp/robust_cspine_v4_extract_after_fix.json`.
+  - Extraction-aware schema runtime gate (`2026-02-25 07:49`):
+    - `mosaicx/pipelines/schema_gen.py` now supports runtime dry-run validation (`_runtime_validate_schema`) integrated into the generator repair loop.
+    - `mosaicx/cli.py` enables runtime dry-run for `template create --from-document`.
+    - Runtime gate enforces extraction-readiness before schema acceptance (in document-grounded generation path).
+    - Regression tests added/updated:
+      - `tests/test_schema_gen.py`
+    - Validation:
+      - `PYTHONPATH=. .venv/bin/pytest -q tests/test_schema_gen.py` -> `24 passed`
+      - `PYTHONPATH=. .venv/bin/pytest -q tests/test_extraction_schema_coercion.py tests/test_extraction_pipeline.py tests/test_cli_extract.py` -> `22 passed`
+    - Live local `vllm-mlx` verification:
+      - `template create --from-document ... --name RobustCSpineDocV5` generated a richer 17-field schema.
+      - `extract --template /tmp/robust_cspine_doc_v5.yaml` succeeded with grounded structured output.
 
 - Verify audit recovery gating hardened (`2026-02-24`, `BUG-VER-001`):
   - `mosaicx/verify/audit.py` now attempts Outlines recovery only for structured serialization/JSON parse failures.
