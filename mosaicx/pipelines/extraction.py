@@ -20,6 +20,7 @@ import logging
 import os
 import re
 import types
+from difflib import SequenceMatcher
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
@@ -435,7 +436,53 @@ def _extract_grounding_snippet(*, source_text: str, value: Any) -> tuple[bool | 
 
     idx = haystack_norm.lower().find(needle_norm.lower())
     if idx < 0:
-        return False, None
+        if not isinstance(value, str):
+            return False, None
+        needle_tokens = {
+            tok
+            for tok in re.findall(r"[a-z0-9]+", needle_norm.lower())
+            if len(tok) >= 3
+        }
+        if len(needle_tokens) < 4:
+            return False, None
+
+        segments = [
+            seg.strip()
+            for seg in re.split(r"(?<=[.!?])\s+|\n+", haystack_norm)
+            if seg and seg.strip()
+        ]
+        if not segments:
+            segments = [haystack_norm]
+
+        best_ratio = 0.0
+        best_snippet = None
+        for i in range(len(segments)):
+            for width in (1, 2, 3):
+                chunk = " ".join(segments[i : i + width]).strip()
+                if not chunk:
+                    continue
+                chunk_tokens = {
+                    tok
+                    for tok in re.findall(r"[a-z0-9]+", chunk.lower())
+                    if len(tok) >= 3
+                }
+                if not chunk_tokens:
+                    continue
+                overlap = len(needle_tokens & chunk_tokens) / float(len(needle_tokens))
+                if overlap > best_ratio:
+                    best_ratio = overlap
+                    best_snippet = chunk
+
+        if best_snippet is None or best_ratio < 0.45:
+            return False, None
+
+        if len(best_snippet) > 420:
+            best_snippet = best_snippet[:417].rstrip() + "..."
+
+        # High-overlap fuzzy match counts as grounded despite punctuation/linebreak/OCR drift.
+        if best_ratio >= 0.85:
+            return True, best_snippet
+        return False, best_snippet
 
     start = max(0, idx - 80)
     end = min(len(haystack_norm), idx + len(needle_norm) + 80)
@@ -554,7 +601,10 @@ _DATE_FORMATS = (
 
 def _field_name_tokens(field_name: str) -> set[str]:
     normalized = re.sub(r"[^a-zA-Z0-9]+", "_", str(field_name or "").strip().lower())
-    return {tok for tok in normalized.split("_") if tok}
+    tokens = {tok for tok in normalized.split("_") if tok}
+    if normalized:
+        tokens.add(normalized)
+    return tokens
 
 
 def _is_critical_field_name(field_name: str) -> bool:
@@ -911,6 +961,7 @@ def apply_extraction_contract(
     fields = critical_fields if critical_fields is not None else inferred
 
     field_results: list[dict[str, Any]] = []
+    missing_required: list[str] = []
     counts = {
         "supported": 0,
         "needs_review": 0,
@@ -927,9 +978,15 @@ def apply_extraction_contract(
         if not validation.get("valid", True):
             reason = str(validation.get("reason") or "invalid_value")
             is_critical = bool(validation.get("critical"))
-            status = "insufficient_evidence" if is_critical else "needs_review"
+            is_missing = reason in {"missing_value", "nullish_string"}
+            if is_missing:
+                status = "insufficient_evidence"
+                if field not in missing_required:
+                    missing_required.append(field)
+            else:
+                status = "insufficient_evidence" if is_critical else "needs_review"
             grounded = False
-            confidence = 0.0 if is_critical else 0.25
+            confidence = 0.0 if status == "insufficient_evidence" else 0.25
             evidence = None
             validation_issues.append(
                 {
@@ -947,6 +1004,8 @@ def apply_extraction_contract(
             grounded: bool | None = False
             confidence = 0.0
             evidence = None
+            if field not in missing_required:
+                missing_required.append(field)
         else:
             grounded, evidence = _extract_grounding_snippet(
                 source_text=source_text,
@@ -980,6 +1039,9 @@ def apply_extraction_contract(
     output_data["_extraction_contract"] = {
         "version": "1.0",
         "critical_fields": fields,
+        "required_field_count": len(fields),
+        "present_required_count": max(0, len(fields) - len(missing_required)),
+        "missing_required": missing_required,
         "field_results": field_results,
         "summary": counts,
         "validation_issues": validation_issues,
@@ -998,6 +1060,31 @@ _SECTION_HEADER_INLINE_PATTERN = re.compile(
     r"procedure information|findings?|impression|diagnosis|assessment|plan|recommendation)s?\s*:\s+",
     flags=re.IGNORECASE,
 )
+
+_LABELLED_LINE_PATTERN = re.compile(
+    r"^\s*([A-Za-z][A-Za-z0-9()/%&,\-'\s]{1,96}?)\s*:\s*(.*)$"
+)
+
+_MATCH_STOPWORDS = {
+    "a",
+    "an",
+    "and",
+    "are",
+    "as",
+    "at",
+    "by",
+    "for",
+    "from",
+    "in",
+    "is",
+    "of",
+    "on",
+    "or",
+    "the",
+    "to",
+    "with",
+    "without",
+}
 
 _ALLOWED_ROUTE_STRATEGIES = {"deterministic", "constrained_extract", "heavy_extract", "repair"}
 
@@ -1063,6 +1150,140 @@ def _split_document_sections(document_text: str, *, max_sections: int = 10) -> l
         }
     )
     return head
+
+
+def _tokenize_for_match(text: str) -> set[str]:
+    tokens = {
+        token
+        for token in re.findall(r"[a-z0-9]+", str(text or "").lower())
+        if token and token not in _MATCH_STOPWORDS
+    }
+    return tokens
+
+
+def _field_to_label_match_score(field_name: str, label: str) -> float:
+    field_tokens = _tokenize_for_match(field_name)
+    label_tokens = _tokenize_for_match(label)
+    if not field_tokens or not label_tokens:
+        return 0.0
+
+    overlap = len(field_tokens & label_tokens)
+    if overlap <= 0:
+        return 0.0
+
+    containment = overlap / float(len(field_tokens))
+    union = len(field_tokens | label_tokens)
+    jaccard = overlap / float(union) if union else 0.0
+
+    normalized_field = "_".join(sorted(field_tokens))
+    normalized_label = "_".join(sorted(label_tokens))
+    similarity = SequenceMatcher(None, normalized_field, normalized_label).ratio()
+
+    score = max((0.70 * containment) + (0.30 * jaccard), similarity * 0.80)
+    if normalized_field == normalized_label:
+        score = 1.0
+    elif normalized_field in normalized_label or normalized_label in normalized_field:
+        score = max(score, 0.92)
+    return max(0.0, min(1.0, score))
+
+
+def _extract_labeled_blocks(document_text: str, *, max_blocks: int = 256) -> list[dict[str, str]]:
+    text = str(document_text or "")
+    if not text.strip():
+        return []
+
+    blocks: list[dict[str, str]] = []
+    current_label: str | None = None
+    current_lines: list[str] = []
+
+    def _flush() -> None:
+        nonlocal current_label, current_lines
+        if not current_label:
+            current_lines = []
+            return
+        merged = " ".join(chunk.strip() for chunk in current_lines if chunk.strip()).strip()
+        if merged and not _is_nullish_string(merged):
+            blocks.append({"label": current_label, "text": merged})
+        current_label = None
+        current_lines = []
+
+    for raw_line in text.splitlines():
+        line = str(raw_line or "")
+        stripped = line.strip()
+
+        match = _LABELLED_LINE_PATTERN.match(stripped)
+        if match:
+            _flush()
+            label = str(match.group(1) or "").strip()
+            if not label:
+                continue
+            current_label = label
+            initial_value = str(match.group(2) or "").strip()
+            if initial_value:
+                current_lines.append(initial_value)
+            if len(blocks) >= max_blocks:
+                break
+            continue
+
+        if current_label is None:
+            continue
+
+        if stripped:
+            current_lines.append(stripped)
+
+    _flush()
+    return blocks[:max_blocks]
+
+
+def _deterministic_backfill_for_field(
+    *,
+    source_text: str,
+    field_name: str,
+) -> tuple[str | None, dict[str, Any]]:
+    diag: dict[str, Any] = {
+        "method": None,
+        "score": 0.0,
+        "label": None,
+    }
+
+    text = str(source_text or "")
+    if not text.strip():
+        return None, diag
+
+    candidates: list[tuple[float, str, str, str]] = []
+    for block in _extract_labeled_blocks(text):
+        label = str(block.get("label") or "")
+        value = str(block.get("text") or "").strip()
+        if not value:
+            continue
+        score = _field_to_label_match_score(field_name, label)
+        if score >= 0.72:
+            candidates.append((score, value, label, "label_block"))
+
+    for section in _split_document_sections(text, max_sections=64):
+        title = str(section.get("title") or "").strip()
+        body = str(section.get("text") or "").strip()
+        if not title or not body:
+            continue
+        score = _field_to_label_match_score(field_name, title)
+        if score >= 0.84:
+            candidates.append((score, body, title, "section_block"))
+
+    if not candidates:
+        return None, diag
+
+    score, value, label, method = max(candidates, key=lambda row: row[0])
+    if _is_nullish_string(value):
+        return None, diag
+
+    cleaned = " ".join(value.split()).strip()
+    if not cleaned:
+        return None, diag
+
+    diag["method"] = method
+    diag["score"] = float(score)
+    diag["label"] = label
+    return cleaned, diag
 
 
 def _section_complexity_hint(text: str) -> str:
@@ -1735,15 +1956,25 @@ def _repair_failed_critical_fields_with_refine(
     critical_fields = required or list(schema_class.model_fields.keys())
 
     failed_fields: list[str] = []
+    missing_fields: list[str] = []
+    ungrounded_fields: list[str] = []
     for field_name in critical_fields:
         value = payload.get(field_name)
         grounded, _snippet = _extract_grounding_snippet(source_text=source_text, value=value)
-        if _is_missing_value(value) or grounded is False:
+        if _is_missing_value(value):
             failed_fields.append(field_name)
+            missing_fields.append(field_name)
+            continue
+        if grounded is False:
+            failed_fields.append(field_name)
+            ungrounded_fields.append(field_name)
 
     diag: dict[str, Any] = {
         "triggered": bool(failed_fields),
-        "failed_fields": failed_fields,
+        "failed_fields": list(failed_fields),
+        "missing_fields": list(missing_fields),
+        "ungrounded_fields": list(ungrounded_fields),
+        "remaining_failed_fields": list(failed_fields),
         "repaired_fields": [],
         "skipped_fields": [],
         "reason": None,
@@ -1752,12 +1983,91 @@ def _repair_failed_critical_fields_with_refine(
         diag["reason"] = "no_failed_fields"
         return model_instance, diag
 
-    # Respect use_refine config (defaults to False) — matches radiology.py / pathology.py
+    updated = model_instance
+    updated_payload = payload
+
+    # Fast deterministic backfill from section/label blocks before any extra LLM calls.
+    remaining_failed_fields: list[str] = []
+    for field_name in failed_fields:
+        before = updated_payload.get(field_name)
+        backfilled_value, backfill_diag = _deterministic_backfill_for_field(
+            source_text=source_text,
+            field_name=field_name,
+        )
+        if backfilled_value is None:
+            remaining_failed_fields.append(field_name)
+            continue
+
+        try:
+            trial_payload = dict(updated_payload)
+            trial_payload[field_name] = backfilled_value
+            coerced = _coerce_payload_to_schema(trial_payload, schema_class)
+            repaired_model = schema_class.model_validate(coerced)
+            repaired_payload = repaired_model.model_dump()
+            after = repaired_payload.get(field_name)
+            if _is_missing_value(after):
+                remaining_failed_fields.append(field_name)
+                diag["skipped_fields"].append(
+                    {
+                        "field": field_name,
+                        "reason": "deterministic_backfill_still_missing",
+                    }
+                )
+                continue
+            updated = repaired_model
+            updated_payload = repaired_payload
+            diag["repaired_fields"].append(
+                {
+                    "field": field_name,
+                    "before": before,
+                    "after": after,
+                    "method": str(backfill_diag.get("method") or "deterministic_backfill"),
+                    "score": backfill_diag.get("score"),
+                    "label": backfill_diag.get("label"),
+                }
+            )
+        except Exception as exc:
+            remaining_failed_fields.append(field_name)
+            diag["skipped_fields"].append(
+                {
+                    "field": field_name,
+                    "reason": f"deterministic_backfill_error:{type(exc).__name__}",
+                }
+            )
+
+    diag["remaining_failed_fields"] = list(remaining_failed_fields)
+    if not remaining_failed_fields:
+        diag["reason"] = "deterministic_backfill_applied"
+        return updated, diag
+
+    # Respect use_refine config (defaults to False for fast extraction)
     from mosaicx.config import get_config
     cfg = get_config()
     if not cfg.use_refine:
         diag["reason"] = "use_refine_disabled"
-        return model_instance, diag
+        return updated, diag
+
+    refine_candidates = list(remaining_failed_fields)
+    if bool(getattr(cfg, "refine_only_missing", True)):
+        refine_candidates = [
+            name for name in refine_candidates if _is_missing_value(updated_payload.get(name))
+        ]
+
+    max_refine_fields = max(0, int(getattr(cfg, "refine_max_fields", 3) or 0))
+    if max_refine_fields > 0 and len(refine_candidates) > max_refine_fields:
+        overflow = refine_candidates[max_refine_fields:]
+        for field_name in overflow:
+            diag["skipped_fields"].append(
+                {
+                    "field": field_name,
+                    "reason": f"refine_field_limit:{max_refine_fields}",
+                }
+            )
+        refine_candidates = refine_candidates[:max_refine_fields]
+
+    if not refine_candidates:
+        diag["reason"] = "no_refine_candidates"
+        return updated, diag
 
     try:
         from mosaicx.runtime_env import import_dspy
@@ -1805,9 +2115,7 @@ def _repair_failed_critical_fields_with_refine(
 
     from mosaicx.verify.parse_utils import parse_json_like
 
-    updated = model_instance
-    updated_payload = payload
-    for field_name in failed_fields:
+    for field_name in refine_candidates:
         before = updated_payload.get(field_name)
         field = schema_class.model_fields.get(field_name)
         field_type = str(getattr(field, "annotation", "unknown"))
@@ -1916,17 +2224,30 @@ def _extract_schema_with_structured_chain(
             error_hint="primary_outlines",
         )
         if outlines_primary is not None:
-            bestofn_info["reason"] = "skipped_outlines_primary_succeeded"
-            _record("outlines_primary", True)
-            selected_path = "outlines_primary"
-            return outlines_primary, {
-                "selected_path": selected_path,
-                "fallback_used": False,
-                "attempts": attempts,
-                "bestofn": bestofn_info,
-                "adjudication": adjudication_info,
-            }
-        _record("outlines_primary", False, ValueError("outlines_primary_unavailable"))
+            score, components = _score_extraction_candidate(
+                extracted=outlines_primary,
+                schema_class=schema_class,
+                source_text=document_text,
+            )
+            completeness = components.get("critical_completeness", 0.0)
+            if completeness >= 1.0:
+                # All required fields present — accept Outlines fast path
+                bestofn_info["reason"] = "skipped_outlines_primary_succeeded"
+                _record("outlines_primary", True)
+                selected_path = "outlines_primary"
+                return outlines_primary, {
+                    "selected_path": selected_path,
+                    "fallback_used": False,
+                    "attempts": attempts,
+                    "bestofn": bestofn_info,
+                    "adjudication": adjudication_info,
+                }
+            # Outlines succeeded but missed required fields — fall through to DSPy
+            _record("outlines_primary", False, ValueError(
+                f"outlines_incomplete:completeness={completeness:.2f}"
+            ))
+        else:
+            _record("outlines_primary", False, ValueError("outlines_primary_unavailable"))
     else:
         _record("outlines_primary", False, ValueError("lm_not_configured"))
 

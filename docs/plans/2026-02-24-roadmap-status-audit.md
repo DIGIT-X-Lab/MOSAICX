@@ -65,6 +65,13 @@ Other plan files are design/history logs and must link here for status.
 - `render_verification` gains `template_field_count` param; when template has more fields than were checked, shows "12/12 present fields verified · 1 absent  not in document" using the absent badge style
 - CLI wires `template_field_count` from `_extraction_contract.critical_fields` length
 
+### Outlines quality gate for required field completeness (2026-02-25)
+
+- Outlines fast-path now scores result via `_score_extraction_candidate()` before accepting
+- If `critical_completeness < 1.0` (any required field empty), falls through to DSPy chain
+- Fixes regression from None→primitive coercion: Outlines no longer silently accepted with empty required fields
+- Diagnostics: incomplete Outlines recorded as `outlines_incomplete:completeness=X.XX`
+
 ### Outlines None→primitive coercion fix (2026-02-25)
 
 - Fixed `_coerce_value_for_annotation(None, T)` returning `None` for required primitive fields
