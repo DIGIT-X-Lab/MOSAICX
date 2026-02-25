@@ -47,6 +47,7 @@ Other plan files are design/history logs and must link here for status.
 ### Canonical control note
 
 - Use this file as the only status authority for roadmap completion.
+- Use `docs/plans/2026-02-25-mosaicx-clear-roadmap.md` as the active execution plan.
 - Treat all other plan docs in `docs/plans/` as design/history/reference only.
 - If status here conflicts with another file, this file wins.
 
