@@ -59,6 +59,12 @@ Other plan files are design/history logs and must link here for status.
 - Treat all other plan docs in `docs/plans/` as design/history/reference only.
 - If status here conflicts with another file, this file wins.
 
+### Outlines None→str coercion fix (2026-02-25)
+
+- Fixed `_coerce_value_for_annotation(None, str)` returning `None` for required string fields
+- When Outlines generates `null` for a field the document genuinely doesn't have, the coercion now returns `""` (the canonical missing sentinel) instead of `None`, preventing Pydantic ValidationError in `schema_class.model_validate()`
+- Optional[str] fields are unaffected — their Union origin dispatches to the Union branch before the None check
+
 ### Grounding whitespace normalization fix (2026-02-25)
 
 - Fixed PDF `\r\n` line-break grounding failure in two places:

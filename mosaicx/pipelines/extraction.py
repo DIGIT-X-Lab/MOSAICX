@@ -237,6 +237,11 @@ def _coerce_value_for_annotation(value: Any, annotation: Any) -> Any:
         absence_enum = _absence_enum_value_for_annotation(annotation)
         if absence_enum is not None:
             return absence_enum
+        # Required str fields get "" (the canonical "missing" sentinel) so that
+        # schema_class.model_validate() doesn't reject None for non-optional fields
+        # when the source document genuinely doesn't contain the value.
+        if annotation is str:
+            return ""
         return None
 
     origin = get_origin(annotation)
