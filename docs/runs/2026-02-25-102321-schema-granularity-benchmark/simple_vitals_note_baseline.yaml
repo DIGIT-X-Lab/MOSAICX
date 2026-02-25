@@ -1,0 +1,45 @@
+name: VitalsNote
+description: Schema for a one‑paragraph vitals note containing key vital sign measurements.
+sections:
+- name: temperature_c
+  type: float
+  description: Body temperature in degrees Celsius.
+- name: heart_rate_bpm
+  type: int
+  description: Heart rate in beats per minute.
+- name: respiratory_rate_bpm
+  type: int
+  description: Respiratory rate in breaths per minute.
+- name: blood_pressure_systolic_mmhg
+  type: int
+  description: Systolic blood pressure in millimeters of mercury.
+- name: blood_pressure_diastolic_mmhg
+  type: int
+  description: Diastolic blood pressure in millimeters of mercury.
+- name: oxygen_saturation_percent
+  type: float
+  description: Peripheral oxygen saturation as a percentage.
+- name: pain_score
+  type: int
+  required: false
+  description: Pain score on a 0‑10 numeric rating scale.
+- name: weight_kg
+  type: float
+  required: false
+  description: Patient weight in kilograms.
+- name: height_cm
+  type: float
+  required: false
+  description: Patient height in centimeters.
+- name: measurement_time
+  type: str
+  required: false
+  description: Timestamp of when the vitals were recorded (ISO‑8601 string).
+- name: provider_name
+  type: str
+  required: false
+  description: Name or identifier of the healthcare provider recording the vitals.
+- name: additional_notes
+  type: str
+  required: false
+  description: Any additional free‑text notes included in the paragraph.

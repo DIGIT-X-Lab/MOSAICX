@@ -1,0 +1,79 @@
+name: OncologyFollowUpReport
+description: Pathology oncology follow‑up report with lesion‑level structured findings
+  and categorical assessment.
+sections:
+- name: report_id
+  type: str
+  description: Unique identifier for the report.
+- name: patient_id
+  type: str
+  description: Unique identifier for the patient.
+- name: report_date
+  type: str
+  description: Date of the report (ISO‑8601 format).
+- name: modality
+  type: enum
+  values:
+  - CT
+  - MRI
+  - PET
+  - Ultrasound
+  - Other
+  description: Imaging modality used for assessment.
+- name: overall_assessment
+  type: enum
+  values:
+  - Complete Response
+  - Partial Response
+  - Stable Disease
+  - Progressive Disease
+  - Unknown
+  description: Overall categorical assessment of disease status for the patient.
+- name: lesions
+  type: list
+  item:
+    type: object
+    fields:
+    - name: lesion_id
+      type: str
+      description: Identifier for the individual lesion.
+    - name: location
+      type: str
+      description: Anatomical location of the lesion.
+    - name: size_mm
+      type: float
+      description: Size of the lesion in millimeters (max diameter).
+      required: false
+    - name: measurement_type
+      type: enum
+      description: Type of quantitative measurement reported.
+      required: false
+      values:
+      - max_diameter
+      - volume
+      - other
+    - name: assessment
+      type: enum
+      description: Categorical assessment for this lesion.
+      values:
+      - Complete Response
+      - Partial Response
+      - Stable Disease
+      - Progressive Disease
+      - Not Assessable
+    - name: biomarkers
+      type: list
+      description: Optional list of biomarkers or molecular findings associated with
+        the lesion.
+      required: false
+      item:
+        type: str
+    - name: notes
+      type: str
+      description: Optional free‑text notes for the lesion.
+      required: false
+  description: List of lesion‑level findings.
+- name: clinical_notes
+  type: str
+  required: false
+  description: Optional free‑text clinical notes or impressions for the report.

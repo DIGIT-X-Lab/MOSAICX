@@ -1,0 +1,55 @@
+name: CervicalSpineMriMolecularReport
+description: Schema for cervical spine MRI pathology molecular report, capturing biomarker
+  results with categorical positivity and optional quantitative percentages.
+sections:
+- name: patient_id
+  type: str
+  description: Unique identifier for the patient.
+- name: accession_number
+  type: str
+  required: false
+  description: Accession number for the imaging study.
+- name: study_date
+  type: str
+  required: false
+  description: Date of the MRI study (ISO 8601 format).
+- name: imaging_modality
+  type: enum
+  values:
+  - MRI
+  description: Imaging modality used; fixed to MRI.
+- name: region
+  type: enum
+  values:
+  - cervical spine
+  description: Anatomical region examined; fixed to cervical spine.
+- name: biomarkers
+  type: list
+  item:
+    type: object
+    fields:
+    - name: biomarker_name
+      type: str
+      description: Name of the biomarker tested.
+    - name: result
+      type: enum
+      description: Categorical result of the biomarker test.
+      values:
+      - positive
+      - negative
+      - equivocal
+      - not detected
+    - name: quantitative_percentage
+      type: float
+      description: Optional quantitative percentage associated with the result.
+      required: false
+    - name: interpretation
+      type: str
+      description: Optional free-text interpretation for the biomarker.
+      required: false
+  required: false
+  description: List of biomarker assessments.
+- name: overall_conclusion
+  type: str
+  required: false
+  description: Overall impression or conclusion of the molecular report.

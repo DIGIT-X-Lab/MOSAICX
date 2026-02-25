@@ -853,3 +853,33 @@ When completing `DSPY-*` items, append:
     - `mean_enum_fields`: `1.0 -> 1.8`
 - Remaining blockers:
   - Finalize and close issue `#57` after publishing this benchmark delta in the issue thread.
+
+### Update 2026-02-25 10:48
+- Tasks completed:
+  - Added explicit describe-only benchmarking mode to schema granularity harness:
+    - `scripts/run_schema_granularity_benchmark.py --generation-context describe_only`
+  - Ran full 5-case describe-only adversarial benchmark on local `vllm-mlx` 120B.
+  - Re-ran live schema-generation checks (`--describe` and `--from-document`) with cache clears.
+  - Re-ran extraction with generated document-grounded schema to confirm runtime safety.
+- Files changed:
+  - `scripts/run_schema_granularity_benchmark.py`
+  - `docs/plans/2026-02-24-roadmap-status-audit.md`
+  - `docs/runs/2026-02-25-102321-schema-granularity-benchmark/schema_granularity_results.json`
+  - `docs/runs/2026-02-25-102321-schema-granularity-benchmark/schema_granularity_report.md`
+  - generated benchmark YAMLs under `docs/runs/2026-02-25-102321-schema-granularity-benchmark/`
+- Tests run:
+  - `scripts/clear_dspy_cache.sh && PYTHONPATH=. .venv/bin/pytest -q tests/test_cli_integration.py -k "template_create"` -> `9 passed`
+  - `scripts/clear_dspy_cache.sh && PYTHONPATH=. .venv/bin/pytest -q tests/test_schema_gen.py tests/test_extraction_schema_coercion.py tests/test_extraction_pipeline.py tests/test_cli_extract.py` -> `57 passed`
+  - `scripts/ensure_vllm_mlx_server.sh && scripts/clear_dspy_cache.sh && PYTHONPATH=. .venv/bin/python scripts/run_schema_granularity_benchmark.py --generation-context describe_only --hybrid-semantic-min-score 0.60`
+- Results:
+  - Describe-only aggregate (baseline -> hybrid):
+    - `required_coverage_mean`: `0.9000 -> 0.9333`
+    - `extraction_success_rate`: `1.0000 -> 1.0000`
+    - `repeated_structure_pass_rate`: `1.0000 -> 1.0000`
+    - `enum_pass_rate`: `1.0000 -> 1.0000`
+  - Live local checks:
+    - `template create --describe ... --name Schema56DescribeCheck` -> `/tmp/schema56_describe_check.yaml` (`9 fields`)
+    - `template create --from-document ... --name Schema56DocCheck` -> `/tmp/schema56_doc_check.yaml` (`13 fields`)
+    - `extract --template /tmp/schema56_doc_check.yaml` -> `/tmp/schema56_doc_extract.json` (success)
+- Remaining blockers:
+  - none for `#56`; ready to close with attached artifacts.

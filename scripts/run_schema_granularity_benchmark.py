@@ -161,6 +161,7 @@ def _run_mode_case(
     case: CaseSpec,
     out_dir: Path,
     hybrid_semantic_min_score: float,
+    generation_context: str,
 ) -> dict[str, Any]:
     from mosaicx.pipelines.extraction import DocumentExtractor
     from mosaicx.pipelines.schema_gen import (
@@ -175,7 +176,7 @@ def _run_mode_case(
     kwargs = dict(
         description=case.description,
         example_text="",
-        document_text=case.text,
+        document_text=case.text if generation_context == "from_document" else "",
         runtime_dryrun=True,
         max_repairs=2,
     )
@@ -223,6 +224,7 @@ def _run_mode_case(
 
     return {
         "mode": mode,
+        "generation_context": generation_context,
         "case_id": case.case_id,
         "case_name": case.name,
         "elapsed_s": round(elapsed_s, 2),
@@ -241,12 +243,17 @@ def _run_mode_case(
     }
 
 
-def _aggregate(rows: list[dict[str, Any]], mode: str) -> dict[str, Any]:
-    mode_rows = [r for r in rows if r["mode"] == mode]
+def _aggregate(rows: list[dict[str, Any]], mode: str, generation_context: str) -> dict[str, Any]:
+    mode_rows = [
+        r
+        for r in rows
+        if r["mode"] == mode and r.get("generation_context") == generation_context
+    ]
     if not mode_rows:
         return {}
     return {
         "mode": mode,
+        "generation_context": generation_context,
         "case_count": len(mode_rows),
         "semantic_score_mean": round(statistics.mean(r["semantic_score"] for r in mode_rows), 4),
         "required_coverage_mean": round(statistics.mean(r["required_coverage"] for r in mode_rows), 4),
@@ -284,6 +291,7 @@ def _render_markdown(
     baseline: dict[str, Any],
     hybrid: dict[str, Any],
     cases_path: Path,
+    generation_context: str,
 ) -> None:
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%SZ")
     lines: list[str] = []
@@ -292,6 +300,7 @@ def _render_markdown(
     lines.append(f"- Generated: {ts}")
     lines.append(f"- Cases: `{cases_path}`")
     lines.append("- Modes: `baseline` (semantic gate off) vs `hybrid` (semantic gate on + DSPy assessor)")
+    lines.append(f"- Generation context: `{generation_context}`")
     lines.append("")
     lines.append("## Aggregate")
     lines.append("")
@@ -368,6 +377,13 @@ def parse_args() -> argparse.Namespace:
         default=0.60,
         help="Semantic threshold for hybrid mode (0..1).",
     )
+    parser.add_argument(
+        "--generation-context",
+        type=str,
+        choices=("from_document", "describe_only"),
+        default="from_document",
+        help="Schema generation context. `from_document` uses source text. `describe_only` uses description only.",
+    )
     return parser.parse_args()
 
 
@@ -404,23 +420,28 @@ def main() -> int:
     for case in cases:
         for mode in ("baseline", "hybrid"):
             _clear_dspy_caches()
-            print(f"[schema-benchmark] case={case.case_id} mode={mode}", flush=True)
+            print(
+                f"[schema-benchmark] case={case.case_id} mode={mode} context={args.generation_context}",
+                flush=True,
+            )
             row = _run_mode_case(
                 mode=mode,
                 case=case,
                 out_dir=out_dir,
                 hybrid_semantic_min_score=args.hybrid_semantic_min_score,
+                generation_context=args.generation_context,
             )
             rows.append(row)
 
-    baseline = _aggregate(rows, "baseline")
-    hybrid = _aggregate(rows, "hybrid")
+    baseline = _aggregate(rows, "baseline", args.generation_context)
+    hybrid = _aggregate(rows, "hybrid", args.generation_context)
 
     results = {
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "cases_file": str(args.cases),
         "adapter_active": os.environ.get("MOSAICX_DSPY_ADAPTER_ACTIVE"),
         "llm_endpoint": endpoint.to_dict(),
+        "generation_context": args.generation_context,
         "baseline": baseline,
         "hybrid": hybrid,
         "rows": rows,
@@ -434,6 +455,7 @@ def main() -> int:
         baseline=baseline,
         hybrid=hybrid,
         cases_path=args.cases,
+        generation_context=args.generation_context,
     )
 
     print(f"[schema-benchmark] results={out_json}")

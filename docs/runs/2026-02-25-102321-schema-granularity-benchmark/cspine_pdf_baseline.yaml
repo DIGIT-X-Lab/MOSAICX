@@ -1,0 +1,41 @@
+name: CervicalSpineMRIReport
+description: Schema for a cervical spine MRI report capturing prior fusion status,
+  hardware presence, level‑wise findings, and impression points.
+sections:
+- name: prior_fusion
+  type: bool
+  description: Indicates whether the patient has a history of prior cervical spine
+    fusion.
+- name: hardware_present
+  type: bool
+  description: Indicates presence of surgical hardware (e.g., screws, rods) in the
+    cervical spine.
+- name: levels
+  type: list
+  item:
+    type: object
+    fields:
+    - name: level
+      type: enum
+      description: Cervical spine level.
+      values:
+      - C1
+      - C2
+      - C3
+      - C4
+      - C5
+      - C6
+      - C7
+    - name: findings
+      type: list
+      description: List of findings at this level.
+      required: false
+      item:
+        type: str
+  description: Findings for each cervical level (C1‑C7).
+- name: impression
+  type: list
+  item:
+    type: str
+  required: false
+  description: Structured impression points summarizing the study.

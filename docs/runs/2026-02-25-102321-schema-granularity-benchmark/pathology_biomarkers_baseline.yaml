@@ -1,0 +1,50 @@
+name: CervicalSpineMriMolecularReport
+description: Schema for cervical spine MRI pathology molecular report with biomarker-level
+  results, categorical positivity, and optional quantitative percentages.
+sections:
+- name: patient_id
+  type: str
+  description: Unique identifier for the patient
+- name: study_date
+  type: str
+  description: Date of the MRI study (ISO 8601 format)
+- name: modality
+  type: enum
+  values:
+  - MRI
+  description: Imaging modality, fixed to MRI for this report
+- name: region
+  type: enum
+  values:
+  - cervical_spine
+  description: Anatomic region evaluated, cervical spine
+- name: biomarkers
+  type: list
+  item:
+    type: object
+    fields:
+    - name: biomarker_name
+      type: str
+      description: Name of the biomarker assessed
+    - name: result
+      type: enum
+      description: Categorical positivity result
+      values:
+      - Positive
+      - Negative
+      - Indeterminate
+      - Not Detected
+    - name: percentage
+      type: float
+      description: Quantitative percentage of positivity (optional)
+      required: false
+    - name: unit
+      type: str
+      description: Unit for percentage, typically percent
+      required: false
+  required: false
+  description: List of biomarker test results
+- name: impression
+  type: str
+  required: false
+  description: Narrative impression of the report

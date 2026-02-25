@@ -1,0 +1,103 @@
+name: PathologyOncologyFollowUpReport
+description: Structured schema for a pathology oncology follow‑up report with lesion‑level
+  findings and categorical assessment.
+sections:
+- name: report_id
+  type: str
+  description: Unique identifier for the report.
+- name: patient_id
+  type: str
+  description: Unique patient identifier.
+- name: report_date
+  type: str
+  description: Date of the report (ISO 8601 format).
+- name: modality
+  type: enum
+  values:
+  - biopsy
+  - surgical
+  - cytology
+  - other
+  required: false
+  description: Specimen acquisition modality.
+- name: overall_assessment
+  type: enum
+  values:
+  - complete_response
+  - partial_response
+  - stable_disease
+  - progressive_disease
+  - no_evidence_of_disease
+  description: Overall categorical assessment of disease status.
+- name: overall_impression
+  type: str
+  required: false
+  description: Narrative summary impression of the overall findings.
+- name: recommendations
+  type: list
+  item:
+    type: str
+  required: false
+  description: List of clinical recommendations derived from the report.
+- name: lesions
+  type: list
+  item:
+    type: object
+    fields:
+    - name: lesion_id
+      type: str
+      description: Identifier for the lesion.
+    - name: location
+      type: str
+      description: Anatomical location of the lesion.
+    - name: size_mm
+      type: float
+      description: Maximum dimension of the lesion in millimeters.
+      required: false
+    - name: measurement_type
+      type: enum
+      description: Type of size measurement reported.
+      required: false
+      values:
+      - max_diameter
+      - volume
+    - name: assessment
+      type: enum
+      description: Categorical assessment for this lesion.
+      values:
+      - stable
+      - progressed
+      - regressed
+      - new
+    - name: histologic_type
+      type: str
+      description: Histologic classification if available.
+      required: false
+    - name: grade
+      type: enum
+      description: Tumor grade.
+      required: false
+      values:
+      - low
+      - intermediate
+      - high
+    - name: margin_status
+      type: enum
+      description: Surgical margin status.
+      required: false
+      values:
+      - positive
+      - negative
+      - close
+      - not_applicable
+    - name: biomarkers
+      type: list
+      description: Molecular or immunohistochemical biomarkers reported for the lesion.
+      required: false
+      item:
+        type: str
+    - name: notes
+      type: str
+      description: Additional free‑text notes for the lesion.
+      required: false
+  description: List of lesion‑level structured findings.

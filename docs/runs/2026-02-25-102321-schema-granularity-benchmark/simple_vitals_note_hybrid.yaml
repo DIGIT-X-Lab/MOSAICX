@@ -1,0 +1,42 @@
+name: VitalsNote
+description: Schema for a compact one‑paragraph vital signs note
+sections:
+- name: patient_id
+  type: str
+  description: Unique identifier for the patient
+- name: note_date
+  type: str
+  description: Date of the vital signs note (ISO‑8601 format preferred)
+- name: temperature_c
+  type: float
+  description: Body temperature in degrees Celsius
+- name: heart_rate_bpm
+  type: int
+  description: Heart rate in beats per minute
+- name: respiratory_rate_bpm
+  type: int
+  description: Respiratory rate in breaths per minute
+- name: blood_pressure_systolic_mmhg
+  type: int
+  description: Systolic blood pressure in mmHg
+- name: blood_pressure_diastolic_mmhg
+  type: int
+  description: Diastolic blood pressure in mmHg
+- name: oxygen_saturation_percent
+  type: int
+  description: Peripheral oxygen saturation as a percentage
+- name: pain_score
+  type: int
+  description: Pain score on a 0‑10 numeric rating scale
+- name: weight_kg
+  type: float
+  required: false
+  description: Patient weight in kilograms (optional)
+- name: height_cm
+  type: float
+  required: false
+  description: Patient height in centimeters (optional)
+- name: additional_notes
+  type: str
+  required: false
+  description: Any additional observations or remarks (optional)

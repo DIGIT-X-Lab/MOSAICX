@@ -1,0 +1,39 @@
+name: CervicalDischargeMedicationList
+description: List of medications prescribed for cervical discharge, including dosage
+  and dosing frequency details.
+sections:
+- name: medications
+  type: list
+  item:
+    type: object
+    fields:
+    - name: drug_name
+      type: str
+      description: Name of the medication.
+    - name: dose
+      type: str
+      description: Dosage amount and unit, e.g., '500 mg' or '1 tablet'.
+      required: false
+    - name: frequency
+      type: enum
+      description: Dosing frequency.
+      values:
+      - once daily
+      - twice daily
+      - three times daily
+      - every 6 hours
+      - every 8 hours
+      - as needed
+      - other
+    - name: route
+      type: enum
+      description: Administration route.
+      required: false
+      values:
+      - oral
+      - topical
+      - vaginal
+      - intramuscular
+      - intravenous
+      - other
+  description: Collection of medication entries.

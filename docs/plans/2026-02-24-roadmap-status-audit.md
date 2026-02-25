@@ -6,7 +6,7 @@ Status: Active
 Owner: Core platform
 Authoritative: Yes (single source of truth for rollout status)
 
-## 0) Canonical Status (Updated 2026-02-25 10:25)
+## 0) Canonical Status (Updated 2026-02-25 10:48)
 
 This file is the canonical status board for DSPy roadmap execution.
 Other plan files are design/history logs and must link here for status.
@@ -19,9 +19,8 @@ Other plan files are design/history logs and must link here for status.
   - legacy bugs: `#17`, `#18`, `#19`
   - current bug fixes: `#51`, `#52`, `#53`, `#54`, `#55`
   - closed duplicates: `#22`, `#27`
-- Open stabilization items:
-  - `#56 [SCHEMA-001] Robust schema generation with normalize/validate/repair pipeline`
 - Closed stabilization items:
+  - `#56 [SCHEMA-001] Robust schema generation with normalize/validate/repair pipeline`
   - `#57 [SCHEMA-002] Add semantic granularity scoring for generated templates`
 - Closed DSPy capability items:
   - `#36 [DSPY-01] ReAct planner as primary query control-plane`
@@ -162,6 +161,21 @@ Other plan files are design/history logs and must link here for status.
       - `required_coverage_mean`: `1.0000` -> `1.0000` (no regression)
       - `extraction_success_rate`: `1.0000` -> `1.0000` (no regression)
       - `mean_enum_fields`: `1.0` -> `1.8` (`+0.8`)
+  - Describe-only adversarial benchmark + closure evidence (`2026-02-25 10:40`, `SCHEMA-001`):
+    - Extended benchmark harness to support explicit generation context:
+      - `scripts/run_schema_granularity_benchmark.py --generation-context describe_only`
+    - Full local `vllm-mlx` run artifact:
+      - `docs/runs/2026-02-25-102321-schema-granularity-benchmark/schema_granularity_results.json`
+      - `docs/runs/2026-02-25-102321-schema-granularity-benchmark/schema_granularity_report.md`
+    - Describe-only aggregate:
+      - `required_coverage_mean`: `0.9000` -> `0.9333`
+      - `extraction_success_rate`: `1.0000` -> `1.0000`
+      - `repeated_structure_pass_rate`: `1.0000` -> `1.0000`
+      - `enum_pass_rate`: `1.0000` -> `1.0000`
+    - Fresh live checks with cache clears:
+      - `template create --describe ... --name Schema56DescribeCheck` -> `/tmp/schema56_describe_check.yaml` (`9 fields`, local 120B)
+      - `template create --from-document ... --name Schema56DocCheck` -> `/tmp/schema56_doc_check.yaml` (`13 fields`, local 120B)
+      - `extract --template /tmp/schema56_doc_check.yaml ...` -> `/tmp/schema56_doc_extract.json` (successful structured extraction)
 
 - Verify audit recovery gating hardened (`2026-02-24`, `BUG-VER-001`):
   - `mosaicx/verify/audit.py` now attempts Outlines recovery only for structured serialization/JSON parse failures.
