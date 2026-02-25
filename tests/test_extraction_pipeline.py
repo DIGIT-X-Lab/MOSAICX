@@ -495,6 +495,14 @@ class TestAdjudicationAndRepair:
             finding: str | None = None
             impression: str | None = None
 
+        # Enable use_refine so the repair logic actually runs
+        from mosaicx.config import MosaicxConfig
+
+        monkeypatch.setattr(
+            "mosaicx.config.get_config",
+            lambda: MosaicxConfig(use_refine=True),
+        )
+
         class _FakeDspy:
             settings = SimpleNamespace(lm=object())
 
@@ -543,3 +551,176 @@ class TestAdjudicationAndRepair:
         assert diag["triggered"] is True
         assert any(item["field"] == "finding" for item in diag["repaired_fields"])
         assert all(item["field"] != "impression" for item in diag["repaired_fields"])
+
+    def test_refine_repair_skipped_when_use_refine_disabled(self, monkeypatch):
+        """When use_refine=False (default), repair should return early without LLM calls."""
+        from mosaicx.pipelines.extraction import _repair_failed_critical_fields_with_refine
+
+        class Report(BaseModel):
+            finding: str
+            impression: str
+
+        # Ensure use_refine is False (the default)
+        from mosaicx.config import MosaicxConfig
+
+        monkeypatch.setattr(
+            "mosaicx.config.get_config",
+            lambda: MosaicxConfig(use_refine=False),
+        )
+
+        base = Report(finding="", impression="stable")
+        repaired, diag = _repair_failed_critical_fields_with_refine(
+            model_instance=base,
+            schema_class=Report,
+            source_text="Findings: disc bulge. Impression: stable.",
+        )
+
+        # Should return the original instance unmodified
+        assert repaired is base
+        assert repaired.finding == ""
+        assert diag["reason"] == "use_refine_disabled"
+        assert diag["repaired_fields"] == []
+
+    def test_refine_repair_proceeds_when_use_refine_enabled(self, monkeypatch):
+        """When use_refine=True, repair should proceed past the gate."""
+        from mosaicx.pipelines.extraction import _repair_failed_critical_fields_with_refine
+
+        class Report(BaseModel):
+            finding: str | None = None
+
+        from mosaicx.config import MosaicxConfig
+
+        monkeypatch.setattr(
+            "mosaicx.config.get_config",
+            lambda: MosaicxConfig(use_refine=True),
+        )
+
+        # Mock DSPy import to fail — this tests the gate was passed
+        monkeypatch.setattr(
+            "mosaicx.runtime_env.import_dspy",
+            lambda: (_ for _ in ()).throw(RuntimeError("no dspy")),
+        )
+
+        base = Report(finding=None)
+        repaired, diag = _repair_failed_critical_fields_with_refine(
+            model_instance=base,
+            schema_class=Report,
+            source_text="Findings: disc bulge.",
+        )
+
+        # Should have passed the use_refine gate and hit dspy import failure
+        assert diag["reason"] == "dspy_import_failed:RuntimeError"
+
+
+class TestPlannerShortDocBypass:
+    def test_short_doc_bypasses_react_planner(self, monkeypatch):
+        """Documents under planner_min_chars should skip ReAct entirely."""
+        from mosaicx.pipelines.extraction import _plan_extraction_document_text
+
+        from mosaicx.config import MosaicxConfig
+
+        monkeypatch.setattr(
+            "mosaicx.config.get_config",
+            lambda: MosaicxConfig(planner_min_chars=4000),
+        )
+
+        # Short document (well under 4000 chars)
+        doc = (
+            "Clinical Information:\n"
+            "Chest pain.\n\n"
+            "Findings:\n"
+            "Normal coronary arteries.\n\n"
+            "Impression:\n"
+            "No significant stenosis."
+        )
+        assert len(doc) < 4000
+
+        planned_text, diag = _plan_extraction_document_text(
+            document_text=doc,
+            schema_name="CTAHeartV2",
+        )
+
+        assert diag["planner"] == "short_doc_bypass"
+        assert diag["react_used"] is False
+        assert isinstance(diag["routes"], list)
+        assert all(r["reason"] == "short_doc_bypass" for r in diag["routes"])
+        assert planned_text.strip()
+
+    def test_long_doc_uses_react_planner(self, monkeypatch):
+        """Documents over planner_min_chars should use the ReAct path."""
+        from mosaicx.pipelines.extraction import _plan_extraction_document_text
+
+        from mosaicx.config import MosaicxConfig
+
+        monkeypatch.setattr(
+            "mosaicx.config.get_config",
+            lambda: MosaicxConfig(planner_min_chars=100),
+        )
+
+        # Force deterministic fallback so we don't need actual DSPy
+        monkeypatch.setattr(
+            "mosaicx.runtime_env.import_dspy",
+            lambda: (_ for _ in ()).throw(RuntimeError("no dspy")),
+        )
+
+        # Long document (over 100 chars threshold)
+        doc = "Findings:\n" + "Multilevel disc disease. " * 20
+        assert len(doc) > 100
+
+        planned_text, diag = _plan_extraction_document_text(
+            document_text=doc,
+            schema_name="SpineV1",
+        )
+
+        # Should have attempted ReAct (fallen back to deterministic due to no dspy)
+        assert diag["planner"] == "deterministic_fallback"
+        assert diag["react_used"] is False
+
+
+class TestOutlinesTimeout:
+    def test_outlines_timeout_prevents_hang(self, monkeypatch):
+        """Outlines generator should be killed after timeout seconds."""
+        import time
+
+        from mosaicx.pipelines.extraction import _recover_schema_instance_with_outlines
+
+        class Report(BaseModel):
+            summary: str
+
+        # Mock outlines + openai to simulate a hanging generator
+        class _FakeModel:
+            pass
+
+        class _FakeGenerator:
+            def __call__(self, prompt, temperature=0.0, max_tokens=2200):
+                time.sleep(10)  # Simulate hang
+                return '{"summary": "should not reach"}'
+
+        fake_outlines = SimpleNamespace(
+            from_openai=lambda client, model_name: _FakeModel(),
+            Generator=lambda model, schema: _FakeGenerator(),
+            json_schema=lambda cls: "fake_schema",
+        )
+        fake_openai = SimpleNamespace(
+            OpenAI=lambda base_url, api_key: None,
+        )
+
+        monkeypatch.setitem(__import__("sys").modules, "outlines", fake_outlines)
+        monkeypatch.setitem(__import__("sys").modules, "openai", fake_openai)
+
+        from mosaicx.config import MosaicxConfig
+
+        monkeypatch.setattr(
+            "mosaicx.config.get_config",
+            lambda: MosaicxConfig(outlines_timeout=1),
+        )
+
+        start = time.monotonic()
+        result = _recover_schema_instance_with_outlines(
+            document_text="test document",
+            schema_class=Report,
+        )
+        elapsed = time.monotonic() - start
+
+        assert result is None  # Should have timed out
+        assert elapsed < 5  # Should not wait the full 10s

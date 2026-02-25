@@ -34,6 +34,8 @@ class MosaicxConfig(BaseSettings):
 
     # --- Self-healing ---
     use_refine: bool = False
+    outlines_timeout: int = 120
+    planner_min_chars: int = 4000
 
     # --- Processing ---
     default_template: str = "auto"

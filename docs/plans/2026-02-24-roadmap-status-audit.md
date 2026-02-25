@@ -6,7 +6,7 @@ Status: Active
 Owner: Core platform
 Authoritative: Yes (single source of truth for rollout status)
 
-## 0) Canonical Status (Updated 2026-02-25 23:15)
+## 0) Canonical Status (Updated 2026-02-25 23:36)
 
 This file is the canonical status board for DSPy roadmap execution.
 Other plan files are design/history logs and must link here for status.
@@ -67,6 +67,24 @@ Other plan files are design/history logs and must link here for status.
   - Fixed `SpotChecker.forward()` → `SpotChecker()` calls in `mosaicx/verify/spot_check.py` to silence DSPy warning
   - None-valued template fields now display as dim `missing` instead of being silently skipped
   - Tests: 3 render_verification cases + None field visibility in `tests/test_cli_display.py`
+
+### Current commit batch (2026-02-25 23:36)
+
+- Extraction runtime hardening:
+  - Added config knobs in `mosaicx/config.py`:
+    - `outlines_timeout`
+    - `planner_min_chars`
+  - Added short-document planner bypass in `mosaicx/pipelines/extraction.py` to skip ReAct route planning for small docs.
+  - Added Outlines timeout wrapper in `mosaicx/pipelines/extraction.py` to avoid unbounded stalls.
+  - Wired `use_refine` gate in `mosaicx/pipelines/extraction.py` so refine repair is skipped when disabled.
+  - Added deterministic semantic validation pass in `mosaicx/pipelines/extraction.py` and surfaced diagnostics under `_planner.deterministic_validation`.
+- Verify runtime routing hardening:
+  - Added smart router in `mosaicx/verify/engine.py` to downgrade audit to spot-check for short/simple/local-model paths.
+  - Added explicit `audit_downgraded` issue signaling for transparent executed path reporting.
+- Deterministic verify generalization:
+  - Expanded `mosaicx/verify/deterministic.py` to traverse nested extraction payloads, score scalar grounding, and emit field-level verdicts for non-flat outputs.
+- Validation run for this batch:
+  - `PYTHONPATH=. .venv/bin/pytest -q tests/test_extraction_pipeline.py tests/test_verify_engine.py` -> `42 passed`.
 
 ### Evidence highlights
 

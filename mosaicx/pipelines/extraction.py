@@ -797,6 +797,75 @@ def _validate_field_semantics(field_name: str, value: Any) -> dict[str, Any]:
     }
 
 
+def _annotation_allows_none(annotation: Any) -> bool:
+    origin = get_origin(annotation)
+    if origin in (Union, types.UnionType):
+        return any(opt is type(None) for opt in get_args(annotation))
+    return False
+
+
+def _apply_deterministic_semantic_validation(
+    *,
+    model_instance: BaseModel,
+    schema_class: type[BaseModel],
+) -> tuple[BaseModel, dict[str, Any]]:
+    """Normalize model payload with deterministic semantic validators."""
+    payload = model_instance.model_dump()
+    updated = dict(payload)
+    issues: list[dict[str, Any]] = []
+    changed_fields: list[str] = []
+    invalid_fields: list[str] = []
+
+    for field_name, field_info in schema_class.model_fields.items():
+        if field_name not in updated:
+            continue
+        current = updated.get(field_name)
+        verdict = _validate_field_semantics(field_name, current)
+        normalized = verdict.get("normalized_value", current)
+        valid = bool(verdict.get("valid", True))
+        if valid:
+            if normalized != current:
+                changed_fields.append(field_name)
+            updated[field_name] = normalized
+            continue
+
+        invalid_fields.append(field_name)
+        allows_none = _annotation_allows_none(field_info.annotation)
+        downgraded = None if allows_none else current
+        updated[field_name] = downgraded
+        issues.append(
+            {
+                "field": field_name,
+                "kind": verdict.get("kind"),
+                "reason": verdict.get("reason"),
+                "critical": bool(verdict.get("critical", False)),
+                "original_value": current,
+                "normalized_value": downgraded,
+                "severity": "error" if bool(verdict.get("critical", False)) else "warning",
+            }
+        )
+
+    try:
+        coerced = _coerce_payload_to_schema(updated, schema_class)
+        normalized_model = schema_class.model_validate(coerced)
+    except Exception as exc:
+        return model_instance, {
+            "applied": False,
+            "reason": f"validation_model_rebuild_failed:{type(exc).__name__}",
+            "issues": issues,
+            "changed_fields": changed_fields,
+            "invalid_fields": invalid_fields,
+        }
+
+    return normalized_model, {
+        "applied": True,
+        "reason": "semantic_validation_applied",
+        "issues": issues,
+        "changed_fields": changed_fields,
+        "invalid_fields": invalid_fields,
+    }
+
+
 def apply_extraction_contract(
     output_data: dict[str, Any],
     *,
@@ -1215,10 +1284,33 @@ def _plan_extraction_document_text(
 ) -> tuple[str, dict[str, Any]]:
     """Plan extraction context using section routes, preferring DSPy ReAct."""
     sections = _split_document_sections(document_text)
-    routes, planner_meta = _plan_section_routes_with_react(
-        schema_name=schema_name,
-        sections=sections,
-    )
+
+    from mosaicx.config import get_config
+    min_chars = get_config().planner_min_chars
+    if len(document_text) < min_chars:
+        # Deterministic routing for short documents — skip ReAct LLM calls
+        routes = [
+            {
+                "section": sec["title"],
+                "name": sec["name"],
+                "complexity": _section_complexity_hint(sec.get("text", "")),
+                "strategy": _default_strategy_for_hint(
+                    _section_complexity_hint(sec.get("text", ""))
+                ),
+                "reason": "short_doc_bypass",
+            }
+            for sec in sections
+        ]
+        planner_meta = {
+            "planner": "short_doc_bypass",
+            "react_used": False,
+            "fallback_reason": None,
+        }
+    else:
+        routes, planner_meta = _plan_section_routes_with_react(
+            schema_name=schema_name,
+            sections=sections,
+        )
     planned_text, plan_stats = _compose_routed_document_text(
         original_text=document_text,
         sections=sections,
@@ -1273,8 +1365,31 @@ def _recover_schema_instance_with_outlines(
             f"Prior extraction error hint: {error_hint[:1200]}\n\n"
             f"Document text:\n{document_text[:30000]}"
         )
-        raw = generator(prompt, temperature=0.0, max_tokens=2200)
-        parsed = parse_json_like(raw if isinstance(raw, str) else json.dumps(raw, ensure_ascii=False))
+        import concurrent.futures
+
+        timeout = cfg.outlines_timeout
+        pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        try:
+            future = pool.submit(generator, prompt, temperature=0.0, max_tokens=2200)
+            raw = future.result(timeout=timeout)
+        finally:
+            pool.shutdown(wait=False, cancel_futures=True)
+        # Report estimated token usage — Outlines bypasses DSPy's tracker.
+        raw_str = raw if isinstance(raw, str) else json.dumps(raw, ensure_ascii=False)
+        try:
+            from mosaicx.metrics import get_tracker
+
+            prompt_tokens = max(1, len(prompt) // 4)
+            completion_tokens = max(1, len(raw_str) // 4)
+            get_tracker().add_usage("outlines", {
+                "prompt_tokens": prompt_tokens,
+                "completion_tokens": completion_tokens,
+                "total_tokens": prompt_tokens + completion_tokens,
+            })
+        except Exception:
+            pass
+
+        parsed = parse_json_like(raw_str)
         if not isinstance(parsed, dict):
             return None
         coerced = _coerce_payload_to_schema(parsed, schema_class)
@@ -1624,6 +1739,13 @@ def _repair_failed_critical_fields_with_refine(
     }
     if not failed_fields:
         diag["reason"] = "no_failed_fields"
+        return model_instance, diag
+
+    # Respect use_refine config (defaults to False) — matches radiology.py / pathology.py
+    from mosaicx.config import get_config
+    cfg = get_config()
+    if not cfg.use_refine:
+        diag["reason"] = "use_refine_disabled"
         return model_instance, diag
 
     try:
@@ -2172,6 +2294,10 @@ def _build_dspy_classes():
                     schema_class=schema,
                     source_text=document_text,
                 )
+                model_instance, semantic_validation_diag = _apply_deterministic_semantic_validation(
+                    model_instance=model_instance,
+                    schema_class=schema,
+                )
                 planner_diag["planned_text_used"] = planned_text != document_text
                 planner_diag["structured_chain"] = chain_diag.get("attempts", [])
                 planner_diag["selected_structured_path"] = chain_diag.get("selected_path")
@@ -2181,6 +2307,7 @@ def _build_dspy_classes():
                 planner_diag["bestofn"] = chain_diag.get("bestofn", {})
                 planner_diag["adjudication"] = chain_diag.get("adjudication", {})
                 planner_diag["repair"] = repair_diag
+                planner_diag["deterministic_validation"] = semantic_validation_diag
                 self._last_metrics = metrics
                 self._last_planner = planner_diag
                 return dspy.Prediction(extracted=model_instance, planner=planner_diag)
@@ -2273,6 +2400,10 @@ def _build_dspy_classes():
                 schema_class=model,
                 source_text=document_text,
             )
+            model_instance, semantic_validation_diag = _apply_deterministic_semantic_validation(
+                model_instance=model_instance,
+                schema_class=model,
+            )
             planner_diag["planned_text_used"] = planned_text != document_text
             planner_diag["structured_chain"] = chain_diag.get("attempts", [])
             planner_diag["selected_structured_path"] = chain_diag.get("selected_path")
@@ -2282,6 +2413,7 @@ def _build_dspy_classes():
             planner_diag["bestofn"] = chain_diag.get("bestofn", {})
             planner_diag["adjudication"] = chain_diag.get("adjudication", {})
             planner_diag["repair"] = repair_diag
+            planner_diag["deterministic_validation"] = semantic_validation_diag
 
             self._last_metrics = metrics
             self._last_planner = planner_diag

@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+import logging
+import os
 import re
 from typing import Any
 
 from .models import FieldVerdict, Issue, VerificationReport
+
+logger = logging.getLogger(__name__)
 
 
 def verify(
@@ -144,11 +148,80 @@ def _enhance_with_spot_check(
         )
 
 
+def _should_use_rlm_audit(
+    extraction: dict[str, Any],
+    source_text: str,
+    base_report: VerificationReport,
+) -> tuple[bool, str]:
+    """Decide whether full RLM audit is worth the cost vs spot_check.
+
+    RLM audit uses ``dspy.RLM`` with up to 25 iterations and 7 tools.
+    Each iteration makes an LLM call, so with a local model (~10-30s/call)
+    the audit can take 4-12+ minutes.  Spot-check does the same job in a
+    single LLM call for small/simple extractions.
+
+    Returns ``(use_rlm, reason)`` where *reason* is a short diagnostic tag.
+    """
+    from mosaicx.config import get_config
+
+    # User override — always run RLM when explicitly requested
+    if os.environ.get("MOSAICX_FORCE_RLM_AUDIT", "").lower() in ("1", "true", "yes"):
+        return True, "forced_by_env"
+
+    cfg = get_config()
+
+    # --- Local model detection ---
+    # RLM's 25 iterative calls are impractical over localhost inference.
+    api_base = (cfg.api_base or "").lower()
+    api_base_norm = (
+        api_base
+        .replace("://localhost", "://127.0.0.1")
+        .replace("://[::1]", "://127.0.0.1")
+    )
+    is_local = "://127.0.0.1" in api_base_norm or "://0.0.0.0" in api_base_norm
+
+    # Count verifiable scalar fields
+    from .deterministic import _collect_scalars
+
+    n_fields = len(_collect_scalars(extraction, prefix=""))
+    doc_len = len(source_text or "")
+
+    # Short doc + few fields → spot_check covers them in one call
+    if doc_len < 4000 and n_fields < 15:
+        return False, f"short_doc({doc_len}chars)_few_fields({n_fields})"
+
+    # Local model → too slow for iterative RLM
+    if is_local:
+        return False, f"local_model"
+
+    # High deterministic confidence with no critical issues → marginal RLM value
+    has_critical = any(i.severity == "critical" for i in base_report.issues)
+    if base_report.confidence >= 0.9 and not has_critical:
+        return False, f"high_det_confidence({base_report.confidence:.2f})"
+
+    return True, "full_audit"
+
+
 def _enhance_with_audit(
     base_report: VerificationReport,
     extraction: dict[str, Any],
     source_text: str,
 ) -> VerificationReport:
+    use_rlm, reason = _should_use_rlm_audit(extraction, source_text, base_report)
+
+    if not use_rlm:
+        logger.info("Smart router: skipping RLM audit → spot_check (%s)", reason)
+        result = _enhance_with_spot_check(base_report, extraction, source_text)
+        result.issues.append(
+            Issue(
+                type="audit_downgraded",
+                field="verify.router",
+                detail=f"RLM audit downgraded to spot_check: {reason}",
+                severity="info",
+            )
+        )
+        return result
+
     from .audit import run_audit
 
     try:
@@ -190,7 +263,52 @@ def _verify_claim_with_spot_check(claim: str, source_text: str) -> VerificationR
         return report
 
 
+def _should_use_rlm_claim_audit(claim: str, source_text: str) -> tuple[bool, str]:
+    """Decide whether RLM audit is worth it for a single claim."""
+    from mosaicx.config import get_config
+
+    if os.environ.get("MOSAICX_FORCE_RLM_AUDIT", "").lower() in ("1", "true", "yes"):
+        return True, "forced_by_env"
+
+    cfg = get_config()
+    api_base = (cfg.api_base or "").lower()
+    api_base_norm = (
+        api_base
+        .replace("://localhost", "://127.0.0.1")
+        .replace("://[::1]", "://127.0.0.1")
+    )
+    is_local = "://127.0.0.1" in api_base_norm or "://0.0.0.0" in api_base_norm
+
+    doc_len = len(source_text or "")
+    claim_len = len(claim or "")
+
+    # Short claim + short doc → spot_check is sufficient
+    if doc_len < 4000 and claim_len < 500:
+        return False, f"short_claim({claim_len}chars)_short_doc({doc_len}chars)"
+
+    # Local model → too slow
+    if is_local:
+        return False, "local_model"
+
+    return True, "full_audit"
+
+
 def _verify_claim_with_audit(claim: str, source_text: str) -> VerificationReport:
+    use_rlm, reason = _should_use_rlm_claim_audit(claim, source_text)
+
+    if not use_rlm:
+        logger.info("Smart router: skipping RLM claim audit → spot_check (%s)", reason)
+        report = _verify_claim_with_spot_check(claim, source_text)
+        report.issues.append(
+            Issue(
+                type="audit_downgraded",
+                field="verify.router",
+                detail=f"RLM claim audit downgraded to spot_check: {reason}",
+                severity="info",
+            )
+        )
+        return report
+
     from .audit import run_claim_audit
 
     try:
