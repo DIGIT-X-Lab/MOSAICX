@@ -66,6 +66,17 @@ Other plan files are design/history logs and must link here for status.
     - `template create --describe ...` -> valid `/tmp/robust_cspine_v4.yaml`
     - `template create --from-document ...` -> valid `/tmp/robust_cspine_doc_v4.yaml`
     - extract with document-derived template succeeded and produced structured JSON.
+  - Extraction-safety hardening follow-up (`2026-02-25 07:34`):
+    - `mosaicx/pipelines/extraction.py` now normalizes null-like strings for optional/required collections (for example, `"None"` -> `null` or `[]` depending on schema annotation).
+    - Added Outlines constrained recovery when both typed DSPy extraction and JSON fallback fail in schema mode.
+    - Regression coverage:
+      - `tests/test_extraction_schema_coercion.py`
+      - `tests/test_extraction_pipeline.py`
+      - `tests/test_cli_extract.py`
+    - Validation:
+      - `PYTHONPATH=. .venv/bin/pytest -q tests/test_extraction_schema_coercion.py tests/test_extraction_pipeline.py tests/test_cli_extract.py` -> `22 passed`
+    - Live local `vllm-mlx` repro fix:
+      - previously failing `mosaicx extract --template /tmp/robust_cspine_v4.yaml ...` now succeeds and saves `/tmp/robust_cspine_v4_extract_after_fix.json`.
 
 - Verify audit recovery gating hardened (`2026-02-24`, `BUG-VER-001`):
   - `mosaicx/verify/audit.py` now attempts Outlines recovery only for structured serialization/JSON parse failures.

@@ -16,11 +16,14 @@ Convenience functions:
     - extract_with_mode(): Run a registered extraction mode pipeline.
 """
 import json
+import logging
 import types
 from pathlib import Path
 from typing import Any, Literal, Union, get_args, get_origin
 
 from pydantic import BaseModel
+
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -148,6 +151,21 @@ def _coerce_literal_value(value: Any, annotation: Any) -> Any:
     return unwrapped
 
 
+def _is_nullish_string(value: Any) -> bool:
+    if not isinstance(value, str):
+        return False
+    probe = value.strip().lower()
+    return probe in {
+        "",
+        "none",
+        "null",
+        "nil",
+        "n/a",
+        "na",
+        "not available",
+    }
+
+
 def _coerce_value_for_annotation(value: Any, annotation: Any) -> Any:
     """Recursively coerce a value to better fit the target annotation."""
     if annotation in (Any, object) or annotation is None:
@@ -158,6 +176,8 @@ def _coerce_value_for_annotation(value: Any, annotation: Any) -> Any:
     origin = get_origin(annotation)
 
     if origin in (Union, types.UnionType):
+        if _is_nullish_string(value) and any(a is type(None) for a in get_args(annotation)):
+            return None
         options = [a for a in get_args(annotation) if a is not type(None)]
         for option in options:
             try:
@@ -200,7 +220,10 @@ def _coerce_value_for_annotation(value: Any, annotation: Any) -> Any:
 
     if origin in (list, tuple, set):
         item_type = get_args(annotation)[0] if get_args(annotation) else Any
-        seq = value if isinstance(value, (list, tuple, set)) else [value]
+        if _is_nullish_string(value):
+            seq = []
+        else:
+            seq = value if isinstance(value, (list, tuple, set)) else [value]
         coerced = [_coerce_value_for_annotation(item, item_type) for item in seq]
         if origin is tuple:
             return tuple(coerced)
@@ -210,6 +233,8 @@ def _coerce_value_for_annotation(value: Any, annotation: Any) -> Any:
 
     if origin is dict:
         key_type, val_type = get_args(annotation) if get_args(annotation) else (Any, Any)
+        if _is_nullish_string(value):
+            return {}
         if not isinstance(value, dict):
             return value
         return {
@@ -223,7 +248,7 @@ def _coerce_value_for_annotation(value: Any, annotation: Any) -> Any:
                 probe = value.strip().lower()
                 if probe in {"true", "yes", "y", "1", "positive"}:
                     return True
-                if probe in {"false", "no", "n", "0", "negative"}:
+                if probe in {"false", "no", "n", "0", "negative"} or _is_nullish_string(value):
                     return False
             return bool(value)
         if annotation in (int, float):
@@ -278,6 +303,67 @@ def _recover_schema_instance_from_raw(
 
     coerced = _coerce_payload_to_schema(parsed, schema_class)
     return schema_class.model_validate(coerced)
+
+
+def _normalize_local_api_base(base_url: str) -> str:
+    return (
+        str(base_url or "")
+        .replace("://localhost", "://127.0.0.1")
+        .replace("://[::1]", "://127.0.0.1")
+    )
+
+
+def _normalize_model_name_for_openai_compatible(model_name: str) -> str:
+    model_name = str(model_name or "").strip()
+    if "/" in model_name:
+        provider, rest = model_name.split("/", 1)
+        if provider.strip().lower() in {"openai", "ollama"} and rest.strip():
+            return rest.strip()
+    return model_name
+
+
+def _recover_schema_instance_with_outlines(
+    *,
+    document_text: str,
+    schema_class: type[BaseModel],
+    error_hint: str = "",
+) -> BaseModel | None:
+    """Recover a schema-mode extraction with Outlines constrained generation."""
+    try:
+        import openai
+        import outlines
+
+        from mosaicx.config import get_config
+        from mosaicx.verify.parse_utils import parse_json_like
+
+        cfg = get_config()
+        base_url = _normalize_local_api_base(str(cfg.api_base or "http://127.0.0.1:8000/v1"))
+        model_name = _normalize_model_name_for_openai_compatible(str(cfg.lm or ""))
+        if not model_name:
+            model_name = "mlx-community/gpt-oss-120b-4bit"
+
+        client = openai.OpenAI(base_url=base_url, api_key=(cfg.api_key or "ollama"))
+        model = outlines.from_openai(client, model_name=model_name)
+        generator = outlines.Generator(model, outlines.json_schema(schema_class))
+        prompt = (
+            "Extract structured medical data from the document.\n"
+            "Return only a JSON object matching the target schema.\n"
+            "Rules:\n"
+            "- Use null for unknown optional fields.\n"
+            "- For optional lists, use [] or null, never the string \"None\".\n"
+            "- Keep values grounded in document text.\n"
+            f"Prior extraction error hint: {error_hint[:1200]}\n\n"
+            f"Document text:\n{document_text[:30000]}"
+        )
+        raw = generator(prompt, temperature=0.0, max_tokens=2200)
+        parsed = parse_json_like(raw if isinstance(raw, str) else json.dumps(raw, ensure_ascii=False))
+        if not isinstance(parsed, dict):
+            return None
+        coerced = _coerce_payload_to_schema(parsed, schema_class)
+        return schema_class.model_validate(coerced)
+    except Exception as exc:
+        logger.warning("Outlines extraction recovery failed: %s", exc)
+        return None
 
 
 def extract_with_mode(document_text: str, mode_name: str) -> tuple[dict[str, Any], "PipelineMetrics | None"]:
@@ -416,12 +502,22 @@ def _build_dspy_classes():
                             model_instance = schema.model_validate(coerced)
                         else:
                             model_instance = schema.model_validate(extracted)
-                    except Exception:
-                        fallback = self.extract_json_fallback(document_text=document_text)
-                        model_instance = _recover_schema_instance_from_raw(
-                            getattr(fallback, "extracted_json", ""),
-                            schema,
-                        )
+                    except Exception as primary_exc:
+                        try:
+                            fallback = self.extract_json_fallback(document_text=document_text)
+                            model_instance = _recover_schema_instance_from_raw(
+                                getattr(fallback, "extracted_json", ""),
+                                schema,
+                            )
+                        except Exception as fallback_exc:
+                            recovered = _recover_schema_instance_with_outlines(
+                                document_text=document_text,
+                                schema_class=schema,
+                                error_hint=f"primary={primary_exc}; fallback={fallback_exc}",
+                            )
+                            if recovered is None:
+                                raise fallback_exc from primary_exc
+                            model_instance = recovered
                 self._last_metrics = metrics
                 return dspy.Prediction(extracted=model_instance)
 

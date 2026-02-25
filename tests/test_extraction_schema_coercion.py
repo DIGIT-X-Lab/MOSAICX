@@ -30,6 +30,15 @@ class MimicCXRMixed(BaseModel):
     pneumothorax: LabelAssessment | None = None
 
 
+class OptionalCollectionsModel(BaseModel):
+    tags: list[str] | None = None
+    notes: list[LabelAssessment] | None = None
+
+
+class RequiredCollectionsModel(BaseModel):
+    tags: list[str]
+
+
 def test_coerce_payload_wraps_scalar_into_nested_model():
     payload = {
         "pleural_effusion": "extensive right pleural effusion",
@@ -105,3 +114,25 @@ def test_recover_schema_instance_raises_for_non_json_text():
             "I cannot comply with JSON output for this task.",
             MimicCXRNested,
         )
+
+
+def test_coerce_payload_treats_nullish_strings_as_none_for_optional_lists():
+    payload = {
+        "tags": "None",
+        "notes": "null",
+    }
+    coerced = _coerce_payload_to_schema(payload, OptionalCollectionsModel)
+    parsed = OptionalCollectionsModel.model_validate(coerced)
+
+    assert parsed.tags is None
+    assert parsed.notes is None
+
+
+def test_coerce_payload_treats_nullish_strings_as_empty_for_required_lists():
+    payload = {
+        "tags": "None",
+    }
+    coerced = _coerce_payload_to_schema(payload, RequiredCollectionsModel)
+    parsed = RequiredCollectionsModel.model_validate(coerced)
+
+    assert parsed.tags == []

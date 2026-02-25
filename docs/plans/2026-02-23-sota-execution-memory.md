@@ -694,3 +694,24 @@ When completing `DSPY-*` items, append:
 - Remaining blockers:
   - Add extraction-side coercion/recovery for optional collection fields in generated templates.
   - Add adversarial integration tests specifically for generated-template extraction robustness.
+
+### Update 2026-02-25 07:34
+- Tasks completed:
+  - Added extraction-safety hardening for generated templates in schema-mode extraction.
+  - Added Outlines constrained recovery when DSPy typed extraction + JSON fallback both fail.
+  - Added null-safe coercion for optional/required collection fields to prevent `"None"` string crashes.
+- Files changed:
+  - `mosaicx/pipelines/extraction.py`
+  - `tests/test_extraction_schema_coercion.py`
+- Tests run:
+  - `PYTHONPATH=. .venv/bin/pytest -q tests/test_extraction_schema_coercion.py tests/test_extraction_pipeline.py`
+  - `PYTHONPATH=. .venv/bin/pytest -q tests/test_extraction_schema_coercion.py tests/test_extraction_pipeline.py tests/test_cli_extract.py`
+- Results:
+  - All extraction-targeted tests pass (`22 passed` in full extraction pack).
+  - Live local-LLM repro of previous failure now succeeds:
+    - `mosaicx extract --template /tmp/robust_cspine_v4.yaml ...` no longer crashes; output saved to `/tmp/robust_cspine_v4_extract_after_fix.json`.
+  - `other_findings` fields in recovered output are normalized to `null`/empty list semantics (not string `"None"`).
+- Commit:
+  - pending
+- Remaining blockers:
+  - Add explicit quality gate that scores generated templates using extraction dry-runs across an adversarial schema benchmark set.
