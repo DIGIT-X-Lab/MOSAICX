@@ -1104,6 +1104,10 @@ def _extract_single_text(
                 "issues": len(report.get("issues", [])),
             }
 
+        from .pipelines.extraction import apply_extraction_contract
+
+        apply_extraction_contract(output, source_text=text)
+
         _attach_envelope(
             output,
             pipeline=pipeline,

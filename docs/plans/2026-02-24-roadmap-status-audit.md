@@ -6,7 +6,7 @@ Status: Active
 Owner: Core platform
 Authoritative: Yes (single source of truth for rollout status)
 
-## 0) Canonical Status (Updated 2026-02-25 12:55)
+## 0) Canonical Status (Updated 2026-02-25 19:40)
 
 This file is the canonical status board for DSPy roadmap execution.
 Other plan files are design/history logs and must link here for status.
@@ -43,6 +43,10 @@ Other plan files are design/history logs and must link here for status.
   - none
 - Open DSPy capability rollout items:
   - none
+- Open extract atomic rollout items:
+  - `#60 [EXTX-02]`, `#61 [EXTX-03]`, `#62 [EXTX-04]`, `#63 [EXTX-05]`, `#64 [EXTX-06]`, `#65 [EXTX-07]`, `#66 [EXTX-08]`, `#67 [EXTX-09]`, `#68 [EXTX-10]`
+- Closed extract atomic rollout items:
+  - `#59 [EXTX-01]` Canonical extract contract + fail-closed semantics across CLI/SDK/MCP
 
 ### Canonical control note
 
@@ -52,6 +56,22 @@ Other plan files are design/history logs and must link here for status.
 - If status here conflicts with another file, this file wins.
 
 ### Evidence highlights
+
+- Extract contract propagation baseline completed (`2026-02-25`, `EXTX-01`, issue `#59`):
+  - Added canonical extraction contract helper in `mosaicx/pipelines/extraction.py`:
+    - `apply_extraction_contract(...)` with per-field `value`, `evidence`, `grounded`, `confidence`, `status`.
+    - explicit fail-closed state for missing fields: `insufficient_evidence`.
+  - Wired contract propagation across all extraction interfaces:
+    - CLI: `mosaicx/cli.py`
+    - SDK: `mosaicx/sdk.py`
+    - MCP: `mosaicx/mcp_server.py` (`extract_document`)
+  - Added regression coverage:
+    - `tests/test_extract_contract.py`
+  - Validation:
+    - `PYTHONPATH=. .venv/bin/pytest -q tests/test_extract_contract.py tests/test_extraction_pipeline.py tests/test_sdk_envelope.py tests/test_mcp_server_dspy_config.py` -> `24 passed`
+    - `PYTHONPATH=. .venv/bin/pytest -q tests/test_mcp_query.py tests/test_mcp_verify.py tests/test_public_api.py -k "extract or verify_output or query_start or query_ask or query_close"` -> `27 passed, 37 deselected`
+  - Run artifact:
+    - `docs/runs/2026-02-25-extx-01-contract-propagation.md`
 
 - Schema robustness hardening (`2026-02-25`, `SCHEMA-001`) implemented and validated:
   - `mosaicx/pipelines/schema_gen.py` now includes deterministic `normalize_schema_spec` + `validate_schema_spec`.

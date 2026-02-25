@@ -389,6 +389,126 @@ def _normalize_model_name_for_openai_compatible(model_name: str) -> str:
     return model_name
 
 
+def _is_missing_value(value: Any) -> bool:
+    if value is None:
+        return True
+    if isinstance(value, str):
+        return _is_nullish_string(value)
+    if isinstance(value, (list, tuple, set, dict)):
+        return len(value) == 0
+    return False
+
+
+def _extract_grounding_snippet(*, source_text: str, value: Any) -> tuple[bool | None, str | None]:
+    """Return (grounded, snippet) for scalar values when directly found in source text."""
+    if value is None:
+        return None, None
+
+    if isinstance(value, bool):
+        return None, None
+
+    if isinstance(value, (int, float)):
+        needle = str(value)
+    elif isinstance(value, str):
+        needle = value.strip()
+        if not needle:
+            return None, None
+    else:
+        return None, None
+
+    haystack = str(source_text or "")
+    if not haystack:
+        return None, None
+
+    idx = haystack.lower().find(needle.lower())
+    if idx < 0:
+        return False, None
+
+    start = max(0, idx - 80)
+    end = min(len(haystack), idx + len(needle) + 80)
+    return True, " ".join(haystack[start:end].split())
+
+
+def apply_extraction_contract(
+    output_data: dict[str, Any],
+    *,
+    source_text: str,
+    critical_fields: list[str] | None = None,
+) -> dict[str, Any]:
+    """Attach canonical extraction contract to *output_data* in ``_extraction_contract``.
+
+    Contract fields (per critical field):
+      - ``value``
+      - ``evidence``
+      - ``grounded``
+      - ``confidence``
+      - ``status`` in {``supported``, ``needs_review``, ``insufficient_evidence``}
+    """
+    if not isinstance(output_data, dict):
+        return output_data
+
+    target: Any
+    if isinstance(output_data.get("extracted"), dict):
+        target = output_data["extracted"]
+    else:
+        target = output_data
+
+    if not isinstance(target, dict):
+        return output_data
+
+    inferred = [
+        key for key in target.keys()
+        if isinstance(key, str) and not key.startswith("_")
+    ]
+    fields = critical_fields if critical_fields is not None else inferred
+
+    field_results: list[dict[str, Any]] = []
+    counts = {
+        "supported": 0,
+        "needs_review": 0,
+        "insufficient_evidence": 0,
+    }
+
+    for field in fields:
+        value = target.get(field)
+        if _is_missing_value(value):
+            status = "insufficient_evidence"
+            grounded: bool | None = False
+            confidence = 0.0
+            evidence = None
+        else:
+            grounded, evidence = _extract_grounding_snippet(
+                source_text=source_text,
+                value=value,
+            )
+            if grounded is True:
+                status = "supported"
+                confidence = 0.9
+            else:
+                status = "needs_review"
+                confidence = 0.5
+
+        counts[status] += 1
+        field_results.append(
+            {
+                "field": field,
+                "value": value,
+                "evidence": evidence,
+                "grounded": grounded,
+                "confidence": confidence,
+                "status": status,
+            }
+        )
+
+    output_data["_extraction_contract"] = {
+        "version": "1.0",
+        "critical_fields": fields,
+        "field_results": field_results,
+        "summary": counts,
+    }
+    return output_data
+
+
 def _recover_schema_instance_with_outlines(
     *,
     document_text: str,

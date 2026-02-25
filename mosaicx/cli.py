@@ -837,6 +837,10 @@ def extract(
             )
         output_data["_verification"] = verification
 
+    from .pipelines.extraction import apply_extraction_contract
+
+    apply_extraction_contract(output_data, source_text=doc.text)
+
     console.print(theme.ok("Extracted \u2014 this is the way"))
 
     # Save to file if --output specified

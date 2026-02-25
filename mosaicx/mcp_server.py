@@ -192,6 +192,17 @@ def extract_document(
                 })
 
         _ensure_dspy()
+        from .pipelines.extraction import apply_extraction_contract
+
+        def _finalize_extract_result(
+            payload: dict[str, Any],
+            *,
+            metrics: Any = None,
+        ) -> str:
+            if metrics is not None:
+                payload["_metrics"] = _metrics_to_dict(metrics)
+            apply_extraction_contract(payload, source_text=document_text)
+            return _json_result(payload)
 
         if template is not None:
             # Template-based extraction
@@ -224,9 +235,7 @@ def extract_document(
                     output_data, metrics = extract_with_mode(document_text, effective_mode)
                     result: dict[str, Any] = dict(output_data)
 
-                if metrics is not None:
-                    result["_metrics"] = _metrics_to_dict(metrics)
-                return _json_result(result)
+                return _finalize_extract_result(result, metrics=metrics)
 
             elif template_model is not None:
                 from .pipelines.extraction import DocumentExtractor
@@ -244,7 +253,10 @@ def extract_document(
                             )
                     else:
                         output["extracted"] = val
-                return _json_result(output)
+                return _finalize_extract_result(
+                    output,
+                    metrics=getattr(extractor, "_last_metrics", None),
+                )
             else:
                 return _json_result({
                     "error": f"Template {template!r} resolved but produced no extraction template."
@@ -274,9 +286,7 @@ def extract_document(
                 output_data, metrics = extract_with_mode(document_text, mode)
                 result: dict[str, Any] = dict(output_data)
 
-            if metrics is not None:
-                result["_metrics"] = _metrics_to_dict(metrics)
-            return _json_result(result)
+            return _finalize_extract_result(result, metrics=metrics)
 
         # Auto mode: LLM infers schema
         if score:
@@ -294,7 +304,10 @@ def extract_document(
             output["extracted"] = val.model_dump() if hasattr(val, "model_dump") else val
         if hasattr(prediction, "inferred_schema"):
             output["inferred_schema"] = prediction.inferred_schema.model_dump()
-        return _json_result(output)
+        return _finalize_extract_result(
+            output,
+            metrics=getattr(extractor, "_last_metrics", None),
+        )
 
     except Exception as exc:
         logger.exception("extract_document failed")

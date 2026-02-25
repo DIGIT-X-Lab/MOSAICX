@@ -155,7 +155,47 @@ MOSAICX is "production-grade" only when all are true:
 5. Phase E (optimizer + CI gates)  
 6. Phase F (release docs/report)
 
-## 8) Artifact Policy
+## 8) Extract Atomic Issue Board
+
+Execution is tracked by atomic GitHub issues:
+
+1. `#59 [EXTX-01]` Canonical extract contract + fail-closed semantics across CLI/SDK/MCP (`done`)
+2. `#60 [EXTX-02]` ReAct planner-first section routing for extraction (`in_progress`)
+3. `#61 [EXTX-03]` Outlines-first structured extraction with DSPy adapter fallback chain (`todo`)
+4. `#62 [EXTX-04]` Selective BestOfN for uncertain extraction sections (`todo`)
+5. `#63 [EXTX-05]` MultiChainComparison adjudication + Refine field-level repair (`todo`)
+6. `#64 [EXTX-06]` Deterministic validators for units/dates/ranges/null semantics (`todo`)
+7. `#65 [EXTX-07]` Extract optimizer datasets + MIPROv2/SIMBA/GEPA artifact runs (`todo`)
+8. `#66 [EXTX-08]` Adversarial extract integration matrix on local vllm-mlx (`todo`)
+9. `#67 [EXTX-09]` CI quality gates for extraction reliability metrics (`todo`)
+10. `#68 [EXTX-10]` Manual gold-vs-model extraction comparison protocol and artifacts (`todo`)
+
+Status update policy:
+
+1. Move exactly one issue to `in_progress` at a time.
+2. Issue is only `done` after tests pass and run artifact is logged under `docs/runs/`.
+3. Roadmap status here must match GitHub issue state.
+
+## 9) Product Feature Backlog (Post-Hardening)
+
+1. `verify --batch` for RAG truth testing with confusion-matrix output.
+2. Evidence coordinates in SDK/CLI output (`source`, `page`, `chunk`, `char_start`, `char_end`).
+3. Query planner explain mode (plan trace, tool choice reason, column resolution reason).
+4. Cross-document contradiction timeline (same entity, conflicting facts over time).
+5. Template/schema playground with pre-run validation and auto-repair suggestions.
+6. Domain benchmark packs (radiology/pathology/labs/tabular) with one-command eval.
+7. Confidence calibration report generator (reliability curve, thresholds by mode).
+8. Drift monitor across model/template versions (regression diff report).
+9. Human correction capture loop (review edits -> eval corpus).
+10. Synthetic edge-case generator per modality and query family.
+
+Feature acceptance baseline:
+
+1. Every feature ships with deterministic tests + at least one local `vllm-mlx` integration run artifact.
+2. New outputs must preserve stable machine-readable contracts.
+3. No feature can bypass grounding/evidence requirements.
+
+## 10) Artifact Policy
 
 Every major run must record:
 
@@ -166,4 +206,3 @@ Every major run must record:
 - output path under `docs/runs/`
 
 If a run is not logged, it does not count as roadmap progress.
-
