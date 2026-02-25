@@ -6,7 +6,7 @@ Status: Active
 Owner: Core platform
 Authoritative: Yes (single source of truth for rollout status)
 
-## 0) Canonical Status (Updated 2026-02-25 12:35)
+## 0) Canonical Status (Updated 2026-02-25 13:10)
 
 This file is the canonical status board for DSPy roadmap execution.
 Other plan files are design/history logs and must link here for status.
@@ -22,6 +22,7 @@ Other plan files are design/history logs and must link here for status.
 - Closed stabilization items:
   - `#56 [SCHEMA-001] Robust schema generation with normalize/validate/repair pipeline`
   - `#57 [SCHEMA-002] Add semantic granularity scoring for generated templates`
+  - `#58 [EXT-003] Investigate V2 vs V3 cervical template extraction parity and enum rendering drift`
 - Closed DSPy capability items:
   - `#36 [DSPY-01] ReAct planner as primary query control-plane`
   - `#37 [DSPY-02] RLM executor robustness for long-document query + verify`
@@ -198,6 +199,25 @@ Other plan files are design/history logs and must link here for status.
     - `scripts/ensure_vllm_mlx_server.sh`
     - `scripts/generate_hard_test_fixtures.py`
     - `scripts/clear_dspy_cache.sh`
+
+- Extract/template parity hardening (`2026-02-25`, `EXT-003`):
+  - Ensured optional enum fields preserve explicit absence semantics across schema generation, template compilation, and extraction coercion:
+    - `mosaicx/pipelines/schema_gen.py` now appends `none`/`None` to optional enums when no absence token is declared.
+    - `mosaicx/schemas/template_compiler.py` now normalizes parsed templates to include absence enum values for optional enum fields.
+    - `mosaicx/pipelines/extraction.py` now maps null/nullish values to declared absence enum members for Optional[Enum] annotations.
+  - Hardened schema-mode extraction post-processing:
+    - coercion now runs even when DSPy returns a fully-typed model instance, so normalization/cleanup is consistently applied.
+  - Added spinal level canonicalization in extraction coercion (`C2-3` / unicode hyphen variants -> `C2-C3`).
+  - Regression coverage:
+    - `tests/test_schema_gen.py`
+    - `tests/test_template_compiler.py`
+    - `tests/test_extraction_schema_coercion.py`
+    - `tests/test_extraction_pipeline.py`
+    - `tests/test_cli_extract.py`
+  - Validation:
+    - `PYTHONPATH=. .venv/bin/pytest -q tests/test_extraction_pipeline.py tests/test_extraction_schema_coercion.py tests/test_template_compiler.py tests/test_schema_gen.py tests/test_cli_extract.py` -> `93 passed`
+  - Live local `vllm-mlx` check on cervical sample:
+    - `MRICervicalSpineV3` now renders level findings with canonical levels and human-readable enum values (for example, `C2-C3`, `Disc`, `None`) instead of internal labels/null-heavy output.
 
 - Primary-path guard for verify route semantics (`BUG-QA-001`):
   - Added SDK regression asserting primary `thorough -> audit` route remains explicit and non-fallback:

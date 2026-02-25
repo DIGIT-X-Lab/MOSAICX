@@ -28,6 +28,44 @@ class TestDocumentExtractorModule:
         assert hasattr(extractor, "extract_custom")
         assert not hasattr(extractor, "infer_schema")
 
+    def test_schema_mode_coerces_model_instance_output(self, monkeypatch):
+        from enum import Enum
+
+        from pydantic import BaseModel
+
+        from mosaicx.pipelines.extraction import DocumentExtractor
+
+        class OptionalSeverity(str, Enum):
+            Mild = "Mild"
+            None_ = "None"
+
+        class Finding(BaseModel):
+            level: str | None = None
+            severity: OptionalSeverity | None = None
+
+        class CustomReport(BaseModel):
+            finding: Finding | None = None
+
+        extractor = DocumentExtractor(output_schema=CustomReport)
+
+        extracted_instance = CustomReport(
+            finding=Finding(level="C2‑3", severity=None)
+        )
+
+        class _DummyPrediction:
+            extracted = extracted_instance
+
+        monkeypatch.setattr(
+            extractor,
+            "extract_custom",
+            lambda document_text: _DummyPrediction(),
+        )
+
+        result = extractor.forward("synthetic report text")
+        assert result.extracted.finding is not None
+        assert result.extracted.finding.level == "C2-C3"
+        assert result.extracted.finding.severity == OptionalSeverity.None_
+
 
 class TestConvenienceFunctions:
     def test_extract_with_schema_function_exists(self):

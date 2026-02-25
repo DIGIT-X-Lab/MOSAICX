@@ -17,7 +17,9 @@ Convenience functions:
 """
 import json
 import logging
+import re
 import types
+from enum import Enum
 from pathlib import Path
 from typing import Any, Literal, Union, get_args, get_origin
 
@@ -166,17 +168,82 @@ def _is_nullish_string(value: Any) -> bool:
     }
 
 
+_ABSENCE_ENUM_TOKENS = {
+    "none",
+    "not present",
+    "absent",
+    "not applicable",
+    "n/a",
+    "na",
+    "missing",
+    "unknown",
+}
+
+
+def _normalize_spinal_level_text(value: str) -> str:
+    """Normalize compressed spinal level ranges (for example, C2-3 -> C2-C3)."""
+
+    text = (
+        str(value)
+        .replace("‐", "-")
+        .replace("‑", "-")
+        .replace("‒", "-")
+        .replace("–", "-")
+        .replace("—", "-")
+        .replace("−", "-")
+    )
+
+    def _expand_letter_range(match: re.Match[str]) -> str:
+        letter = match.group(1).upper()
+        left = match.group(2)
+        right = match.group(3)
+        return f"{letter}{left}-{letter}{right}"
+
+    return re.sub(
+        r"\b([A-Za-z])\s*(\d+)\s*-\s*(\d+)\b",
+        _expand_letter_range,
+        text,
+    )
+
+
+def _absence_enum_value_for_annotation(annotation: Any) -> Any | None:
+    """Return explicit absence enum value for Optional[Enum], if declared."""
+    origin = get_origin(annotation)
+    if origin not in (Union, types.UnionType):
+        return None
+
+    options = list(get_args(annotation))
+    if not any(opt is type(None) for opt in options):
+        return None
+
+    for option in options:
+        if option is type(None):
+            continue
+        if isinstance(option, type) and issubclass(option, Enum):
+            for member in option:
+                key = " ".join(str(member.value).strip().lower().split())
+                if key in _ABSENCE_ENUM_TOKENS:
+                    return member.value
+    return None
+
+
 def _coerce_value_for_annotation(value: Any, annotation: Any) -> Any:
     """Recursively coerce a value to better fit the target annotation."""
     if annotation in (Any, object) or annotation is None:
         return value
     if value is None:
+        absence_enum = _absence_enum_value_for_annotation(annotation)
+        if absence_enum is not None:
+            return absence_enum
         return None
 
     origin = get_origin(annotation)
 
     if origin in (Union, types.UnionType):
         if _is_nullish_string(value) and any(a is type(None) for a in get_args(annotation)):
+            absence_enum = _absence_enum_value_for_annotation(annotation)
+            if absence_enum is not None:
+                return absence_enum
             return None
         options = [a for a in get_args(annotation) if a is not type(None)]
         for option in options:
@@ -262,7 +329,7 @@ def _coerce_value_for_annotation(value: Any, annotation: Any) -> Any:
         if annotation is str:
             if isinstance(value, (dict, list)):
                 return json.dumps(value, default=str, ensure_ascii=False)
-            return str(value)
+            return _normalize_spinal_level_text(str(value))
 
     return value
 
@@ -496,12 +563,19 @@ def _build_dspy_classes():
                         result = self.extract_custom(document_text=document_text)
                         extracted = getattr(result, "extracted", result)
                         if isinstance(extracted, schema):
-                            model_instance = extracted
+                            extracted_payload: Any = extracted.model_dump()
                         elif isinstance(extracted, dict):
-                            coerced = _coerce_payload_to_schema(extracted, schema)
+                            extracted_payload = extracted
+                        elif hasattr(extracted, "model_dump"):
+                            extracted_payload = extracted.model_dump()
+                        else:
+                            extracted_payload = extracted
+
+                        if isinstance(extracted_payload, dict):
+                            coerced = _coerce_payload_to_schema(extracted_payload, schema)
                             model_instance = schema.model_validate(coerced)
                         else:
-                            model_instance = schema.model_validate(extracted)
+                            model_instance = schema.model_validate(extracted_payload)
                     except Exception as primary_exc:
                         try:
                             fallback = self.extract_json_fallback(document_text=document_text)

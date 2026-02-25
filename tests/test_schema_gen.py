@@ -294,6 +294,37 @@ class TestSchemaNormalization:
         issues = validate_schema_spec(spec)
         assert any("no fields" in issue.lower() for issue in issues)
 
+    def test_normalize_schema_spec_adds_absence_value_to_optional_enums(self):
+        from mosaicx.pipelines.schema_gen import FieldSpec, SchemaSpec, normalize_schema_spec
+
+        spec = SchemaSpec(
+            class_name="CervicalSchema",
+            fields=[
+                FieldSpec(
+                    name="disc_bulge_type",
+                    type="enum",
+                    enum_values=["Disc", "Annular"],
+                    required=False,
+                ),
+                FieldSpec(
+                    name="spinal_canal_stenosis",
+                    type="enum",
+                    enum_values=["mild", "moderate", "severe"],
+                    required=False,
+                ),
+            ],
+        )
+
+        normalized = normalize_schema_spec(spec)
+        by_name = {f.name: f for f in normalized.fields}
+        assert by_name["disc_bulge_type"].enum_values == ["Disc", "Annular", "None"]
+        assert by_name["spinal_canal_stenosis"].enum_values == [
+            "mild",
+            "moderate",
+            "severe",
+            "none",
+        ]
+
     def test_validate_schema_spec_flags_non_canonical_types(self):
         from mosaicx.pipelines.schema_gen import FieldSpec, SchemaSpec, validate_schema_spec
 

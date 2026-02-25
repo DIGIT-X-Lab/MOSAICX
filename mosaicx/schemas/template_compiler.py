@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from enum import Enum
 from pathlib import Path
+import re
 from typing import Any, List, Optional, Type
 
 import yaml
@@ -92,7 +93,64 @@ def parse_template(yaml_content: str) -> TemplateMeta:
         Validated template metadata with all sections resolved.
     """
     data = yaml.safe_load(yaml_content)
-    return TemplateMeta(**data)
+    meta = TemplateMeta(**data)
+    _normalize_optional_enum_absence_values(meta)
+    return meta
+
+
+_ABSENCE_ENUM_TOKENS = {
+    "none",
+    "not present",
+    "absent",
+    "not applicable",
+    "n/a",
+    "na",
+    "missing",
+    "unknown",
+}
+
+
+def _has_absence_enum(values: list[str]) -> bool:
+    for value in values:
+        if " ".join(str(value or "").strip().lower().split()) in _ABSENCE_ENUM_TOKENS:
+            return True
+    return False
+
+
+def _absence_label_for(values: list[str]) -> str:
+    alpha_values = [v for v in values if re.search(r"[A-Za-z]", str(v))]
+    if alpha_values and all(str(v)[:1].isupper() for v in alpha_values):
+        return "None"
+    return "none"
+
+
+def _normalize_optional_enum_absence_values(meta: TemplateMeta) -> None:
+    """Ensure optional enum fields can encode explicit absence.
+
+    Legacy/user templates sometimes define optional enums without any neutral
+    value (for example only `Mild|Moderate|Severe`). In such cases extraction
+    tends to collapse "no finding" into null. Adding an explicit absence token
+    preserves medically meaningful negatives (for example `none`).
+    """
+
+    def _visit_field(field: FieldSpec | SectionSpec) -> None:
+        if field.type == "enum":
+            values = list(field.values or [])
+            if values and (not field.required) and (not _has_absence_enum(values)):
+                values.append(_absence_label_for(values))
+                field.values = values
+            return
+
+        if field.type == "object" and field.fields:
+            for child in field.fields:
+                _visit_field(child)
+            return
+
+        if field.type == "list" and field.item is not None:
+            _visit_field(field.item)
+
+    for section in meta.sections:
+        _visit_field(section)
 
 
 # ---------------------------------------------------------------------------

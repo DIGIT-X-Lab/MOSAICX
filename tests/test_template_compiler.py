@@ -84,3 +84,28 @@ class TestTemplateCompiler:
         assert meta.name == "ChestCTReport"
         assert meta.description == "Structured chest CT report"
         assert len(meta.sections) == 4
+
+    def test_parse_template_adds_absence_value_for_optional_enum(self):
+        from mosaicx.schemas.template_compiler import parse_template
+
+        yaml_text = """\
+name: CervicalLite
+sections:
+  - name: findings
+    type: object
+    fields:
+      - name: stenosis
+        type: enum
+        required: false
+        values: ["Mild", "Severe"]
+      - name: bulge
+        type: enum
+        required: false
+        values: ["disc", "annular"]
+"""
+        meta = parse_template(yaml_text)
+        findings = meta.sections[0]
+        assert findings.fields is not None
+        by_name = {f.name: f for f in findings.fields}
+        assert by_name["stenosis"].values == ["Mild", "Severe", "None"]
+        assert by_name["bulge"].values == ["disc", "annular", "none"]

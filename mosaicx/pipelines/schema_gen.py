@@ -305,6 +305,36 @@ def _normalize_enum_values(values: list[str] | None) -> list[str] | None:
     return out or None
 
 
+_ABSENCE_ENUM_TOKENS = {
+    "none",
+    "not present",
+    "absent",
+    "not applicable",
+    "n/a",
+    "na",
+    "missing",
+    "unknown",
+}
+
+
+def _enum_has_absence_value(values: list[str]) -> bool:
+    for value in values:
+        if " ".join(str(value or "").strip().lower().split()) in _ABSENCE_ENUM_TOKENS:
+            return True
+    return False
+
+
+def _suggest_absence_enum_value(values: list[str]) -> str:
+    """Pick a neutral enum label style that matches existing values."""
+    if not values:
+        return "none"
+
+    alpha_values = [v for v in values if re.search(r"[A-Za-z]", v)]
+    if alpha_values and all(v[:1].isupper() for v in alpha_values):
+        return "None"
+    return "none"
+
+
 def _normalize_field_spec(field: FieldSpec, *, index: int, used_names: set[str]) -> FieldSpec:
     base_name = _to_snake_case(field.name, default=f"field_{index}")
     name = _dedupe_name(base_name, used_names)
@@ -327,6 +357,10 @@ def _normalize_field_spec(field: FieldSpec, *, index: int, used_names: set[str])
 
     if normalized_type != "enum":
         enum_values = None
+    elif enum_values and not bool(field.required):
+        # Optional categorical fields should encode explicit absence when possible.
+        if not _enum_has_absence_value(enum_values):
+            enum_values = [*enum_values, _suggest_absence_enum_value(enum_values)]
     if normalized_type not in {"object", "list[object]"}:
         normalized_nested = None
 

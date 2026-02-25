@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from enum import Enum
 from typing import Literal
 
 import pytest
@@ -37,6 +38,29 @@ class OptionalCollectionsModel(BaseModel):
 
 class RequiredCollectionsModel(BaseModel):
     tags: list[str]
+
+
+class OptionalSeverityEnum(str, Enum):
+    Mild = "Mild"
+    Severe = "Severe"
+    None_ = "None"
+
+
+class OptionalSeverityModel(BaseModel):
+    severity: OptionalSeverityEnum | None = None
+
+
+class OptionalBinaryEnum(str, Enum):
+    Yes = "Yes"
+    No = "No"
+
+
+class OptionalBinaryModel(BaseModel):
+    flag: OptionalBinaryEnum | None = None
+
+
+class SpinalLevelModel(BaseModel):
+    level: str | None = None
 
 
 def test_coerce_payload_wraps_scalar_into_nested_model():
@@ -136,3 +160,43 @@ def test_coerce_payload_treats_nullish_strings_as_empty_for_required_lists():
     parsed = RequiredCollectionsModel.model_validate(coerced)
 
     assert parsed.tags == []
+
+
+def test_coerce_payload_maps_nullish_to_explicit_absence_enum_when_available():
+    payload = {
+        "severity": "null",
+    }
+    coerced = _coerce_payload_to_schema(payload, OptionalSeverityModel)
+    parsed = OptionalSeverityModel.model_validate(coerced)
+
+    assert parsed.severity == OptionalSeverityEnum.None_
+
+
+def test_coerce_payload_keeps_none_when_optional_enum_has_no_absence_value():
+    payload = {
+        "flag": "null",
+    }
+    coerced = _coerce_payload_to_schema(payload, OptionalBinaryModel)
+    parsed = OptionalBinaryModel.model_validate(coerced)
+
+    assert parsed.flag is None
+
+
+def test_coerce_payload_normalizes_spinal_level_range_notation():
+    payload = {
+        "level": "C2-3",
+    }
+    coerced = _coerce_payload_to_schema(payload, SpinalLevelModel)
+    parsed = SpinalLevelModel.model_validate(coerced)
+
+    assert parsed.level == "C2-C3"
+
+
+def test_coerce_payload_normalizes_spinal_level_with_unicode_hyphen():
+    payload = {
+        "level": "C2‑3",
+    }
+    coerced = _coerce_payload_to_schema(payload, SpinalLevelModel)
+    parsed = SpinalLevelModel.model_validate(coerced)
+
+    assert parsed.level == "C2-C3"
