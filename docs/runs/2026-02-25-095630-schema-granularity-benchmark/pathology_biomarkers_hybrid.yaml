@@ -1,0 +1,34 @@
+name: CervicalSpineMRIBiomarkerReport
+description: Cervical spine MRI pathology molecular report with biomarker-level results,
+  categorical positivity, and optional quantitative percentages.
+sections:
+- name: specimen
+  type: str
+  description: Specimen description (e.g., tissue source).
+- name: interpretation
+  type: str
+  required: false
+  description: Interpretation or summary of findings.
+- name: biomarkers
+  type: list
+  item:
+    type: object
+    fields:
+    - name: name
+      type: str
+      description: Name of the biomarker (e.g., EGFR, PD-L1 TPS).
+    - name: result
+      type: enum
+      description: Categorical result of the biomarker test.
+      values:
+      - Positive
+      - Negative
+      - Indeterminate
+      - Not Tested
+      - Other
+    - name: quantitative_percent
+      type: float
+      description: Optional quantitative percentage associated with the biomarker
+        (e.g., PD-L1 TPS).
+      required: false
+  description: List of biomarker results.

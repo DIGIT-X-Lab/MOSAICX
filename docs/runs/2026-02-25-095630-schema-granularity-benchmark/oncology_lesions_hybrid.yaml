@@ -1,0 +1,44 @@
+name: OncologyFollowUpReport
+description: Pathology oncology follow‑up report with lesion‑level structured findings
+  and categorical assessment.
+sections:
+- name: imaging_modality
+  type: enum
+  values:
+  - CT
+  - MRI
+  - PET
+  - Ultrasound
+  description: Imaging modality used for the study.
+- name: findings
+  type: list
+  item:
+    type: object
+    fields:
+    - name: lesion_id
+      type: int
+      description: Sequential identifier for the lesion.
+    - name: location
+      type: str
+      description: Anatomical location of the lesion.
+    - name: size_mm
+      type: float
+      description: Maximum linear dimension of the lesion in millimetres.
+    - name: assessment
+      type: enum
+      description: Categorical assessment of the lesion.
+      values:
+      - benign
+      - indeterminate
+      - suspicious
+      - stable
+  description: List of lesion‑level findings.
+- name: impression
+  type: list
+  item:
+    type: str
+  description: List of impression statements summarizing the study.
+- name: recommended_interval_months
+  type: int
+  required: false
+  description: Suggested interval for the next follow‑up imaging, in months.

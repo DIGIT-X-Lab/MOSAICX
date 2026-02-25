@@ -1,0 +1,30 @@
+name: CervicalSpineMriMolecularReport
+description: Schema for cervical spine MRI pathology molecular report with biomarker-level
+  values, categorical positivity, and optional quantitative percentages.
+sections:
+- name: specimen
+  type: str
+  description: Specimen description.
+- name: biomarker_panel
+  type: list
+  item:
+    type: object
+    fields:
+    - name: biomarker_name
+      type: str
+      description: Name of the biomarker.
+    - name: status
+      type: enum
+      description: Categorical positivity status.
+      values:
+      - Positive
+      - Negative
+      - Indeterminate
+    - name: percentage
+      type: float
+      description: Optional quantitative percentage (e.g., PD-L1 TPS).
+      required: false
+  description: List of biomarker results.
+- name: interpretation
+  type: str
+  description: Interpretation text.

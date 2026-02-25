@@ -1,0 +1,37 @@
+name: CervicalDischargeMedicationList
+description: Schema for a discharge medication list specific to cervical discharge
+  patients, containing itemized drug entries with dosage and frequency information.
+sections:
+- name: medications
+  type: list
+  item:
+    type: object
+    fields:
+    - name: drug_name
+      type: str
+      description: Name of the medication.
+    - name: dosage_amount
+      type: float
+      description: Numeric dosage amount.
+    - name: dosage_unit
+      type: enum
+      description: Unit of dosage.
+      values:
+      - mg
+      - g
+      - mcg
+      - units
+    - name: route
+      type: enum
+      description: Route of administration.
+      values:
+      - PO
+      - IV
+      - IM
+      - SC
+      - topical
+      - inhalation
+    - name: frequency
+      type: str
+      description: Dosing frequency (e.g., daily, twice daily).
+  description: List of prescribed discharge medications.

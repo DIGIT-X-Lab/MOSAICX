@@ -6,7 +6,7 @@ Status: Active
 Owner: Core platform
 Authoritative: Yes (single source of truth for rollout status)
 
-## 0) Canonical Status (Updated 2026-02-25 08:50)
+## 0) Canonical Status (Updated 2026-02-25 10:25)
 
 This file is the canonical status board for DSPy roadmap execution.
 Other plan files are design/history logs and must link here for status.
@@ -21,6 +21,7 @@ Other plan files are design/history logs and must link here for status.
   - closed duplicates: `#22`, `#27`
 - Open stabilization items:
   - `#56 [SCHEMA-001] Robust schema generation with normalize/validate/repair pipeline`
+- Closed stabilization items:
   - `#57 [SCHEMA-002] Add semantic granularity scoring for generated templates`
 - Closed DSPy capability items:
   - `#36 [DSPY-01] ReAct planner as primary query control-plane`
@@ -140,6 +141,27 @@ Other plan files are design/history logs and must link here for status.
         - `semantic_score_mean`: baseline `0.5872`, hybrid `0.5759`.
         - `mean_enum_fields`: baseline `1.8`, hybrid `2.6`.
       - Interpretation: gating is active and improves typing in some scenarios, but robustness is not consistently superior across all cases yet; next step is optimizer-tuned and multi-trial evaluation in `#57`.
+  - Schema granularity tuning pass + net-positive benchmark (`2026-02-25 10:14`, `SCHEMA-002`):
+    - Hardened `SchemaGenerator` semantic policy in `mosaicx/pipelines/schema_gen.py`:
+      - borderline-only LLM semantic assessor invocation (reduces unnecessary LLM critique calls),
+      - required-coverage regression guard inside semantic gating,
+      - candidate ranking/selection with required-coverage priority to prevent quality regressions.
+    - Added runtime validation detail channel (`required_coverage`) and expanded schema tests:
+      - `tests/test_schema_gen.py` now covers:
+        - runtime coverage details,
+        - assessor-skip behavior when deterministic signal is clear,
+        - coverage-regression blocking in repair flow.
+    - Validation:
+      - `scripts/clear_dspy_cache.sh && PYTHONPATH=. .venv/bin/pytest -q tests/test_schema_gen.py` -> `35 passed`
+      - `scripts/clear_dspy_cache.sh && PYTHONPATH=. .venv/bin/pytest -q tests/test_cli_integration.py -k "template_create"` -> `9 passed`
+    - Full benchmark artifact:
+      - `docs/runs/2026-02-25-095630-schema-granularity-benchmark/schema_granularity_results.json`
+      - `docs/runs/2026-02-25-095630-schema-granularity-benchmark/schema_granularity_report.md`
+    - Aggregate deltas (baseline -> hybrid):
+      - `semantic_score_mean`: `0.5604` -> `0.5931` (`+0.0327`)
+      - `required_coverage_mean`: `1.0000` -> `1.0000` (no regression)
+      - `extraction_success_rate`: `1.0000` -> `1.0000` (no regression)
+      - `mean_enum_fields`: `1.0` -> `1.8` (`+0.8`)
 
 - Verify audit recovery gating hardened (`2026-02-24`, `BUG-VER-001`):
   - `mosaicx/verify/audit.py` now attempts Outlines recovery only for structured serialization/JSON parse failures.

@@ -1,0 +1,22 @@
+name: VitalsNote
+description: Compact vitals note containing patient ID and vital signs.
+sections:
+- name: patient_id
+  type: int
+  description: Patient identifier
+- name: blood_pressure_systolic
+  type: int
+  description: Systolic blood pressure
+- name: blood_pressure_diastolic
+  type: int
+  description: Diastolic blood pressure
+- name: heart_rate
+  type: int
+  description: Heart rate (beats per minute)
+- name: temperature_celsius
+  type: float
+  description: Body temperature in Celsius
+- name: acute_distress
+  type: bool
+  required: false
+  description: Presence of acute distress (true if present)

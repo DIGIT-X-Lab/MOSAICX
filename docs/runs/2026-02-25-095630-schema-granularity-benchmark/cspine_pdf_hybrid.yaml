@@ -1,0 +1,109 @@
+name: CervicalSpineMriReport
+description: Schema for cervical spine MRI report with level‑wise findings, prior
+  fusion/hardware context, and structured impression points.
+sections:
+- name: patient_name
+  type: str
+  description: Full name of the patient.
+- name: patient_id
+  type: str
+  description: Identifier for the patient.
+- name: date_of_birth
+  type: str
+  description: Date of birth of the patient (e.g., MM/DD/YYYY).
+- name: referring_physician
+  type: str
+  description: Name of the referring physician.
+- name: exam_date
+  type: str
+  description: Date the MRI exam was performed.
+- name: exam_type
+  type: str
+  description: Type of exam, e.g., MRI Cervical Spine.
+- name: indication
+  type: str
+  required: false
+  description: Clinical indication for the study.
+- name: technique
+  type: str
+  required: false
+  description: Description of the imaging technique used.
+- name: comparison
+  type: str
+  required: false
+  description: Any prior study used for comparison.
+- name: cord_status
+  type: str
+  required: false
+  description: Overall appearance of the cervical cord (e.g., normal).
+- name: hardware_description
+  type: str
+  required: false
+  description: Description of hardware present (e.g., anterior screw and plate) that
+    may span multiple levels.
+- name: findings_levels
+  type: list
+  item:
+    type: object
+    fields:
+    - name: level
+      type: str
+      description: Spinal level identifier (e.g., C2-3).
+    - name: disc_degeneration
+      type: bool
+      description: Whether disc degeneration is noted at this level.
+      required: false
+    - name: disc_degeneration_severity
+      type: enum
+      description: Severity of disc degeneration.
+      required: false
+      values:
+      - none
+      - mild
+      - moderate
+      - severe
+    - name: disc_bulge
+      type: enum
+      description: Severity of disc bulging.
+      required: false
+      values:
+      - none
+      - mild
+      - moderate
+      - severe
+    - name: central_narrowing
+      type: bool
+      description: Presence of central canal narrowing.
+      required: false
+    - name: central_narrowing_severity
+      type: enum
+      description: Severity of central canal narrowing.
+      required: false
+      values:
+      - none
+      - mild
+      - moderate
+      - severe
+    - name: neural_foraminal_narrowing
+      type: enum
+      description: Severity of neural foraminal narrowing.
+      required: false
+      values:
+      - none
+      - mild
+      - moderate
+      - severe
+    - name: prior_fusion
+      type: bool
+      description: Whether prior fusion is present at this level.
+      required: false
+    - name: hardware_present
+      type: bool
+      description: Whether hardware is present at this level.
+      required: false
+  description: Level‑wise findings for each cervical segment.
+- name: impression
+  type: list
+  item:
+    type: str
+  description: List of impression statements extracted from the report.

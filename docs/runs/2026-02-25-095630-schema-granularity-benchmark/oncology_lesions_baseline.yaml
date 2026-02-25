@@ -1,0 +1,60 @@
+name: PathologyOncologyFollowUpReport
+description: Structured schema for pathology oncology follow‑up reports with lesion‑level
+  findings and categorical assessment.
+sections:
+- name: study_modality
+  type: enum
+  values:
+  - CT
+  - MRI
+  - PET
+  - Ultrasound
+  description: Imaging modality used for the follow‑up study
+- name: study_region
+  type: str
+  description: Anatomical region imaged (e.g., abdomen/pelvis)
+- name: findings
+  type: list
+  item:
+    type: object
+    fields:
+    - name: lesion_number
+      type: int
+      description: Sequential identifier for the lesion
+    - name: location
+      type: str
+      description: Anatomical location description of the lesion
+    - name: size_mm
+      type: float
+      description: Maximum dimension of the lesion in millimeters
+    - name: assessment
+      type: enum
+      description: Categorical assessment of the lesion
+      values:
+      - benign
+      - indeterminate
+      - suspicious
+      - stable
+    - name: laterality
+      type: enum
+      description: Laterality of the lesion if applicable
+      required: false
+      values:
+      - right
+      - left
+      - bilateral
+      - unknown
+    - name: organ_system
+      type: str
+      description: Organ system involved (e.g., liver, adrenal, lymph node, lung)
+      required: false
+  description: List of lesion‑level findings
+- name: impression
+  type: list
+  item:
+    type: str
+  description: Impression statements summarizing the report
+- name: follow_up_interval_months
+  type: int
+  required: false
+  description: Recommended interval for the next follow‑up in months

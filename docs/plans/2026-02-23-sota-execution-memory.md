@@ -820,3 +820,36 @@ When completing `DSPY-*` items, append:
     - overall semantic mean was mixed (`0.5872 -> 0.5759`), indicating current gate/assessor policy is not yet consistently superior on every scenario.
 - Remaining blockers:
   - Tune semantic-gate policy and assessor weighting against this benchmark (multi-trial and optimizer-assisted), then rerun and require net-positive aggregate deltas before closing `#57`.
+
+### Update 2026-02-25 10:20
+- Tasks completed:
+  - Tuned schema granularity policy to reduce regressions and over-triggering:
+    - added borderline-only DSPy semantic assessor invocation,
+    - added required-coverage regression guard in semantic gating,
+    - added candidate ranking/selection with coverage-first tie-break.
+  - Extended runtime validator to optionally return required-field coverage details.
+  - Added regression tests for:
+    - runtime coverage details output,
+    - deterministic clear-signal path skipping LLM semantic assessor,
+    - coverage-regression blocking in repair loop.
+  - Ran full local `vllm-mlx` benchmark and produced net-positive aggregate deltas.
+- Files changed:
+  - `mosaicx/pipelines/schema_gen.py`
+  - `tests/test_schema_gen.py`
+  - `docs/plans/2026-02-24-roadmap-status-audit.md`
+  - `docs/runs/2026-02-25-095630-schema-granularity-benchmark/schema_granularity_results.json`
+  - `docs/runs/2026-02-25-095630-schema-granularity-benchmark/schema_granularity_report.md`
+- Tests run:
+  - `scripts/clear_dspy_cache.sh && PYTHONPATH=. .venv/bin/pytest -q tests/test_schema_gen.py`
+  - `scripts/clear_dspy_cache.sh && PYTHONPATH=. .venv/bin/pytest -q tests/test_cli_integration.py -k "template_create"`
+  - `scripts/clear_dspy_cache.sh && PYTHONPATH=. .venv/bin/python scripts/run_schema_granularity_benchmark.py --hybrid-semantic-min-score 0.60`
+- Results:
+  - `tests/test_schema_gen.py` -> `35 passed`.
+  - `tests/test_cli_integration.py -k template_create` -> `9 passed`.
+  - Benchmark aggregate (baseline -> hybrid):
+    - `semantic_score_mean`: `0.5604 -> 0.5931`
+    - `required_coverage_mean`: `1.0000 -> 1.0000`
+    - `extraction_success_rate`: `1.0000 -> 1.0000`
+    - `mean_enum_fields`: `1.0 -> 1.8`
+- Remaining blockers:
+  - Finalize and close issue `#57` after publishing this benchmark delta in the issue thread.

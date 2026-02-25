@@ -1,0 +1,106 @@
+name: CervicalSpineMRIReport
+description: Structured representation of a cervical spine MRI report including patient
+  demographics, exam metadata, prior fusion/hardware context, level‑wise imaging findings,
+  and impression statements.
+sections:
+- name: patient_name
+  type: str
+  description: Full name of the patient.
+- name: patient_id
+  type: str
+  description: Identifier assigned to the patient.
+- name: date_of_birth
+  type: str
+  required: false
+  description: Date of birth of the patient.
+- name: referring_physician
+  type: str
+  required: false
+  description: Name of the referring physician.
+- name: exam_date
+  type: str
+  description: Date the MRI exam was performed.
+- name: exam_type
+  type: str
+  description: Type of examination, e.g., MRI Cervical Spine.
+- name: indications
+  type: list
+  item:
+    type: str
+  required: false
+  description: Clinical indications prompting the MRI.
+- name: technique
+  type: str
+  required: false
+  description: Technical description of the MRI acquisition.
+- name: comparison
+  type: str
+  required: false
+  description: Reference to any prior study used for comparison.
+- name: prior_fusion
+  type: bool
+  required: false
+  description: Whether prior spinal fusion surgery is present.
+- name: fusion_levels
+  type: list
+  item:
+    type: str
+  required: false
+  description: Spinal levels that were fused (e.g., C4-C7).
+- name: hardware_present
+  type: bool
+  required: false
+  description: Whether surgical hardware (screws/plates) is visualized.
+- name: hardware_type
+  type: list
+  item:
+    type: str
+  required: false
+  description: Types of hardware observed (e.g., anterior screw, plate).
+- name: findings
+  type: list
+  item:
+    type: object
+    fields:
+    - name: level
+      type: str
+      description: Spinal level descriptor (e.g., C2-3, C3-4).
+    - name: cord_status
+      type: enum
+      description: Qualitative assessment of the spinal cord at this level.
+      required: false
+      values:
+      - normal
+      - abnormal
+    - name: disc_degeneration
+      type: bool
+      description: Presence of disc degeneration at this level.
+      required: false
+    - name: disc_bulging
+      type: bool
+      description: Presence of disc bulging at this level.
+      required: false
+    - name: central_narrowing
+      type: bool
+      description: Evidence of central canal narrowing.
+      required: false
+    - name: neural_foraminal_narrowing
+      type: bool
+      description: Neural foraminal narrowing present.
+      required: false
+    - name: bony_narrowing
+      type: bool
+      description: Bony foraminal narrowing present.
+      required: false
+    - name: hardware_at_level
+      type: bool
+      description: Hardware visualized at this specific level.
+      required: false
+  required: false
+  description: Level‑wise imaging findings.
+- name: impressions
+  type: list
+  item:
+    type: str
+  required: false
+  description: List of impression statements summarizing the study.

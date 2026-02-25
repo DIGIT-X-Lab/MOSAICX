@@ -362,6 +362,43 @@ class TestSchemaNormalization:
         assert ok is False
         assert any("runtime_missing_required_fields" in issue for issue in issues)
 
+    def test_runtime_validate_schema_returns_required_coverage_details(self, monkeypatch):
+        from types import SimpleNamespace
+
+        from mosaicx.pipelines import extraction as extraction_mod
+        from mosaicx.pipelines.schema_gen import (
+            FieldSpec,
+            SchemaSpec,
+            _runtime_validate_schema,
+        )
+
+        class FakeExtractor:
+            def __init__(self, output_schema=None):  # noqa: ANN001
+                self.output_schema = output_schema
+
+            def __call__(self, document_text: str):  # noqa: ARG002
+                return SimpleNamespace(extracted={"patient_id": "1234", "study_date": ""})
+
+        monkeypatch.setattr(extraction_mod, "DocumentExtractor", FakeExtractor)
+        spec = SchemaSpec(
+            class_name="RuntimeCheck",
+            fields=[
+                FieldSpec(name="patient_id", type="str", required=True),
+                FieldSpec(name="study_date", type="str", required=True),
+            ],
+        )
+        ok, issues, details = _runtime_validate_schema(
+            spec,
+            document_text="report text",
+            missing_required_threshold=0.4,
+            include_details=True,
+        )
+        assert ok is False
+        assert any("runtime_missing_required_fields" in issue for issue in issues)
+        assert details["required_total"] == 2
+        assert details["required_missing"] == 1
+        assert details["required_coverage"] == 0.5
+
     def test_build_synthetic_runtime_probe_contains_schema_payload(self):
         from mosaicx.pipelines.schema_gen import (
             FieldSpec,
@@ -413,9 +450,17 @@ class TestSchemaNormalization:
 
         captured: dict[str, str] = {}
 
-        def fake_runtime_validate(candidate, *, document_text, missing_required_threshold=0.5):  # noqa: ANN001
+        def fake_runtime_validate(  # noqa: ANN001
+            candidate,
+            *,
+            document_text,
+            missing_required_threshold=0.5,
+            include_details=False,
+        ):
             captured["document_text"] = str(document_text)
             captured["threshold"] = str(missing_required_threshold)
+            if include_details:
+                return True, [], {"required_total": 1, "required_missing": 0, "required_coverage": 1.0}
             return True, []
 
         monkeypatch.setattr(schema_mod, "_runtime_validate_schema", fake_runtime_validate)
@@ -445,8 +490,16 @@ class TestSchemaNormalization:
 
         captured: dict[str, str] = {}
 
-        def fake_runtime_validate(candidate, *, document_text, missing_required_threshold=0.5):  # noqa: ANN001
+        def fake_runtime_validate(  # noqa: ANN001
+            candidate,
+            *,
+            document_text,
+            missing_required_threshold=0.5,
+            include_details=False,
+        ):
             captured["document_text"] = str(document_text)
+            if include_details:
+                return True, [], {"required_total": 1, "required_missing": 0, "required_coverage": 1.0}
             return True, []
 
         monkeypatch.setattr(schema_mod, "_runtime_validate_schema", fake_runtime_validate)
@@ -606,7 +659,15 @@ Impression:
 
         generator.assess_granularity = fail_if_called
 
-        def fake_runtime_validate(candidate, *, document_text, missing_required_threshold=0.5):  # noqa: ANN001
+        def fake_runtime_validate(  # noqa: ANN001
+            candidate,
+            *,
+            document_text,
+            missing_required_threshold=0.5,
+            include_details=False,
+        ):
+            if include_details:
+                return True, [], {"required_total": 1, "required_missing": 0, "required_coverage": 1.0}
             return True, []
 
         monkeypatch.setattr(schema_mod, "_runtime_validate_schema", fake_runtime_validate)
@@ -620,3 +681,84 @@ Impression:
             use_llm_semantic_assessor=False,
         )
         assert out.runtime_dryrun_used is True
+
+    def test_schema_generator_skips_llm_assessor_when_deterministic_signal_is_clear(self, monkeypatch):
+        from types import SimpleNamespace
+
+        import mosaicx.pipelines.schema_gen as schema_mod
+        from mosaicx.pipelines.schema_gen import FieldSpec, SchemaGenerator, SchemaSpec
+
+        spec = SchemaSpec(
+            class_name="ClearSignalSchema",
+            fields=[FieldSpec(name="patient_id", type="str", required=True)],
+        )
+        generator = SchemaGenerator()
+        generator.generate = lambda **_: SimpleNamespace(schema_spec=spec)
+        generator.repair = lambda **_: SimpleNamespace(repaired_schema=spec)
+        generator.assess_granularity = lambda **_: (_ for _ in ()).throw(AssertionError("LLM assessor should be skipped"))  # noqa: E731
+
+        monkeypatch.setattr(
+            schema_mod,
+            "assess_schema_semantic_granularity",
+            lambda candidate, *, document_text: (0.10, []),  # noqa: ARG005
+        )
+
+        out = generator.forward(
+            description="Simple schema",
+            document_text="Patient ID 1234",
+            runtime_dryrun=False,
+            semantic_min_score=0.55,
+            enable_semantic_gate=True,
+            use_llm_semantic_assessor=True,
+        )
+        assert out.schema_issues == []
+
+    def test_schema_generator_blocks_semantic_gate_when_required_coverage_regresses(self, monkeypatch):
+        from types import SimpleNamespace
+
+        import mosaicx.pipelines.schema_gen as schema_mod
+        from mosaicx.pipelines.schema_gen import FieldSpec, SchemaGenerator, SchemaSpec
+
+        initial = SchemaSpec(
+            class_name="InitialSchema",
+            fields=[FieldSpec(name="finding", type="str", required=True)],
+        )
+        repaired = SchemaSpec(
+            class_name="RepairedSchema",
+            fields=[FieldSpec(name="finding", type="str", required=True)],
+        )
+
+        generator = SchemaGenerator()
+        generator.generate = lambda **_: SimpleNamespace(schema_spec=initial)
+        generator.repair = lambda **_: SimpleNamespace(repaired_schema=repaired)
+
+        monkeypatch.setattr(
+            schema_mod,
+            "assess_schema_semantic_granularity",
+            lambda candidate, *, document_text: (0.20, ["understructured"]),  # noqa: ARG005
+        )
+
+        def fake_runtime_validate(  # noqa: ANN001
+            candidate,
+            *,
+            document_text,
+            missing_required_threshold=0.5,
+            include_details=False,
+        ):
+            cov = 1.0 if candidate.class_name == "InitialSchema" else 0.70
+            if include_details:
+                return True, [], {"required_total": 1, "required_missing": 0, "required_coverage": cov}
+            return True, []
+
+        monkeypatch.setattr(schema_mod, "_runtime_validate_schema", fake_runtime_validate)
+
+        with pytest.raises(ValueError, match="coverage_regression"):
+            generator.forward(
+                description="Need structured findings",
+                document_text="1) Finding A 2) Finding B",
+                runtime_dryrun=True,
+                max_repairs=1,
+                semantic_min_score=0.55,
+                enable_semantic_gate=True,
+                use_llm_semantic_assessor=False,
+            )

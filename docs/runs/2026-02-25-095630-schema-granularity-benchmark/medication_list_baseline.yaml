@@ -1,0 +1,26 @@
+name: CervicalDischargeMedicationList
+description: A list of discharge medications for a cervical discharge patient, capturing
+  drug name, dosage amount, dosage units, administration route, and dosing frequency
+  for each entry.
+sections:
+- name: medications
+  type: list
+  item:
+    type: object
+    fields:
+    - name: drug_name
+      type: str
+      description: Name of the medication.
+    - name: dosage_amount
+      type: float
+      description: Numeric dosage amount.
+    - name: dosage_units
+      type: str
+      description: Units for dosage, e.g., mg.
+    - name: route
+      type: str
+      description: Administration route, e.g., PO (by mouth).
+    - name: frequency
+      type: str
+      description: Dosing frequency, e.g., daily, nightly, twice daily.
+  description: Itemized medication entries.

@@ -889,16 +889,28 @@ def _runtime_validate_schema(
     *,
     document_text: str,
     missing_required_threshold: float = 0.5,
-) -> tuple[bool, list[str]]:
+    include_details: bool = False,
+) -> tuple[bool, list[str]] | tuple[bool, list[str], dict[str, Any]]:
     """Dry-run extraction to validate runtime safety of generated schema."""
+    details: dict[str, Any] = {
+        "required_total": 0,
+        "required_missing": 0,
+        "required_coverage": None,
+    }
+
     if not str(document_text or "").strip():
+        if include_details:
+            return True, [], details
         return True, []
 
     issues: list[str] = []
     try:
         model = compile_schema(spec)
     except Exception as exc:
-        return False, [f"runtime_compile_error: {exc}"]
+        fail_issues = [f"runtime_compile_error: {exc}"]
+        if include_details:
+            return False, fail_issues, details
+        return False, fail_issues
 
     try:
         from .extraction import DocumentExtractor
@@ -914,17 +926,26 @@ def _runtime_validate_schema(
             payload = {}
 
         required = [f.name for f in spec.fields if f.required]
+        details["required_total"] = len(required)
         if required:
             missing = [name for name in required if _is_blank_payload_value(payload.get(name))]
             ratio = len(missing) / max(len(required), 1)
+            details["required_missing"] = len(missing)
+            details["required_coverage"] = max(0.0, min(1.0, 1.0 - ratio))
             if ratio > max(0.0, min(1.0, float(missing_required_threshold))):
                 issues.append(
                     "runtime_missing_required_fields: "
                     + ", ".join(missing[:10])
                 )
-        return len(issues) == 0, issues
+        ok = len(issues) == 0
+        if include_details:
+            return ok, issues, details
+        return ok, issues
     except Exception as exc:
-        return False, [f"runtime_extract_error: {str(exc)[:500]}"]
+        fail_issues = [f"runtime_extract_error: {str(exc)[:500]}"]
+        if include_details:
+            return False, fail_issues, details
+        return False, fail_issues
 
 
 def _is_structured_parse_failure(exc: Exception) -> bool:
@@ -1166,22 +1187,13 @@ def _build_dspy_classes():
             if spec is None:
                 raise ValueError("Schema generation returned no schema specification.")
 
-            structural_issues = validate_schema_spec(spec)
-            compile_error: str | None = None
-            compiled: type[BaseModel] | None = None
-            try:
-                compiled = compile_schema(spec)
-            except Exception as exc:
-                compile_error = str(exc)
-                structural_issues.append(f"compile_error: {compile_error}")
-
-            runtime_issues: list[str] = []
             runtime_enabled = bool(runtime_dryrun)
             runtime_source_text = str(document_text or "").strip()
             semantic_threshold = max(0.0, min(1.0, float(semantic_min_score)))
             semantic_gate_enabled = bool(enable_semantic_gate)
             semantic_assessor_enabled = bool(use_llm_semantic_assessor)
-            semantic_gate_applied = False
+            semantic_assessor_margin = 0.18
+            coverage_regression_tolerance = 0.02
 
             def _semantic_feedback(candidate: SchemaSpec) -> tuple[float, list[str]]:
                 det_score, det_issues = assess_schema_semantic_granularity(
@@ -1195,6 +1207,11 @@ def _build_dspy_classes():
                 if det_score >= semantic_threshold and not det_issues:
                     return score, issues
                 if not semantic_assessor_enabled:
+                    return score, issues
+                should_query_llm = bool(det_issues) or (
+                    abs(det_score - semantic_threshold) <= semantic_assessor_margin
+                )
+                if not should_query_llm:
                     return score, issues
                 try:
                     llm_eval = self.assess_granularity(
@@ -1213,28 +1230,131 @@ def _build_dspy_classes():
                     logger.debug("LLM semantic granularity assessment failed: %s", exc)
                 return max(0.0, min(1.0, score)), _parse_issue_lines("\n".join(issues))
 
-            if runtime_enabled and compiled is not None:
-                runtime_probe_text = runtime_source_text or _build_synthetic_runtime_probe_text(
-                    spec,
-                    description=description,
-                    example_text=example_text,
-                )
-                runtime_ok, runtime_issues = _runtime_validate_schema(
-                    spec,
-                    document_text=runtime_probe_text,
-                    missing_required_threshold=runtime_missing_required_threshold,
-                )
-                if not runtime_ok and runtime_issues:
-                    logger.info(
-                        "Schema runtime dry-run flagged issues: %s",
-                        "; ".join(runtime_issues),
+            def _candidate_rank(candidate_eval: dict[str, Any]) -> tuple[float, float, float]:
+                raw_coverage = candidate_eval.get("required_coverage")
+                coverage = float(raw_coverage) if raw_coverage is not None else (1.0 if not runtime_enabled else 0.0)
+                raw_semantic = candidate_eval.get("semantic_score")
+                semantic = float(raw_semantic) if raw_semantic is not None else 0.0
+                quality = float(candidate_eval.get("schema_quality", 0.0))
+                return coverage, semantic, quality
+
+            def _is_better_candidate(
+                candidate_eval: dict[str, Any],
+                incumbent_eval: dict[str, Any] | None,
+            ) -> bool:
+                if incumbent_eval is None:
+                    return True
+                cand_coverage, cand_semantic, cand_quality = _candidate_rank(candidate_eval)
+                inc_coverage, inc_semantic, inc_quality = _candidate_rank(incumbent_eval)
+                if cand_coverage > (inc_coverage + coverage_regression_tolerance):
+                    return True
+                if cand_coverage < (inc_coverage - coverage_regression_tolerance):
+                    return False
+                if cand_semantic > (inc_semantic + 0.03):
+                    return True
+                if cand_semantic < (inc_semantic - 0.03):
+                    return False
+                return cand_quality > inc_quality
+
+            def _evaluate_candidate(
+                candidate: SchemaSpec,
+                *,
+                coverage_floor: float | None = None,
+                after_repair: bool = False,
+            ) -> dict[str, Any]:
+                candidate_structural_issues = validate_schema_spec(candidate)
+                candidate_compile_error: str | None = None
+                candidate_compiled: type[BaseModel] | None = None
+                try:
+                    candidate_compiled = compile_schema(candidate)
+                except Exception as exc:
+                    candidate_compile_error = str(exc)
+                    candidate_structural_issues.append(f"compile_error: {candidate_compile_error}")
+
+                candidate_runtime_issues: list[str] = []
+                required_coverage: float | None = None
+                if runtime_enabled and candidate_compiled is not None:
+                    runtime_probe_text = runtime_source_text or _build_synthetic_runtime_probe_text(
+                        candidate,
+                        description=description,
+                        example_text=example_text,
                     )
-            if runtime_source_text and compiled is not None:
-                semantic_score, semantic_issues = _semantic_feedback(spec)
-                if semantic_gate_enabled and semantic_issues and semantic_score < semantic_threshold:
-                    semantic_gate_applied = True
-                    runtime_issues.extend([f"semantic_issue: {item}" for item in semantic_issues[:8]])
-                    runtime_issues.append(f"semantic_score_low: {semantic_score:.2f}")
+                    runtime_ok, candidate_runtime_issues, runtime_meta = _runtime_validate_schema(
+                        candidate,
+                        document_text=runtime_probe_text,
+                        missing_required_threshold=runtime_missing_required_threshold,
+                        include_details=True,
+                    )
+                    runtime_cov_raw = runtime_meta.get("required_coverage")
+                    if runtime_cov_raw is not None:
+                        required_coverage = max(0.0, min(1.0, float(runtime_cov_raw)))
+                    if not runtime_ok and candidate_runtime_issues:
+                        if after_repair:
+                            logger.info(
+                                "Schema runtime dry-run flagged issues after repair: %s",
+                                "; ".join(candidate_runtime_issues),
+                            )
+                        else:
+                            logger.info(
+                                "Schema runtime dry-run flagged issues: %s",
+                                "; ".join(candidate_runtime_issues),
+                            )
+
+                candidate_semantic_score: float | None = None
+                candidate_semantic_issues: list[str] = []
+                candidate_semantic_gate_applied = False
+                if runtime_source_text and candidate_compiled is not None:
+                    candidate_semantic_score, candidate_semantic_issues = _semantic_feedback(candidate)
+                    should_gate = (
+                        semantic_gate_enabled
+                        and bool(candidate_semantic_issues)
+                        and candidate_semantic_score < semantic_threshold
+                    )
+                    if should_gate:
+                        if (
+                            coverage_floor is not None
+                            and required_coverage is not None
+                            and required_coverage < (coverage_floor - coverage_regression_tolerance)
+                        ):
+                            candidate_runtime_issues.append(
+                                "coverage_regression: "
+                                f"required_coverage {required_coverage:.2f} < floor {coverage_floor:.2f}"
+                            )
+                        else:
+                            candidate_semantic_gate_applied = True
+                            candidate_runtime_issues.extend(
+                                [f"semantic_issue: {item}" for item in candidate_semantic_issues[:8]]
+                            )
+                            candidate_runtime_issues.append(
+                                f"semantic_score_low: {candidate_semantic_score:.2f}"
+                            )
+
+                candidate_usable = (
+                    candidate_compiled is not None
+                    and not candidate_structural_issues
+                    and not candidate_runtime_issues
+                )
+                return {
+                    "spec": candidate,
+                    "compiled": candidate_compiled,
+                    "compile_error": candidate_compile_error,
+                    "structural_issues": candidate_structural_issues,
+                    "runtime_issues": candidate_runtime_issues,
+                    "semantic_score": candidate_semantic_score,
+                    "semantic_issues": candidate_semantic_issues,
+                    "semantic_gate_applied": candidate_semantic_gate_applied,
+                    "required_coverage": required_coverage,
+                    "schema_quality": _schema_quality_score(candidate),
+                    "usable": candidate_usable,
+                }
+
+            evaluation = _evaluate_candidate(spec)
+            structural_issues = list(evaluation["structural_issues"])
+            runtime_issues = list(evaluation["runtime_issues"])
+            compile_error = evaluation["compile_error"]
+            compiled = evaluation["compiled"]
+            best_coverage_floor = evaluation.get("required_coverage")
+            best_usable_evaluation: dict[str, Any] | None = evaluation if evaluation["usable"] else None
 
             repairs_remaining = max(0, int(max_repairs))
             while (structural_issues or compiled is None or runtime_issues) and repairs_remaining > 0:
@@ -1250,55 +1370,50 @@ def _build_dspy_classes():
                 spec = normalize_schema_spec(
                     _coerce_schema_spec(getattr(repair_result, "repaired_schema", repair_result))
                 )
-                structural_issues = validate_schema_spec(spec)
-                compile_error = None
-                try:
-                    compiled = compile_schema(spec)
-                except Exception as exc:
-                    compile_error = str(exc)
-                    compiled = None
-                    structural_issues.append(f"compile_error: {compile_error}")
+                evaluation = _evaluate_candidate(
+                    spec,
+                    coverage_floor=best_coverage_floor,
+                    after_repair=True,
+                )
+                structural_issues = list(evaluation["structural_issues"])
+                runtime_issues = list(evaluation["runtime_issues"])
+                compile_error = evaluation["compile_error"]
+                compiled = evaluation["compiled"]
 
-                runtime_issues = []
-                if runtime_enabled and compiled is not None:
-                    runtime_probe_text = runtime_source_text or _build_synthetic_runtime_probe_text(
-                        spec,
-                        description=description,
-                        example_text=example_text,
-                    )
-                    runtime_ok, runtime_issues = _runtime_validate_schema(
-                        spec,
-                        document_text=runtime_probe_text,
-                        missing_required_threshold=runtime_missing_required_threshold,
-                    )
-                    if not runtime_ok and runtime_issues:
-                        logger.info(
-                            "Schema runtime dry-run flagged issues after repair: %s",
-                            "; ".join(runtime_issues),
+                if evaluation["usable"]:
+                    if _is_better_candidate(evaluation, best_usable_evaluation):
+                        best_usable_evaluation = evaluation
+                    coverage_value = evaluation.get("required_coverage")
+                    if coverage_value is not None:
+                        best_coverage_floor = (
+                            coverage_value
+                            if best_coverage_floor is None
+                            else max(float(best_coverage_floor), float(coverage_value))
                         )
-                if runtime_source_text and compiled is not None:
-                    semantic_score, semantic_issues = _semantic_feedback(spec)
-                    if semantic_gate_enabled and semantic_issues and semantic_score < semantic_threshold:
-                        semantic_gate_applied = True
-                        runtime_issues.extend([f"semantic_issue: {item}" for item in semantic_issues[:8]])
-                        runtime_issues.append(f"semantic_score_low: {semantic_score:.2f}")
 
+            selected = evaluation
             if compiled is None or structural_issues or runtime_issues:
-                all_issues = structural_issues + runtime_issues
-                joined = "; ".join(all_issues[:8]) if all_issues else (compile_error or "unknown error")
-                raise ValueError(f"Schema generation failed after repair attempts: {joined}")
+                if best_usable_evaluation is None:
+                    all_issues = structural_issues + runtime_issues
+                    joined = "; ".join(all_issues[:8]) if all_issues else (compile_error or "unknown error")
+                    raise ValueError(f"Schema generation failed after repair attempts: {joined}")
+                selected = best_usable_evaluation
+            elif _is_better_candidate(best_usable_evaluation or selected, selected):
+                selected = best_usable_evaluation or selected
+
+            spec = selected["spec"]
+            compiled = selected["compiled"]
+            if compiled is None:
+                raise ValueError("Schema generation failed: selected candidate has no compiled schema.")
 
             self._last_metrics = metrics
-            semantic_score = None
-            if runtime_source_text and compiled is not None:
-                semantic_score, _ = _semantic_feedback(spec)
             return dspy.Prediction(
                 schema_spec=spec,
                 compiled_model=compiled,
-                schema_issues=structural_issues + runtime_issues,
+                schema_issues=[],
                 runtime_dryrun_used=runtime_enabled,
-                semantic_score=semantic_score,
-                semantic_gate_applied=semantic_gate_applied,
+                semantic_score=selected.get("semantic_score"),
+                semantic_gate_applied=bool(selected.get("semantic_gate_applied", False)),
             )
 
     class RefineSchemaSpec(dspy.Signature):
