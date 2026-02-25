@@ -17,6 +17,7 @@ Convenience functions:
 """
 import json
 import logging
+import os
 import re
 import types
 from enum import Enum
@@ -910,15 +911,231 @@ def _coerce_extracted_to_model_instance(
     return schema_class.model_validate(extracted)
 
 
+def _flatten_scalar_values(payload: Any, *, prefix: str = "", out: list[tuple[str, Any]] | None = None) -> list[tuple[str, Any]]:
+    if out is None:
+        out = []
+    if len(out) >= 256:
+        return out
+    if isinstance(payload, dict):
+        for key, value in payload.items():
+            key_name = str(key)
+            child = f"{prefix}.{key_name}" if prefix else key_name
+            _flatten_scalar_values(value, prefix=child, out=out)
+        return out
+    if isinstance(payload, list):
+        for idx, value in enumerate(payload):
+            child = f"{prefix}[{idx}]"
+            _flatten_scalar_values(value, prefix=child, out=out)
+            if len(out) >= 256:
+                break
+        return out
+    out.append((prefix or "value", payload))
+    return out
+
+
+def _score_extraction_candidate(
+    *,
+    extracted: Any,
+    schema_class: type[BaseModel],
+    source_text: str,
+) -> tuple[float, dict[str, float]]:
+    """Compute deterministic reward components for candidate selection."""
+    schema_compliance = 0.0
+    evidence_overlap = 0.0
+    critical_completeness = 0.0
+    contradiction_penalty = 0.0
+    null_overuse_penalty = 0.0
+
+    try:
+        model_instance = _coerce_extracted_to_model_instance(
+            extracted=extracted,
+            schema_class=schema_class,
+        )
+        normalized = model_instance.model_dump()
+        schema_compliance = 1.0
+    except Exception:
+        return 0.0, {
+            "schema_compliance": 0.0,
+            "evidence_overlap": 0.0,
+            "critical_completeness": 0.0,
+            "contradiction_penalty": 1.0,
+            "null_overuse_penalty": 1.0,
+        }
+
+    source_lower = str(source_text or "").lower()
+    scalars = _flatten_scalar_values(normalized)
+    observed: list[str] = []
+    contradictions = 0
+    for _, value in scalars:
+        if _is_missing_value(value):
+            continue
+        if isinstance(value, bool):
+            continue
+        token = str(value).strip()
+        if len(token) < 2:
+            continue
+        observed.append(token)
+        probe = token.lower()
+        if probe in source_lower:
+            evidence_overlap += 1.0
+        if f"no {probe}" in source_lower or f"without {probe}" in source_lower:
+            contradictions += 1
+
+    if observed:
+        evidence_overlap = evidence_overlap / float(len(observed))
+        contradiction_penalty = min(1.0, contradictions / float(len(observed)))
+    else:
+        evidence_overlap = 0.0
+        contradiction_penalty = 0.0
+
+    top_level_fields = list(schema_class.model_fields.keys())
+    required_fields = [
+        name for name, field in schema_class.model_fields.items()
+        if bool(getattr(field, "is_required", lambda: False)())
+    ]
+    targets = required_fields or top_level_fields
+    if targets:
+        hit = 0
+        for field_name in targets:
+            if field_name in normalized and not _is_missing_value(normalized.get(field_name)):
+                hit += 1
+        critical_completeness = hit / float(len(targets))
+
+    if top_level_fields:
+        missing_top = sum(
+            1 for field_name in top_level_fields
+            if _is_missing_value(normalized.get(field_name))
+        )
+        missing_ratio = missing_top / float(len(top_level_fields))
+        null_overuse_penalty = max(0.0, missing_ratio - 0.5)
+
+    score = (
+        0.35 * schema_compliance
+        + 0.25 * evidence_overlap
+        + 0.25 * critical_completeness
+        + 0.15 * (1.0 - contradiction_penalty)
+        - 0.25 * null_overuse_penalty
+    )
+    score = max(0.0, min(1.0, score))
+    return score, {
+        "schema_compliance": schema_compliance,
+        "evidence_overlap": evidence_overlap,
+        "critical_completeness": critical_completeness,
+        "contradiction_penalty": contradiction_penalty,
+        "null_overuse_penalty": null_overuse_penalty,
+    }
+
+
+def _planner_routes_uncertain(planner_diag: dict[str, Any] | None) -> bool:
+    if not isinstance(planner_diag, dict):
+        return False
+    routes = planner_diag.get("routes")
+    if not isinstance(routes, list):
+        return False
+    for route in routes:
+        if not isinstance(route, dict):
+            continue
+        strategy = str(route.get("strategy") or "").strip().lower()
+        if strategy in {"heavy_extract", "repair"}:
+            return True
+    return False
+
+
+def _try_bestofn_for_uncertain_sections(
+    *,
+    document_text: str,
+    schema_class: type[BaseModel],
+    typed_extract: Any,
+    planner_diag: dict[str, Any] | None,
+) -> tuple[BaseModel | None, dict[str, Any]]:
+    info: dict[str, Any] = {
+        "triggered": False,
+        "used": False,
+        "score": None,
+        "components": None,
+        "reason": None,
+    }
+
+    if not _planner_routes_uncertain(planner_diag):
+        info["reason"] = "no_uncertain_sections"
+        return None, info
+
+    info["triggered"] = True
+    try:
+        from mosaicx.runtime_env import import_dspy
+
+        dspy = import_dspy()
+    except Exception as exc:
+        info["reason"] = f"dspy_import_failed:{type(exc).__name__}"
+        return None, info
+
+    if getattr(dspy.settings, "lm", None) is None:
+        info["reason"] = "lm_not_configured"
+        return None, info
+    if not hasattr(dspy, "BestOfN"):
+        info["reason"] = "bestofn_unavailable"
+        return None, info
+
+    class _TypedModule:
+        def __call__(self, **kwargs: Any) -> Any:
+            return typed_extract(**kwargs)
+
+    def reward_fn(_args: dict[str, Any], pred: Any) -> float:
+        extracted = getattr(pred, "extracted", pred)
+        score, _components = _score_extraction_candidate(
+            extracted=extracted,
+            schema_class=schema_class,
+            source_text=document_text,
+        )
+        return score
+
+    n = max(2, int(os.environ.get("MOSAICX_EXTRACT_BESTOFN_N", "3") or "3"))
+    threshold = float(os.environ.get("MOSAICX_EXTRACT_BESTOFN_THRESHOLD", "0.0") or "0.0")
+    try:
+        best = dspy.BestOfN(
+            module=_TypedModule(),
+            N=n,
+            reward_fn=reward_fn,
+            threshold=threshold,
+        )
+        pred = best(document_text=document_text)
+        extracted = getattr(pred, "extracted", pred)
+        model = _coerce_extracted_to_model_instance(
+            extracted=extracted,
+            schema_class=schema_class,
+        )
+        score, components = _score_extraction_candidate(
+            extracted=model,
+            schema_class=schema_class,
+            source_text=document_text,
+        )
+        info["used"] = True
+        info["score"] = score
+        info["components"] = components
+        info["reason"] = "bestofn_selected"
+        return model, info
+    except Exception as exc:
+        info["reason"] = f"bestofn_failed:{type(exc).__name__}"
+        return None, info
+
+
 def _extract_schema_with_structured_chain(
     *,
     document_text: str,
     schema_class: type[BaseModel],
     typed_extract: Any,
     json_extract: Any | None = None,
+    planner_diag: dict[str, Any] | None = None,
 ) -> tuple[BaseModel, dict[str, Any]]:
     """Run deterministic structured extraction fallback chain with diagnostics."""
     attempts: list[dict[str, Any]] = []
+    bestofn_info: dict[str, Any] = {
+        "triggered": False,
+        "used": False,
+        "score": None,
+        "components": None,
+        "reason": "not_evaluated",
+    }
 
     def _record(step: str, ok: bool, error: Exception | None = None) -> None:
         row: dict[str, Any] = {"step": step, "ok": bool(ok)}
@@ -948,16 +1165,36 @@ def _extract_schema_with_structured_chain(
             error_hint="primary_outlines",
         )
         if outlines_primary is not None:
+            bestofn_info["reason"] = "skipped_outlines_primary_succeeded"
             _record("outlines_primary", True)
             selected_path = "outlines_primary"
             return outlines_primary, {
                 "selected_path": selected_path,
                 "fallback_used": False,
                 "attempts": attempts,
+                "bestofn": bestofn_info,
             }
         _record("outlines_primary", False, ValueError("outlines_primary_unavailable"))
     else:
         _record("outlines_primary", False, ValueError("lm_not_configured"))
+
+    bestofn_model, bestofn_info = _try_bestofn_for_uncertain_sections(
+        document_text=document_text,
+        schema_class=schema_class,
+        typed_extract=typed_extract,
+        planner_diag=planner_diag,
+    )
+    if bestofn_model is not None:
+        _record("bestofn_uncertain", True)
+        selected_path = "bestofn_uncertain"
+        return bestofn_model, {
+            "selected_path": selected_path,
+            "fallback_used": True,
+            "attempts": attempts,
+            "bestofn": bestofn_info,
+        }
+    if bestofn_info.get("triggered"):
+        _record("bestofn_uncertain", False, ValueError(str(bestofn_info.get("reason") or "failed")))
 
     try:
         pred = typed_extract(document_text=document_text)
@@ -972,6 +1209,7 @@ def _extract_schema_with_structured_chain(
             "selected_path": selected_path,
             "fallback_used": True,
             "attempts": attempts,
+            "bestofn": bestofn_info,
         }
     except Exception as exc:
         last_exc = exc
@@ -1007,6 +1245,7 @@ def _extract_schema_with_structured_chain(
                 "selected_path": selected_path,
                 "fallback_used": True,
                 "attempts": attempts,
+                "bestofn": bestofn_info,
             }
         except Exception as exc:
             last_exc = exc
@@ -1025,6 +1264,7 @@ def _extract_schema_with_structured_chain(
                 "selected_path": selected_path,
                 "fallback_used": True,
                 "attempts": attempts,
+                "bestofn": bestofn_info,
             }
         except Exception as exc:
             last_exc = exc
@@ -1047,6 +1287,7 @@ def _extract_schema_with_structured_chain(
                 "selected_path": selected_path,
                 "fallback_used": True,
                 "attempts": attempts,
+                "bestofn": bestofn_info,
             }
         _record("existing_outlines_rescue", False, ValueError("outlines_rescue_unavailable"))
     else:
@@ -1218,6 +1459,7 @@ def _build_dspy_classes():
                             json_extract=lambda *, document_text: self.extract_json_fallback(
                                 document_text=document_text
                             ),
+                            planner_diag=planner_diag,
                         )
                     except Exception:
                         if planned_text != document_text:
@@ -1231,6 +1473,7 @@ def _build_dspy_classes():
                                 json_extract=lambda *, document_text: self.extract_json_fallback(
                                     document_text=document_text
                                 ),
+                                planner_diag=planner_diag,
                             )
                         else:
                             raise
@@ -1240,6 +1483,7 @@ def _build_dspy_classes():
                 planner_diag["structured_fallback_used"] = bool(
                     chain_diag.get("fallback_used", False)
                 )
+                planner_diag["bestofn"] = chain_diag.get("bestofn", {})
                 self._last_metrics = metrics
                 self._last_planner = planner_diag
                 return dspy.Prediction(extracted=model_instance, planner=planner_diag)
@@ -1309,6 +1553,7 @@ def _build_dspy_classes():
                         json_extract=lambda *, document_text: extract_json_step(
                             document_text=document_text
                         ),
+                        planner_diag=planner_diag,
                     )
                 except Exception:
                     if planned_text != document_text:
@@ -1322,6 +1567,7 @@ def _build_dspy_classes():
                             json_extract=lambda *, document_text: extract_json_step(
                                 document_text=document_text
                             ),
+                            planner_diag=planner_diag,
                         )
                     else:
                         raise
@@ -1331,6 +1577,7 @@ def _build_dspy_classes():
             planner_diag["structured_fallback_used"] = bool(
                 chain_diag.get("fallback_used", False)
             )
+            planner_diag["bestofn"] = chain_diag.get("bestofn", {})
 
             self._last_metrics = metrics
             self._last_planner = planner_diag

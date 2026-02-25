@@ -6,7 +6,7 @@ Status: Active
 Owner: Core platform
 Authoritative: Yes (single source of truth for rollout status)
 
-## 0) Canonical Status (Updated 2026-02-25 20:35)
+## 0) Canonical Status (Updated 2026-02-25 21:05)
 
 This file is the canonical status board for DSPy roadmap execution.
 Other plan files are design/history logs and must link here for status.
@@ -44,11 +44,12 @@ Other plan files are design/history logs and must link here for status.
 - Open DSPy capability rollout items:
   - none
 - Open extract atomic rollout items:
-  - `#62 [EXTX-04]`, `#63 [EXTX-05]`, `#64 [EXTX-06]`, `#65 [EXTX-07]`, `#66 [EXTX-08]`, `#67 [EXTX-09]`, `#68 [EXTX-10]`
+  - `#63 [EXTX-05]`, `#64 [EXTX-06]`, `#65 [EXTX-07]`, `#66 [EXTX-08]`, `#67 [EXTX-09]`, `#68 [EXTX-10]`
 - Closed extract atomic rollout items:
   - `#59 [EXTX-01]` Canonical extract contract + fail-closed semantics across CLI/SDK/MCP
   - `#60 [EXTX-02]` ReAct planner-first section routing for extraction
   - `#61 [EXTX-03]` Outlines-first structured extraction with DSPy adapter fallback chain
+  - `#62 [EXTX-04]` Selective BestOfN for uncertain extraction sections
 
 ### Canonical control note
 
@@ -113,6 +114,27 @@ Other plan files are design/history logs and must link here for status.
       - output `_planner.selected_structured_path=outlines_primary`, `structured_fallback_used=false`.
   - Run artifact:
     - `docs/runs/2026-02-25-extx-03-outlines-first-chain.md`
+
+- Selective BestOfN for uncertain section routing completed (`2026-02-25`, `EXTX-04`, issue `#62`):
+  - Added selective BestOfN trigger path in `mosaicx/pipelines/extraction.py`:
+    - trigger only when planner routes contain `heavy_extract` or `repair`,
+    - no trigger on deterministic/constrained-only routes.
+  - Implemented deterministic reward component scoring:
+    - schema compliance,
+    - evidence overlap,
+    - critical-field completeness,
+    - contradiction penalty,
+    - null-overuse penalty.
+  - Diagnostics now expose BestOfN behavior under `_planner.bestofn`.
+  - Regression coverage:
+    - `tests/test_extraction_pipeline.py::TestBestOfNSelectiveRouting`
+  - Validation:
+    - `PYTHONPATH=. .venv/bin/pytest -q tests/test_extraction_pipeline.py tests/test_extract_contract.py tests/test_cli_extract.py tests/test_mcp_server_dspy_config.py tests/test_mcp_query.py tests/test_mcp_verify.py tests/test_public_api.py -k "extract or planner or verify_output or query_start or query_ask or query_close"` -> `58 passed, 39 deselected`
+    - Live local `vllm-mlx` smoke:
+      - `PYTHONPATH=. .venv/bin/mosaicx extract --document tests/datasets/standardize/Sample_Report_Cervical_Spine.pdf --template MRICervicalSpineV3 -o /tmp/mosaicx_extx04_smoke2.json`
+      - output `_planner.bestofn` recorded deterministic skip reason when not uncertain.
+  - Run artifact:
+    - `docs/runs/2026-02-25-extx-04-selective-bestofn.md`
 
 - Schema robustness hardening (`2026-02-25`, `SCHEMA-001`) implemented and validated:
   - `mosaicx/pipelines/schema_gen.py` now includes deterministic `normalize_schema_spec` + `validate_schema_spec`.

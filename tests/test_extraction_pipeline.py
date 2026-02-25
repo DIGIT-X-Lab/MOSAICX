@@ -344,3 +344,97 @@ class TestStructuredExtractionChain:
         assert model.summary == "rescued"
         assert diag["selected_path"] == "existing_outlines_rescue"
         assert any(a["step"] == "existing_json_fallback" and a["ok"] is False for a in diag["attempts"])
+
+
+class TestBestOfNSelectiveRouting:
+    def test_score_components_reward_grounded_complete_candidate(self):
+        from mosaicx.pipelines.extraction import _score_extraction_candidate
+
+        class Report(BaseModel):
+            finding: str
+            level: str
+
+        score, components = _score_extraction_candidate(
+            extracted={"finding": "disc bulge", "level": "C3-C4"},
+            schema_class=Report,
+            source_text="Findings: disc bulge at C3-C4 level.",
+        )
+
+        assert score > 0.7
+        assert components["schema_compliance"] == 1.0
+        assert components["critical_completeness"] == 1.0
+        assert components["evidence_overlap"] > 0.5
+
+    def test_score_components_penalize_null_overuse(self):
+        from mosaicx.pipelines.extraction import _score_extraction_candidate
+
+        class Report(BaseModel):
+            finding: str | None = None
+            level: str | None = None
+            impression: str | None = None
+            note: str | None = None
+
+        score, components = _score_extraction_candidate(
+            extracted={"finding": None, "level": None, "impression": None, "note": "stable"},
+            schema_class=Report,
+            source_text="Impression: stable.",
+        )
+
+        assert components["null_overuse_penalty"] > 0.0
+        assert score < 0.8
+
+    def test_bestofn_only_triggers_for_uncertain_routes(self, monkeypatch):
+        from mosaicx.pipelines.extraction import _try_bestofn_for_uncertain_sections
+
+        class Report(BaseModel):
+            summary: str
+
+        fake_dspy = SimpleNamespace(settings=SimpleNamespace(lm=object()))
+        monkeypatch.setattr("mosaicx.runtime_env.import_dspy", lambda: fake_dspy)
+
+        model, info = _try_bestofn_for_uncertain_sections(
+            document_text="sample",
+            schema_class=Report,
+            typed_extract=lambda **kwargs: SimpleNamespace(extracted={"summary": "ok"}),
+            planner_diag={"routes": [{"section": "Findings", "strategy": "deterministic"}]},
+        )
+
+        assert model is None
+        assert info["triggered"] is False
+        assert info["reason"] == "no_uncertain_sections"
+
+    def test_bestofn_triggers_and_returns_candidate_on_uncertain_routes(self, monkeypatch):
+        from mosaicx.pipelines.extraction import _try_bestofn_for_uncertain_sections
+
+        class Report(BaseModel):
+            summary: str
+
+        class _FakeBestOfN:
+            def __init__(self, module, N, reward_fn, threshold):  # noqa: N803
+                self.module = module
+                self.reward_fn = reward_fn
+
+            def __call__(self, **kwargs):
+                pred = self.module(**kwargs)
+                # Ensure reward function is exercised deterministically.
+                _ = self.reward_fn(kwargs, pred)
+                return pred
+
+        fake_dspy = SimpleNamespace(
+            settings=SimpleNamespace(lm=object()),
+            BestOfN=_FakeBestOfN,
+        )
+        monkeypatch.setattr("mosaicx.runtime_env.import_dspy", lambda: fake_dspy)
+
+        model, info = _try_bestofn_for_uncertain_sections(
+            document_text="Findings: disc bulge at C3-C4.",
+            schema_class=Report,
+            typed_extract=lambda **kwargs: SimpleNamespace(extracted={"summary": "disc bulge"}),
+            planner_diag={"routes": [{"section": "Findings", "strategy": "heavy_extract"}]},
+        )
+
+        assert model is not None
+        assert model.summary == "disc bulge"
+        assert info["triggered"] is True
+        assert info["used"] is True
+        assert info["reason"] == "bestofn_selected"
