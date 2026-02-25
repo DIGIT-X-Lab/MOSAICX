@@ -584,3 +584,39 @@ Impression:
         )
         assert score >= 0.6
         assert not any("numbered_structures" in issue for issue in issues)
+
+    def test_schema_generator_can_disable_llm_semantic_assessor(self, monkeypatch):
+        from types import SimpleNamespace
+
+        import mosaicx.pipelines.schema_gen as schema_mod
+        from mosaicx.pipelines.schema_gen import FieldSpec, SchemaGenerator, SchemaSpec
+
+        spec = SchemaSpec(
+            class_name="NoLlmAssessSchema",
+            fields=[
+                FieldSpec(name="findings", type="list[str]", required=True),
+            ],
+        )
+        generator = SchemaGenerator()
+        generator.generate = lambda **_: SimpleNamespace(schema_spec=spec)
+        generator.repair = lambda **_: SimpleNamespace(repaired_schema=spec)
+
+        def fail_if_called(**kwargs):  # noqa: ANN001
+            raise AssertionError("LLM assessor should not be called when disabled")
+
+        generator.assess_granularity = fail_if_called
+
+        def fake_runtime_validate(candidate, *, document_text, missing_required_threshold=0.5):  # noqa: ANN001
+            return True, []
+
+        monkeypatch.setattr(schema_mod, "_runtime_validate_schema", fake_runtime_validate)
+
+        out = generator.forward(
+            description="Flat findings schema",
+            document_text="1) Lesion A. 2) Lesion B. 3) Lesion C.",
+            runtime_dryrun=True,
+            semantic_min_score=0.55,
+            enable_semantic_gate=False,
+            use_llm_semantic_assessor=False,
+        )
+        assert out.runtime_dryrun_used is True

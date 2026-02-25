@@ -1072,7 +1072,7 @@ def _build_dspy_classes():
         document_text: str = dspy.InputField(
             desc="Document text containing the reporting patterns",
         )
-        schema_json: str = dspy.InputField(
+        schema_payload: str = dspy.InputField(
             desc="SchemaSpec JSON payload to evaluate",
         )
         score: float = dspy.OutputField(
@@ -1125,6 +1125,8 @@ def _build_dspy_classes():
             runtime_dryrun: bool = False,
             runtime_missing_required_threshold: float = 0.5,
             semantic_min_score: float = 0.55,
+            enable_semantic_gate: bool = True,
+            use_llm_semantic_assessor: bool = True,
         ) -> dspy.Prediction:
             """Run the schema generation pipeline."""
             from mosaicx.metrics import PipelineMetrics, get_tracker, track_step
@@ -1177,6 +1179,9 @@ def _build_dspy_classes():
             runtime_enabled = bool(runtime_dryrun)
             runtime_source_text = str(document_text or "").strip()
             semantic_threshold = max(0.0, min(1.0, float(semantic_min_score)))
+            semantic_gate_enabled = bool(enable_semantic_gate)
+            semantic_assessor_enabled = bool(use_llm_semantic_assessor)
+            semantic_gate_applied = False
 
             def _semantic_feedback(candidate: SchemaSpec) -> tuple[float, list[str]]:
                 det_score, det_issues = assess_schema_semantic_granularity(
@@ -1189,10 +1194,12 @@ def _build_dspy_classes():
                     return score, issues
                 if det_score >= semantic_threshold and not det_issues:
                     return score, issues
+                if not semantic_assessor_enabled:
+                    return score, issues
                 try:
                     llm_eval = self.assess_granularity(
                         document_text=runtime_source_text[:30000],
-                        schema_json=candidate.model_dump_json(indent=2),
+                        schema_payload=candidate.model_dump_json(indent=2),
                     )
                     llm_score_raw = getattr(llm_eval, "score", None)
                     llm_score = float(llm_score_raw) if llm_score_raw is not None else None
@@ -1224,7 +1231,8 @@ def _build_dspy_classes():
                     )
             if runtime_source_text and compiled is not None:
                 semantic_score, semantic_issues = _semantic_feedback(spec)
-                if semantic_issues and semantic_score < semantic_threshold:
+                if semantic_gate_enabled and semantic_issues and semantic_score < semantic_threshold:
+                    semantic_gate_applied = True
                     runtime_issues.extend([f"semantic_issue: {item}" for item in semantic_issues[:8]])
                     runtime_issues.append(f"semantic_score_low: {semantic_score:.2f}")
 
@@ -1270,7 +1278,8 @@ def _build_dspy_classes():
                         )
                 if runtime_source_text and compiled is not None:
                     semantic_score, semantic_issues = _semantic_feedback(spec)
-                    if semantic_issues and semantic_score < semantic_threshold:
+                    if semantic_gate_enabled and semantic_issues and semantic_score < semantic_threshold:
+                        semantic_gate_applied = True
                         runtime_issues.extend([f"semantic_issue: {item}" for item in semantic_issues[:8]])
                         runtime_issues.append(f"semantic_score_low: {semantic_score:.2f}")
 
@@ -1289,6 +1298,7 @@ def _build_dspy_classes():
                 schema_issues=structural_issues + runtime_issues,
                 runtime_dryrun_used=runtime_enabled,
                 semantic_score=semantic_score,
+                semantic_gate_applied=semantic_gate_applied,
             )
 
     class RefineSchemaSpec(dspy.Signature):

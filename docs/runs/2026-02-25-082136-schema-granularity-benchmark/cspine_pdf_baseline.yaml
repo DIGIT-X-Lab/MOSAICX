@@ -1,0 +1,97 @@
+name: CervicalSpineMRIReport
+description: Schema for a cervical spine MRI report capturing patient demographics,
+  level‑wise findings (including disc degeneration, bulging, narrowing, prior fusion
+  and hardware) and a list of impression statements.
+sections:
+- name: patient_name
+  type: str
+  description: Full name of the patient
+- name: patient_id
+  type: str
+  description: Identifier for the patient
+- name: date_of_birth
+  type: str
+  description: Patient date of birth (MM/DD/YYYY)
+- name: referring_physician
+  type: str
+  description: Name of the referring physician
+- name: exam_date
+  type: str
+  description: Date the MRI exam was performed
+- name: exam_type
+  type: str
+  description: Type of exam (e.g., MRI Cervical Spine)
+- name: cervical_cord_status
+  type: enum
+  values:
+  - normal
+  - abnormal
+  required: false
+  description: Overall assessment of the cervical cord
+- name: findings
+  type: list
+  item:
+    type: object
+    fields:
+    - name: level
+      type: str
+      description: Spinal level identifier (e.g., C2-3, C3-4)
+    - name: disc_degeneration
+      type: bool
+      description: Presence of disc degeneration at this level
+      required: false
+    - name: disc_bulge_present
+      type: bool
+      description: Whether a disc bulge is present
+      required: false
+    - name: disc_bulge_severity
+      type: enum
+      description: Severity of disc bulge when present
+      required: false
+      values:
+      - mild
+      - moderate
+      - severe
+    - name: central_narrowing
+      type: bool
+      description: Presence of central canal narrowing
+      required: false
+    - name: neural_foraminal_narrowing
+      type: enum
+      description: Severity of neural foraminal narrowing
+      required: false
+      values:
+      - none
+      - mild
+      - moderate
+      - severe
+    - name: bony_neural_foraminal_narrowing
+      type: bool
+      description: Presence of bony foraminal narrowing
+      required: false
+    - name: prior_fusion
+      type: bool
+      description: Whether prior fusion is present at this level
+      required: false
+    - name: fusion_levels
+      type: str
+      description: Range of levels that have been fused (e.g., C4-C7)
+      required: false
+    - name: hardware_present
+      type: bool
+      description: Presence of surgical hardware (screw/plate)
+      required: false
+    - name: hardware_type
+      type: str
+      description: Description of hardware type (e.g., anterior screw and plate)
+      required: false
+    - name: alignment_good
+      type: bool
+      description: Whether hardware alignment is good
+      required: false
+  description: Level‑wise findings for each cervical segment
+- name: impression
+  type: list
+  item:
+    type: str
+  description: List of impression statements summarizing the exam

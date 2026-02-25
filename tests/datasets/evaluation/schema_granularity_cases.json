@@ -1,0 +1,42 @@
+[
+  {
+    "id": "cspine_pdf",
+    "name": "Cervical Spine MRI Report",
+    "description": "Generate a schema for cervical spine MRI with level-wise findings, prior fusion/hardware context, and structured impression points.",
+    "source_path": "tests/datasets/standardize/Sample_Report_Cervical_Spine.pdf",
+    "expects_repeated_structure": true,
+    "expects_enums": true
+  },
+  {
+    "id": "oncology_lesions",
+    "name": "Oncology Follow-up Lesion List",
+    "description": "Generate a schema for oncology follow-up report with lesion-level structured findings and categorical assessment.",
+    "text": "Follow-up CT Abdomen/Pelvis with contrast.\nFindings:\n1) Liver segment IV lesion, 12 mm, likely benign.\n2) Right adrenal lesion, 18 mm, indeterminate.\n3) Left iliac node, 9 mm short-axis, suspicious.\n4) Pulmonary nodule in right lower lobe, 6 mm, stable.\nImpression:\n- Mixed lesion burden with one suspicious nodal focus.\n- Recommend interval follow-up in 3 months.",
+    "expects_repeated_structure": true,
+    "expects_enums": true
+  },
+  {
+    "id": "pathology_biomarkers",
+    "name": "Pathology Biomarker Panel",
+    "description": "Generate a schema for pathology molecular report with biomarker-level values, categorical positivity, and optional quantitative percentages.",
+    "text": "Specimen: Lung adenocarcinoma biopsy.\nBiomarker panel:\n- EGFR: Negative\n- ALK: Negative\n- ROS1: Negative\n- PD-L1 TPS: 35%\n- KRAS G12C: Positive\nInterpretation:\nActionable mutation detected (KRAS G12C). PD-L1 expression is intermediate.",
+    "expects_repeated_structure": true,
+    "expects_enums": true
+  },
+  {
+    "id": "medication_list",
+    "name": "Discharge Medication Plan",
+    "description": "Generate a schema for discharge medication list with itemized drug entries and dosing frequency fields.",
+    "text": "Discharge medications:\n1. Aspirin 81 mg PO daily\n2. Atorvastatin 40 mg PO nightly\n3. Metoprolol succinate 50 mg PO twice daily\n4. Apixaban 5 mg PO twice daily\nPlan:\nContinue all medications unless bleeding develops.",
+    "expects_repeated_structure": true,
+    "expects_enums": false
+  },
+  {
+    "id": "simple_vitals_note",
+    "name": "Simple Vitals Note",
+    "description": "Generate a compact schema for one-paragraph vitals note.",
+    "text": "Patient ID 12345. BP 128/82. HR 76. Temp 36.9 C. No acute distress.",
+    "expects_repeated_structure": false,
+    "expects_enums": false
+  }
+]

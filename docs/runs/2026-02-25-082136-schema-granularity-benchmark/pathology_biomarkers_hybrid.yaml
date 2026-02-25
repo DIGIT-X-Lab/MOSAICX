@@ -1,0 +1,33 @@
+name: CervicalPathologyMolecularReport
+description: Schema for a cervical pathology molecular report that includes biomarker‑level
+  categorical positivity and optional quantitative percentages.
+sections:
+- name: specimen
+  type: str
+  description: Description of the specimen (e.g., tissue type, site).
+- name: biomarker_panel
+  type: list
+  item:
+    type: object
+    fields:
+    - name: biomarker_name
+      type: str
+      description: Name of the biomarker (e.g., EGFR, ALK, PD-L1).
+    - name: result
+      type: enum
+      description: Categorical positivity result for the biomarker.
+      values:
+      - Positive
+      - Negative
+      - Indeterminate
+      - Not Tested
+    - name: percentage
+      type: float
+      description: Quantitative percentage value when applicable (e.g., PD-L1 TPS).
+      required: false
+  description: List of biomarker results, each containing a name, categorical result,
+    and optional quantitative percentage.
+- name: interpretation
+  type: str
+  required: false
+  description: Interpretation or summary of the molecular findings.

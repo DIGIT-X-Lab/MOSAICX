@@ -1,0 +1,124 @@
+name: CervicalSpineMriReport
+description: Schema for cervical spine MRI report with level‑wise findings, prior
+  fusion/hardware context, and structured impression points.
+sections:
+- name: patient_name
+  type: str
+  description: Full name of the patient.
+- name: patient_id
+  type: str
+  description: Identifier assigned to the patient.
+- name: date_of_birth
+  type: str
+  description: Patient's date of birth (e.g., MM/DD/YYYY).
+- name: referring_physician
+  type: str
+  description: Name of the referring physician.
+- name: exam_date
+  type: str
+  description: Date the MRI exam was performed.
+- name: examination
+  type: str
+  description: Type of examination (e.g., MRI Cervical Spine).
+- name: indications
+  type: str
+  description: Clinical indication for the study.
+- name: technique
+  type: str
+  description: Brief description of the imaging technique used.
+- name: comparison
+  type: str
+  description: Reference to any prior imaging studies compared with this exam.
+- name: spinal_cord_status
+  type: enum
+  values:
+  - normal
+  - abnormal
+  - not_assessed
+  description: Overall status of the spinal cord.
+- name: findings
+  type: list
+  item:
+    type: object
+    fields:
+    - name: level
+      type: str
+      description: Spinal level (e.g., C2-3, C3-4).
+    - name: disc_degeneration_severity
+      type: enum
+      description: Severity of disc degeneration at this level.
+      values:
+      - none
+      - mild
+      - moderate
+      - severe
+    - name: disc_bulging
+      type: enum
+      description: Severity of disc bulging.
+      values:
+      - none
+      - mild
+      - moderate
+      - severe
+    - name: central_narrowing
+      type: bool
+      description: Presence of central canal narrowing.
+    - name: neural_foraminal_narrowing
+      type: enum
+      description: Severity of neural foraminal narrowing.
+      values:
+      - none
+      - mild
+      - moderate
+      - severe
+    - name: bony_neural_foraminal_narrowing
+      type: enum
+      description: Severity of bony neural foraminal narrowing.
+      values:
+      - none
+      - mild
+      - moderate
+      - severe
+    - name: prior_fusion
+      type: bool
+      description: True if prior fusion is present at this level.
+    - name: fusion_levels
+      type: list
+      description: Range of vertebral levels that were fused (e.g., ["C4", "C5", "C6",
+        "C7"]).
+      required: false
+      item:
+        type: str
+    - name: hardware_present
+      type: bool
+      description: True if hardware (screws/plate) is present at this level.
+    - name: hardware_type
+      type: enum
+      description: Type of hardware present.
+      required: false
+      values:
+      - none
+      - anterior_screw_plate
+      - other
+    - name: alignment
+      type: enum
+      description: Quality of alignment for any fused segment.
+      required: false
+      values:
+      - good
+      - fair
+      - poor
+    - name: comments
+      type: str
+      description: Additional free‑text comments for the level.
+      required: false
+  description: Level‑wise findings for each cervical segment.
+- name: report_comments
+  type: str
+  required: false
+  description: Optional free‑text comments applicable to the entire report.
+- name: impression
+  type: list
+  item:
+    type: str
+  description: List of impression statements summarizing the study.

@@ -6,7 +6,7 @@ Status: Active
 Owner: Core platform
 Authoritative: Yes (single source of truth for rollout status)
 
-## 0) Canonical Status (Updated 2026-02-25 10:44)
+## 0) Canonical Status (Updated 2026-02-25 08:50)
 
 This file is the canonical status board for DSPy roadmap execution.
 Other plan files are design/history logs and must link here for status.
@@ -121,6 +121,25 @@ Other plan files are design/history logs and must link here for status.
     - Live local `vllm-mlx` evidence:
       - `template create --from-document ... --name RuntimeProbeDocV2` now produced structured `findings: list[object]` with typed nested fields (`level`, `disc_condition(enum)`, `bulge(bool)`, etc.).
       - `extract --template /tmp/runtime_probe_doc_v2.yaml` succeeded and produced 6 structured finding rows with grounded values.
+  - Schema granularity benchmark harness + first full adversarial run (`2026-02-25 08:47`, `SCHEMA-002`):
+    - Added reproducible benchmark harness:
+      - `scripts/run_schema_granularity_benchmark.py`
+      - `tests/datasets/evaluation/schema_granularity_cases.json`
+    - Harness behavior:
+      - Runs baseline (`semantic gate off`) vs hybrid (`semantic gate on + DSPy assessor`) across multiple report styles.
+      - Disables DSPy memory/disk cache for fair mode comparison.
+      - Clears cache paths between case/mode executions.
+      - Persists machine-readable and markdown artifacts.
+    - Full-run artifact:
+      - `docs/runs/2026-02-25-082136-schema-granularity-benchmark/schema_granularity_results.json`
+      - `docs/runs/2026-02-25-082136-schema-granularity-benchmark/schema_granularity_report.md`
+    - Result summary (full 5-case run):
+      - `extraction_success_rate`: baseline `1.00`, hybrid `1.00` (no regression in extraction success).
+      - `semantic_gate_trigger_rate`: baseline `0.00`, hybrid `0.20` (gate exercised on hard case).
+      - Mixed aggregate quality signal (hybrid not uniformly better yet):
+        - `semantic_score_mean`: baseline `0.5872`, hybrid `0.5759`.
+        - `mean_enum_fields`: baseline `1.8`, hybrid `2.6`.
+      - Interpretation: gating is active and improves typing in some scenarios, but robustness is not consistently superior across all cases yet; next step is optimizer-tuned and multi-trial evaluation in `#57`.
 
 - Verify audit recovery gating hardened (`2026-02-24`, `BUG-VER-001`):
   - `mosaicx/verify/audit.py` now attempts Outlines recovery only for structured serialization/JSON parse failures.

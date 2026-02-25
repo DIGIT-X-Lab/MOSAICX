@@ -1,0 +1,62 @@
+name: OncologyFollowUpReport
+description: Schema for an oncology imaging follow‑up report that captures lesion‑level
+  structured findings and categorical assessments.
+sections:
+- name: study_type
+  type: str
+  description: Type of imaging study, e.g., 'CT Abdomen/Pelvis with contrast'.
+- name: modality
+  type: enum
+  values:
+  - CT
+  - MRI
+  - PET
+  - Ultrasound
+  required: false
+  description: Imaging modality used for the study.
+- name: findings
+  type: list
+  item:
+    type: object
+    fields:
+    - name: lesion_number
+      type: int
+      description: Sequential lesion identifier within the report.
+    - name: location
+      type: str
+      description: Anatomical location of the lesion (e.g., 'Liver segment IV', 'Right
+        adrenal').
+    - name: size_mm
+      type: float
+      description: Maximum linear dimension of the lesion in millimeters.
+    - name: assessment
+      type: enum
+      description: Categorical assessment of the lesion.
+      values:
+      - benign
+      - indeterminate
+      - suspicious
+      - stable
+    - name: laterality
+      type: enum
+      description: Laterality of the lesion when applicable.
+      required: false
+      values:
+      - left
+      - right
+      - midline
+  required: false
+  description: List of lesion‑level findings.
+- name: impression
+  type: list
+  item:
+    type: str
+  description: Bullet‑point summary statements of the overall impression.
+- name: recommendation
+  type: str
+  required: false
+  description: Free‑text recommendation for patient management.
+- name: follow_up_interval_months
+  type: int
+  required: false
+  description: Suggested interval until the next follow‑up exam, expressed in months.

@@ -795,3 +795,28 @@ When completing `DSPY-*` items, append:
     - Extraction with this template produced 6 structured rows (including level + boolean/enum signals), not just flat text lists.
 - Remaining blockers:
   - Run a larger adversarial benchmark set and persist before/after schema-granularity metrics in `docs/runs/` for issue `#57`.
+
+### Update 2026-02-25 08:47
+- Tasks completed:
+  - Added benchmark harness for schema granularity comparison across baseline vs hybrid semantic gating.
+  - Added multi-scenario adversarial case set (spine report, oncology lesions, pathology biomarkers, medication list, simple vitals).
+  - Disabled DSPy cache in benchmark path and enforced cache resets between case/mode runs for fair comparison.
+  - Ran full local-LLM benchmark with real `vllm-mlx` inference.
+- Files changed:
+  - `scripts/run_schema_granularity_benchmark.py`
+  - `tests/datasets/evaluation/schema_granularity_cases.json`
+  - `mosaicx/pipelines/schema_gen.py`
+  - `tests/test_schema_gen.py`
+  - `docs/runs/2026-02-25-082136-schema-granularity-benchmark/schema_granularity_results.json`
+  - `docs/runs/2026-02-25-082136-schema-granularity-benchmark/schema_granularity_report.md`
+- Tests run:
+  - `scripts/clear_dspy_cache.sh && PYTHONPATH=. .venv/bin/pytest -q tests/test_schema_gen.py`
+  - `scripts/ensure_vllm_mlx_server.sh && scripts/clear_dspy_cache.sh && PYTHONPATH=. .venv/bin/python scripts/run_schema_granularity_benchmark.py --hybrid-semantic-min-score 0.60`
+- Results:
+  - `tests/test_schema_gen.py` -> `32 passed`.
+  - Benchmark full-run aggregate:
+    - extraction success remained stable (`1.00` baseline, `1.00` hybrid).
+    - hybrid increased enum richness (`mean_enum_fields` `1.8 -> 2.6`) and activated semantic gate on hard cases (`trigger_rate=0.20`).
+    - overall semantic mean was mixed (`0.5872 -> 0.5759`), indicating current gate/assessor policy is not yet consistently superior on every scenario.
+- Remaining blockers:
+  - Tune semantic-gate policy and assessor weighting against this benchmark (multi-trial and optimizer-assisted), then rerun and require net-positive aggregate deltas before closing `#57`.
