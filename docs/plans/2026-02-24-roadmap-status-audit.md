@@ -305,6 +305,12 @@ Other plan files are design/history logs and must link here for status.
   - Live local `vllm-mlx` check on cervical sample:
     - `MRICervicalSpineV3` now renders level findings with canonical levels and human-readable enum values (for example, `C2-C3`, `Disc`, `None`) instead of internal labels/null-heavy output.
 
+- Template create dry-run crash fix (`2026-02-25`, `BUG-TMPL-001`):
+  - `template create --from-radreport` crashed because runtime dry-run tried to extract structured data from template metadata text (not a real medical document).
+  - Fix: moved RadReport metadata to `example_text`, set `document_text=""`, `runtime_dryrun=False` for RadReport path; gated generic path `runtime_dryrun` on `bool(document_text)`.
+  - Validation:
+    - `PYTHONPATH=. .venv/bin/pytest -q tests/test_template_compiler.py tests/test_report.py` -> `56 passed`
+
 - Primary-path guard for verify route semantics (`BUG-QA-001`):
   - Added SDK regression asserting primary `thorough -> audit` route remains explicit and non-fallback:
     - `tests/test_sdk_verify.py::test_thorough_claim_reports_primary_audit_route_without_fallback`
