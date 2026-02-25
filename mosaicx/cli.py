@@ -619,6 +619,10 @@ def extract(
         ctx.exit()
         return
 
+    # --verify-level implies --verify
+    if not do_verify and ctx.get_parameter_source("verify_level") == click.core.ParameterSource.COMMANDLINE:
+        do_verify = True
+
     # Mutual exclusivity: --document and --dir
     if document is not None and directory is not None:
         raise click.UsageError(
@@ -868,7 +872,7 @@ def extract(
         console.print(theme.ok(f"Saved to {output}"))
 
     theme.section("Extracted Data", console)
-    from .cli_display import render_completeness, render_extracted_data, render_metrics
+    from .cli_display import render_completeness, render_extracted_data, render_metrics, render_verification
 
     render_extracted_data(output_data, console)
 
@@ -885,6 +889,9 @@ def extract(
             _extract_model_instance, doc.text, type(_extract_model_instance)
         )
         render_completeness(asdict(comp), console)
+
+    if do_verify and "_verification" in output_data:
+        render_verification(output_data["_verification"], console)
 
     if output is None:
         console.print()

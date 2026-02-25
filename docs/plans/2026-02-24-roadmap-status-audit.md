@@ -59,6 +59,15 @@ Other plan files are design/history logs and must link here for status.
 - Treat all other plan docs in `docs/plans/` as design/history/reference only.
 - If status here conflicts with another file, this file wins.
 
+### Verification CLI display fixes (2026-02-25)
+
+- Fixed missing CLI display for `--verify` / `--verify-level` output:
+  - Added `render_verification()` to `mosaicx/cli_display.py` — themed panel showing verdict, confidence, execution level, field counts, and fallback/downgrade notice
+  - Wired into extract command in `mosaicx/cli.py` after completeness section
+  - Fixed `SpotChecker.forward()` → `SpotChecker()` calls in `mosaicx/verify/spot_check.py` to silence DSPy warning
+  - None-valued template fields now display as dim `missing` instead of being silently skipped
+  - Tests: 3 render_verification cases + None field visibility in `tests/test_cli_display.py`
+
 ### Evidence highlights
 
 - Extract contract propagation baseline completed (`2026-02-25`, `EXTX-01`, issue `#59`):

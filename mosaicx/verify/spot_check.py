@@ -21,6 +21,9 @@ def select_high_risk_fields(extraction: dict[str, Any]) -> list[str]:
     High-risk fields include measurements, severity ratings, staging,
     margins, and diagnoses -- fields where errors have clinical impact.
 
+    For flat dicts (no nested high-risk keys found), selects all non-trivial
+    string fields since any clinical value could be high-risk.
+
     Returns a list of dotted field paths (e.g., "findings[0].measurement").
     """
     paths: list[str] = []
@@ -37,6 +40,18 @@ def select_high_risk_fields(extraction: dict[str, Any]) -> list[str]:
                 _walk(item, f"{prefix}[{i}]")
 
     _walk(extraction, "")
+
+    # For flat/simple extractions with no nested high-risk keys,
+    # select all non-trivial scalar fields for spot-checking.
+    if not paths:
+        for k, v in extraction.items():
+            if isinstance(v, str) and len(v.strip()) >= 10:
+                paths.append(k)
+            elif isinstance(v, (int, float)) and not isinstance(v, bool):
+                paths.append(k)
+        # Cap at 8 fields to keep spot-check focused
+        paths = paths[:8]
+
     return paths
 
 
@@ -156,7 +171,7 @@ def run_spot_check(
 
     checker_cls = _get_dspy_class("SpotChecker")
     checker = checker_cls()
-    result = checker.forward(source_text=source_text, claims=claims)
+    result = checker(source_text=source_text, claims=claims)
     raw_verdicts = str(getattr(result, "verdicts", "") or "")
     return _parse_verdict_payload(
         raw_verdicts,
@@ -172,7 +187,7 @@ def verify_claim_with_llm(
     checker_cls = _get_dspy_class("SpotChecker")
     checker = checker_cls()
     claims = [{"field_path": "claim", "claimed_value": claim}]
-    result = checker.forward(source_text=source_text, claims=claims)
+    result = checker(source_text=source_text, claims=claims)
     raw_verdicts = str(getattr(result, "verdicts", "") or "")
     issues, field_verdicts = _parse_verdict_payload(
         raw_verdicts,

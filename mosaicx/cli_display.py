@@ -51,22 +51,21 @@ def render_extracted_data(data: dict[str, Any], console: Console) -> None:
         return
 
     keys = set(data.keys())
+    # Internal diagnostic keys (planner, contract, provenance, verification)
+    # are saved for -o/--output but should not clutter CLI display.
+    user_keys = {k for k in keys if not k.startswith("_")}
 
-    # Unwrap template mode: {"extracted": {flat dict}}
-    if keys == {"extracted"} and isinstance(data["extracted"], dict):
+    # Unwrap template/schema mode: {"extracted": {flat dict}, "_planner": ..., ...}
+    if "extracted" in user_keys and isinstance(data["extracted"], dict):
         _render_dict_items(data["extracted"], console, depth=0)
-        return
-
-    # Unwrap auto mode: {"extracted": {...}, "inferred_schema": {...}}
-    if "extracted" in keys and "inferred_schema" in keys:
-        if isinstance(data["extracted"], dict):
-            _render_dict_items(data["extracted"], console, depth=0)
-        if isinstance(data["inferred_schema"], dict):
+        if "inferred_schema" in user_keys and isinstance(data.get("inferred_schema"), dict):
             _render_subsection("Inferred Template", data["inferred_schema"], console, depth=0)
         return
 
-    # Mode output (radiology, pathology) — render top-level keys directly
-    _render_dict_items(data, console, depth=0)
+    # Mode output (radiology, pathology) — render top-level keys directly,
+    # but skip internal diagnostic keys.
+    visible = {k: v for k, v in data.items() if not k.startswith("_")}
+    _render_dict_items(visible or data, console, depth=0)
 
 
 # ---------------------------------------------------------------------------
@@ -83,17 +82,15 @@ def _render_dict_items(data: dict[str, Any], console: Console, depth: int) -> No
         if not scalar_buf:
             return
         t = theme.make_clean_table(show_header=False)
-        t.add_column("Key", style=f"bold {theme.CORAL}", no_wrap=True)
-        t.add_column("Value")
+        t.add_column("Key", style=f"bold {theme.CORAL}", max_width=28)
+        t.add_column("Value", ratio=1)
         for k, v in scalar_buf:
             t.add_row(_pretty_key(k), _format_value(v))
         console.print(Padding(t, (0, 0, 0, 2)))
         scalar_buf.clear()
 
     for key, value in data.items():
-        if value is None:
-            continue
-        if isinstance(value, (str, int, float, bool)):
+        if isinstance(value, (str, int, float, bool)) or value is None:
             scalar_buf.append((key, value))
         elif isinstance(value, dict):
             flush_scalars()
@@ -131,11 +128,9 @@ def _render_subsection(key: str, data: dict[str, Any], console: Console, depth: 
     if is_flat:
         theme.section(_pretty_key(key), console, uppercase=False)
         t = theme.make_clean_table(show_header=False)
-        t.add_column("Key", style=f"bold {theme.CORAL}", no_wrap=True)
-        t.add_column("Value")
+        t.add_column("Key", style=f"bold {theme.CORAL}", max_width=28)
+        t.add_column("Value", ratio=1)
         for k, v in data.items():
-            if v is None:
-                continue
             t.add_row(_pretty_key(k), _format_value(v))
         console.print(Padding(t, (0, 0, 0, 2)))
     else:
@@ -226,7 +221,10 @@ def _humanize_enum_like_value(text: str) -> str:
     if not value:
         return value
 
-    looks_internal = "." in value and any(ch.isupper() for ch in value.split(".", 1)[0])
+    # Detect enum-style tokens like "ClassName.member_name" — the part before
+    # the first dot has no spaces (unlike normal sentences ending with periods).
+    first_part = value.split(".", 1)[0]
+    looks_internal = "." in value and " " not in first_part and any(ch.isupper() for ch in first_part)
     if looks_internal:
         value = value.rsplit(".", 1)[-1]
 
@@ -249,7 +247,7 @@ def _humanize_enum_like_value(text: str) -> str:
 def _format_value(val: Any) -> str:
     """Format a value for display."""
     if val is None:
-        return "\u2014"
+        return "[dim]missing[/dim]"
     if isinstance(val, bool):
         return f"[green]Yes[/green]" if val else f"[dim]No[/dim]"
     if isinstance(val, Enum):
@@ -337,6 +335,72 @@ def render_completeness(completeness: dict[str, Any], console: Console) -> None:
     content = "\n".join(lines)
 
     theme.section("Completeness", console)
+    console.print(
+        Panel(
+            content,
+            box=box.ROUNDED,
+            border_style=theme.GREIGE,
+            padding=(0, 1),
+        )
+    )
+
+
+def render_verification(verification: dict[str, Any], console: Console) -> None:
+    """Render a verification panel with verdict, confidence, and level info.
+
+    Parameters
+    ----------
+    verification:
+        Dict as returned by :func:`mosaicx.sdk.verify` and stored under
+        ``_verification`` in extraction output.
+    console:
+        Rich console instance.
+    """
+    from rich import box
+    from rich.panel import Panel
+
+    verdict = verification.get("result", "insufficient_evidence")
+    confidence = verification.get("confidence", 0.0)
+    executed_mode = verification.get("executed_mode", "unknown")
+    requested_mode = verification.get("requested_mode", executed_mode)
+    fallback_used = verification.get("fallback_used", False)
+    field_checks = verification.get("field_checks") or {}
+    verified_fields = field_checks.get("verified", 0)
+    total_fields = field_checks.get("total", 0)
+
+    verdict_color = {
+        "verified": "green",
+        "partially_supported": "yellow",
+        "contradicted": "red",
+        "insufficient_evidence": "yellow",
+    }.get(verdict, "yellow")
+
+    verdict_label = verdict.replace("_", " ")
+    pct = int(confidence * 100)
+
+    lines: list[str] = []
+    lines.append(
+        f"  [{verdict_color}]{verdict_label}[/{verdict_color}]"
+        f" [{theme.GREIGE}]·[/{theme.GREIGE}]"
+        f" [{verdict_color}]{pct}%[/{verdict_color}]"
+        f" [{theme.GREIGE}]confidence[/{theme.GREIGE}]"
+        f"  [{theme.MUTED}]({executed_mode})[/{theme.MUTED}]"
+    )
+    if total_fields:
+        lines.append(
+            f"  [{theme.CORAL}]{verified_fields}/{total_fields}[/{theme.CORAL}]"
+            f" [{theme.GREIGE}]fields verified[/{theme.GREIGE}]"
+        )
+    if fallback_used and requested_mode != executed_mode:
+        lines.append("")
+        lines.append(
+            f"  [{theme.MUTED}]requested {requested_mode},"
+            f" downgraded to {executed_mode}[/{theme.MUTED}]"
+        )
+
+    content = "\n".join(lines)
+
+    theme.section("Verification", console)
     console.print(
         Panel(
             content,
