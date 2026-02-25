@@ -663,3 +663,34 @@ When completing `DSPY-*` items, append:
   - pending
 - Remaining blockers:
   - Continue planner-primacy hardening for broader ambiguous prompts and long-document adversarial set.
+
+### Update 2026-02-25 07:23
+- Tasks completed:
+  - Opened schema robustness tracking issue: `#56 [SCHEMA-001] Robust schema generation with normalize/validate/repair pipeline`.
+  - Implemented deterministic schema normalization + validation before template save.
+  - Added DSPy `BestOfN` candidate selection + repair loop (`RepairSchemaSpec`) in schema generation.
+  - Added Outlines structured recovery path when DSPy JSON parsing fails during schema generation.
+  - Hardened `template create` CLI paths (`--from-json`, `--from-document`, `--describe`, RadReport) to compile-validate generated YAML before writing.
+- Files changed:
+  - `mosaicx/pipelines/schema_gen.py`
+  - `mosaicx/cli.py`
+  - `tests/test_schema_gen.py`
+  - `tests/test_cli_integration.py`
+  - `docs/plans/issue-drafts/SCHEMA-001.md`
+- Tests run:
+  - `PYTHONPATH=. .venv/bin/pytest -q tests/test_schema_gen.py`
+  - `PYTHONPATH=. .venv/bin/pytest -q tests/test_cli_integration.py -k "template_create_from_json"`
+  - `PYTHONPATH=. .venv/bin/pytest -q tests/test_template_compiler.py tests/test_radiology_refine.py tests/test_pathology_refine.py`
+- Results:
+  - Unit/CLI targeted tests pass (`22 passed`, `7 passed`, `12 passed`).
+  - Live local-LLM checks (vLLM-MLX 120B):
+    - `template create --describe ...` => valid template `/tmp/robust_cspine_v4.yaml`.
+    - `template create --from-document ...` => valid template `/tmp/robust_cspine_doc_v4.yaml`.
+    - `extract` with document-derived template succeeded and produced structured JSON.
+  - Known remaining gap:
+    - Highly complex describe-only schemas can still be extraction-fragile (optional list fields may receive string `"None"`); follow-up tracked under issue `#56`.
+- Commit:
+  - pending
+- Remaining blockers:
+  - Add extraction-side coercion/recovery for optional collection fields in generated templates.
+  - Add adversarial integration tests specifically for generated-template extraction robustness.

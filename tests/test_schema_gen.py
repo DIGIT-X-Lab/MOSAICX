@@ -259,3 +259,47 @@ class TestSchemaRefinerSignature:
         assert "current_schema" in sig.input_fields
         assert "instruction" in sig.input_fields
         assert "refined_schema" in sig.output_fields
+
+
+class TestSchemaNormalization:
+    def test_normalize_schema_spec_sanitizes_identifiers_and_types(self):
+        from mosaicx.pipelines.schema_gen import FieldSpec, SchemaSpec, normalize_schema_spec
+
+        spec = SchemaSpec(
+            class_name="123 bad schema",
+            fields=[
+                FieldSpec(name="Patient Name", type="STRING", required=True),
+                FieldSpec(name="Patient Name", type="integer", required=True),
+                FieldSpec(name="Status", type="enum", enum_values=["", "Active", "active"]),
+                FieldSpec(name="Free Form", type="", required=False),
+            ],
+        )
+
+        normalized = normalize_schema_spec(spec)
+        assert normalized.class_name.startswith("Schema")
+        names = [f.name for f in normalized.fields]
+        assert names[0] == "patient_name"
+        assert names[1] == "patient_name_2"
+        assert names[2] == "status"
+        assert names[3] == "free_form"
+        assert normalized.fields[0].type == "str"
+        assert normalized.fields[1].type == "int"
+        assert normalized.fields[2].enum_values == ["Active"]
+        assert normalized.fields[3].type == "str"
+
+    def test_validate_schema_spec_reports_missing_fields(self):
+        from mosaicx.pipelines.schema_gen import SchemaSpec, validate_schema_spec
+
+        spec = SchemaSpec(class_name="ValidName", fields=[])
+        issues = validate_schema_spec(spec)
+        assert any("no fields" in issue.lower() for issue in issues)
+
+    def test_validate_schema_spec_flags_non_canonical_types(self):
+        from mosaicx.pipelines.schema_gen import FieldSpec, SchemaSpec, validate_schema_spec
+
+        spec = SchemaSpec(
+            class_name="MySchema",
+            fields=[FieldSpec(name="x", type="string", required=True)],
+        )
+        issues = validate_schema_spec(spec)
+        assert any("non-canonical type" in issue.lower() for issue in issues)

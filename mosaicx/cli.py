@@ -1073,7 +1073,7 @@ def template_create(
       mosaicx template create --from-json old_schema.json
       mosaicx template create --from-url https://radreport.org/home/50
     """
-    from .schemas.template_compiler import schema_spec_to_template_yaml
+    from .schemas.template_compiler import compile_template, schema_spec_to_template_yaml
 
     sources = sum(x is not None for x in (describe, from_document, from_url, from_radreport, from_json))
     if sources == 0:
@@ -1085,7 +1085,11 @@ def template_create(
 
     # --- Path 1: Convert existing JSON schema to YAML ---
     if from_json is not None:
-        from .pipelines.schema_gen import SchemaSpec
+        from .pipelines.schema_gen import (
+            SchemaSpec,
+            normalize_schema_spec,
+            validate_schema_spec,
+        )
 
         try:
             spec = SchemaSpec.model_validate_json(
@@ -1096,8 +1100,20 @@ def template_create(
 
         if name:
             spec.class_name = name
+        spec = normalize_schema_spec(spec, default_class_name="GeneratedSchema")
+        issues = validate_schema_spec(spec)
+        if issues:
+            issues_preview = "\n".join(f"- {issue}" for issue in issues[:8])
+            raise click.ClickException(
+                "Invalid JSON schema after normalization:\n"
+                f"{issues_preview}"
+            )
 
         yaml_str = schema_spec_to_template_yaml(spec, mode=mode)
+        try:
+            compile_template(yaml_str)
+        except Exception as exc:
+            raise click.ClickException(f"Generated template failed validation: {exc}")
         dest = _save_template_yaml(spec.class_name, yaml_str, output)
         console.print(theme.ok("Template created from JSON schema"))
         console.print(theme.info(f"Name: {spec.class_name}"))
@@ -1148,7 +1164,11 @@ def template_create(
         _check_api_key()
         _configure_dspy()
 
-        from .pipelines.schema_gen import SchemaGenerator
+        from .pipelines.schema_gen import (
+            SchemaGenerator,
+            normalize_schema_spec,
+            validate_schema_spec,
+        )
 
         generator = SchemaGenerator()
         with theme.spinner("Enriching template with LLM... hold my beer", console):
@@ -1164,8 +1184,20 @@ def template_create(
         elif not spec.class_name or spec.class_name == "Schema":
             # Generate a sensible name from the RadReport title
             spec.class_name = re.sub(r"[^a-zA-Z0-9]", "", rr_template.title.title())
+        spec = normalize_schema_spec(spec, default_class_name="GeneratedSchema")
+        issues = validate_schema_spec(spec)
+        if issues:
+            issues_preview = "\n".join(f"- {issue}" for issue in issues[:8])
+            raise click.ClickException(
+                "Generated schema failed validation:\n"
+                f"{issues_preview}"
+            )
 
         yaml_str = schema_spec_to_template_yaml(spec, mode=effective_mode)
+        try:
+            compile_template(yaml_str)
+        except Exception as exc:
+            raise click.ClickException(f"Generated template failed validation: {exc}")
         dest = _save_template_yaml(spec.class_name, yaml_str, output)
 
         console.print(theme.ok("Template created from RadReport"))
@@ -1255,7 +1287,11 @@ def template_create(
 
     _configure_dspy()
 
-    from .pipelines.schema_gen import SchemaGenerator
+    from .pipelines.schema_gen import (
+        SchemaGenerator,
+        normalize_schema_spec,
+        validate_schema_spec,
+    )
 
     generator = SchemaGenerator()
     with theme.spinner("Generating template... hold my beer", console):
@@ -1268,8 +1304,20 @@ def template_create(
     spec = result.schema_spec
     if name:
         spec.class_name = name
+    spec = normalize_schema_spec(spec, default_class_name="GeneratedSchema")
+    issues = validate_schema_spec(spec)
+    if issues:
+        issues_preview = "\n".join(f"- {issue}" for issue in issues[:8])
+        raise click.ClickException(
+            "Generated schema failed validation:\n"
+            f"{issues_preview}"
+        )
 
     yaml_str = schema_spec_to_template_yaml(spec, mode=mode)
+    try:
+        compile_template(yaml_str)
+    except Exception as exc:
+        raise click.ClickException(f"Generated template failed validation: {exc}")
     dest = _save_template_yaml(spec.class_name, yaml_str, output)
 
     console.print(theme.ok("Template created"))

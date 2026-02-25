@@ -635,6 +635,25 @@ class TestTemplateCreate:
         assert result.exit_code != 0
         assert "Invalid" in result.output
 
+    def test_template_create_from_json_normalizes_identifiers(self, runner: CliRunner, tmp_path: Path):
+        json_file = tmp_path / "odd.json"
+        json_file.write_text(
+            '{"class_name":"123 odd schema","description":"test",'
+            '"fields":[{"name":"Patient Name","type":"STRING","description":"x","required":true,"enum_values":null},'
+            '{"name":"Patient Name","type":"integer","description":"y","required":true,"enum_values":null}]}'
+        )
+        output_path = tmp_path / "normalized.yaml"
+        result = runner.invoke(
+            cli,
+            ["template", "create", "--from-json", str(json_file), "--output", str(output_path)],
+        )
+        assert result.exit_code == 0
+        assert output_path.exists()
+        content = output_path.read_text(encoding="utf-8")
+        assert "name: Schema123OddSchema" in content
+        assert "name: patient_name" in content
+        assert "name: patient_name_2" in content
+
     def test_template_create_from_json_with_mode(self, runner: CliRunner, tmp_path: Path, monkeypatch):
         """--mode embeds pipeline mode in the YAML template."""
         monkeypatch.setenv("MOSAICX_HOME_DIR", str(tmp_path))

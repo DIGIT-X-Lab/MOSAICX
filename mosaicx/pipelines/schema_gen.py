@@ -14,6 +14,8 @@ Key components:
 
 from __future__ import annotations
 
+import json
+import logging
 import re
 import shutil
 from datetime import datetime
@@ -22,6 +24,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, List, NamedTuple, Optional
 
 from pydantic import BaseModel, Field, create_model
+
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -85,6 +89,19 @@ _SIMPLE_TYPE_MAP: dict[str, type] = {
 }
 
 _LIST_RE = re.compile(r"^list\[(\w+)\]$", re.IGNORECASE)
+_NON_IDENTIFIER_RE = re.compile(r"[^0-9a-zA-Z_]+")
+_MULTI_UNDERSCORE_RE = re.compile(r"_+")
+
+_TYPE_ALIASES: dict[str, str] = {
+    "string": "str",
+    "text": "str",
+    "integer": "int",
+    "number": "float",
+    "double": "float",
+    "boolean": "bool",
+    "dict": "object",
+    "array": "list[str]",
+}
 
 
 def _build_nested_model(spec: FieldSpec, *, parent_name: str = "") -> type[BaseModel]:
@@ -175,6 +192,197 @@ def _resolve_type(spec: FieldSpec, *, parent_name: str = "") -> type:
         f"Unsupported type string: {spec.type!r} "
         f"(supported: {list(_SIMPLE_TYPE_MAP)} + list[X] + enum)"
     )
+
+
+def _to_snake_case(raw: str, *, default: str) -> str:
+    text = str(raw or "").strip()
+    if not text:
+        return default
+    text = _NON_IDENTIFIER_RE.sub("_", text)
+    text = _MULTI_UNDERSCORE_RE.sub("_", text).strip("_").lower()
+    if not text:
+        return default
+    if text[0].isdigit():
+        text = f"f_{text}"
+    return text
+
+
+def _to_pascal_case(raw: str, *, default: str) -> str:
+    text = str(raw or "").strip()
+    if not text:
+        return default
+    text = _NON_IDENTIFIER_RE.sub(" ", text)
+    parts = [p for p in text.split() if p]
+    if not parts:
+        return default
+    out = "".join(part[:1].upper() + part[1:] for part in parts)
+    if out[0].isdigit():
+        out = f"Schema{out}"
+    return out
+
+
+def _dedupe_name(name: str, used: set[str]) -> str:
+    if name not in used:
+        used.add(name)
+        return name
+    i = 2
+    while f"{name}_{i}" in used:
+        i += 1
+    deduped = f"{name}_{i}"
+    used.add(deduped)
+    return deduped
+
+
+def _normalize_type_string(type_str: str, *, has_fields: bool, has_enum_values: bool) -> str:
+    raw = " ".join(str(type_str or "").strip().lower().split())
+    if not raw:
+        if has_enum_values:
+            return "enum"
+        if has_fields:
+            return "object"
+        return "str"
+
+    raw = _TYPE_ALIASES.get(raw, raw)
+    raw = re.sub(r"\s+", "", raw)
+    raw = raw.replace("array[", "list[")
+
+    if raw == "enum":
+        return "enum" if has_enum_values else "str"
+    if raw in {"object", "dict"}:
+        return "object"
+    if raw in {"list", "array"}:
+        return "list[str]"
+    if raw in _SIMPLE_TYPE_MAP:
+        return raw
+
+    m = re.match(r"^(list)\[(.+)\]$", raw)
+    if m:
+        inner = _TYPE_ALIASES.get(m.group(2), m.group(2))
+        if inner in {"dict", "object"}:
+            return "list[object]"
+        if inner in _SIMPLE_TYPE_MAP:
+            return f"list[{inner}]"
+        return "list[str]"
+
+    if has_enum_values:
+        return "enum"
+    if has_fields:
+        return "object"
+    return "str"
+
+
+def _normalize_enum_values(values: list[str] | None) -> list[str] | None:
+    if not values:
+        return None
+    out: list[str] = []
+    seen: set[str] = set()
+    for v in values:
+        sv = str(v or "").strip()
+        if not sv:
+            continue
+        key = sv.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(sv)
+    return out or None
+
+
+def _normalize_field_spec(field: FieldSpec, *, index: int, used_names: set[str]) -> FieldSpec:
+    base_name = _to_snake_case(field.name, default=f"field_{index}")
+    name = _dedupe_name(base_name, used_names)
+
+    nested_fields = list(field.fields or [])
+    normalized_nested: list[FieldSpec] | None = None
+    if nested_fields:
+        nested_used: set[str] = set()
+        normalized_nested = [
+            _normalize_field_spec(nf, index=i + 1, used_names=nested_used)
+            for i, nf in enumerate(nested_fields)
+        ]
+
+    enum_values = _normalize_enum_values(field.enum_values)
+    normalized_type = _normalize_type_string(
+        field.type,
+        has_fields=bool(normalized_nested),
+        has_enum_values=bool(enum_values),
+    )
+
+    if normalized_type != "enum":
+        enum_values = None
+    if normalized_type not in {"object", "list[object]"}:
+        normalized_nested = None
+
+    desc = " ".join(str(field.description or "").split())
+    return FieldSpec(
+        name=name,
+        type=normalized_type,
+        description=desc,
+        required=bool(field.required),
+        enum_values=enum_values,
+        fields=normalized_nested,
+    )
+
+
+def normalize_schema_spec(spec: SchemaSpec, *, default_class_name: str = "GeneratedSchema") -> SchemaSpec:
+    """Normalize class/field names and type aliases into a compile-safe SchemaSpec."""
+    normalized_class_name = _to_pascal_case(spec.class_name, default=default_class_name)
+    used_names: set[str] = set()
+    normalized_fields = [
+        _normalize_field_spec(field, index=i + 1, used_names=used_names)
+        for i, field in enumerate(spec.fields)
+    ]
+    return SchemaSpec(
+        class_name=normalized_class_name,
+        description=" ".join(str(spec.description or "").split()),
+        fields=normalized_fields,
+    )
+
+
+def validate_schema_spec(spec: SchemaSpec) -> list[str]:
+    """Return structural validation issues for a SchemaSpec."""
+    issues: list[str] = []
+    if not spec.class_name or not re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", spec.class_name):
+        issues.append(f"Invalid class_name: {spec.class_name!r}")
+    if not spec.fields:
+        issues.append("Schema has no fields.")
+
+    def _walk_fields(fields: list[FieldSpec], *, prefix: str = "") -> None:
+        seen: set[str] = set()
+        for field in fields:
+            field_path = f"{prefix}.{field.name}".strip(".")
+            if not field.name or not re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", field.name):
+                issues.append(f"Invalid field name at {field_path or '<root>'}")
+            if field.name in seen:
+                issues.append(f"Duplicate field name: {field_path}")
+            seen.add(field.name)
+
+            normalized_type = _normalize_type_string(
+                field.type,
+                has_fields=bool(field.fields),
+                has_enum_values=bool(field.enum_values),
+            )
+            if field.type != normalized_type:
+                issues.append(
+                    f"Non-canonical type '{field.type}' at {field_path}; expected '{normalized_type}'."
+                )
+            if normalized_type == "enum" and not (field.enum_values or []):
+                issues.append(f"Enum field missing enum_values: {field_path}")
+
+            if normalized_type in {"object", "list[object]"} and field.fields:
+                _walk_fields(list(field.fields), prefix=field_path)
+
+    _walk_fields(list(spec.fields))
+
+    # Deduplicate while preserving order for readable logs.
+    deduped: list[str] = []
+    seen_issues: set[str] = set()
+    for issue in issues:
+        if issue in seen_issues:
+            continue
+        seen_issues.add(issue)
+        deduped.append(issue)
+    return deduped
 
 
 # ---------------------------------------------------------------------------
@@ -441,6 +649,117 @@ def rename_field(spec: SchemaSpec, old_name: str, new_name: str) -> SchemaSpec:
     return spec.model_copy(update={"fields": new_fields})
 
 
+def _schema_quality_score(spec: SchemaSpec) -> float:
+    """Heuristic structural quality score used by BestOfN selection."""
+    issues = validate_schema_spec(spec)
+    total = max(len(spec.fields), 1)
+    typed_fields = sum(1 for f in spec.fields if f.type not in {"str", "string"})
+    enum_fields = sum(1 for f in spec.fields if f.type == "enum" and (f.enum_values or []))
+    required_fields = sum(1 for f in spec.fields if f.required)
+
+    score = 0.0
+    try:
+        compile_schema(spec)
+        score += 0.45
+    except Exception:
+        score += 0.0
+
+    score += min(0.2, (len(spec.fields) / 12.0) * 0.2)
+    score += min(0.15, (typed_fields / total) * 0.15)
+    score += min(0.1, (required_fields / total) * 0.1)
+    score += min(0.1, (enum_fields / total) * 0.1)
+
+    if issues:
+        score *= 0.65
+
+    return max(0.0, min(1.0, score))
+
+
+def _coerce_schema_spec(value: Any) -> SchemaSpec:
+    if isinstance(value, SchemaSpec):
+        return value
+    if isinstance(value, dict):
+        return SchemaSpec.model_validate(value)
+    if isinstance(value, str):
+        return SchemaSpec.model_validate_json(value)
+    raise TypeError(f"Unsupported schema payload type: {type(value).__name__}")
+
+
+def _is_structured_parse_failure(exc: Exception) -> bool:
+    msg = str(exc or "").lower()
+    markers = (
+        "jsonadapter",
+        "adapterparseerror",
+        "cannot be serialized to a json object",
+        "failed to parse lm response",
+    )
+    return any(marker in msg for marker in markers)
+
+
+def _normalize_local_api_base(base_url: str) -> str:
+    return (
+        str(base_url or "")
+        .replace("://localhost", "://127.0.0.1")
+        .replace("://[::1]", "://127.0.0.1")
+    )
+
+
+def _normalize_model_name_for_openai_compatible(model_name: str) -> str:
+    model_name = str(model_name or "").strip()
+    if "/" in model_name:
+        provider, rest = model_name.split("/", 1)
+        if provider.strip().lower() in {"openai", "ollama"} and rest.strip():
+            return rest.strip()
+    return model_name
+
+
+def _recover_schema_with_outlines(
+    *,
+    description: str,
+    example_text: str,
+    document_text: str,
+    error_hint: str,
+) -> SchemaSpec | None:
+    """Recover SchemaSpec via Outlines when DSPy JSON parsing fails."""
+    try:
+        import openai
+        import outlines
+
+        from mosaicx.config import get_config
+        from mosaicx.verify.parse_utils import parse_json_like
+
+        cfg = get_config()
+        base_url = _normalize_local_api_base(str(cfg.api_base or "http://127.0.0.1:8000/v1"))
+        model_name = _normalize_model_name_for_openai_compatible(str(cfg.lm or ""))
+        if not model_name:
+            model_name = "mlx-community/gpt-oss-120b-4bit"
+
+        client = openai.OpenAI(base_url=base_url, api_key=(cfg.api_key or "ollama"))
+        model = outlines.from_openai(client, model_name=model_name)
+        generator = outlines.Generator(model, outlines.json_schema(SchemaSpec))
+        prompt = (
+            "Generate a strict medical extraction SchemaSpec JSON object.\n"
+            "Rules:\n"
+            "- class_name must be PascalCase.\n"
+            "- field names must be snake_case identifiers.\n"
+            "- Allowed types: str, int, float, bool, object, list[X], enum.\n"
+            "- enum requires enum_values.\n"
+            "- list[object]/object may include nested fields.\n"
+            f"Prior parser failure hint: {error_hint}\n\n"
+            f"Description:\n{description[:5000]}\n\n"
+            f"Example text:\n{example_text[:10000]}\n\n"
+            f"Document text:\n{document_text[:20000]}"
+        )
+        raw = generator(prompt, temperature=0.0, max_tokens=1800)
+        parsed = parse_json_like(raw if isinstance(raw, str) else json.dumps(raw, ensure_ascii=False))
+        if parsed is None:
+            return None
+        return SchemaSpec.model_validate(parsed)
+    except Exception as exc:
+        logger.warning("Outlines schema recovery failed: %s", exc)
+        return None
+
+
 def _build_dspy_classes():
     """Lazily define and return DSPy signature/module classes.
 
@@ -480,6 +799,31 @@ def _build_dspy_classes():
             desc="The generated schema specification as a SchemaSpec JSON object"
         )
 
+    class RepairSchemaSpec(dspy.Signature):
+        """Repair an invalid SchemaSpec using explicit validation and compile errors."""
+
+        description: str = dspy.InputField(
+            desc="Original description used for schema generation",
+            default="",
+        )
+        example_text: str = dspy.InputField(
+            desc="Optional example document text used for grounding",
+            default="",
+        )
+        document_text: str = dspy.InputField(
+            desc="Optional full document text used for grounding",
+            default="",
+        )
+        invalid_schema: str = dspy.InputField(
+            desc="Current invalid or weak schema as JSON",
+        )
+        validation_issues: str = dspy.InputField(
+            desc="Line-separated validation issues and compile errors to fix",
+        )
+        repaired_schema: SchemaSpec = dspy.OutputField(
+            desc="A corrected SchemaSpec that resolves the listed issues",
+        )
+
     class SchemaGenerator(dspy.Module):
         """Generate a Pydantic model from a text description.
 
@@ -489,33 +833,116 @@ def _build_dspy_classes():
 
         def __init__(self) -> None:
             super().__init__()
-            self.generate = dspy.ChainOfThought(GenerateSchemaSpec)
+            base_generate = dspy.ChainOfThought(GenerateSchemaSpec)
+            self.generate = base_generate
+            if hasattr(dspy, "BestOfN"):
+                def reward_fn(_args: dict[str, Any], pred: Any) -> float:
+                    try:
+                        candidate = normalize_schema_spec(
+                            _coerce_schema_spec(getattr(pred, "schema_spec", pred))
+                        )
+                    except Exception:
+                        return 0.0
+                    return _schema_quality_score(candidate)
+
+                try:
+                    self.generate = dspy.BestOfN(
+                        module=base_generate,
+                        N=3,
+                        reward_fn=reward_fn,
+                        threshold=0.72,
+                    )
+                except Exception:
+                    self.generate = base_generate
+
+            self.repair = dspy.ChainOfThought(RepairSchemaSpec)
 
         def forward(
             self,
             description: str = "",
             example_text: str = "",
             document_text: str = "",
+            max_repairs: int = 2,
         ) -> dspy.Prediction:
             """Run the schema generation pipeline."""
             from mosaicx.metrics import PipelineMetrics, get_tracker, track_step
 
             metrics = PipelineMetrics()
             tracker = get_tracker()
+            generated: Any = None
+            parse_error: Exception | None = None
+            spec: SchemaSpec | None = None
 
             with track_step(metrics, "Generate schema", tracker):
-                result = self.generate(
-                    description=description,
-                    example_text=example_text,
-                    document_text=document_text,
-                )
+                try:
+                    generated = self.generate(
+                        description=description,
+                        example_text=example_text,
+                        document_text=document_text,
+                    )
+                    spec = normalize_schema_spec(
+                        _coerce_schema_spec(getattr(generated, "schema_spec", generated))
+                    )
+                except Exception as exc:
+                    parse_error = exc
 
-            spec: SchemaSpec = result.schema_spec
-            compiled = compile_schema(spec)
+            if spec is None and parse_error is not None and _is_structured_parse_failure(parse_error):
+                with track_step(metrics, "Schema recovery (Outlines)", tracker):
+                    recovered = _recover_schema_with_outlines(
+                        description=description,
+                        example_text=example_text,
+                        document_text=document_text,
+                        error_hint=str(parse_error),
+                    )
+                    if recovered is not None:
+                        spec = normalize_schema_spec(recovered)
+
+            if spec is None and parse_error is not None:
+                raise parse_error
+            if spec is None:
+                raise ValueError("Schema generation returned no schema specification.")
+
+            issues = validate_schema_spec(spec)
+            compile_error: str | None = None
+            compiled: type[BaseModel] | None = None
+            try:
+                compiled = compile_schema(spec)
+            except Exception as exc:
+                compile_error = str(exc)
+                issues.append(f"compile_error: {compile_error}")
+
+            repairs_remaining = max(0, int(max_repairs))
+            while (issues or compiled is None) and repairs_remaining > 0:
+                repairs_remaining -= 1
+                with track_step(metrics, "Repair schema", tracker):
+                    repair_result = self.repair(
+                        description=description,
+                        example_text=example_text,
+                        document_text=document_text,
+                        invalid_schema=spec.model_dump_json(indent=2),
+                        validation_issues="\n".join(issues[:20]) or "compile failed",
+                    )
+                spec = normalize_schema_spec(
+                    _coerce_schema_spec(getattr(repair_result, "repaired_schema", repair_result))
+                )
+                issues = validate_schema_spec(spec)
+                compile_error = None
+                try:
+                    compiled = compile_schema(spec)
+                except Exception as exc:
+                    compile_error = str(exc)
+                    compiled = None
+                    issues.append(f"compile_error: {compile_error}")
+
+            if compiled is None:
+                joined = "; ".join(issues[:8]) if issues else (compile_error or "unknown error")
+                raise ValueError(f"Schema generation failed after repair attempts: {joined}")
+
             self._last_metrics = metrics
             return dspy.Prediction(
                 schema_spec=spec,
                 compiled_model=compiled,
+                schema_issues=issues,
             )
 
     class RefineSchemaSpec(dspy.Signature):

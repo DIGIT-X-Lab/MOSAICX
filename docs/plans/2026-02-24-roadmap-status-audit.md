@@ -6,7 +6,7 @@ Status: Active
 Owner: Core platform
 Authoritative: Yes (single source of truth for rollout status)
 
-## 0) Canonical Status (Updated 2026-02-24 23:59)
+## 0) Canonical Status (Updated 2026-02-25 07:23)
 
 This file is the canonical status board for DSPy roadmap execution.
 Other plan files are design/history logs and must link here for status.
@@ -19,6 +19,8 @@ Other plan files are design/history logs and must link here for status.
   - legacy bugs: `#17`, `#18`, `#19`
   - current bug fixes: `#51`, `#52`, `#53`, `#54`, `#55`
   - closed duplicates: `#22`, `#27`
+- Open stabilization items:
+  - `#56 [SCHEMA-001] Robust schema generation with normalize/validate/repair pipeline`
 - Closed DSPy capability items:
   - `#36 [DSPY-01] ReAct planner as primary query control-plane`
   - `#37 [DSPY-02] RLM executor robustness for long-document query + verify`
@@ -47,6 +49,23 @@ Other plan files are design/history logs and must link here for status.
 - If status here conflicts with another file, this file wins.
 
 ### Evidence highlights
+
+- Schema robustness hardening (`2026-02-25`, `SCHEMA-001`) implemented and validated:
+  - `mosaicx/pipelines/schema_gen.py` now includes deterministic `normalize_schema_spec` + `validate_schema_spec`.
+  - `SchemaGenerator` now uses `BestOfN` candidate selection when available, plus a repair loop (`RepairSchemaSpec`) with validation/compile feedback.
+  - Added Outlines recovery when DSPy structured parsing fails during schema generation.
+  - `mosaicx/cli.py` `template create` paths (`--from-json`, `--from-document`, `--describe`, RadReport) now normalize+validate schema and compile generated YAML before save.
+  - Regression coverage added:
+    - `tests/test_schema_gen.py`
+    - `tests/test_cli_integration.py` (`template_create_from_json` block)
+  - Validation:
+    - `PYTHONPATH=. .venv/bin/pytest -q tests/test_schema_gen.py` -> `22 passed`
+    - `PYTHONPATH=. .venv/bin/pytest -q tests/test_cli_integration.py -k "template_create_from_json"` -> `7 passed`
+    - `PYTHONPATH=. .venv/bin/pytest -q tests/test_template_compiler.py tests/test_radiology_refine.py tests/test_pathology_refine.py` -> `12 passed`
+  - Live local `vllm-mlx` checks:
+    - `template create --describe ...` -> valid `/tmp/robust_cspine_v4.yaml`
+    - `template create --from-document ...` -> valid `/tmp/robust_cspine_doc_v4.yaml`
+    - extract with document-derived template succeeded and produced structured JSON.
 
 - Verify audit recovery gating hardened (`2026-02-24`, `BUG-VER-001`):
   - `mosaicx/verify/audit.py` now attempts Outlines recovery only for structured serialization/JSON parse failures.
