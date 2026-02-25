@@ -6,7 +6,7 @@ Status: Active
 Owner: Core platform
 Authoritative: Yes (single source of truth for rollout status)
 
-## 0) Canonical Status (Updated 2026-02-25 13:10)
+## 0) Canonical Status (Updated 2026-02-25 12:55)
 
 This file is the canonical status board for DSPy roadmap execution.
 Other plan files are design/history logs and must link here for status.
@@ -195,6 +195,8 @@ Other plan files are design/history logs and must link here for status.
     - validated with local full matrix run: `docs/runs/2026-02-25-121759-hard-test-matrix.md`
   - Added post-fix smoke validation (non-LLM mode) to verify script startup and command logging:
     - `docs/runs/2026-02-25-122302-hard-test-matrix.md`
+  - Added post-EXT-003 full matrix validation (LLM + integration + query-engine integration):
+    - `docs/runs/2026-02-25-124924-hard-test-matrix.md`
   - Added local helpers required by matrix runner:
     - `scripts/ensure_vllm_mlx_server.sh`
     - `scripts/generate_hard_test_fixtures.py`
@@ -215,7 +217,7 @@ Other plan files are design/history logs and must link here for status.
     - `tests/test_extraction_pipeline.py`
     - `tests/test_cli_extract.py`
   - Validation:
-    - `PYTHONPATH=. .venv/bin/pytest -q tests/test_extraction_pipeline.py tests/test_extraction_schema_coercion.py tests/test_template_compiler.py tests/test_schema_gen.py tests/test_cli_extract.py` -> `93 passed`
+    - `PYTHONPATH=. .venv/bin/pytest -q tests/test_extraction_pipeline.py tests/test_extraction_schema_coercion.py tests/test_template_compiler.py tests/test_schema_gen.py tests/test_cli_extract.py` -> `70 passed`
   - Live local `vllm-mlx` check on cervical sample:
     - `MRICervicalSpineV3` now renders level findings with canonical levels and human-readable enum values (for example, `C2-C3`, `Disc`, `None`) instead of internal labels/null-heavy output.
 
