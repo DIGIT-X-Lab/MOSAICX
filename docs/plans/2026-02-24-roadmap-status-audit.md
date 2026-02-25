@@ -6,7 +6,7 @@ Status: Active
 Owner: Core platform
 Authoritative: Yes (single source of truth for rollout status)
 
-## 0) Canonical Status (Updated 2026-02-25 10:48)
+## 0) Canonical Status (Updated 2026-02-25 12:35)
 
 This file is the canonical status board for DSPy roadmap execution.
 Other plan files are design/history logs and must link here for status.
@@ -189,6 +189,11 @@ Other plan files are design/history logs and must link here for status.
 - Hard-test pipeline reliability (`ROADMAP-OPS`):
   - `scripts/run_hard_test_matrix.sh` now enforces DSPy cache clears between major packs and before LLM checks via `scripts/clear_dspy_cache.sh`.
   - Added strict LLM preflight mode (`MOSAICX_HARDTEST_STRICT_LLM=1` default): hard-test run aborts if local model endpoint health-check fails.
+  - Pinned hard-test execution to repository source by exporting `PYTHONPATH=$ROOT_DIR` inside `scripts/run_hard_test_matrix.sh`.
+    - this removes drift where `.venv/bin/mosaicx` could execute stale installed package code instead of current branch code.
+    - validated with local full matrix run: `docs/runs/2026-02-25-121759-hard-test-matrix.md`
+  - Added post-fix smoke validation (non-LLM mode) to verify script startup and command logging:
+    - `docs/runs/2026-02-25-122302-hard-test-matrix.md`
   - Added local helpers required by matrix runner:
     - `scripts/ensure_vllm_mlx_server.sh`
     - `scripts/generate_hard_test_fixtures.py`

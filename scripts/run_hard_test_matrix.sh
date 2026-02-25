@@ -3,6 +3,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT_DIR"
+export PYTHONPATH="$ROOT_DIR${PYTHONPATH:+:$PYTHONPATH}"
 
 RUN_TS="$(date +%Y-%m-%d-%H%M%S)"
 LOG_PATH="docs/runs/${RUN_TS}-hard-test-matrix.md"
@@ -23,6 +24,7 @@ QueryEngine integration enabled: ${QUERY_ENGINE_INT_ENABLED}
 Strict LLM preflight: ${LLM_STRICT}
 
 ## Commands
+- PYTHONPATH: ${PYTHONPATH}
 LOG
 
 run_cmd() {
@@ -68,32 +70,19 @@ clear_dspy_cache() {
 }
 
 llm_preflight() {
-  local attempts=3
-  local delay=2
+  local attempts=6
+  local delay=3
+  local models_timeout=20
+  local chat_timeout=30
   local i
   local models_json
   local model_id
   for ((i=1; i<=attempts; i++)); do
-    models_json="$(curl -sS --max-time 5 http://127.0.0.1:8000/v1/models)" || true
+    models_json="$(curl -sS --max-time "${models_timeout}" http://127.0.0.1:8000/v1/models)" || true
     if [[ -n "${models_json}" ]]; then
-      model_id="$(
-        printf '%s' "${models_json}" | python3 - <<'PY'
-import json
-import sys
-try:
-    payload = json.load(sys.stdin)
-except Exception:
-    print("")
-    raise SystemExit(0)
-data = payload.get("data", []) if isinstance(payload, dict) else []
-if data and isinstance(data[0], dict):
-    print(str(data[0].get("id", "")))
-else:
-    print("")
-PY
-      )"
+      model_id="$(printf '%s' "${models_json}" | jq -r '.data[0].id // empty' 2>/dev/null || true)"
       if [[ -n "${model_id}" ]]; then
-        if curl -sS --max-time 20 http://127.0.0.1:8000/v1/chat/completions \
+        if curl -sS --max-time "${chat_timeout}" http://127.0.0.1:8000/v1/chat/completions \
           -H "Content-Type: application/json" \
           -d "{\"model\":\"${model_id}\",\"messages\":[{\"role\":\"user\",\"content\":\"Say OK\"}],\"temperature\":0,\"max_tokens\":8}" >/dev/null; then
           echo "LLM preflight OK (model=${model_id})" | tee -a "$LOG_PATH"
@@ -102,6 +91,7 @@ PY
       fi
     fi
     if [[ "$i" -lt "$attempts" ]]; then
+      scripts/ensure_vllm_mlx_server.sh >/dev/null 2>&1 || true
       echo "LLM preflight attempt $i failed; retrying in ${delay}s..." | tee -a "$LOG_PATH"
       sleep "$delay"
     fi
@@ -130,9 +120,9 @@ PY
   fi
 
   if [[ "$LLM_ENABLED" == "1" ]]; then
-    echo "- \`curl -sS --max-time 5 http://127.0.0.1:8000/v1/models\`" >> "$LOG_PATH"
+    echo "- \`curl -sS --max-time 20 http://127.0.0.1:8000/v1/models\`" >> "$LOG_PATH"
     echo
-    echo "==> curl -sS --max-time 5 http://127.0.0.1:8000/v1/models"
+    echo "==> curl -sS --max-time 20 http://127.0.0.1:8000/v1/models"
     if llm_preflight; then
       clear_dspy_cache
       run_cmd "curl -sS --max-time 120 http://127.0.0.1:8000/v1/chat/completions -H 'Content-Type: application/json' -d '{\"model\":\"mlx-community/gpt-oss-120b-4bit\",\"messages\":[{\"role\":\"user\",\"content\":\"Say OK\"}],\"temperature\":0,\"max_tokens\":8}'"

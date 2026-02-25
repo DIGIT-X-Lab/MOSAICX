@@ -883,3 +883,31 @@ When completing `DSPY-*` items, append:
     - `extract --template /tmp/schema56_doc_check.yaml` -> `/tmp/schema56_doc_extract.json` (success)
 - Remaining blockers:
   - none for `#56`; ready to close with attached artifacts.
+
+### Update 2026-02-25 12:35
+- Tasks completed:
+  - Fixed hard-test matrix execution drift by pinning runtime to repository code:
+    - `scripts/run_hard_test_matrix.sh` now exports `PYTHONPATH=$ROOT_DIR`.
+  - Fixed markdown log header regression in the same script (removed accidental command substitution in `PYTHONPATH` log line).
+  - Re-ran full local `vllm-mlx` hard matrix after the fix with integration + query-engine integration enabled.
+  - Ran repeated cache-cleared thorough verify stability sweeps:
+    - true-claim (`patient BP is 128/82`) x5
+    - false-claim (`patient BP is 120/82`) x5
+- Files changed:
+  - `scripts/run_hard_test_matrix.sh`
+  - `docs/plans/2026-02-24-roadmap-status-audit.md`
+  - `docs/plans/2026-02-23-sota-execution-memory.md`
+- Tests run:
+  - `scripts/ensure_vllm_mlx_server.sh && scripts/clear_dspy_cache.sh && MOSAICX_HARDTEST_LLM=1 MOSAICX_HARDTEST_INTEGRATION=1 MOSAICX_HARDTEST_QUERY_ENGINE_INT=1 scripts/run_hard_test_matrix.sh`
+  - `MOSAICX_HARDTEST_LLM=0 MOSAICX_HARDTEST_INTEGRATION=0 MOSAICX_HARDTEST_QUERY_ENGINE_INT=0 scripts/run_hard_test_matrix.sh`
+  - repeated `mosaicx verify --level thorough` cache-cleared sweeps (5x true, 5x false).
+- Results:
+  - Full LLM matrix run succeeded with coherent verify outputs and grounded query outputs:
+    - `docs/runs/2026-02-25-121759-hard-test-matrix.md`
+  - Post-fix non-LLM smoke matrix also succeeded:
+    - `docs/runs/2026-02-25-122302-hard-test-matrix.md`
+  - Verify stability sweep outcome:
+    - true-claim runs: consistent `result=verified`, `claim_true=true`, `support_score=1.0`, `executed_mode=audit`, no fallback.
+    - false-claim runs: consistent `result=contradicted`, `claim_true=false`, `support_score=0.0`, `source_value=128/82`, no fallback.
+- Remaining blockers:
+  - none for hard-test runtime drift; matrix now reflects branch code deterministically.
