@@ -46,9 +46,21 @@ def test_sdk_extract_attaches_extraction_contract(monkeypatch):
     class _FakeExtractor:
         def __init__(self, *args, **kwargs):
             self._last_metrics = None
+            self._last_planner = {
+                "planner": "react",
+                "react_used": True,
+                "routes": [{"section": "Document", "strategy": "constrained_extract"}],
+            }
 
         def __call__(self, document_text: str):
-            return SimpleNamespace(extracted={"bp": "128/82"})
+            return SimpleNamespace(
+                extracted={"bp": "128/82"},
+                planner={
+                    "planner": "react",
+                    "react_used": True,
+                    "routes": [{"section": "Document", "strategy": "constrained_extract"}],
+                },
+            )
 
     monkeypatch.setattr("mosaicx.pipelines.extraction.DocumentExtractor", _FakeExtractor)
 
@@ -57,6 +69,8 @@ def test_sdk_extract_attaches_extraction_contract(monkeypatch):
     contract = result["_extraction_contract"]
     assert contract["summary"]["supported"] >= 1
     assert any(r["field"] == "bp" and r["status"] == "supported" for r in contract["field_results"])
+    assert isinstance(result.get("_planner"), dict)
+    assert result["_planner"].get("planner") in {"react", "deterministic_fallback"}
 
 
 def test_cli_extract_output_includes_extraction_contract(monkeypatch, tmp_path):
@@ -79,9 +93,21 @@ def test_cli_extract_output_includes_extraction_contract(monkeypatch, tmp_path):
     class _FakeExtractor:
         def __init__(self, *args, **kwargs):
             self._last_metrics = None
+            self._last_planner = {
+                "planner": "react",
+                "react_used": True,
+                "routes": [{"section": "Document", "strategy": "constrained_extract"}],
+            }
 
         def __call__(self, document_text: str):
-            return SimpleNamespace(extracted={"bp": "128/82"})
+            return SimpleNamespace(
+                extracted={"bp": "128/82"},
+                planner={
+                    "planner": "react",
+                    "react_used": True,
+                    "routes": [{"section": "Document", "strategy": "constrained_extract"}],
+                },
+            )
 
     monkeypatch.setattr("mosaicx.pipelines.extraction.DocumentExtractor", _FakeExtractor)
 
@@ -96,6 +122,8 @@ def test_cli_extract_output_includes_extraction_contract(monkeypatch, tmp_path):
     payload = json.loads(out_path.read_text(encoding="utf-8"))
     assert "_extraction_contract" in payload
     assert payload["_extraction_contract"]["summary"]["supported"] >= 1
+    assert isinstance(payload.get("_planner"), dict)
+    assert payload["_planner"].get("planner") in {"react", "deterministic_fallback"}
 
 
 def test_mcp_extract_document_includes_extraction_contract(monkeypatch):
@@ -106,9 +134,21 @@ def test_mcp_extract_document_includes_extraction_contract(monkeypatch):
     class _FakeExtractor:
         def __init__(self, *args, **kwargs):
             self._last_metrics = None
+            self._last_planner = {
+                "planner": "react",
+                "react_used": True,
+                "routes": [{"section": "Document", "strategy": "constrained_extract"}],
+            }
 
         def __call__(self, document_text: str):
-            return SimpleNamespace(extracted={"bp": "128/82"})
+            return SimpleNamespace(
+                extracted={"bp": "128/82"},
+                planner={
+                    "planner": "react",
+                    "react_used": True,
+                    "routes": [{"section": "Document", "strategy": "constrained_extract"}],
+                },
+            )
 
     monkeypatch.setattr("mosaicx.pipelines.extraction.DocumentExtractor", _FakeExtractor)
 
@@ -116,3 +156,5 @@ def test_mcp_extract_document_includes_extraction_contract(monkeypatch):
     payload = json.loads(raw)
     assert "_extraction_contract" in payload
     assert payload["_extraction_contract"]["summary"]["supported"] >= 1
+    assert isinstance(payload.get("_planner"), dict)
+    assert payload["_planner"].get("planner") in {"react", "deterministic_fallback"}

@@ -243,6 +243,10 @@ def extract_document(
                 extractor = DocumentExtractor(output_schema=template_model)
                 prediction = extractor(document_text=document_text)
                 output: dict[str, Any] = {}
+                planner_diag = (
+                    getattr(prediction, "planner", None)
+                    or getattr(extractor, "_last_planner", None)
+                )
                 if hasattr(prediction, "extracted"):
                     val = prediction.extracted
                     if hasattr(val, "model_dump"):
@@ -253,6 +257,8 @@ def extract_document(
                             )
                     else:
                         output["extracted"] = val
+                if isinstance(planner_diag, dict):
+                    output["_planner"] = planner_diag
                 return _finalize_extract_result(
                     output,
                     metrics=getattr(extractor, "_last_metrics", None),
@@ -299,11 +305,17 @@ def extract_document(
         extractor = DocumentExtractor()
         prediction = extractor(document_text=document_text)
         output: dict[str, Any] = {}
+        planner_diag = (
+            getattr(prediction, "planner", None)
+            or getattr(extractor, "_last_planner", None)
+        )
         if hasattr(prediction, "extracted"):
             val = prediction.extracted
             output["extracted"] = val.model_dump() if hasattr(val, "model_dump") else val
         if hasattr(prediction, "inferred_schema"):
             output["inferred_schema"] = prediction.inferred_schema.model_dump()
+        if isinstance(planner_diag, dict):
+            output["_planner"] = planner_diag
         return _finalize_extract_result(
             output,
             metrics=getattr(extractor, "_last_metrics", None),

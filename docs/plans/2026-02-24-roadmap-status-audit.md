@@ -6,7 +6,7 @@ Status: Active
 Owner: Core platform
 Authoritative: Yes (single source of truth for rollout status)
 
-## 0) Canonical Status (Updated 2026-02-25 19:40)
+## 0) Canonical Status (Updated 2026-02-25 20:10)
 
 This file is the canonical status board for DSPy roadmap execution.
 Other plan files are design/history logs and must link here for status.
@@ -44,9 +44,10 @@ Other plan files are design/history logs and must link here for status.
 - Open DSPy capability rollout items:
   - none
 - Open extract atomic rollout items:
-  - `#60 [EXTX-02]`, `#61 [EXTX-03]`, `#62 [EXTX-04]`, `#63 [EXTX-05]`, `#64 [EXTX-06]`, `#65 [EXTX-07]`, `#66 [EXTX-08]`, `#67 [EXTX-09]`, `#68 [EXTX-10]`
+  - `#61 [EXTX-03]`, `#62 [EXTX-04]`, `#63 [EXTX-05]`, `#64 [EXTX-06]`, `#65 [EXTX-07]`, `#66 [EXTX-08]`, `#67 [EXTX-09]`, `#68 [EXTX-10]`
 - Closed extract atomic rollout items:
   - `#59 [EXTX-01]` Canonical extract contract + fail-closed semantics across CLI/SDK/MCP
+  - `#60 [EXTX-02]` ReAct planner-first section routing for extraction
 
 ### Canonical control note
 
@@ -72,6 +73,25 @@ Other plan files are design/history logs and must link here for status.
     - `PYTHONPATH=. .venv/bin/pytest -q tests/test_mcp_query.py tests/test_mcp_verify.py tests/test_public_api.py -k "extract or verify_output or query_start or query_ask or query_close"` -> `27 passed, 37 deselected`
   - Run artifact:
     - `docs/runs/2026-02-25-extx-01-contract-propagation.md`
+
+- ReAct planner-first extraction routing completed (`2026-02-25`, `EXTX-02`, issue `#60`):
+  - Added planner flow in `mosaicx/pipelines/extraction.py`:
+    - section splitting and complexity hints,
+    - DSPy `ReAct` route planning with deterministic fallback,
+    - routed extraction context composition.
+  - `DocumentExtractor.forward()` now runs explicit `Plan extraction` then `Extract` in both schema and auto modes.
+  - Planner diagnostics are propagated to user-facing outputs:
+    - `mosaicx/cli.py`, `mosaicx/sdk.py`, `mosaicx/mcp_server.py` now emit `_planner`.
+  - Regression coverage:
+    - `tests/test_extraction_pipeline.py`
+    - `tests/test_extract_contract.py`
+  - Validation:
+    - `PYTHONPATH=. .venv/bin/pytest -q tests/test_extraction_pipeline.py tests/test_extract_contract.py tests/test_cli_extract.py tests/test_mcp_server_dspy_config.py tests/test_mcp_query.py tests/test_mcp_verify.py tests/test_public_api.py -k "extract or planner or verify_output or query_start or query_ask or query_close"` -> `51 passed, 39 deselected`
+    - Live local `vllm-mlx` smoke:
+      - `PYTHONPATH=. .venv/bin/mosaicx extract --document tests/datasets/standardize/Sample_Report_Cervical_Spine.pdf --template MRICervicalSpineV3 -o /tmp/mosaicx_extx02_smoke.json`
+      - output `_planner` showed `planner=react`, `react_used=true`.
+  - Run artifact:
+    - `docs/runs/2026-02-25-extx-02-react-routing.md`
 
 - Schema robustness hardening (`2026-02-25`, `SCHEMA-001`) implemented and validated:
   - `mosaicx/pipelines/schema_gen.py` now includes deterministic `normalize_schema_spec` + `validate_schema_spec`.

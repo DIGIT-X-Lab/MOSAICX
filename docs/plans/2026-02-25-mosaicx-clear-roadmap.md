@@ -160,8 +160,8 @@ MOSAICX is "production-grade" only when all are true:
 Execution is tracked by atomic GitHub issues:
 
 1. `#59 [EXTX-01]` Canonical extract contract + fail-closed semantics across CLI/SDK/MCP (`done`)
-2. `#60 [EXTX-02]` ReAct planner-first section routing for extraction (`in_progress`)
-3. `#61 [EXTX-03]` Outlines-first structured extraction with DSPy adapter fallback chain (`todo`)
+2. `#60 [EXTX-02]` ReAct planner-first section routing for extraction (`done`)
+3. `#61 [EXTX-03]` Outlines-first structured extraction with DSPy adapter fallback chain (`in_progress`)
 4. `#62 [EXTX-04]` Selective BestOfN for uncertain extraction sections (`todo`)
 5. `#63 [EXTX-05]` MultiChainComparison adjudication + Refine field-level repair (`todo`)
 6. `#64 [EXTX-06]` Deterministic validators for units/dates/ranges/null semantics (`todo`)

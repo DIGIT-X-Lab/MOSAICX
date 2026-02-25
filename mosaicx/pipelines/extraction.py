@@ -509,6 +509,339 @@ def apply_extraction_contract(
     return output_data
 
 
+_SECTION_HEADER_PATTERN = re.compile(
+    r"^\s*(clinical information|clinical history|history|indication|comparison|technique|"
+    r"procedure information|findings?|impression|diagnosis|assessment|plan|recommendation)s?\s*:?\s*$",
+    flags=re.IGNORECASE,
+)
+
+_SECTION_HEADER_INLINE_PATTERN = re.compile(
+    r"^\s*(clinical information|clinical history|history|indication|comparison|technique|"
+    r"procedure information|findings?|impression|diagnosis|assessment|plan|recommendation)s?\s*:\s+",
+    flags=re.IGNORECASE,
+)
+
+_ALLOWED_ROUTE_STRATEGIES = {"deterministic", "constrained_extract", "heavy_extract", "repair"}
+
+
+def _normalize_section_name(text: str) -> str:
+    cleaned = re.sub(r"[^a-zA-Z0-9]+", "_", str(text or "").strip().lower()).strip("_")
+    return cleaned or "section"
+
+
+def _split_document_sections(document_text: str, *, max_sections: int = 10) -> list[dict[str, str]]:
+    """Split a document into lightweight named sections for route planning."""
+    text = str(document_text or "")
+    if not text.strip():
+        return [{"name": "document", "title": "Document", "text": ""}]
+
+    sections: list[dict[str, str]] = []
+    current_title = "Document"
+    current_lines: list[str] = []
+
+    def _flush() -> None:
+        nonlocal current_lines, current_title
+        block = "\n".join(current_lines).strip()
+        if block:
+            sections.append(
+                {
+                    "name": _normalize_section_name(current_title),
+                    "title": current_title.strip() or "Document",
+                    "text": block,
+                }
+            )
+        current_lines = []
+
+    for line in text.splitlines():
+        stripped = line.strip()
+        is_header = bool(_SECTION_HEADER_PATTERN.match(stripped))
+        if is_header:
+            _flush()
+            header = stripped.rstrip(":").strip()
+            current_title = header.title() if header else "Section"
+            continue
+        current_lines.append(line)
+
+    _flush()
+
+    if not sections:
+        return [{"name": "document", "title": "Document", "text": text.strip()}]
+
+    if len(sections) <= max_sections:
+        return sections
+
+    head = sections[: max_sections - 1]
+    tail = sections[max_sections - 1 :]
+    merged_tail = "\n\n".join(
+        f"{entry['title']}\n{entry['text']}".strip()
+        for entry in tail
+        if str(entry.get("text", "")).strip()
+    ).strip()
+    head.append(
+        {
+            "name": "remaining_sections",
+            "title": "Remaining Sections",
+            "text": merged_tail,
+        }
+    )
+    return head
+
+
+def _section_complexity_hint(text: str) -> str:
+    """Assign an easy/moderate/hard complexity hint for planner context."""
+    sample = str(text or "")
+    token_count = len(sample.split())
+    digit_count = sum(ch.isdigit() for ch in sample)
+    has_units = bool(
+        re.search(r"\b\d+(\.\d+)?\s*(mm|cm|kg|mg|ml|%|x10\^?\d+)\b", sample, flags=re.IGNORECASE)
+    )
+    has_table_like = bool(re.search(r"\b[A-Za-z_]+\s*\|\s*[A-Za-z_]+", sample))
+
+    if token_count <= 70 and digit_count <= 20 and not has_units and not has_table_like:
+        return "easy"
+    if token_count >= 260 or digit_count >= 80 or has_units or has_table_like:
+        return "hard"
+    return "moderate"
+
+
+def _default_strategy_for_hint(hint: str) -> str:
+    hint_norm = str(hint or "").strip().lower()
+    if hint_norm == "easy":
+        return "deterministic"
+    if hint_norm == "moderate":
+        return "constrained_extract"
+    return "heavy_extract"
+
+
+def _normalize_route_strategy(value: Any, *, default: str) -> str:
+    probe = " ".join(str(value or "").strip().lower().split())
+    aliases = {
+        "deterministic": "deterministic",
+        "light": "deterministic",
+        "lightweight": "deterministic",
+        "constrained_extract": "constrained_extract",
+        "constrained": "constrained_extract",
+        "json": "constrained_extract",
+        "heavy_extract": "heavy_extract",
+        "heavy": "heavy_extract",
+        "full": "heavy_extract",
+        "repair": "repair",
+        "retry": "repair",
+        "refine": "repair",
+    }
+    mapped = aliases.get(probe, "")
+    if mapped in _ALLOWED_ROUTE_STRATEGIES:
+        return mapped
+    return default
+
+
+def _plan_section_routes_with_react(
+    *,
+    schema_name: str,
+    sections: list[dict[str, str]],
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Plan section-level extraction routes using DSPy ReAct when available."""
+    fallback_routes = [
+        {
+            "section": sec["title"],
+            "name": sec["name"],
+            "complexity": _section_complexity_hint(sec.get("text", "")),
+            "strategy": _default_strategy_for_hint(_section_complexity_hint(sec.get("text", ""))),
+            "reason": "deterministic fallback",
+        }
+        for sec in sections
+    ]
+
+    try:
+        from mosaicx.runtime_env import import_dspy
+
+        dspy = import_dspy()
+    except Exception as exc:
+        return fallback_routes, {
+            "planner": "deterministic_fallback",
+            "react_used": False,
+            "fallback_reason": f"dspy_import_failed: {type(exc).__name__}",
+        }
+
+    if getattr(dspy.settings, "lm", None) is None:
+        return fallback_routes, {
+            "planner": "deterministic_fallback",
+            "react_used": False,
+            "fallback_reason": "lm_not_configured",
+        }
+
+    section_map = {sec["name"]: sec for sec in sections}
+    section_descriptors = [
+        {
+            "name": sec["name"],
+            "title": sec["title"],
+            "chars": len(sec.get("text", "")),
+            "complexity": _section_complexity_hint(sec.get("text", "")),
+        }
+        for sec in sections
+    ]
+
+    def list_sections() -> list[dict[str, Any]]:
+        """List section descriptors with complexity hints."""
+        return section_descriptors
+
+    def read_section(name: str) -> str:
+        """Read a section preview by section name."""
+        sec = section_map.get(str(name or "").strip())
+        if sec is None:
+            return ""
+        body = str(sec.get("text", ""))
+        return body[:1800]
+
+    class _RouteSig(dspy.Signature):
+        schema_name: str = dspy.InputField(desc="Target schema class name")
+        section_name: str = dspy.InputField(desc="Section identifier")
+        section_preview: str = dspy.InputField(desc="Preview of section text")
+        complexity_hint: str = dspy.InputField(desc="easy|moderate|hard")
+        strategy: str = dspy.OutputField(
+            desc="deterministic|constrained_extract|heavy_extract|repair"
+        )
+        reason: str = dspy.OutputField(desc="Short route justification")
+
+    tools = [
+        dspy.Tool(list_sections, name="list_sections", desc="List available extraction sections."),
+        dspy.Tool(read_section, name="read_section", desc="Read section preview by name."),
+    ]
+
+    try:
+        react = dspy.ReAct(_RouteSig, tools=tools, max_iters=4)
+    except Exception as exc:
+        return fallback_routes, {
+            "planner": "deterministic_fallback",
+            "react_used": False,
+            "fallback_reason": f"react_init_failed: {type(exc).__name__}",
+        }
+
+    routes: list[dict[str, Any]] = []
+    for sec in sections:
+        section_text = str(sec.get("text", ""))
+        hint = _section_complexity_hint(section_text)
+        default_strategy = _default_strategy_for_hint(hint)
+        try:
+            pred = react(
+                schema_name=schema_name,
+                section_name=sec["name"],
+                section_preview=section_text[:1200],
+                complexity_hint=hint,
+            )
+            strategy = _normalize_route_strategy(
+                getattr(pred, "strategy", ""),
+                default=default_strategy,
+            )
+            reason = str(getattr(pred, "reason", "") or "").strip() or "react_planner"
+        except Exception as exc:
+            strategy = default_strategy
+            reason = f"react_error:{type(exc).__name__}"
+
+        routes.append(
+            {
+                "section": sec["title"],
+                "name": sec["name"],
+                "complexity": hint,
+                "strategy": strategy,
+                "reason": reason,
+            }
+        )
+
+    return routes, {
+        "planner": "react",
+        "react_used": True,
+        "fallback_reason": None,
+    }
+
+
+def _compose_routed_document_text(
+    *,
+    original_text: str,
+    sections: list[dict[str, str]],
+    routes: list[dict[str, Any]],
+) -> tuple[str, dict[str, Any]]:
+    """Compose planned extraction context from section routes."""
+    route_map = {
+        str(route.get("name") or ""): str(route.get("strategy") or "heavy_extract")
+        for route in routes
+    }
+    parts: list[str] = []
+    summary_counts = {k: 0 for k in _ALLOWED_ROUTE_STRATEGIES}
+
+    for sec in sections:
+        body = str(sec.get("text", ""))
+        if not body.strip():
+            continue
+        strategy = _normalize_route_strategy(
+            route_map.get(sec["name"], "heavy_extract"),
+            default="heavy_extract",
+        )
+        summary_counts[strategy] += 1
+
+        if strategy == "deterministic":
+            chunk = body[:500]
+        elif strategy == "constrained_extract":
+            chunk = body[:2000]
+        else:
+            chunk = body
+
+        inline_match = _SECTION_HEADER_INLINE_PATTERN.match(chunk)
+        if inline_match:
+            chunk = chunk[inline_match.end() :]
+
+        rendered = f"{sec['title']}:\n{chunk.strip()}".strip()
+        if rendered:
+            parts.append(rendered)
+
+    planned = "\n\n".join(parts).strip()
+    if not planned:
+        planned = str(original_text or "")
+
+    original_chars = len(str(original_text or ""))
+    planned_chars = len(planned)
+    compression_ratio = float(planned_chars / original_chars) if original_chars else 1.0
+
+    return planned, {
+        "strategy_counts": summary_counts,
+        "original_chars": original_chars,
+        "planned_chars": planned_chars,
+        "compression_ratio": compression_ratio,
+    }
+
+
+def _plan_extraction_document_text(
+    *,
+    document_text: str,
+    schema_name: str,
+) -> tuple[str, dict[str, Any]]:
+    """Plan extraction context using section routes, preferring DSPy ReAct."""
+    sections = _split_document_sections(document_text)
+    routes, planner_meta = _plan_section_routes_with_react(
+        schema_name=schema_name,
+        sections=sections,
+    )
+    planned_text, plan_stats = _compose_routed_document_text(
+        original_text=document_text,
+        sections=sections,
+        routes=routes,
+    )
+    diagnostics = {
+        **planner_meta,
+        **plan_stats,
+        "sections": [
+            {
+                "name": sec["name"],
+                "title": sec["title"],
+                "chars": len(sec.get("text", "")),
+            }
+            for sec in sections
+        ],
+        "routes": routes,
+    }
+    return planned_text, diagnostics
+
+
 def _recover_schema_instance_with_outlines(
     *,
     document_text: str,
@@ -672,15 +1005,41 @@ def _build_dspy_classes():
 
             metrics = PipelineMetrics()
             tracker = get_tracker()
+            planner_diag: dict[str, Any] = {
+                "planner": "deterministic_fallback",
+                "react_used": False,
+                "fallback_reason": "planner_not_run",
+                "original_chars": len(str(document_text or "")),
+                "planned_chars": len(str(document_text or "")),
+                "compression_ratio": 1.0,
+                "strategy_counts": {k: 0 for k in _ALLOWED_ROUTE_STRATEGIES},
+                "sections": [],
+                "routes": [],
+                "full_text_rescue_used": False,
+            }
 
             if hasattr(self, "extract_custom") and not hasattr(self, "infer_schema"):
                 # Schema mode: single step
                 schema = self._output_schema
                 assert schema is not None
 
-                with track_step(metrics, "Extract", tracker):
+                planned_text = document_text
+                with track_step(metrics, "Plan extraction", tracker):
                     try:
-                        result = self.extract_custom(document_text=document_text)
+                        planned_text, planner_diag = _plan_extraction_document_text(
+                            document_text=document_text,
+                            schema_name=schema.__name__,
+                        )
+                    except Exception as plan_exc:
+                        planner_diag = {
+                            **planner_diag,
+                            "fallback_reason": f"planner_error:{type(plan_exc).__name__}",
+                        }
+                        planned_text = document_text
+
+                with track_step(metrics, "Extract", tracker):
+                    def _extract_primary(text_value: str) -> BaseModel:
+                        result = self.extract_custom(document_text=text_value)
                         extracted = getattr(result, "extracted", result)
                         if isinstance(extracted, schema):
                             extracted_payload: Any = extracted.model_dump()
@@ -693,27 +1052,54 @@ def _build_dspy_classes():
 
                         if isinstance(extracted_payload, dict):
                             coerced = _coerce_payload_to_schema(extracted_payload, schema)
-                            model_instance = schema.model_validate(coerced)
-                        else:
-                            model_instance = schema.model_validate(extracted_payload)
+                            return schema.model_validate(coerced)
+                        return schema.model_validate(extracted_payload)
+
+                    def _extract_json(text_value: str) -> BaseModel:
+                        fallback = self.extract_json_fallback(document_text=text_value)
+                        return _recover_schema_instance_from_raw(
+                            getattr(fallback, "extracted_json", ""),
+                            schema,
+                        )
+
+                    try:
+                        model_instance = _extract_primary(planned_text)
                     except Exception as primary_exc:
                         try:
-                            fallback = self.extract_json_fallback(document_text=document_text)
-                            model_instance = _recover_schema_instance_from_raw(
-                                getattr(fallback, "extracted_json", ""),
-                                schema,
-                            )
+                            model_instance = _extract_json(planned_text)
                         except Exception as fallback_exc:
-                            recovered = _recover_schema_instance_with_outlines(
-                                document_text=document_text,
-                                schema_class=schema,
-                                error_hint=f"primary={primary_exc}; fallback={fallback_exc}",
-                            )
-                            if recovered is None:
-                                raise fallback_exc from primary_exc
-                            model_instance = recovered
+                            if planned_text != document_text:
+                                planner_diag["full_text_rescue_used"] = True
+                                try:
+                                    model_instance = _extract_primary(document_text)
+                                except Exception as full_primary_exc:
+                                    try:
+                                        model_instance = _extract_json(document_text)
+                                    except Exception as full_fallback_exc:
+                                        recovered = _recover_schema_instance_with_outlines(
+                                            document_text=document_text,
+                                            schema_class=schema,
+                                            error_hint=(
+                                                f"primary={full_primary_exc}; "
+                                                f"fallback={full_fallback_exc}"
+                                            ),
+                                        )
+                                        if recovered is None:
+                                            raise full_fallback_exc from full_primary_exc
+                                        model_instance = recovered
+                            else:
+                                recovered = _recover_schema_instance_with_outlines(
+                                    document_text=document_text,
+                                    schema_class=schema,
+                                    error_hint=f"primary={primary_exc}; fallback={fallback_exc}",
+                                )
+                                if recovered is None:
+                                    raise fallback_exc from primary_exc
+                                model_instance = recovered
+                planner_diag["planned_text_used"] = planned_text != document_text
                 self._last_metrics = metrics
-                return dspy.Prediction(extracted=model_instance)
+                self._last_planner = planner_diag
+                return dspy.Prediction(extracted=model_instance, planner=planner_diag)
 
             # Auto mode: infer schema, compile, extract
             with track_step(metrics, "Infer schema", tracker):
@@ -740,14 +1126,30 @@ def _build_dspy_classes():
                 type_=model,
             )
             extract_step = dspy.ChainOfThought(extract_sig)
+            planned_text = document_text
+            with track_step(metrics, "Plan extraction", tracker):
+                try:
+                    planned_text, planner_diag = _plan_extraction_document_text(
+                        document_text=document_text,
+                        schema_name=model.__name__,
+                    )
+                except Exception as plan_exc:
+                    planner_diag = {
+                        **planner_diag,
+                        "fallback_reason": f"planner_error:{type(plan_exc).__name__}",
+                    }
+                    planned_text = document_text
             with track_step(metrics, "Extract", tracker):
-                result = extract_step(document_text=document_text)
+                result = extract_step(document_text=planned_text)
+            planner_diag["planned_text_used"] = planned_text != document_text
 
             self._last_metrics = metrics
+            self._last_planner = planner_diag
 
             return dspy.Prediction(
                 extracted=result.extracted,
                 inferred_schema=spec,
+                planner=planner_diag,
             )
 
     return {

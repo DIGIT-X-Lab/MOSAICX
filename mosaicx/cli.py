@@ -752,6 +752,7 @@ def extract(
             with theme.spinner("Extracting... patience you must have", console):
                 result = extractor(document_text=doc.text)
             output_data = {}
+            planner_diag = getattr(result, "planner", None) or getattr(extractor, "_last_planner", None)
             if hasattr(result, "extracted"):
                 val = result.extracted
                 if hasattr(val, "model_dump"):
@@ -759,6 +760,8 @@ def extract(
                     output_data["extracted"] = val.model_dump()
                 else:
                     output_data["extracted"] = val
+            if isinstance(planner_diag, dict):
+                output_data["_planner"] = planner_diag
             metrics = getattr(extractor, "_last_metrics", None)
         else:
             # Template resolved but no model and no mode -- shouldn't happen
@@ -809,6 +812,7 @@ def extract(
         with theme.spinner("Extracting... patience you must have", console):
             result = extractor(document_text=doc.text)
         output_data = {}
+        planner_diag = getattr(result, "planner", None) or getattr(extractor, "_last_planner", None)
         if hasattr(result, "extracted"):
             val = result.extracted
             if hasattr(val, "model_dump"):
@@ -818,6 +822,8 @@ def extract(
                 output_data["extracted"] = val
         if hasattr(result, "inferred_schema"):
             output_data["inferred_schema"] = result.inferred_schema.model_dump()
+        if isinstance(planner_diag, dict):
+            output_data["_planner"] = planner_diag
         metrics = getattr(extractor, "_last_metrics", None)
 
     if provenance:

@@ -1166,6 +1166,7 @@ def _extract_single_text(
                 extractor = load_optimized(DocumentExtractor, Path(optimized))
             result = extractor(document_text=text)
             output: dict[str, Any] = {}
+            planner_diag = getattr(result, "planner", None) or getattr(extractor, "_last_planner", None)
             if hasattr(result, "extracted"):
                 val = result.extracted
                 if hasattr(val, "model_dump"):
@@ -1176,6 +1177,8 @@ def _extract_single_text(
                         )
                 else:
                     output["extracted"] = val
+            if isinstance(planner_diag, dict):
+                output["_planner"] = planner_diag
             return _finalize_output(
                 output,
                 pipeline="extraction",
@@ -1234,12 +1237,15 @@ def _extract_single_text(
 
     result = extractor(document_text=text)
     output: dict[str, Any] = {}
+    planner_diag = getattr(result, "planner", None) or getattr(extractor, "_last_planner", None)
 
     if hasattr(result, "extracted"):
         val = result.extracted
         output["extracted"] = val.model_dump() if hasattr(val, "model_dump") else val
     if hasattr(result, "inferred_schema"):
         output["inferred_schema"] = result.inferred_schema.model_dump()
+    if isinstance(planner_diag, dict):
+        output["_planner"] = planner_diag
 
     return _finalize_output(
         output,
