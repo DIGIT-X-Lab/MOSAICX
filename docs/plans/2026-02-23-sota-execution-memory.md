@@ -737,3 +737,27 @@ When completing `DSPY-*` items, append:
   - pending
 - Remaining blockers:
   - Apply runtime-gated scoring to describe-only generation through synthetic probes/adversarial benchmark, since no source document is provided there.
+
+### Update 2026-02-25 10:12
+- Tasks completed:
+  - Closed the describe-only runtime validation gap in schema generation (`#56`).
+  - Added deterministic synthetic probe generation for runtime dry-runs when `document_text` is absent.
+  - Enabled runtime dry-run in all LLM template-create paths (RadReport + generic LLM flow), while preserving real-document preference when available.
+- Files changed:
+  - `mosaicx/pipelines/schema_gen.py`
+  - `mosaicx/cli.py`
+  - `tests/test_schema_gen.py`
+  - `docs/plans/2026-02-24-roadmap-status-audit.md`
+- Tests run:
+  - `scripts/clear_dspy_cache.sh && PYTHONPATH=. .venv/bin/pytest -q tests/test_schema_gen.py`
+  - `PYTHONPATH=. .venv/bin/pytest -q tests/test_cli_integration.py -k "template_create"`
+- Results:
+  - Schema test suite: `27 passed`.
+  - CLI template-create subset: `9 passed`.
+  - Live local-LLM (`vllm-mlx`) validation:
+    - `template create --describe ... --name RuntimeProbeTmp --output /tmp/runtime_probe_tmp.yaml` succeeded.
+    - Output template included structured object nesting (`blood_pressure.systolic/diastolic`) and saved successfully.
+- Commit:
+  - pending
+- Remaining blockers:
+  - Run adversarial synthetic benchmark set for describe-only schema generation and attach before/after metrics to `#56`.

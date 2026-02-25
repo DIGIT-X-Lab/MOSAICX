@@ -696,6 +696,77 @@ def _is_blank_payload_value(value: Any) -> bool:
     return False
 
 
+def _sample_probe_value_for_field(field: FieldSpec, *, depth: int = 0) -> Any:
+    """Build a deterministic sample value for runtime probe text."""
+    if depth >= 3:
+        return "value"
+
+    t = _normalize_type_string(
+        field.type,
+        has_fields=bool(field.fields),
+        has_enum_values=bool(field.enum_values),
+    )
+    if t == "enum":
+        return (field.enum_values or ["unknown"])[0]
+    if t == "bool":
+        return True
+    if t == "int":
+        return 1
+    if t == "float":
+        return 1.0
+    if t == "object":
+        nested = {}
+        for nested_field in field.fields or []:
+            nested[nested_field.name] = _sample_probe_value_for_field(
+                nested_field,
+                depth=depth + 1,
+            )
+        return nested
+    if t.startswith("list["):
+        inner = t[5:-1].strip().lower()
+        if inner == "object":
+            first_item = {}
+            for nested_field in field.fields or []:
+                first_item[nested_field.name] = _sample_probe_value_for_field(
+                    nested_field,
+                    depth=depth + 1,
+                )
+            return [first_item or {"item": "value"}]
+        if inner == "int":
+            return [1, 2]
+        if inner == "float":
+            return [1.0, 2.0]
+        if inner == "bool":
+            return [True, False]
+        return ["value_a", "value_b"]
+    return "value"
+
+
+def _build_synthetic_runtime_probe_text(
+    spec: SchemaSpec,
+    *,
+    description: str = "",
+    example_text: str = "",
+) -> str:
+    """Create synthetic source text so describe-only generation can be runtime-gated."""
+    payload = {}
+    for field in spec.fields:
+        payload[field.name] = _sample_probe_value_for_field(field)
+
+    blocks: list[str] = [
+        "Synthetic document for schema runtime validation.",
+        "This payload provides explicit key-value evidence for all schema fields.",
+        f"Schema class: {spec.class_name}",
+    ]
+    if str(description or "").strip():
+        blocks.append(f"Schema description: {str(description).strip()[:1200]}")
+    if str(example_text or "").strip():
+        blocks.append(f"Example context: {str(example_text).strip()[:2000]}")
+    blocks.append("Structured sample payload:")
+    blocks.append(json.dumps(payload, indent=2, ensure_ascii=False))
+    return "\n\n".join(blocks)
+
+
 def _runtime_validate_schema(
     spec: SchemaSpec,
     *,
@@ -968,11 +1039,17 @@ def _build_dspy_classes():
                 structural_issues.append(f"compile_error: {compile_error}")
 
             runtime_issues: list[str] = []
-            runtime_enabled = bool(runtime_dryrun and str(document_text or "").strip())
+            runtime_enabled = bool(runtime_dryrun)
+            runtime_source_text = str(document_text or "").strip()
             if runtime_enabled and compiled is not None:
+                runtime_probe_text = runtime_source_text or _build_synthetic_runtime_probe_text(
+                    spec,
+                    description=description,
+                    example_text=example_text,
+                )
                 runtime_ok, runtime_issues = _runtime_validate_schema(
                     spec,
-                    document_text=document_text,
+                    document_text=runtime_probe_text,
                     missing_required_threshold=runtime_missing_required_threshold,
                 )
                 if not runtime_ok and runtime_issues:
@@ -1006,9 +1083,14 @@ def _build_dspy_classes():
 
                 runtime_issues = []
                 if runtime_enabled and compiled is not None:
+                    runtime_probe_text = runtime_source_text or _build_synthetic_runtime_probe_text(
+                        spec,
+                        description=description,
+                        example_text=example_text,
+                    )
                     runtime_ok, runtime_issues = _runtime_validate_schema(
                         spec,
-                        document_text=document_text,
+                        document_text=runtime_probe_text,
                         missing_required_threshold=runtime_missing_required_threshold,
                     )
                     if not runtime_ok and runtime_issues:

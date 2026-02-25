@@ -6,7 +6,7 @@ Status: Active
 Owner: Core platform
 Authoritative: Yes (single source of truth for rollout status)
 
-## 0) Canonical Status (Updated 2026-02-25 07:23)
+## 0) Canonical Status (Updated 2026-02-25 10:12)
 
 This file is the canonical status board for DSPy roadmap execution.
 Other plan files are design/history logs and must link here for status.
@@ -89,6 +89,20 @@ Other plan files are design/history logs and must link here for status.
     - Live local `vllm-mlx` verification:
       - `template create --from-document ... --name RobustCSpineDocV5` generated a richer 17-field schema.
       - `extract --template /tmp/robust_cspine_doc_v5.yaml` succeeded with grounded structured output.
+  - Describe-only runtime gate completion (`2026-02-25 10:12`):
+    - `mosaicx/pipelines/schema_gen.py` now synthesizes deterministic runtime probe text when no source document is provided and `runtime_dryrun=True`.
+    - Runtime validation is now enabled for describe-only schema generation (no document required), and still prefers real document text when available.
+    - `mosaicx/cli.py` now enables runtime dry-run for all LLM `template create` paths (RadReport and generic `--describe/--from-document/--from-url` flow).
+    - Regression coverage added:
+      - `tests/test_schema_gen.py`:
+        - synthetic probe payload construction
+        - describe-only runtime dry-run path
+        - runtime preference for real source text
+    - Validation:
+      - `scripts/clear_dspy_cache.sh && PYTHONPATH=. .venv/bin/pytest -q tests/test_schema_gen.py` -> `27 passed`
+      - `PYTHONPATH=. .venv/bin/pytest -q tests/test_cli_integration.py -k "template_create"` -> `9 passed`
+    - Live local `vllm-mlx` check:
+      - `template create --describe ... --name RuntimeProbeTmp --output /tmp/runtime_probe_tmp.yaml` succeeded (`6,145 tokens`, `36.9s`) and produced a valid template.
 
 - Verify audit recovery gating hardened (`2026-02-24`, `BUG-VER-001`):
   - `mosaicx/verify/audit.py` now attempts Outlines recovery only for structured serialization/JSON parse failures.

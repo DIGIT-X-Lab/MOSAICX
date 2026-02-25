@@ -1176,6 +1176,7 @@ def template_create(
                 description=rr_description,
                 example_text="",
                 document_text=llm_context,
+                runtime_dryrun=True,
             )
 
         spec = result.schema_spec
@@ -1294,7 +1295,7 @@ def template_create(
     )
 
     generator = SchemaGenerator()
-    runtime_dryrun = from_document is not None
+    runtime_dryrun = True
     with theme.spinner("Generating template... hold my beer", console):
         result = generator(
             description=description,

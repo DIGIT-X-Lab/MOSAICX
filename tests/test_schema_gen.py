@@ -361,3 +361,100 @@ class TestSchemaNormalization:
         ok, issues = _runtime_validate_schema(spec, document_text="report text")
         assert ok is False
         assert any("runtime_missing_required_fields" in issue for issue in issues)
+
+    def test_build_synthetic_runtime_probe_contains_schema_payload(self):
+        from mosaicx.pipelines.schema_gen import (
+            FieldSpec,
+            SchemaSpec,
+            _build_synthetic_runtime_probe_text,
+        )
+
+        spec = SchemaSpec(
+            class_name="ProbeSchema",
+            fields=[
+                FieldSpec(name="patient_id", type="str", required=True),
+                FieldSpec(name="severity", type="enum", enum_values=["mild", "severe"], required=True),
+                FieldSpec(
+                    name="level_findings",
+                    type="list[object]",
+                    required=True,
+                    fields=[
+                        FieldSpec(name="level", type="str", required=True),
+                        FieldSpec(name="stenosis", type="enum", enum_values=["none", "mild"], required=True),
+                    ],
+                ),
+            ],
+        )
+
+        probe = _build_synthetic_runtime_probe_text(
+            spec,
+            description="C-spine MRI report",
+            example_text="Disc bulge at C3-C4.",
+        )
+        assert "Synthetic document for schema runtime validation." in probe
+        assert '"patient_id"' in probe
+        assert '"severity"' in probe
+        assert '"level_findings"' in probe
+        assert "Schema description: C-spine MRI report" in probe
+
+    def test_schema_generator_runtime_dryrun_uses_synthetic_probe_when_no_document(self, monkeypatch):
+        from types import SimpleNamespace
+
+        import mosaicx.pipelines.schema_gen as schema_mod
+        from mosaicx.pipelines.schema_gen import FieldSpec, SchemaGenerator, SchemaSpec
+
+        spec = SchemaSpec(
+            class_name="RuntimeProbeSchema",
+            fields=[FieldSpec(name="patient_id", type="str", required=True)],
+        )
+        generator = SchemaGenerator()
+        generator.generate = lambda **_: SimpleNamespace(schema_spec=spec)
+        generator.repair = lambda **_: SimpleNamespace(repaired_schema=spec)
+
+        captured: dict[str, str] = {}
+
+        def fake_runtime_validate(candidate, *, document_text, missing_required_threshold=0.5):  # noqa: ANN001
+            captured["document_text"] = str(document_text)
+            captured["threshold"] = str(missing_required_threshold)
+            return True, []
+
+        monkeypatch.setattr(schema_mod, "_runtime_validate_schema", fake_runtime_validate)
+
+        out = generator.forward(
+            description="Simple patient ID extraction",
+            document_text="",
+            runtime_dryrun=True,
+        )
+        assert out.runtime_dryrun_used is True
+        assert "Synthetic document for schema runtime validation." in captured["document_text"]
+        assert '"patient_id"' in captured["document_text"]
+
+    def test_schema_generator_runtime_dryrun_prefers_real_document_text(self, monkeypatch):
+        from types import SimpleNamespace
+
+        import mosaicx.pipelines.schema_gen as schema_mod
+        from mosaicx.pipelines.schema_gen import FieldSpec, SchemaGenerator, SchemaSpec
+
+        spec = SchemaSpec(
+            class_name="RuntimeProbeSchema",
+            fields=[FieldSpec(name="patient_id", type="str", required=True)],
+        )
+        generator = SchemaGenerator()
+        generator.generate = lambda **_: SimpleNamespace(schema_spec=spec)
+        generator.repair = lambda **_: SimpleNamespace(repaired_schema=spec)
+
+        captured: dict[str, str] = {}
+
+        def fake_runtime_validate(candidate, *, document_text, missing_required_threshold=0.5):  # noqa: ANN001
+            captured["document_text"] = str(document_text)
+            return True, []
+
+        monkeypatch.setattr(schema_mod, "_runtime_validate_schema", fake_runtime_validate)
+
+        out = generator.forward(
+            description="Simple patient ID extraction",
+            document_text="Ground truth source text",
+            runtime_dryrun=True,
+        )
+        assert out.runtime_dryrun_used is True
+        assert captured["document_text"] == "Ground truth source text"
