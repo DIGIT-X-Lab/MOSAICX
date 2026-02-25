@@ -38,6 +38,53 @@ def test_apply_extraction_contract_basic_semantics():
     assert contract["summary"]["insufficient_evidence"] == 1
 
 
+def test_apply_extraction_contract_normalizes_date_and_flags_invalid_range():
+    from mosaicx.pipelines.extraction import apply_extraction_contract
+
+    payload = {
+        "extracted": {
+            "exam_date": "1/1/2013",
+            "lesion_range": "16-12 mm",
+        }
+    }
+
+    result = apply_extraction_contract(
+        payload,
+        source_text="Exam Date: 2013-01-01. Lesion range documented as 16-12 mm.",
+    )
+    contract = result["_extraction_contract"]
+    by_field = {row["field"]: row for row in contract["field_results"]}
+
+    assert by_field["exam_date"]["value"] == "2013-01-01"
+    assert by_field["exam_date"]["status"] == "supported"
+    assert by_field["exam_date"]["validation"]["valid"] is True
+    assert by_field["lesion_range"]["status"] == "needs_review"
+    assert by_field["lesion_range"]["validation"]["valid"] is False
+    assert by_field["lesion_range"]["validation"]["reason"] == "invalid_range_order"
+    assert any(
+        issue["field"] == "lesion_range" and issue["reason"] == "invalid_range_order"
+        for issue in contract["validation_issues"]
+    )
+
+
+def test_apply_extraction_contract_flags_unknown_units():
+    from mosaicx.pipelines.extraction import apply_extraction_contract
+
+    payload = {"extracted": {"uptake_time": "90 parsecs"}}
+    result = apply_extraction_contract(
+        payload,
+        source_text="Uptake time reported as 90 parsecs.",
+    )
+    contract = result["_extraction_contract"]
+    row = contract["field_results"][0]
+
+    assert row["field"] == "uptake_time"
+    assert row["status"] == "needs_review"
+    assert row["validation"]["valid"] is False
+    assert row["validation"]["reason"] == "unknown_unit"
+    assert any(issue["reason"] == "unknown_unit" for issue in contract["validation_issues"])
+
+
 def test_sdk_extract_attaches_extraction_contract(monkeypatch):
     import mosaicx.sdk as sdk
 

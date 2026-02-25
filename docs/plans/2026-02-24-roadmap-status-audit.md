@@ -6,7 +6,7 @@ Status: Active
 Owner: Core platform
 Authoritative: Yes (single source of truth for rollout status)
 
-## 0) Canonical Status (Updated 2026-02-25 21:05)
+## 0) Canonical Status (Updated 2026-02-25 23:15)
 
 This file is the canonical status board for DSPy roadmap execution.
 Other plan files are design/history logs and must link here for status.
@@ -44,12 +44,13 @@ Other plan files are design/history logs and must link here for status.
 - Open DSPy capability rollout items:
   - none
 - Open extract atomic rollout items:
-  - `#63 [EXTX-05]`, `#64 [EXTX-06]`, `#65 [EXTX-07]`, `#66 [EXTX-08]`, `#67 [EXTX-09]`, `#68 [EXTX-10]`
+  - `#64 [EXTX-06]`, `#65 [EXTX-07]`, `#66 [EXTX-08]`, `#67 [EXTX-09]`, `#68 [EXTX-10]`
 - Closed extract atomic rollout items:
   - `#59 [EXTX-01]` Canonical extract contract + fail-closed semantics across CLI/SDK/MCP
   - `#60 [EXTX-02]` ReAct planner-first section routing for extraction
   - `#61 [EXTX-03]` Outlines-first structured extraction with DSPy adapter fallback chain
   - `#62 [EXTX-04]` Selective BestOfN for uncertain extraction sections
+  - `#63 [EXTX-05]` MultiChainComparison adjudication + Refine field-level repair
 
 ### Canonical control note
 
@@ -135,6 +136,37 @@ Other plan files are design/history logs and must link here for status.
       - output `_planner.bestofn` recorded deterministic skip reason when not uncertain.
   - Run artifact:
     - `docs/runs/2026-02-25-extx-04-selective-bestofn.md`
+
+- Adjudication + field-level repair completed (`2026-02-25`, `EXTX-05`, issue `#63`):
+  - Added candidate conflict adjudication in `mosaicx/pipelines/extraction.py`:
+    - `_adjudicate_conflicting_candidates(...)` with DSPy `MultiChainComparison` preference when candidate payloads diverge.
+  - Added targeted field repair in `mosaicx/pipelines/extraction.py`:
+    - `_repair_failed_critical_fields_with_refine(...)` using DSPy `Refine` on failed critical fields only.
+  - Planner diagnostics now include:
+    - `_planner.adjudication`
+    - `_planner.repair`
+  - Regression coverage expanded:
+    - `tests/test_extraction_pipeline.py::TestAdjudicationAndRepair`
+  - Live local `vllm-mlx` smoke captured:
+    - `PYTHONPATH=. .venv/bin/mosaicx extract --document tests/datasets/standardize/Sample_Report_Cervical_Spine.pdf --template MRICervicalSpineV3 -o /tmp/mosaicx_extx05_smoke.json`
+    - diagnostics recorded `repair.triggered=true` with `method=refine`.
+  - Run artifact:
+    - `docs/runs/2026-02-25-extx-05-adjudication-refine.md`
+
+- Deterministic validator hardening started (`2026-02-25`, `EXTX-06`, issue `#64`):
+  - Added deterministic validation + normalization in `mosaicx/pipelines/extraction.py` for:
+    - date formats,
+    - ranges,
+    - numeric units,
+    - null semantics,
+    - numeric-content checks for numeric-like fields.
+  - Added extraction contract diagnostics:
+    - per-field `validation` block
+    - `_extraction_contract.validation_issues`
+  - Added regression cases:
+    - `tests/test_extract_contract.py` (date/range/unit downgrade behavior).
+  - Implementation artifact:
+    - `docs/runs/2026-02-25-extx-06-deterministic-validators.md`
 
 - Schema robustness hardening (`2026-02-25`, `SCHEMA-001`) implemented and validated:
   - `mosaicx/pipelines/schema_gen.py` now includes deterministic `normalize_schema_spec` + `validate_schema_spec`.

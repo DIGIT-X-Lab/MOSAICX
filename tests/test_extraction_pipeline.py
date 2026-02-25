@@ -438,3 +438,108 @@ class TestBestOfNSelectiveRouting:
         assert info["triggered"] is True
         assert info["used"] is True
         assert info["reason"] == "bestofn_selected"
+
+
+class TestAdjudicationAndRepair:
+    def test_conflicting_candidates_are_adjudicated_with_mcc(self, monkeypatch):
+        from mosaicx.pipelines.extraction import _adjudicate_conflicting_candidates
+
+        class Report(BaseModel):
+            summary: str
+
+        class _FakeMCC:
+            def __init__(self, *args, **kwargs):  # noqa: ARG002
+                pass
+
+            def __call__(self, completions, source_text):  # noqa: ARG002
+                # Prefer the second candidate deterministically.
+                return SimpleNamespace(chosen_path=completions[1]["chosen_path"], rationale="mcc_selected")
+
+        fake_dspy = SimpleNamespace(
+            settings=SimpleNamespace(lm=object()),
+            MultiChainComparison=_FakeMCC,
+        )
+        monkeypatch.setattr("mosaicx.runtime_env.import_dspy", lambda: fake_dspy)
+
+        candidates = [
+            {
+                "path": "candidate_a",
+                "model": Report(summary="mild bulge"),
+                "score": 0.62,
+                "components": {"evidence_overlap": 0.4, "null_overuse_penalty": 0.0},
+            },
+            {
+                "path": "candidate_b",
+                "model": Report(summary="disc bulge at C3-C4"),
+                "score": 0.59,
+                "components": {"evidence_overlap": 0.8, "null_overuse_penalty": 0.0},
+            },
+        ]
+
+        chosen, diag = _adjudicate_conflicting_candidates(
+            candidates=candidates,
+            source_text="Findings: disc bulge at C3-C4.",
+        )
+
+        assert chosen is not None
+        assert chosen["path"] == "candidate_b"
+        assert diag["conflict_detected"] is True
+        assert diag["method"] == "mcc"
+        assert diag["chosen_path"] == "candidate_b"
+        assert "mcc" in diag["rationale"].lower()
+
+    def test_refine_repair_only_touches_failed_fields(self, monkeypatch):
+        from mosaicx.pipelines.extraction import _repair_failed_critical_fields_with_refine
+
+        class Report(BaseModel):
+            finding: str | None = None
+            impression: str | None = None
+
+        class _FakeDspy:
+            settings = SimpleNamespace(lm=object())
+
+            class Signature:
+                pass
+
+            @staticmethod
+            def InputField(**kwargs):  # noqa: ARG004
+                return None
+
+            @staticmethod
+            def OutputField(**kwargs):  # noqa: ARG004
+                return None
+
+            class _RepairModule:
+                def __call__(self, **kwargs):
+                    field_name = str(kwargs.get("field_name") or "")
+                    if field_name == "finding":
+                        return SimpleNamespace(repaired_value="disc bulge")
+                    return SimpleNamespace(repaired_value="")
+
+            @staticmethod
+            def ChainOfThought(_sig):  # noqa: ARG004
+                return _FakeDspy._RepairModule()
+
+            class _Refine:
+                def __init__(self, module, N, reward_fn, threshold):  # noqa: N803, ARG002
+                    self.module = module
+
+                def __call__(self, **kwargs):
+                    return self.module(**kwargs)
+
+            Refine = _Refine
+
+        monkeypatch.setattr("mosaicx.runtime_env.import_dspy", lambda: _FakeDspy())
+
+        base = Report(finding=None, impression="stable")
+        repaired, diag = _repair_failed_critical_fields_with_refine(
+            model_instance=base,
+            schema_class=Report,
+            source_text="Findings: disc bulge. Impression: stable.",
+        )
+
+        assert repaired.finding == "disc bulge"
+        assert repaired.impression == "stable"
+        assert diag["triggered"] is True
+        assert any(item["field"] == "finding" for item in diag["repaired_fields"])
+        assert all(item["field"] != "impression" for item in diag["repaired_fields"])

@@ -20,6 +20,7 @@ import logging
 import os
 import re
 import types
+from datetime import datetime
 from enum import Enum
 from pathlib import Path
 from typing import Any, Literal, Union, get_args, get_origin
@@ -430,6 +431,372 @@ def _extract_grounding_snippet(*, source_text: str, value: Any) -> tuple[bool | 
     return True, " ".join(haystack[start:end].split())
 
 
+_DATE_FIELD_HINTS = {
+    "date",
+    "dob",
+    "birth",
+    "birthday",
+    "admission",
+    "discharge",
+    "study_date",
+    "exam_date",
+}
+_RANGE_FIELD_HINTS = {
+    "range",
+    "interval",
+    "window",
+    "duration",
+}
+_UNIT_FIELD_HINTS = {
+    "height",
+    "weight",
+    "bmi",
+    "blood_glucose",
+    "uptake_time",
+    "size",
+    "diameter",
+    "volume",
+    "dose",
+    "activity",
+    "suv",
+    "hu",
+    "pressure",
+    "bp",
+}
+_NUMERIC_FIELD_HINTS = {
+    "age",
+    "score",
+    "count",
+    "number",
+    "size",
+    "diameter",
+    "volume",
+    "weight",
+    "height",
+    "bmi",
+    "suv",
+    "hu",
+}
+_CRITICAL_FIELD_HINTS = {
+    "impression",
+    "finding",
+    "findings",
+    "diagnosis",
+    "assessment",
+    "procedure",
+    "exam_date",
+    "date_of_birth",
+    "dob",
+    "patient_name",
+}
+_NUMBER_PATTERN = re.compile(r"[-+]?\d+(?:\.\d+)?")
+_RANGE_PATTERN = re.compile(
+    r"^\s*([-+]?\d+(?:\.\d+)?)\s*(?:-|to|–|—)\s*([-+]?\d+(?:\.\d+)?)\s*([A-Za-z%/]+)?\s*$",
+    flags=re.IGNORECASE,
+)
+_VALUE_UNIT_PATTERN = re.compile(
+    r"^\s*([-+]?\d+(?:\.\d+)?)\s*([A-Za-z%/]+)?\s*$",
+    flags=re.IGNORECASE,
+)
+_ALLOWED_UNITS = {
+    "mm",
+    "cm",
+    "m",
+    "kg",
+    "g",
+    "mg",
+    "ug",
+    "lb",
+    "lbs",
+    "mmhg",
+    "s",
+    "sec",
+    "seconds",
+    "min",
+    "mins",
+    "minute",
+    "minutes",
+    "h",
+    "hr",
+    "hrs",
+    "hour",
+    "hours",
+    "ml",
+    "l",
+    "%",
+    "mg/dl",
+    "g/dl",
+}
+_DATE_FORMATS = (
+    "%Y-%m-%d",
+    "%Y/%m/%d",
+    "%m/%d/%Y",
+    "%m-%d-%Y",
+    "%d/%m/%Y",
+    "%d-%m-%Y",
+    "%m/%d/%y",
+    "%d/%m/%y",
+    "%b %d %Y",
+    "%B %d %Y",
+)
+
+
+def _field_name_tokens(field_name: str) -> set[str]:
+    normalized = re.sub(r"[^a-zA-Z0-9]+", "_", str(field_name or "").strip().lower())
+    return {tok for tok in normalized.split("_") if tok}
+
+
+def _is_critical_field_name(field_name: str) -> bool:
+    tokens = _field_name_tokens(field_name)
+    if tokens & _CRITICAL_FIELD_HINTS:
+        return True
+    joined = "_".join(sorted(tokens))
+    return joined in _CRITICAL_FIELD_HINTS
+
+
+def _format_compact_number(value: float) -> str:
+    text = f"{value:.6f}".rstrip("0").rstrip(".")
+    return text or "0"
+
+
+def _normalize_unit_token(unit: str) -> str:
+    token = str(unit or "").strip().lower()
+    aliases = {
+        "millimeter": "mm",
+        "millimeters": "mm",
+        "centimeter": "cm",
+        "centimeters": "cm",
+        "milliliter": "ml",
+        "milliliters": "ml",
+        "liter": "l",
+        "liters": "l",
+        "kgs": "kg",
+        "grams": "g",
+        "milligrams": "mg",
+        "micrograms": "ug",
+        "mm hg": "mmhg",
+    }
+    return aliases.get(token, token)
+
+
+def _looks_like_date_field(field_name: str) -> bool:
+    tokens = _field_name_tokens(field_name)
+    if "date" in tokens:
+        return True
+    return bool(tokens & _DATE_FIELD_HINTS)
+
+
+def _looks_like_range_field(field_name: str) -> bool:
+    tokens = _field_name_tokens(field_name)
+    return bool(tokens & _RANGE_FIELD_HINTS)
+
+
+def _looks_like_unit_field(field_name: str) -> bool:
+    tokens = _field_name_tokens(field_name)
+    return bool(tokens & _UNIT_FIELD_HINTS)
+
+
+def _looks_like_numeric_field(field_name: str) -> bool:
+    tokens = _field_name_tokens(field_name)
+    return bool(tokens & _NUMERIC_FIELD_HINTS)
+
+
+def _try_parse_date_value(value: Any) -> str | None:
+    if isinstance(value, datetime):
+        return value.date().isoformat()
+
+    text = str(value or "").strip()
+    if not text:
+        return None
+
+    iso_match = re.search(r"\b(\d{4}-\d{2}-\d{2})\b", text)
+    if iso_match:
+        return iso_match.group(1)
+
+    cleaned = text.replace(",", " ")
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+
+    for fmt in _DATE_FORMATS:
+        try:
+            parsed = datetime.strptime(cleaned, fmt)
+            return parsed.date().isoformat()
+        except Exception:
+            continue
+    return None
+
+
+def _try_parse_numeric_range(text: str) -> tuple[float, float, str | None] | None:
+    match = _RANGE_PATTERN.match(str(text or ""))
+    if not match:
+        return None
+    low = float(match.group(1))
+    high = float(match.group(2))
+    unit = match.group(3)
+    normalized_unit = _normalize_unit_token(unit) if unit else None
+    return low, high, normalized_unit
+
+
+def _try_parse_numeric_unit(text: str) -> tuple[float, str | None] | None:
+    match = _VALUE_UNIT_PATTERN.match(str(text or ""))
+    if not match:
+        return None
+    value = float(match.group(1))
+    unit = match.group(2)
+    normalized_unit = _normalize_unit_token(unit) if unit else None
+    return value, normalized_unit
+
+
+def _validate_field_semantics(field_name: str, value: Any) -> dict[str, Any]:
+    """Deterministically validate/normalize field semantics."""
+    tokens = _field_name_tokens(field_name)
+    critical = _is_critical_field_name(field_name)
+    if _is_missing_value(value):
+        return {
+            "valid": False,
+            "kind": "null",
+            "critical": critical,
+            "reason": "missing_value",
+            "normalized_value": None,
+        }
+
+    if isinstance(value, (bool, int, float)):
+        return {
+            "valid": True,
+            "kind": "scalar",
+            "critical": critical,
+            "reason": None,
+            "normalized_value": value,
+        }
+
+    if isinstance(value, (list, tuple, set, dict)):
+        return {
+            "valid": True,
+            "kind": "container",
+            "critical": critical,
+            "reason": None,
+            "normalized_value": value,
+        }
+
+    raw = str(value).strip()
+    if _is_nullish_string(raw):
+        return {
+            "valid": False,
+            "kind": "null",
+            "critical": critical,
+            "reason": "nullish_string",
+            "normalized_value": None,
+        }
+
+    if ("bp" in tokens or "pressure" in tokens) and re.match(
+        r"^\s*\d{2,3}\s*/\s*\d{2,3}\s*$",
+        raw,
+    ):
+        normalized_bp = "/".join(part.strip() for part in raw.split("/", 1))
+        return {
+            "valid": True,
+            "kind": "blood_pressure",
+            "critical": critical,
+            "reason": None,
+            "normalized_value": normalized_bp,
+        }
+
+    if _looks_like_date_field(field_name):
+        parsed = _try_parse_date_value(raw)
+        if parsed is None:
+            return {
+                "valid": False,
+                "kind": "date",
+                "critical": critical,
+                "reason": "invalid_date_format",
+                "normalized_value": raw,
+            }
+        return {
+            "valid": True,
+            "kind": "date",
+            "critical": critical,
+            "reason": None,
+            "normalized_value": parsed,
+        }
+
+    range_candidate = _try_parse_numeric_range(raw)
+    if _looks_like_range_field(field_name) or range_candidate is not None:
+        if range_candidate is None:
+            return {
+                "valid": False,
+                "kind": "range",
+                "critical": critical,
+                "reason": "invalid_range_format",
+                "normalized_value": raw,
+            }
+        low, high, unit = range_candidate
+        if low > high:
+            return {
+                "valid": False,
+                "kind": "range",
+                "critical": critical,
+                "reason": "invalid_range_order",
+                "normalized_value": raw,
+            }
+        normalized = f"{_format_compact_number(low)}-{_format_compact_number(high)}"
+        if unit:
+            normalized = f"{normalized} {unit}"
+        return {
+            "valid": True,
+            "kind": "range",
+            "critical": critical,
+            "reason": None,
+            "normalized_value": normalized,
+        }
+
+    numeric_unit = _try_parse_numeric_unit(raw)
+    if _looks_like_unit_field(field_name):
+        if numeric_unit is None:
+            return {
+                "valid": False,
+                "kind": "unit",
+                "critical": critical,
+                "reason": "invalid_numeric_unit",
+                "normalized_value": raw,
+            }
+        numeric, unit = numeric_unit
+        if unit and unit not in _ALLOWED_UNITS:
+            return {
+                "valid": False,
+                "kind": "unit",
+                "critical": critical,
+                "reason": "unknown_unit",
+                "normalized_value": raw,
+            }
+        normalized = _format_compact_number(numeric)
+        if unit:
+            normalized = f"{normalized} {unit}"
+        return {
+            "valid": True,
+            "kind": "unit",
+            "critical": critical,
+            "reason": None,
+            "normalized_value": normalized,
+        }
+
+    if _looks_like_numeric_field(field_name):
+        if _NUMBER_PATTERN.search(raw) is None:
+            return {
+                "valid": False,
+                "kind": "numeric",
+                "critical": critical,
+                "reason": "missing_numeric_content",
+                "normalized_value": raw,
+            }
+
+    return {
+        "valid": True,
+        "kind": "text",
+        "critical": critical,
+        "reason": None,
+        "normalized_value": raw,
+    }
+
+
 def apply_extraction_contract(
     output_data: dict[str, Any],
     *,
@@ -469,10 +836,33 @@ def apply_extraction_contract(
         "needs_review": 0,
         "insufficient_evidence": 0,
     }
+    validation_issues: list[dict[str, Any]] = []
 
     for field in fields:
-        value = target.get(field)
-        if _is_missing_value(value):
+        original_value = target.get(field)
+        validation = _validate_field_semantics(field, original_value)
+        value = validation.get("normalized_value", original_value)
+        target[field] = value
+
+        if not validation.get("valid", True):
+            reason = str(validation.get("reason") or "invalid_value")
+            is_critical = bool(validation.get("critical"))
+            status = "insufficient_evidence" if is_critical else "needs_review"
+            grounded = False
+            confidence = 0.0 if is_critical else 0.25
+            evidence = None
+            validation_issues.append(
+                {
+                    "field": field,
+                    "kind": validation.get("kind"),
+                    "reason": reason,
+                    "critical": is_critical,
+                    "original_value": original_value,
+                    "normalized_value": value,
+                    "severity": "error" if is_critical else "warning",
+                }
+            )
+        elif _is_missing_value(value):
             status = "insufficient_evidence"
             grounded: bool | None = False
             confidence = 0.0
@@ -498,6 +888,12 @@ def apply_extraction_contract(
                 "grounded": grounded,
                 "confidence": confidence,
                 "status": status,
+                "validation": {
+                    "valid": bool(validation.get("valid", True)),
+                    "kind": validation.get("kind"),
+                    "reason": validation.get("reason"),
+                    "critical": bool(validation.get("critical", False)),
+                },
             }
         )
 
@@ -506,6 +902,7 @@ def apply_extraction_contract(
         "critical_fields": fields,
         "field_results": field_results,
         "summary": counts,
+        "validation_issues": validation_issues,
     }
     return output_data
 
@@ -1119,6 +1516,219 @@ def _try_bestofn_for_uncertain_sections(
         return None, info
 
 
+def _adjudicate_conflicting_candidates(
+    *,
+    candidates: list[dict[str, Any]],
+    source_text: str,
+) -> tuple[dict[str, Any] | None, dict[str, Any]]:
+    """Adjudicate conflicting candidate outputs, preferring MCC when available."""
+    diag: dict[str, Any] = {
+        "triggered": bool(candidates),
+        "conflict_detected": False,
+        "method": "score",
+        "chosen_path": None,
+        "rationale": "",
+        "candidates": [],
+    }
+    if not candidates:
+        return None, diag
+
+    for cand in candidates:
+        diag["candidates"].append(
+            {
+                "path": cand.get("path"),
+                "score": cand.get("score"),
+                "components": cand.get("components"),
+            }
+        )
+
+    dumps = {
+        json.dumps(c.get("model").model_dump(), sort_keys=True, ensure_ascii=False)
+        for c in candidates
+        if c.get("model") is not None
+    }
+    diag["conflict_detected"] = len(dumps) > 1
+
+    chosen = max(candidates, key=lambda c: float(c.get("score") or 0.0))
+    diag["chosen_path"] = chosen.get("path")
+    diag["rationale"] = "highest_score"
+
+    if diag["conflict_detected"]:
+        try:
+            from mosaicx.runtime_env import import_dspy
+
+            dspy = import_dspy()
+            if getattr(dspy.settings, "lm", None) is not None and hasattr(dspy, "MultiChainComparison"):
+                completions = [
+                    {
+                        "chosen_path": str(c.get("path") or ""),
+                        "rationale": (
+                            f"score={float(c.get('score') or 0.0):.3f}, "
+                            f"evidence_overlap={float((c.get('components') or {}).get('evidence_overlap', 0.0)):.3f}, "
+                            f"null_penalty={float((c.get('components') or {}).get('null_overuse_penalty', 0.0)):.3f}"
+                        ),
+                    }
+                    for c in candidates
+                ]
+                mcc = dspy.MultiChainComparison(
+                    "source_text -> chosen_path, rationale",
+                    M=max(2, len(completions)),
+                    temperature=0.2,
+                )
+                pred = mcc(
+                    completions=completions,
+                    source_text=str(source_text or "")[:4000],
+                )
+                mcc_path = str(getattr(pred, "chosen_path", "") or "").strip()
+                if mcc_path:
+                    for cand in candidates:
+                        if str(cand.get("path") or "") == mcc_path:
+                            chosen = cand
+                            diag["method"] = "mcc"
+                            diag["chosen_path"] = mcc_path
+                            diag["rationale"] = str(getattr(pred, "rationale", "") or "mcc")
+                            break
+        except Exception:
+            pass
+
+    return chosen, diag
+
+
+def _repair_failed_critical_fields_with_refine(
+    *,
+    model_instance: BaseModel,
+    schema_class: type[BaseModel],
+    source_text: str,
+) -> tuple[BaseModel, dict[str, Any]]:
+    """Repair only failed critical fields using DSPy Refine when available."""
+    payload = model_instance.model_dump()
+    required = [
+        name for name, field in schema_class.model_fields.items()
+        if bool(getattr(field, "is_required", lambda: False)())
+    ]
+    critical_fields = required or list(schema_class.model_fields.keys())
+
+    failed_fields: list[str] = []
+    for field_name in critical_fields:
+        value = payload.get(field_name)
+        grounded, _snippet = _extract_grounding_snippet(source_text=source_text, value=value)
+        if _is_missing_value(value) or grounded is False:
+            failed_fields.append(field_name)
+
+    diag: dict[str, Any] = {
+        "triggered": bool(failed_fields),
+        "failed_fields": failed_fields,
+        "repaired_fields": [],
+        "skipped_fields": [],
+        "reason": None,
+    }
+    if not failed_fields:
+        diag["reason"] = "no_failed_fields"
+        return model_instance, diag
+
+    try:
+        from mosaicx.runtime_env import import_dspy
+
+        dspy = import_dspy()
+    except Exception as exc:
+        diag["reason"] = f"dspy_import_failed:{type(exc).__name__}"
+        return model_instance, diag
+    if getattr(dspy.settings, "lm", None) is None:
+        diag["reason"] = "lm_not_configured"
+        return model_instance, diag
+    if not hasattr(dspy, "Refine"):
+        diag["reason"] = "refine_unavailable"
+        return model_instance, diag
+
+    source_lower = str(source_text or "").lower()
+
+    class _RepairSig(dspy.Signature):
+        field_name: str = dspy.InputField(desc="Field to repair")
+        field_type: str = dspy.InputField(desc="Target field type")
+        current_value: str = dspy.InputField(desc="Current field value")
+        source_text: str = dspy.InputField(desc="Source document text")
+        repaired_value: str = dspy.OutputField(desc="Improved value for this field only")
+
+    repair_module = dspy.ChainOfThought(_RepairSig)
+
+    def reward_fn(_args: dict[str, Any], pred: Any) -> float:
+        candidate = str(getattr(pred, "repaired_value", "") or "").strip()
+        if _is_nullish_string(candidate):
+            return 0.0
+        score = 0.35
+        probe = candidate.lower()
+        if probe and probe in source_lower:
+            score += 0.55
+        if probe and (f"no {probe}" in source_lower or f"without {probe}" in source_lower):
+            score -= 0.4
+        return max(0.0, min(1.0, score))
+
+    refiner = dspy.Refine(
+        module=repair_module,
+        N=3,
+        reward_fn=reward_fn,
+        threshold=0.6,
+    )
+
+    from mosaicx.verify.parse_utils import parse_json_like
+
+    updated = model_instance
+    updated_payload = payload
+    for field_name in failed_fields:
+        before = updated_payload.get(field_name)
+        field = schema_class.model_fields.get(field_name)
+        field_type = str(getattr(field, "annotation", "unknown"))
+        try:
+            pred = refiner(
+                field_name=field_name,
+                field_type=field_type,
+                current_value=json.dumps(before, ensure_ascii=False, default=str),
+                source_text=str(source_text or "")[:12000],
+            )
+            raw = str(getattr(pred, "repaired_value", "") or "").strip()
+            if not raw:
+                diag["skipped_fields"].append(
+                    {"field": field_name, "reason": "empty_repair_output"}
+                )
+                continue
+            if raw.startswith("{") or raw.startswith("["):
+                parsed = parse_json_like(raw)
+                candidate_value = parsed
+            else:
+                candidate_value = raw
+            trial_payload = dict(updated_payload)
+            trial_payload[field_name] = candidate_value
+            coerced = _coerce_payload_to_schema(trial_payload, schema_class)
+            repaired_model = schema_class.model_validate(coerced)
+            repaired_payload = repaired_model.model_dump()
+            after = repaired_payload.get(field_name)
+            if _is_missing_value(after):
+                diag["skipped_fields"].append(
+                    {"field": field_name, "reason": "repair_still_missing"}
+                )
+                continue
+            updated = repaired_model
+            updated_payload = repaired_payload
+            diag["repaired_fields"].append(
+                {
+                    "field": field_name,
+                    "before": before,
+                    "after": after,
+                    "method": "refine",
+                }
+            )
+        except Exception as exc:
+            diag["skipped_fields"].append(
+                {"field": field_name, "reason": f"refine_error:{type(exc).__name__}"}
+            )
+
+    if not diag["repaired_fields"]:
+        diag["reason"] = "no_field_repaired"
+    else:
+        diag["reason"] = "field_repair_applied"
+    return updated, diag
+
+
 def _extract_schema_with_structured_chain(
     *,
     document_text: str,
@@ -1135,6 +1745,14 @@ def _extract_schema_with_structured_chain(
         "score": None,
         "components": None,
         "reason": "not_evaluated",
+    }
+    adjudication_info: dict[str, Any] = {
+        "triggered": False,
+        "conflict_detected": False,
+        "method": None,
+        "chosen_path": None,
+        "rationale": "",
+        "candidates": [],
     }
 
     def _record(step: str, ok: bool, error: Exception | None = None) -> None:
@@ -1173,6 +1791,7 @@ def _extract_schema_with_structured_chain(
                 "fallback_used": False,
                 "attempts": attempts,
                 "bestofn": bestofn_info,
+                "adjudication": adjudication_info,
             }
         _record("outlines_primary", False, ValueError("outlines_primary_unavailable"))
     else:
@@ -1196,6 +1815,73 @@ def _extract_schema_with_structured_chain(
     if bestofn_info.get("triggered"):
         _record("bestofn_uncertain", False, ValueError(str(bestofn_info.get("reason") or "failed")))
 
+    if _planner_routes_uncertain(planner_diag):
+        candidate_pool: list[dict[str, Any]] = []
+
+        def _add_candidate(path: str, model: BaseModel) -> None:
+            score, components = _score_extraction_candidate(
+                extracted=model,
+                schema_class=schema_class,
+                source_text=document_text,
+            )
+            candidate_pool.append(
+                {
+                    "path": path,
+                    "model": model,
+                    "score": score,
+                    "components": components,
+                }
+            )
+
+        try:
+            pred = typed_extract(document_text=document_text)
+            model = _coerce_extracted_to_model_instance(
+                extracted=getattr(pred, "extracted", pred),
+                schema_class=schema_class,
+            )
+            _record("uncertain_candidate_typed", True)
+            _add_candidate("dspy_typed_direct", model)
+        except Exception as exc:
+            _record("uncertain_candidate_typed", False, exc)
+
+        if dspy is not None and has_lm:
+            for step_name, adapter_name in (
+                ("uncertain_candidate_json", "JSONAdapter"),
+                ("uncertain_candidate_two_step", "TwoStepAdapter"),
+            ):
+                adapter_cls = getattr(dspy, adapter_name, None)
+                if adapter_cls is None:
+                    _record(step_name, False, ValueError(f"{adapter_name}_missing"))
+                    continue
+                try:
+                    with dspy.context(adapter=adapter_cls()):
+                        pred = typed_extract(document_text=document_text)
+                    model = _coerce_extracted_to_model_instance(
+                        extracted=getattr(pred, "extracted", pred),
+                        schema_class=schema_class,
+                    )
+                    _record(step_name, True)
+                    route_name = "dspy_json_adapter" if "json" in step_name else "dspy_two_step_adapter"
+                    _add_candidate(route_name, model)
+                except Exception as exc:
+                    _record(step_name, False, exc)
+
+        if candidate_pool:
+            chosen_candidate, adjudication_info = _adjudicate_conflicting_candidates(
+                candidates=candidate_pool,
+                source_text=document_text,
+            )
+            if chosen_candidate is not None:
+                _record("mcc_adjudication", True)
+                selected_path = f"adjudicated:{chosen_candidate.get('path')}"
+                return chosen_candidate["model"], {
+                    "selected_path": selected_path,
+                    "fallback_used": True,
+                    "attempts": attempts,
+                    "bestofn": bestofn_info,
+                    "adjudication": adjudication_info,
+                }
+
     try:
         pred = typed_extract(document_text=document_text)
         extracted = getattr(pred, "extracted", pred)
@@ -1210,6 +1896,7 @@ def _extract_schema_with_structured_chain(
             "fallback_used": True,
             "attempts": attempts,
             "bestofn": bestofn_info,
+            "adjudication": adjudication_info,
         }
     except Exception as exc:
         last_exc = exc
@@ -1246,6 +1933,7 @@ def _extract_schema_with_structured_chain(
                 "fallback_used": True,
                 "attempts": attempts,
                 "bestofn": bestofn_info,
+                "adjudication": adjudication_info,
             }
         except Exception as exc:
             last_exc = exc
@@ -1265,6 +1953,7 @@ def _extract_schema_with_structured_chain(
                 "fallback_used": True,
                 "attempts": attempts,
                 "bestofn": bestofn_info,
+                "adjudication": adjudication_info,
             }
         except Exception as exc:
             last_exc = exc
@@ -1288,6 +1977,7 @@ def _extract_schema_with_structured_chain(
                 "fallback_used": True,
                 "attempts": attempts,
                 "bestofn": bestofn_info,
+                "adjudication": adjudication_info,
             }
         _record("existing_outlines_rescue", False, ValueError("outlines_rescue_unavailable"))
     else:
@@ -1477,6 +2167,11 @@ def _build_dspy_classes():
                             )
                         else:
                             raise
+                model_instance, repair_diag = _repair_failed_critical_fields_with_refine(
+                    model_instance=model_instance,
+                    schema_class=schema,
+                    source_text=document_text,
+                )
                 planner_diag["planned_text_used"] = planned_text != document_text
                 planner_diag["structured_chain"] = chain_diag.get("attempts", [])
                 planner_diag["selected_structured_path"] = chain_diag.get("selected_path")
@@ -1484,6 +2179,8 @@ def _build_dspy_classes():
                     chain_diag.get("fallback_used", False)
                 )
                 planner_diag["bestofn"] = chain_diag.get("bestofn", {})
+                planner_diag["adjudication"] = chain_diag.get("adjudication", {})
+                planner_diag["repair"] = repair_diag
                 self._last_metrics = metrics
                 self._last_planner = planner_diag
                 return dspy.Prediction(extracted=model_instance, planner=planner_diag)
@@ -1571,6 +2268,11 @@ def _build_dspy_classes():
                         )
                     else:
                         raise
+            model_instance, repair_diag = _repair_failed_critical_fields_with_refine(
+                model_instance=model_instance,
+                schema_class=model,
+                source_text=document_text,
+            )
             planner_diag["planned_text_used"] = planned_text != document_text
             planner_diag["structured_chain"] = chain_diag.get("attempts", [])
             planner_diag["selected_structured_path"] = chain_diag.get("selected_path")
@@ -1578,6 +2280,8 @@ def _build_dspy_classes():
                 chain_diag.get("fallback_used", False)
             )
             planner_diag["bestofn"] = chain_diag.get("bestofn", {})
+            planner_diag["adjudication"] = chain_diag.get("adjudication", {})
+            planner_diag["repair"] = repair_diag
 
             self._last_metrics = metrics
             self._last_planner = planner_diag
