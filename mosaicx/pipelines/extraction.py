@@ -422,13 +422,17 @@ def _extract_grounding_snippet(*, source_text: str, value: Any) -> tuple[bool | 
     if not haystack:
         return None, None
 
-    idx = haystack.lower().find(needle.lower())
+    # Normalize whitespace so PDF \r\n line breaks don't break substring matching
+    needle_norm = " ".join(needle.split())
+    haystack_norm = " ".join(haystack.split())
+
+    idx = haystack_norm.lower().find(needle_norm.lower())
     if idx < 0:
         return False, None
 
     start = max(0, idx - 80)
-    end = min(len(haystack), idx + len(needle) + 80)
-    return True, " ".join(haystack[start:end].split())
+    end = min(len(haystack_norm), idx + len(needle_norm) + 80)
+    return True, haystack_norm[start:end]
 
 
 _DATE_FIELD_HINTS = {

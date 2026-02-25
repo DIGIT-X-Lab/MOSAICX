@@ -59,6 +59,13 @@ Other plan files are design/history logs and must link here for status.
 - Treat all other plan docs in `docs/plans/` as design/history/reference only.
 - If status here conflicts with another file, this file wins.
 
+### Grounding whitespace normalization fix (2026-02-25)
+
+- Fixed PDF `\r\n` line-break grounding failure in two places:
+  - `mosaicx/pipelines/extraction.py:_extract_grounding_snippet` — normalize needle and haystack whitespace before `find()` so PDF line breaks don't break substring matching
+  - `mosaicx/verify/deterministic.py:verify_deterministic` — normalize source text at the start; normalize needle per-field; use normalized source for word-overlap fallback
+- Root cause: PDFs produce `\r\n` mid-sentence; raw `str.find()` / `in` checks silently failed even for verbatim extractions spanning a line break
+
 ### Verification CLI display fixes (2026-02-25)
 
 - Fixed missing CLI display for `--verify` / `--verify-level` output:

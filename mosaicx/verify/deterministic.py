@@ -30,7 +30,9 @@ def verify_deterministic(
     """
     issues: list[Issue] = []
     field_verdicts: list[FieldVerdict] = []
-    source_lower = source_text.lower()
+    # Normalize whitespace so PDF \r\n line breaks don't break substring matching
+    source_norm = " ".join(source_text.split())
+    source_lower = source_norm.lower()
 
     # Walk the entire extraction tree
     scalars = _collect_scalars(extraction, prefix="")
@@ -83,17 +85,17 @@ def verify_deterministic(
                 ))
 
         elif isinstance(value, str):
-            needle = value.strip()
+            needle = " ".join(value.strip().split())  # normalize whitespace
             if not needle or len(needle) < 4:
                 continue
             checked += 1
-            # Try exact substring match first
+            # Try exact substring match first (whitespace-normalized)
             if needle.lower() in source_lower:
                 grounded += 1
                 idx = source_lower.find(needle.lower())
                 start = max(0, idx - 40)
-                end = min(len(source_text), idx + len(needle) + 40)
-                excerpt = " ".join(source_text[start:end].split())
+                end = min(len(source_norm), idx + len(needle) + 40)
+                excerpt = source_norm[start:end]
                 field_verdicts.append(FieldVerdict(
                     status="verified",
                     field_path=path,
@@ -103,7 +105,7 @@ def verify_deterministic(
                 ))
             else:
                 # Fall back to word overlap for longer values
-                overlap = _word_overlap(needle, source_text)
+                overlap = _word_overlap(needle, source_norm)
                 if overlap >= 0.6:
                     grounded += 1
                     field_verdicts.append(FieldVerdict(
