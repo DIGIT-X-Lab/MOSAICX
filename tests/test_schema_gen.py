@@ -458,3 +458,129 @@ class TestSchemaNormalization:
         )
         assert out.runtime_dryrun_used is True
         assert captured["document_text"] == "Ground truth source text"
+
+    def test_assess_schema_semantic_granularity_flags_flat_schema_for_levelled_text(self):
+        from mosaicx.pipelines.schema_gen import (
+            FieldSpec,
+            SchemaSpec,
+            assess_schema_semantic_granularity,
+        )
+
+        document_text = """
+Findings:
+C2-3: mild disc desiccation.
+C3-4: broad-based bulge with mild stenosis.
+C4-5: no significant narrowing.
+C5-6: moderate foraminal narrowing.
+C6-7: severe bilateral foraminal narrowing.
+Impression:
+1. Mild bulging at C3-4.
+2. Moderate narrowing at C5-6.
+3. Severe bilateral narrowing at C6-7.
+"""
+        flat = SchemaSpec(
+            class_name="FlatSpineSchema",
+            fields=[
+                FieldSpec(name="findings", type="list[str]", required=True),
+                FieldSpec(name="impression", type="list[str]", required=True),
+            ],
+        )
+        score, issues = assess_schema_semantic_granularity(flat, document_text=document_text)
+        assert score < 0.55
+        assert any("lacks_list_object_structure" in issue for issue in issues)
+
+    def test_assess_schema_semantic_granularity_rewards_structured_schema_for_levelled_text(self):
+        from mosaicx.pipelines.schema_gen import (
+            FieldSpec,
+            SchemaSpec,
+            assess_schema_semantic_granularity,
+        )
+
+        document_text = """
+Findings:
+C2-3: mild disc desiccation.
+C3-4: broad-based bulge with mild stenosis.
+C4-5: no significant narrowing.
+C5-6: moderate foraminal narrowing.
+C6-7: severe bilateral foraminal narrowing.
+"""
+        structured = SchemaSpec(
+            class_name="StructuredSpineSchema",
+            fields=[
+                FieldSpec(
+                    name="level_findings",
+                    type="list[object]",
+                    required=True,
+                    fields=[
+                        FieldSpec(name="level", type="str", required=True),
+                        FieldSpec(name="severity", type="enum", enum_values=["none", "mild", "moderate", "severe"], required=True),
+                    ],
+                ),
+                FieldSpec(name="impression", type="list[str]", required=False),
+            ],
+        )
+        score, issues = assess_schema_semantic_granularity(
+            structured,
+            document_text=document_text,
+        )
+        assert score >= 0.55
+        assert not any("lacks_list_object_structure" in issue for issue in issues)
+
+    def test_assess_schema_semantic_granularity_flags_flat_schema_for_numbered_lesions(self):
+        from mosaicx.pipelines.schema_gen import (
+            FieldSpec,
+            SchemaSpec,
+            assess_schema_semantic_granularity,
+        )
+
+        document_text = """
+Impression:
+1. Liver lesion in segment IV, size 12 mm, likely benign.
+2. Right adrenal lesion, size 18 mm, indeterminate.
+3. Left iliac node, size 9 mm, suspicious.
+"""
+        flat = SchemaSpec(
+            class_name="FlatLesionSchema",
+            fields=[
+                FieldSpec(name="impression", type="list[str]", required=True),
+                FieldSpec(name="summary", type="str", required=False),
+            ],
+        )
+        score, issues = assess_schema_semantic_granularity(flat, document_text=document_text)
+        assert score < 0.6
+        assert any("numbered_structures" in issue for issue in issues)
+
+    def test_assess_schema_semantic_granularity_rewards_structured_lesion_schema(self):
+        from mosaicx.pipelines.schema_gen import (
+            FieldSpec,
+            SchemaSpec,
+            assess_schema_semantic_granularity,
+        )
+
+        document_text = """
+Impression:
+1. Liver lesion in segment IV, size 12 mm, likely benign.
+2. Right adrenal lesion, size 18 mm, indeterminate.
+3. Left iliac node, size 9 mm, suspicious.
+"""
+        structured = SchemaSpec(
+            class_name="StructuredLesionSchema",
+            fields=[
+                FieldSpec(
+                    name="lesions",
+                    type="list[object]",
+                    required=True,
+                    fields=[
+                        FieldSpec(name="location", type="str", required=True),
+                        FieldSpec(name="size_mm", type="float", required=True),
+                        FieldSpec(name="status", type="enum", enum_values=["benign", "indeterminate", "suspicious"], required=True),
+                    ],
+                ),
+            ],
+        )
+        score, issues = assess_schema_semantic_granularity(
+            structured,
+            document_text=document_text,
+        )
+        assert score >= 0.6
+        assert not any("numbered_structures" in issue for issue in issues)

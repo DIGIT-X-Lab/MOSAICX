@@ -772,3 +772,26 @@ When completing `DSPY-*` items, append:
   - Output quality note: extraction is correct but schema remains flatter than expert template design (`findings`/`impression` as simple lists instead of richer typed level/group structures).
 - Remaining blockers:
   - Implement benchmarked semantic-granularity optimization loop (`#57`) and publish before/after scoring artifacts.
+
+### Update 2026-02-25 10:44
+- Tasks completed:
+  - Implemented hybrid schema-granularity validation in schema generation:
+    - deterministic scorer (structure/type/cue based)
+    - DSPy LLM semantic critique (`AssessSchemaGranularity`) when deterministic signals are weak
+  - Wired semantic issues into the schema repair loop for document-grounded generation.
+  - Expanded tests to include non-spine repeated-structure scenarios (numbered lesion lists) to prevent spine-only overfitting.
+- Files changed:
+  - `mosaicx/pipelines/schema_gen.py`
+  - `tests/test_schema_gen.py`
+  - `docs/plans/2026-02-24-roadmap-status-audit.md`
+- Tests run:
+  - `scripts/clear_dspy_cache.sh && PYTHONPATH=. .venv/bin/pytest -q tests/test_schema_gen.py`
+  - `PYTHONPATH=. .venv/bin/pytest -q tests/test_cli_integration.py -k "template_create"`
+- Results:
+  - `tests/test_schema_gen.py` -> `31 passed`
+  - `tests/test_cli_integration.py -k template_create` -> `9 passed`
+  - Live local model result improved on cervical example:
+    - `RuntimeProbeDocV2` template now emits `findings` as `list[object]` with typed nested fields.
+    - Extraction with this template produced 6 structured rows (including level + boolean/enum signals), not just flat text lists.
+- Remaining blockers:
+  - Run a larger adversarial benchmark set and persist before/after schema-granularity metrics in `docs/runs/` for issue `#57`.

@@ -91,6 +91,23 @@ _SIMPLE_TYPE_MAP: dict[str, type] = {
 _LIST_RE = re.compile(r"^list\[(\w+)\]$", re.IGNORECASE)
 _NON_IDENTIFIER_RE = re.compile(r"[^0-9a-zA-Z_]+")
 _MULTI_UNDERSCORE_RE = re.compile(r"_+")
+_LEVEL_MARKER_RE = re.compile(
+    r"\b(?:[cCtTlLsS]\d{1,2}\s*[-/]\s*[cCtTlLsS]?\d{1,2})\b"
+)
+_NUMBERED_LINE_RE = re.compile(r"^\s*\d+[\).:-]\s+")
+
+_ENUM_HINT_TERMS: tuple[str, ...] = (
+    "none",
+    "mild",
+    "moderate",
+    "severe",
+    "present",
+    "absent",
+    "left",
+    "right",
+    "bilateral",
+    "unilateral",
+)
 
 _TYPE_ALIASES: dict[str, str] = {
     "string": "str",
@@ -767,6 +784,106 @@ def _build_synthetic_runtime_probe_text(
     return "\n\n".join(blocks)
 
 
+def _walk_schema_fields(spec: SchemaSpec) -> list[FieldSpec]:
+    out: list[FieldSpec] = []
+
+    def _walk(fields: list[FieldSpec]) -> None:
+        for field in fields:
+            out.append(field)
+            if field.fields:
+                _walk(list(field.fields))
+
+    _walk(list(spec.fields))
+    return out
+
+
+def assess_schema_semantic_granularity(
+    spec: SchemaSpec,
+    *,
+    document_text: str,
+) -> tuple[float, list[str]]:
+    """Score how well schema structure matches document complexity cues."""
+    text = str(document_text or "")
+    if not text.strip():
+        return 1.0, []
+
+    level_hits = len(set(_LEVEL_MARKER_RE.findall(text)))
+    numbered_lines = sum(1 for line in text.splitlines() if _NUMBERED_LINE_RE.match(line))
+    lower_text = text.lower()
+    enum_hint_hits = sum(lower_text.count(term) for term in _ENUM_HINT_TERMS)
+
+    all_fields = _walk_schema_fields(spec)
+    total_fields = max(len(all_fields), 1)
+    non_str_fields = 0
+    enum_fields = 0
+    object_fields = 0
+    list_object_fields = 0
+    has_level_named_field = False
+
+    for field in all_fields:
+        normalized_type = _normalize_type_string(
+            field.type,
+            has_fields=bool(field.fields),
+            has_enum_values=bool(field.enum_values),
+        )
+        if normalized_type != "str":
+            non_str_fields += 1
+        if normalized_type == "enum":
+            enum_fields += 1
+        if normalized_type in {"object", "list[object]"}:
+            object_fields += 1
+        if normalized_type == "list[object]":
+            list_object_fields += 1
+        if "level" in field.name.lower():
+            has_level_named_field = True
+
+    typed_ratio = non_str_fields / total_fields
+    enum_ratio = enum_fields / total_fields
+    nested_ratio = (object_fields + list_object_fields) / total_fields
+
+    score = 0.35
+    score += min(0.25, typed_ratio * 0.25)
+    score += min(0.20, nested_ratio * 0.20)
+    score += min(0.15, enum_ratio * 0.15)
+
+    issues: list[str] = []
+    if level_hits >= 3 and list_object_fields == 0:
+        issues.append("document_has_repeating_level_markers_but_schema_lacks_list_object_structure")
+        score -= 0.25
+    if level_hits >= 3 and not has_level_named_field:
+        issues.append("document_has_level_markers_but_schema_has_no_level_field")
+        score -= 0.15
+    if enum_hint_hits >= 6 and enum_fields == 0:
+        issues.append("document_has_strong_categorical_cues_but_schema_has_no_enum_fields")
+        score -= 0.10
+    if numbered_lines >= 3 and object_fields == 0 and list_object_fields == 0:
+        issues.append("document_has_numbered_structures_but_schema_is_flat")
+        score -= 0.10
+
+    return max(0.0, min(1.0, score)), issues
+
+
+def _parse_issue_lines(raw: Any) -> list[str]:
+    text = str(raw or "").strip()
+    if not text:
+        return []
+    out: list[str] = []
+    for line in re.split(r"[\n;]+", text):
+        token = line.strip().lstrip("-").strip()
+        if not token:
+            continue
+        out.append(token)
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for item in out:
+        key = item.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(item)
+    return deduped
+
+
 def _runtime_validate_schema(
     spec: SchemaSpec,
     *,
@@ -949,6 +1066,22 @@ def _build_dspy_classes():
             desc="A corrected SchemaSpec that resolves the listed issues",
         )
 
+    class AssessSchemaGranularity(dspy.Signature):
+        """Assess whether schema structure is sufficiently granular for the source text."""
+
+        document_text: str = dspy.InputField(
+            desc="Document text containing the reporting patterns",
+        )
+        schema_json: str = dspy.InputField(
+            desc="SchemaSpec JSON payload to evaluate",
+        )
+        score: float = dspy.OutputField(
+            desc="Granularity score in [0,1], higher is better",
+        )
+        issues: str = dspy.OutputField(
+            desc="Short newline-separated issues when granularity is weak",
+        )
+
     class SchemaGenerator(dspy.Module):
         """Generate a Pydantic model from a text description.
 
@@ -981,6 +1114,7 @@ def _build_dspy_classes():
                     self.generate = base_generate
 
             self.repair = dspy.ChainOfThought(RepairSchemaSpec)
+            self.assess_granularity = dspy.ChainOfThought(AssessSchemaGranularity)
 
         def forward(
             self,
@@ -990,6 +1124,7 @@ def _build_dspy_classes():
             max_repairs: int = 2,
             runtime_dryrun: bool = False,
             runtime_missing_required_threshold: float = 0.5,
+            semantic_min_score: float = 0.55,
         ) -> dspy.Prediction:
             """Run the schema generation pipeline."""
             from mosaicx.metrics import PipelineMetrics, get_tracker, track_step
@@ -1041,6 +1176,36 @@ def _build_dspy_classes():
             runtime_issues: list[str] = []
             runtime_enabled = bool(runtime_dryrun)
             runtime_source_text = str(document_text or "").strip()
+            semantic_threshold = max(0.0, min(1.0, float(semantic_min_score)))
+
+            def _semantic_feedback(candidate: SchemaSpec) -> tuple[float, list[str]]:
+                det_score, det_issues = assess_schema_semantic_granularity(
+                    candidate,
+                    document_text=runtime_source_text,
+                )
+                score = det_score
+                issues = list(det_issues)
+                if not runtime_source_text:
+                    return score, issues
+                if det_score >= semantic_threshold and not det_issues:
+                    return score, issues
+                try:
+                    llm_eval = self.assess_granularity(
+                        document_text=runtime_source_text[:30000],
+                        schema_json=candidate.model_dump_json(indent=2),
+                    )
+                    llm_score_raw = getattr(llm_eval, "score", None)
+                    llm_score = float(llm_score_raw) if llm_score_raw is not None else None
+                    llm_issues = _parse_issue_lines(getattr(llm_eval, "issues", ""))
+                    if llm_score is not None:
+                        llm_score = max(0.0, min(1.0, llm_score))
+                        score = (0.7 * det_score) + (0.3 * llm_score)
+                    if llm_issues:
+                        issues.extend(f"llm_semantic: {item}" for item in llm_issues[:8])
+                except Exception as exc:
+                    logger.debug("LLM semantic granularity assessment failed: %s", exc)
+                return max(0.0, min(1.0, score)), _parse_issue_lines("\n".join(issues))
+
             if runtime_enabled and compiled is not None:
                 runtime_probe_text = runtime_source_text or _build_synthetic_runtime_probe_text(
                     spec,
@@ -1057,6 +1222,11 @@ def _build_dspy_classes():
                         "Schema runtime dry-run flagged issues: %s",
                         "; ".join(runtime_issues),
                     )
+            if runtime_source_text and compiled is not None:
+                semantic_score, semantic_issues = _semantic_feedback(spec)
+                if semantic_issues and semantic_score < semantic_threshold:
+                    runtime_issues.extend([f"semantic_issue: {item}" for item in semantic_issues[:8]])
+                    runtime_issues.append(f"semantic_score_low: {semantic_score:.2f}")
 
             repairs_remaining = max(0, int(max_repairs))
             while (structural_issues or compiled is None or runtime_issues) and repairs_remaining > 0:
@@ -1098,6 +1268,11 @@ def _build_dspy_classes():
                             "Schema runtime dry-run flagged issues after repair: %s",
                             "; ".join(runtime_issues),
                         )
+                if runtime_source_text and compiled is not None:
+                    semantic_score, semantic_issues = _semantic_feedback(spec)
+                    if semantic_issues and semantic_score < semantic_threshold:
+                        runtime_issues.extend([f"semantic_issue: {item}" for item in semantic_issues[:8]])
+                        runtime_issues.append(f"semantic_score_low: {semantic_score:.2f}")
 
             if compiled is None or structural_issues or runtime_issues:
                 all_issues = structural_issues + runtime_issues
@@ -1105,11 +1280,15 @@ def _build_dspy_classes():
                 raise ValueError(f"Schema generation failed after repair attempts: {joined}")
 
             self._last_metrics = metrics
+            semantic_score = None
+            if runtime_source_text and compiled is not None:
+                semantic_score, _ = _semantic_feedback(spec)
             return dspy.Prediction(
                 schema_spec=spec,
                 compiled_model=compiled,
                 schema_issues=structural_issues + runtime_issues,
                 runtime_dryrun_used=runtime_enabled,
+                semantic_score=semantic_score,
             )
 
     class RefineSchemaSpec(dspy.Signature):

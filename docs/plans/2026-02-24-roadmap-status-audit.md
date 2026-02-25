@@ -6,7 +6,7 @@ Status: Active
 Owner: Core platform
 Authoritative: Yes (single source of truth for rollout status)
 
-## 0) Canonical Status (Updated 2026-02-25 10:12)
+## 0) Canonical Status (Updated 2026-02-25 10:44)
 
 This file is the canonical status board for DSPy roadmap execution.
 Other plan files are design/history logs and must link here for status.
@@ -107,6 +107,20 @@ Other plan files are design/history logs and must link here for status.
   - Semantic quality follow-up identified (`2026-02-25 10:18`):
     - `template create --from-document tests/datasets/standardize/Sample_Report_Cervical_Spine.pdf --name RuntimeProbeDoc` produced a valid and extractable template, but field granularity remained flatter than expert design (for example, broad `findings: list[str]` vs typed level-structured objects).
     - Opened follow-up issue `#57 [SCHEMA-002]` to enforce semantic granularity scoring and benchmark-driven improvement.
+  - Hybrid granularity gate improvement (`2026-02-25 10:44`, `SCHEMA-002`):
+    - Added deterministic semantic-granularity scoring to `mosaicx/pipelines/schema_gen.py` (typed coverage, nested structure, enum cues, repeated-structure cues).
+    - Added DSPy semantic assessor (`AssessSchemaGranularity`) as an LLM critique path when deterministic score/issues indicate weak schema granularity.
+    - Repair loop now receives semantic issues (`semantic_issue:*`) plus low-score signal (`semantic_score_low:*`) for document-grounded generation.
+    - Regression coverage expanded in `tests/test_schema_gen.py`:
+      - spine-level repeated-structure scenarios
+      - non-spine numbered-lesion scenarios
+      - flat vs structured schema scoring checks
+    - Validation:
+      - `scripts/clear_dspy_cache.sh && PYTHONPATH=. .venv/bin/pytest -q tests/test_schema_gen.py` -> `31 passed`
+      - `PYTHONPATH=. .venv/bin/pytest -q tests/test_cli_integration.py -k "template_create"` -> `9 passed`
+    - Live local `vllm-mlx` evidence:
+      - `template create --from-document ... --name RuntimeProbeDocV2` now produced structured `findings: list[object]` with typed nested fields (`level`, `disc_condition(enum)`, `bulge(bool)`, etc.).
+      - `extract --template /tmp/runtime_probe_doc_v2.yaml` succeeded and produced 6 structured finding rows with grounded values.
 
 - Verify audit recovery gating hardened (`2026-02-24`, `BUG-VER-001`):
   - `mosaicx/verify/audit.py` now attempts Outlines recovery only for structured serialization/JSON parse failures.
