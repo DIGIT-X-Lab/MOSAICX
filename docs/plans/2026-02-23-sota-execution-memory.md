@@ -761,3 +761,14 @@ When completing `DSPY-*` items, append:
   - pending
 - Remaining blockers:
   - Run adversarial synthetic benchmark set for describe-only schema generation and attach before/after metrics to `#56`.
+
+### Update 2026-02-25 10:18
+- Tasks completed:
+  - Performed manual gold-standard comparison of generated schema quality after runtime-gate fixes.
+  - Logged follow-up issue `#57 [SCHEMA-002]` for semantic granularity scoring (human-grade structure vs merely valid schema).
+- Evidence:
+  - `mosaicx template create --from-document tests/datasets/standardize/Sample_Report_Cervical_Spine.pdf --name RuntimeProbeDoc --output /tmp/runtime_probe_doc.yaml` succeeded.
+  - `mosaicx extract --document tests/datasets/standardize/Sample_Report_Cervical_Spine.pdf --template /tmp/runtime_probe_doc.yaml -o /tmp/runtime_probe_doc_extract.json` succeeded with grounded values.
+  - Output quality note: extraction is correct but schema remains flatter than expert template design (`findings`/`impression` as simple lists instead of richer typed level/group structures).
+- Remaining blockers:
+  - Implement benchmarked semantic-granularity optimization loop (`#57`) and publish before/after scoring artifacts.

@@ -21,6 +21,7 @@ Other plan files are design/history logs and must link here for status.
   - closed duplicates: `#22`, `#27`
 - Open stabilization items:
   - `#56 [SCHEMA-001] Robust schema generation with normalize/validate/repair pipeline`
+  - `#57 [SCHEMA-002] Add semantic granularity scoring for generated templates`
 - Closed DSPy capability items:
   - `#36 [DSPY-01] ReAct planner as primary query control-plane`
   - `#37 [DSPY-02] RLM executor robustness for long-document query + verify`
@@ -103,6 +104,9 @@ Other plan files are design/history logs and must link here for status.
       - `PYTHONPATH=. .venv/bin/pytest -q tests/test_cli_integration.py -k "template_create"` -> `9 passed`
     - Live local `vllm-mlx` check:
       - `template create --describe ... --name RuntimeProbeTmp --output /tmp/runtime_probe_tmp.yaml` succeeded (`6,145 tokens`, `36.9s`) and produced a valid template.
+  - Semantic quality follow-up identified (`2026-02-25 10:18`):
+    - `template create --from-document tests/datasets/standardize/Sample_Report_Cervical_Spine.pdf --name RuntimeProbeDoc` produced a valid and extractable template, but field granularity remained flatter than expert design (for example, broad `findings: list[str]` vs typed level-structured objects).
+    - Opened follow-up issue `#57 [SCHEMA-002]` to enforce semantic granularity scoring and benchmark-driven improvement.
 
 - Verify audit recovery gating hardened (`2026-02-24`, `BUG-VER-001`):
   - `mosaicx/verify/audit.py` now attempts Outlines recovery only for structured serialization/JSON parse failures.
