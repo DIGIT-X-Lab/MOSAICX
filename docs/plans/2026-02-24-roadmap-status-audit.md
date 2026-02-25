@@ -6,7 +6,7 @@ Status: Active
 Owner: Core platform
 Authoritative: Yes (single source of truth for rollout status)
 
-## 0) Canonical Status (Updated 2026-02-25 20:10)
+## 0) Canonical Status (Updated 2026-02-25 20:35)
 
 This file is the canonical status board for DSPy roadmap execution.
 Other plan files are design/history logs and must link here for status.
@@ -44,10 +44,11 @@ Other plan files are design/history logs and must link here for status.
 - Open DSPy capability rollout items:
   - none
 - Open extract atomic rollout items:
-  - `#61 [EXTX-03]`, `#62 [EXTX-04]`, `#63 [EXTX-05]`, `#64 [EXTX-06]`, `#65 [EXTX-07]`, `#66 [EXTX-08]`, `#67 [EXTX-09]`, `#68 [EXTX-10]`
+  - `#62 [EXTX-04]`, `#63 [EXTX-05]`, `#64 [EXTX-06]`, `#65 [EXTX-07]`, `#66 [EXTX-08]`, `#67 [EXTX-09]`, `#68 [EXTX-10]`
 - Closed extract atomic rollout items:
   - `#59 [EXTX-01]` Canonical extract contract + fail-closed semantics across CLI/SDK/MCP
   - `#60 [EXTX-02]` ReAct planner-first section routing for extraction
+  - `#61 [EXTX-03]` Outlines-first structured extraction with DSPy adapter fallback chain
 
 ### Canonical control note
 
@@ -92,6 +93,26 @@ Other plan files are design/history logs and must link here for status.
       - output `_planner` showed `planner=react`, `react_used=true`.
   - Run artifact:
     - `docs/runs/2026-02-25-extx-02-react-routing.md`
+
+- Outlines-first structured extraction chain completed (`2026-02-25`, `EXTX-03`, issue `#61`):
+  - Added deterministic chain in `mosaicx/pipelines/extraction.py`:
+    1. `outlines_primary`
+    2. `dspy_typed_direct`
+    3. `dspy_json_adapter`
+    4. `dspy_two_step_adapter`
+    5. `existing_json_fallback`
+    6. `existing_outlines_rescue`
+  - Chain diagnostics are now persisted in `_planner`:
+    - `structured_chain`, `selected_structured_path`, `structured_fallback_used`.
+  - Added regression tests for malformed/non-JSON and ordered fallback behavior:
+    - `tests/test_extraction_pipeline.py::TestStructuredExtractionChain`
+  - Validation:
+    - `PYTHONPATH=. .venv/bin/pytest -q tests/test_extraction_pipeline.py tests/test_extract_contract.py tests/test_cli_extract.py tests/test_mcp_server_dspy_config.py tests/test_mcp_query.py tests/test_mcp_verify.py tests/test_public_api.py -k "extract or planner or verify_output or query_start or query_ask or query_close"` -> `54 passed, 39 deselected`
+    - Live local `vllm-mlx` smoke:
+      - `PYTHONPATH=. .venv/bin/mosaicx extract --document tests/datasets/standardize/Sample_Report_Cervical_Spine.pdf --template MRICervicalSpineV3 -o /tmp/mosaicx_extx03_smoke.json`
+      - output `_planner.selected_structured_path=outlines_primary`, `structured_fallback_used=false`.
+  - Run artifact:
+    - `docs/runs/2026-02-25-extx-03-outlines-first-chain.md`
 
 - Schema robustness hardening (`2026-02-25`, `SCHEMA-001`) implemented and validated:
   - `mosaicx/pipelines/schema_gen.py` now includes deterministic `normalize_schema_spec` + `validate_schema_spec`.

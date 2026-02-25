@@ -886,6 +886,176 @@ def _recover_schema_instance_with_outlines(
         return None
 
 
+def _coerce_extracted_to_model_instance(
+    *,
+    extracted: Any,
+    schema_class: type[BaseModel],
+) -> BaseModel:
+    """Coerce an arbitrary extraction payload into a validated schema instance."""
+    if isinstance(extracted, schema_class):
+        dumped = extracted.model_dump()
+        if isinstance(dumped, dict):
+            coerced = _coerce_payload_to_schema(dumped, schema_class)
+            return schema_class.model_validate(coerced)
+        return schema_class.model_validate(dumped)
+    if isinstance(extracted, dict):
+        coerced = _coerce_payload_to_schema(extracted, schema_class)
+        return schema_class.model_validate(coerced)
+    if hasattr(extracted, "model_dump"):
+        dumped = extracted.model_dump()  # type: ignore[attr-defined]
+        if isinstance(dumped, dict):
+            coerced = _coerce_payload_to_schema(dumped, schema_class)
+            return schema_class.model_validate(coerced)
+        return schema_class.model_validate(dumped)
+    return schema_class.model_validate(extracted)
+
+
+def _extract_schema_with_structured_chain(
+    *,
+    document_text: str,
+    schema_class: type[BaseModel],
+    typed_extract: Any,
+    json_extract: Any | None = None,
+) -> tuple[BaseModel, dict[str, Any]]:
+    """Run deterministic structured extraction fallback chain with diagnostics."""
+    attempts: list[dict[str, Any]] = []
+
+    def _record(step: str, ok: bool, error: Exception | None = None) -> None:
+        row: dict[str, Any] = {"step": step, "ok": bool(ok)}
+        if error is not None:
+            row["error"] = f"{type(error).__name__}: {error}"
+        attempts.append(row)
+
+    selected_path = ""
+    last_exc: Exception | None = None
+
+    dspy = None
+    has_lm = False
+    try:
+        from mosaicx.runtime_env import import_dspy
+
+        dspy = import_dspy()
+        has_lm = getattr(dspy.settings, "lm", None) is not None
+    except Exception as exc:
+        _record("dspy_import", False, exc)
+        dspy = None
+        has_lm = False
+
+    if has_lm:
+        outlines_primary = _recover_schema_instance_with_outlines(
+            document_text=document_text,
+            schema_class=schema_class,
+            error_hint="primary_outlines",
+        )
+        if outlines_primary is not None:
+            _record("outlines_primary", True)
+            selected_path = "outlines_primary"
+            return outlines_primary, {
+                "selected_path": selected_path,
+                "fallback_used": False,
+                "attempts": attempts,
+            }
+        _record("outlines_primary", False, ValueError("outlines_primary_unavailable"))
+    else:
+        _record("outlines_primary", False, ValueError("lm_not_configured"))
+
+    try:
+        pred = typed_extract(document_text=document_text)
+        extracted = getattr(pred, "extracted", pred)
+        model_instance = _coerce_extracted_to_model_instance(
+            extracted=extracted,
+            schema_class=schema_class,
+        )
+        _record("dspy_typed_direct", True)
+        selected_path = "dspy_typed_direct"
+        return model_instance, {
+            "selected_path": selected_path,
+            "fallback_used": True,
+            "attempts": attempts,
+        }
+    except Exception as exc:
+        last_exc = exc
+        _record("dspy_typed_direct", False, exc)
+
+    for step_name, adapter_name in (
+        ("dspy_json_adapter", "JSONAdapter"),
+        ("dspy_two_step_adapter", "TwoStepAdapter"),
+    ):
+        if dspy is None:
+            _record(step_name, False, ValueError("dspy_unavailable"))
+            continue
+        if not has_lm:
+            _record(step_name, False, ValueError("lm_not_configured"))
+            continue
+
+        adapter_cls = getattr(dspy, adapter_name, None)
+        if adapter_cls is None:
+            _record(step_name, False, ValueError(f"{adapter_name}_missing"))
+            continue
+
+        try:
+            with dspy.context(adapter=adapter_cls()):
+                pred = typed_extract(document_text=document_text)
+            extracted = getattr(pred, "extracted", pred)
+            model_instance = _coerce_extracted_to_model_instance(
+                extracted=extracted,
+                schema_class=schema_class,
+            )
+            _record(step_name, True)
+            selected_path = step_name
+            return model_instance, {
+                "selected_path": selected_path,
+                "fallback_used": True,
+                "attempts": attempts,
+            }
+        except Exception as exc:
+            last_exc = exc
+            _record(step_name, False, exc)
+
+    if json_extract is not None:
+        try:
+            fallback_pred = json_extract(document_text=document_text)
+            model_instance = _recover_schema_instance_from_raw(
+                getattr(fallback_pred, "extracted_json", ""),
+                schema_class,
+            )
+            _record("existing_json_fallback", True)
+            selected_path = "existing_json_fallback"
+            return model_instance, {
+                "selected_path": selected_path,
+                "fallback_used": True,
+                "attempts": attempts,
+            }
+        except Exception as exc:
+            last_exc = exc
+            _record("existing_json_fallback", False, exc)
+
+    if has_lm:
+        outlines_rescue = _recover_schema_instance_with_outlines(
+            document_text=document_text,
+            schema_class=schema_class,
+            error_hint="; ".join(
+                str(a.get("error", ""))
+                for a in attempts
+                if not a.get("ok")
+            )[:1500],
+        )
+        if outlines_rescue is not None:
+            _record("existing_outlines_rescue", True)
+            selected_path = "existing_outlines_rescue"
+            return outlines_rescue, {
+                "selected_path": selected_path,
+                "fallback_used": True,
+                "attempts": attempts,
+            }
+        _record("existing_outlines_rescue", False, ValueError("outlines_rescue_unavailable"))
+    else:
+        _record("existing_outlines_rescue", False, ValueError("lm_not_configured"))
+    if last_exc is not None:
+        raise last_exc
+    raise ValueError("Structured extraction chain failed without recoverable path.")
+
+
 def extract_with_mode(document_text: str, mode_name: str) -> tuple[dict[str, Any], "PipelineMetrics | None"]:
     """Run a registered extraction mode pipeline.
 
@@ -1038,65 +1208,38 @@ def _build_dspy_classes():
                         planned_text = document_text
 
                 with track_step(metrics, "Extract", tracker):
-                    def _extract_primary(text_value: str) -> BaseModel:
-                        result = self.extract_custom(document_text=text_value)
-                        extracted = getattr(result, "extracted", result)
-                        if isinstance(extracted, schema):
-                            extracted_payload: Any = extracted.model_dump()
-                        elif isinstance(extracted, dict):
-                            extracted_payload = extracted
-                        elif hasattr(extracted, "model_dump"):
-                            extracted_payload = extracted.model_dump()
-                        else:
-                            extracted_payload = extracted
-
-                        if isinstance(extracted_payload, dict):
-                            coerced = _coerce_payload_to_schema(extracted_payload, schema)
-                            return schema.model_validate(coerced)
-                        return schema.model_validate(extracted_payload)
-
-                    def _extract_json(text_value: str) -> BaseModel:
-                        fallback = self.extract_json_fallback(document_text=text_value)
-                        return _recover_schema_instance_from_raw(
-                            getattr(fallback, "extracted_json", ""),
-                            schema,
-                        )
-
                     try:
-                        model_instance = _extract_primary(planned_text)
-                    except Exception as primary_exc:
-                        try:
-                            model_instance = _extract_json(planned_text)
-                        except Exception as fallback_exc:
-                            if planned_text != document_text:
-                                planner_diag["full_text_rescue_used"] = True
-                                try:
-                                    model_instance = _extract_primary(document_text)
-                                except Exception as full_primary_exc:
-                                    try:
-                                        model_instance = _extract_json(document_text)
-                                    except Exception as full_fallback_exc:
-                                        recovered = _recover_schema_instance_with_outlines(
-                                            document_text=document_text,
-                                            schema_class=schema,
-                                            error_hint=(
-                                                f"primary={full_primary_exc}; "
-                                                f"fallback={full_fallback_exc}"
-                                            ),
-                                        )
-                                        if recovered is None:
-                                            raise full_fallback_exc from full_primary_exc
-                                        model_instance = recovered
-                            else:
-                                recovered = _recover_schema_instance_with_outlines(
-                                    document_text=document_text,
-                                    schema_class=schema,
-                                    error_hint=f"primary={primary_exc}; fallback={fallback_exc}",
-                                )
-                                if recovered is None:
-                                    raise fallback_exc from primary_exc
-                                model_instance = recovered
+                        model_instance, chain_diag = _extract_schema_with_structured_chain(
+                            document_text=planned_text,
+                            schema_class=schema,
+                            typed_extract=lambda *, document_text: self.extract_custom(
+                                document_text=document_text
+                            ),
+                            json_extract=lambda *, document_text: self.extract_json_fallback(
+                                document_text=document_text
+                            ),
+                        )
+                    except Exception:
+                        if planned_text != document_text:
+                            planner_diag["full_text_rescue_used"] = True
+                            model_instance, chain_diag = _extract_schema_with_structured_chain(
+                                document_text=document_text,
+                                schema_class=schema,
+                                typed_extract=lambda *, document_text: self.extract_custom(
+                                    document_text=document_text
+                                ),
+                                json_extract=lambda *, document_text: self.extract_json_fallback(
+                                    document_text=document_text
+                                ),
+                            )
+                        else:
+                            raise
                 planner_diag["planned_text_used"] = planned_text != document_text
+                planner_diag["structured_chain"] = chain_diag.get("attempts", [])
+                planner_diag["selected_structured_path"] = chain_diag.get("selected_path")
+                planner_diag["structured_fallback_used"] = bool(
+                    chain_diag.get("fallback_used", False)
+                )
                 self._last_metrics = metrics
                 self._last_planner = planner_diag
                 return dspy.Prediction(extracted=model_instance, planner=planner_diag)
@@ -1126,6 +1269,22 @@ def _build_dspy_classes():
                 type_=model,
             )
             extract_step = dspy.ChainOfThought(extract_sig)
+            extract_json_sig = dspy.Signature(
+                "document_text -> extracted_json",
+                instructions=(
+                    f"Extract structured data matching the {model.__name__} schema "
+                    "from the document. Return ONLY a JSON object with no markdown and no commentary."
+                ),
+            ).with_updated_fields(
+                "document_text",
+                desc="Full text of the document",
+                type_=str,
+            ).with_updated_fields(
+                "extracted_json",
+                desc="Strict JSON object as text",
+                type_=str,
+            )
+            extract_json_step = dspy.Predict(extract_json_sig)
             planned_text = document_text
             with track_step(metrics, "Plan extraction", tracker):
                 try:
@@ -1140,14 +1299,44 @@ def _build_dspy_classes():
                     }
                     planned_text = document_text
             with track_step(metrics, "Extract", tracker):
-                result = extract_step(document_text=planned_text)
+                try:
+                    model_instance, chain_diag = _extract_schema_with_structured_chain(
+                        document_text=planned_text,
+                        schema_class=model,
+                        typed_extract=lambda *, document_text: extract_step(
+                            document_text=document_text
+                        ),
+                        json_extract=lambda *, document_text: extract_json_step(
+                            document_text=document_text
+                        ),
+                    )
+                except Exception:
+                    if planned_text != document_text:
+                        planner_diag["full_text_rescue_used"] = True
+                        model_instance, chain_diag = _extract_schema_with_structured_chain(
+                            document_text=document_text,
+                            schema_class=model,
+                            typed_extract=lambda *, document_text: extract_step(
+                                document_text=document_text
+                            ),
+                            json_extract=lambda *, document_text: extract_json_step(
+                                document_text=document_text
+                            ),
+                        )
+                    else:
+                        raise
             planner_diag["planned_text_used"] = planned_text != document_text
+            planner_diag["structured_chain"] = chain_diag.get("attempts", [])
+            planner_diag["selected_structured_path"] = chain_diag.get("selected_path")
+            planner_diag["structured_fallback_used"] = bool(
+                chain_diag.get("fallback_used", False)
+            )
 
             self._last_metrics = metrics
             self._last_planner = planner_diag
 
             return dspy.Prediction(
-                extracted=result.extracted,
+                extracted=model_instance,
                 inferred_schema=spec,
                 planner=planner_diag,
             )

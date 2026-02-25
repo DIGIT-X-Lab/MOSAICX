@@ -161,8 +161,8 @@ Execution is tracked by atomic GitHub issues:
 
 1. `#59 [EXTX-01]` Canonical extract contract + fail-closed semantics across CLI/SDK/MCP (`done`)
 2. `#60 [EXTX-02]` ReAct planner-first section routing for extraction (`done`)
-3. `#61 [EXTX-03]` Outlines-first structured extraction with DSPy adapter fallback chain (`in_progress`)
-4. `#62 [EXTX-04]` Selective BestOfN for uncertain extraction sections (`todo`)
+3. `#61 [EXTX-03]` Outlines-first structured extraction with DSPy adapter fallback chain (`done`)
+4. `#62 [EXTX-04]` Selective BestOfN for uncertain extraction sections (`in_progress`)
 5. `#63 [EXTX-05]` MultiChainComparison adjudication + Refine field-level repair (`todo`)
 6. `#64 [EXTX-06]` Deterministic validators for units/dates/ranges/null semantics (`todo`)
 7. `#65 [EXTX-07]` Extract optimizer datasets + MIPROv2/SIMBA/GEPA artifact runs (`todo`)

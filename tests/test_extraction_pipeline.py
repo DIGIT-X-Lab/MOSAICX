@@ -1,5 +1,7 @@
 # tests/test_extraction_pipeline.py
 """Tests for the extraction pipeline."""
+from types import SimpleNamespace
+
 import pytest
 from pydantic import BaseModel
 
@@ -184,3 +186,161 @@ class TestExtractionPlannerRouting:
         assert captured["document_text"] == planned
         assert getattr(result, "planner") == planner_diag
         assert extractor._last_planner == planner_diag
+
+
+class TestStructuredExtractionChain:
+    def test_chain_prefers_outlines_primary_when_available(self, monkeypatch):
+        from mosaicx.pipelines.extraction import _extract_schema_with_structured_chain
+
+        class Report(BaseModel):
+            summary: str
+
+        called = {"typed": 0}
+
+        def _typed_extract(*, document_text: str):
+            called["typed"] += 1
+            return SimpleNamespace(extracted={"summary": "typed"})
+
+        monkeypatch.setattr(
+            "mosaicx.pipelines.extraction._recover_schema_instance_with_outlines",
+            lambda **kwargs: Report(summary="outlines"),
+        )
+        class _Ctx:
+            def __enter__(self):
+                return None
+
+            def __exit__(self, exc_type, exc, tb):  # noqa: ARG002
+                return False
+
+        fake_dspy = SimpleNamespace(
+            settings=SimpleNamespace(lm=object()),
+            context=lambda adapter=None: _Ctx(),
+        )
+        monkeypatch.setattr("mosaicx.runtime_env.import_dspy", lambda: fake_dspy)
+
+        model, diag = _extract_schema_with_structured_chain(
+            document_text="sample",
+            schema_class=Report,
+            typed_extract=_typed_extract,
+            json_extract=None,
+        )
+
+        assert model.summary == "outlines"
+        assert diag["selected_path"] == "outlines_primary"
+        assert diag["fallback_used"] is False
+        assert called["typed"] == 0
+        assert diag["attempts"][0]["step"] == "outlines_primary"
+        assert diag["attempts"][0]["ok"] is True
+
+    def test_chain_order_json_adapter_then_two_step(self, monkeypatch):
+        from mosaicx.pipelines.extraction import _extract_schema_with_structured_chain
+
+        class Report(BaseModel):
+            summary: str
+
+        monkeypatch.setattr(
+            "mosaicx.pipelines.extraction._recover_schema_instance_with_outlines",
+            lambda **kwargs: None,
+        )
+
+        active_adapter = {"name": ""}
+
+        class JSONAdapter:
+            pass
+
+        class TwoStepAdapter:
+            pass
+
+        class _Context:
+            def __init__(self, adapter):
+                self.adapter = adapter
+
+            def __enter__(self):
+                active_adapter["name"] = type(self.adapter).__name__
+                return None
+
+            def __exit__(self, exc_type, exc, tb):  # noqa: ARG002
+                active_adapter["name"] = ""
+                return False
+
+        fake_dspy = SimpleNamespace(
+            settings=SimpleNamespace(lm=object()),
+            JSONAdapter=JSONAdapter,
+            TwoStepAdapter=TwoStepAdapter,
+            context=lambda adapter=None: _Context(adapter),
+        )
+        monkeypatch.setattr(
+            "mosaicx.runtime_env.import_dspy",
+            lambda: fake_dspy,
+        )
+
+        def _typed_extract(*, document_text: str):  # noqa: ARG001
+            if active_adapter["name"] == "JSONAdapter":
+                raise ValueError("json adapter failed")
+            if active_adapter["name"] == "TwoStepAdapter":
+                return SimpleNamespace(extracted={"summary": "two-step"})
+            raise AssertionError("unexpected adapter path")
+
+        model, diag = _extract_schema_with_structured_chain(
+            document_text="sample",
+            schema_class=Report,
+            typed_extract=_typed_extract,
+            json_extract=lambda **kwargs: SimpleNamespace(extracted_json='{"summary":"fallback"}'),
+        )
+
+        assert model.summary == "two-step"
+        assert diag["selected_path"] == "dspy_two_step_adapter"
+        steps = [a["step"] for a in diag["attempts"]]
+        assert steps[:4] == [
+            "outlines_primary",
+            "dspy_typed_direct",
+            "dspy_json_adapter",
+            "dspy_two_step_adapter",
+        ]
+        assert diag["attempts"][1]["ok"] is False
+        assert diag["attempts"][2]["ok"] is False
+        assert diag["attempts"][3]["ok"] is True
+
+    def test_chain_uses_existing_rescue_on_malformed_json(self, monkeypatch):
+        from mosaicx.pipelines.extraction import _extract_schema_with_structured_chain
+
+        class Report(BaseModel):
+            summary: str
+
+        outlines_calls = {"count": 0}
+
+        def _fake_outlines(**kwargs):  # noqa: ARG001
+            outlines_calls["count"] += 1
+            if outlines_calls["count"] == 1:
+                return None
+            return Report(summary="rescued")
+
+        monkeypatch.setattr(
+            "mosaicx.pipelines.extraction._recover_schema_instance_with_outlines",
+            _fake_outlines,
+        )
+        class _Ctx:
+            def __enter__(self):
+                return None
+
+            def __exit__(self, exc_type, exc, tb):  # noqa: ARG002
+                return False
+
+        fake_dspy = SimpleNamespace(
+            settings=SimpleNamespace(lm=object()),
+            context=lambda adapter=None: _Ctx(),
+            JSONAdapter=None,
+            TwoStepAdapter=None,
+        )
+        monkeypatch.setattr("mosaicx.runtime_env.import_dspy", lambda: fake_dspy)
+
+        model, diag = _extract_schema_with_structured_chain(
+            document_text="sample",
+            schema_class=Report,
+            typed_extract=lambda **kwargs: (_ for _ in ()).throw(ValueError("typed failed")),
+            json_extract=lambda **kwargs: SimpleNamespace(extracted_json="not json at all"),
+        )
+
+        assert model.summary == "rescued"
+        assert diag["selected_path"] == "existing_outlines_rescue"
+        assert any(a["step"] == "existing_json_fallback" and a["ok"] is False for a in diag["attempts"])
