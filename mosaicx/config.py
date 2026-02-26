@@ -33,7 +33,12 @@ class MosaicxConfig(BaseSettings):
     lm_temperature: float = 0.0
 
     # --- Self-healing ---
+    # Keep extraction fast by default; enable targeted LLM repair via MOSAICX_USE_REFINE=1.
     use_refine: bool = False
+    # Only run LLM refine on still-missing fields by default.
+    refine_only_missing: bool = True
+    # Hard cap to avoid runaway per-field repair loops on large templates.
+    refine_max_fields: int = 3
     outlines_timeout: int = 120
     planner_min_chars: int = 4000
 

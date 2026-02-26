@@ -572,7 +572,7 @@ class TestAdjudicationAndRepair:
         repaired, diag = _repair_failed_critical_fields_with_refine(
             model_instance=base,
             schema_class=Report,
-            source_text="Findings: disc bulge. Impression: stable.",
+            source_text="No grounded finding text is available in this document.",
         )
 
         # Should return the original instance unmodified
@@ -580,6 +580,40 @@ class TestAdjudicationAndRepair:
         assert repaired.finding == ""
         assert diag["reason"] == "use_refine_disabled"
         assert diag["repaired_fields"] == []
+
+    def test_deterministic_backfill_runs_even_when_use_refine_disabled(self, monkeypatch):
+        """Missing fields should be repaired from labeled text blocks before LLM refine."""
+        from mosaicx.pipelines.extraction import _repair_failed_critical_fields_with_refine
+
+        class Report(BaseModel):
+            clinical_information: str
+            comparison: str
+
+        from mosaicx.config import MosaicxConfig
+
+        monkeypatch.setattr(
+            "mosaicx.config.get_config",
+            lambda: MosaicxConfig(use_refine=False),
+        )
+
+        base = Report(clinical_information="", comparison="")
+        repaired, diag = _repair_failed_critical_fields_with_refine(
+            model_instance=base,
+            schema_class=Report,
+            source_text=(
+                "Clinical Information: Evaluation of stable acute chest pain.\n"
+                "Comparison: No prior imaging is available for comparison."
+            ),
+        )
+
+        assert repaired.clinical_information == "Evaluation of stable acute chest pain."
+        assert repaired.comparison == "No prior imaging is available for comparison."
+        assert diag["reason"] == "deterministic_backfill_applied"
+        assert len(diag["remaining_failed_fields"]) == 0
+        assert {entry["field"] for entry in diag["repaired_fields"]} == {
+            "clinical_information",
+            "comparison",
+        }
 
     def test_refine_repair_proceeds_when_use_refine_enabled(self, monkeypatch):
         """When use_refine=True, repair should proceed past the gate."""

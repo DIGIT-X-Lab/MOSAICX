@@ -36,6 +36,9 @@ def test_apply_extraction_contract_basic_semantics():
 
     assert contract["summary"]["supported"] == 2
     assert contract["summary"]["insufficient_evidence"] == 1
+    assert contract["required_field_count"] == 3
+    assert contract["present_required_count"] == 2
+    assert contract["missing_required"] == ["missing_field"]
 
 
 def test_apply_extraction_contract_normalizes_date_and_flags_invalid_range():
@@ -83,6 +86,30 @@ def test_apply_extraction_contract_flags_unknown_units():
     assert row["validation"]["valid"] is False
     assert row["validation"]["reason"] == "unknown_unit"
     assert any(issue["reason"] == "unknown_unit" for issue in contract["validation_issues"])
+
+
+def test_apply_extraction_contract_fuzzy_snippet_recovers_minor_word_drift():
+    from mosaicx.pipelines.extraction import apply_extraction_contract
+
+    payload = {
+        "extracted": {
+            "right_coronary_artery": (
+                "The right coronary artery reveals predominately non-calcified plaque "
+                "with focal proximal stenosis."
+            ),
+        }
+    }
+    source = (
+        "Right coronary artery: The right coronary artery reveals predominantly non-calcified "
+        "plaque with focal proximal stenosis."
+    )
+    result = apply_extraction_contract(payload, source_text=source)
+    row = result["_extraction_contract"]["field_results"][0]
+
+    assert row["field"] == "right_coronary_artery"
+    assert row["status"] == "supported"
+    assert row["grounded"] is True
+    assert isinstance(row["evidence"], str) and "right coronary artery" in row["evidence"].lower()
 
 
 def test_sdk_extract_attaches_extraction_contract(monkeypatch):
