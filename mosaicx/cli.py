@@ -407,7 +407,7 @@ def _extract_batch(
                 output = {}
                 if hasattr(result, "extracted"):
                     val = result.extracted
-                    output["extracted"] = val.model_dump() if hasattr(val, "model_dump") else val
+                    output["extracted"] = val.model_dump(mode="json") if hasattr(val, "model_dump") else val
                 return output
         else:
             raise click.ClickException(
@@ -440,7 +440,7 @@ def _extract_batch(
             output = {}
             if hasattr(result, "extracted"):
                 val = result.extracted
-                output["extracted"] = val.model_dump() if hasattr(val, "model_dump") else val
+                output["extracted"] = val.model_dump(mode="json") if hasattr(val, "model_dump") else val
             return output
 
     resume_id = "resume" if resume else None
@@ -761,7 +761,7 @@ def extract(
                 val = result.extracted
                 if hasattr(val, "model_dump"):
                     _extract_model_instance = val
-                    output_data["extracted"] = val.model_dump()
+                    output_data["extracted"] = val.model_dump(mode="json")
                 else:
                     output_data["extracted"] = val
             if isinstance(planner_diag, dict):
@@ -821,11 +821,11 @@ def extract(
             val = result.extracted
             if hasattr(val, "model_dump"):
                 _extract_model_instance = val
-                output_data["extracted"] = val.model_dump()
+                output_data["extracted"] = val.model_dump(mode="json")
             else:
                 output_data["extracted"] = val
         if hasattr(result, "inferred_schema"):
-            output_data["inferred_schema"] = result.inferred_schema.model_dump()
+            output_data["inferred_schema"] = result.inferred_schema.model_dump(mode="json")
         if isinstance(planner_diag, dict):
             output_data["_planner"] = planner_diag
         metrics = getattr(extractor, "_last_metrics", None)

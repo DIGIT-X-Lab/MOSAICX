@@ -294,7 +294,7 @@ def run_report(
             val = result.extracted
             if hasattr(val, "model_dump"):
                 result_model_instance = val
-                output_data["extracted"] = val.model_dump()
+                output_data["extracted"] = val.model_dump(mode="json")
             else:
                 output_data["extracted"] = val
         pipe_metrics = getattr(extractor, "_last_metrics", None)
@@ -315,7 +315,7 @@ def run_report(
             if hasattr(val, "model_dump"):
                 result_model_instance = val
                 result_model_class = type(val)
-                output_data["extracted"] = val.model_dump()
+                output_data["extracted"] = val.model_dump(mode="json")
             else:
                 output_data["extracted"] = val
         pipe_metrics = getattr(extractor, "_last_metrics", None)

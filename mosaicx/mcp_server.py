@@ -250,7 +250,7 @@ def extract_document(
                 if hasattr(prediction, "extracted"):
                     val = prediction.extracted
                     if hasattr(val, "model_dump"):
-                        output["extracted"] = val.model_dump()
+                        output["extracted"] = val.model_dump(mode="json")
                         if score:
                             output["completeness"] = _compute_completeness(
                                 val, document_text
@@ -311,9 +311,9 @@ def extract_document(
         )
         if hasattr(prediction, "extracted"):
             val = prediction.extracted
-            output["extracted"] = val.model_dump() if hasattr(val, "model_dump") else val
+            output["extracted"] = val.model_dump(mode="json") if hasattr(val, "model_dump") else val
         if hasattr(prediction, "inferred_schema"):
-            output["inferred_schema"] = prediction.inferred_schema.model_dump()
+            output["inferred_schema"] = prediction.inferred_schema.model_dump(mode="json")
         if isinstance(planner_diag, dict):
             output["_planner"] = planner_diag
         return _finalize_extract_result(

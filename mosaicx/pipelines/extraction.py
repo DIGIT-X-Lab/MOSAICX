@@ -57,7 +57,7 @@ def extract_with_schema(document_text: str, schema_name: str, schema_dir: Path) 
     extractor = mod.DocumentExtractor(output_schema=model)
     result = extractor(document_text=document_text)
     val = result.extracted
-    return val.model_dump() if hasattr(val, "model_dump") else val
+    return val.model_dump(mode="json") if hasattr(val, "model_dump") else val
 
 
 def _prediction_to_dict(prediction: Any) -> dict[str, Any]:
@@ -66,9 +66,9 @@ def _prediction_to_dict(prediction: Any) -> dict[str, Any]:
     for key in prediction.keys():
         val = getattr(prediction, key)
         if hasattr(val, "model_dump"):
-            output[key] = val.model_dump()
+            output[key] = val.model_dump(mode="json")
         elif isinstance(val, list):
-            output[key] = [v.model_dump() if hasattr(v, "model_dump") else v for v in val]
+            output[key] = [v.model_dump(mode="json") if hasattr(v, "model_dump") else v for v in val]
         else:
             output[key] = val
     return output
@@ -347,7 +347,7 @@ def _coerce_value_for_annotation(value: Any, annotation: Any) -> Any:
 def _coerce_payload_to_schema(payload: Any, schema_class: type[BaseModel]) -> dict[str, Any]:
     """Coerce extracted payload into a dict better aligned with *schema_class*."""
     if isinstance(payload, schema_class):
-        return payload.model_dump()
+        return payload.model_dump(mode="json")
     if not isinstance(payload, dict):
         raise ValueError(
             f"Expected dict payload for {schema_class.__name__}, got {type(payload).__name__}"
@@ -871,7 +871,7 @@ def _apply_deterministic_semantic_validation(
     schema_class: type[BaseModel],
 ) -> tuple[BaseModel, dict[str, Any]]:
     """Normalize model payload with deterministic semantic validators."""
-    payload = model_instance.model_dump()
+    payload = model_instance.model_dump(mode="json")
     updated = dict(payload)
     issues: list[dict[str, Any]] = []
     changed_fields: list[str] = []
@@ -1638,7 +1638,7 @@ def _coerce_extracted_to_model_instance(
 ) -> BaseModel:
     """Coerce an arbitrary extraction payload into a validated schema instance."""
     if isinstance(extracted, schema_class):
-        dumped = extracted.model_dump()
+        dumped = extracted.model_dump(mode="json")
         if isinstance(dumped, dict):
             coerced = _coerce_payload_to_schema(dumped, schema_class)
             return schema_class.model_validate(coerced)
@@ -1647,7 +1647,7 @@ def _coerce_extracted_to_model_instance(
         coerced = _coerce_payload_to_schema(extracted, schema_class)
         return schema_class.model_validate(coerced)
     if hasattr(extracted, "model_dump"):
-        dumped = extracted.model_dump()  # type: ignore[attr-defined]
+        dumped = extracted.model_dump(mode="json")  # type: ignore[attr-defined]
         if isinstance(dumped, dict):
             coerced = _coerce_payload_to_schema(dumped, schema_class)
             return schema_class.model_validate(coerced)
@@ -1695,7 +1695,7 @@ def _score_extraction_candidate(
             extracted=extracted,
             schema_class=schema_class,
         )
-        normalized = model_instance.model_dump()
+        normalized = model_instance.model_dump(mode="json")
         schema_compliance = 1.0
     except Exception:
         return 0.0, {
@@ -1890,7 +1890,7 @@ def _adjudicate_conflicting_candidates(
         )
 
     dumps = {
-        json.dumps(c.get("model").model_dump(), sort_keys=True, ensure_ascii=False)
+        json.dumps(c.get("model").model_dump(mode="json"), sort_keys=True, ensure_ascii=False)
         for c in candidates
         if c.get("model") is not None
     }
@@ -1948,7 +1948,7 @@ def _repair_failed_critical_fields_with_refine(
     source_text: str,
 ) -> tuple[BaseModel, dict[str, Any]]:
     """Repair only failed critical fields using DSPy Refine when available."""
-    payload = model_instance.model_dump()
+    payload = model_instance.model_dump(mode="json")
     required = [
         name for name, field in schema_class.model_fields.items()
         if bool(getattr(field, "is_required", lambda: False)())
@@ -2141,7 +2141,7 @@ def _repair_failed_critical_fields_with_refine(
             trial_payload[field_name] = candidate_value
             coerced = _coerce_payload_to_schema(trial_payload, schema_class)
             repaired_model = schema_class.model_validate(coerced)
-            repaired_payload = repaired_model.model_dump()
+            repaired_payload = repaired_model.model_dump(mode="json")
             after = repaired_payload.get(field_name)
             if _is_missing_value(after):
                 diag["skipped_fields"].append(

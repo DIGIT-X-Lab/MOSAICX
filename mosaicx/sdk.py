@@ -120,10 +120,10 @@ def _prediction_to_dict(prediction: Any) -> dict[str, Any]:
     for key in prediction.keys():
         val = getattr(prediction, key)
         if hasattr(val, "model_dump"):
-            output[key] = val.model_dump()
+            output[key] = val.model_dump(mode="json")
         elif isinstance(val, list):
             output[key] = [
-                v.model_dump() if hasattr(v, "model_dump") else v for v in val
+                v.model_dump(mode="json") if hasattr(v, "model_dump") else v for v in val
             ]
         else:
             output[key] = val
@@ -1170,7 +1170,7 @@ def _extract_single_text(
             if hasattr(result, "extracted"):
                 val = result.extracted
                 if hasattr(val, "model_dump"):
-                    output["extracted"] = val.model_dump()
+                    output["extracted"] = val.model_dump(mode="json")
                     if score:
                         output["completeness"] = _compute_completeness_dict(
                             val, text
@@ -1241,9 +1241,9 @@ def _extract_single_text(
 
     if hasattr(result, "extracted"):
         val = result.extracted
-        output["extracted"] = val.model_dump() if hasattr(val, "model_dump") else val
+        output["extracted"] = val.model_dump(mode="json") if hasattr(val, "model_dump") else val
     if hasattr(result, "inferred_schema"):
-        output["inferred_schema"] = result.inferred_schema.model_dump()
+        output["inferred_schema"] = result.inferred_schema.model_dump(mode="json")
     if isinstance(planner_diag, dict):
         output["_planner"] = planner_diag
 

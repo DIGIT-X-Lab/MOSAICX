@@ -200,7 +200,7 @@ def extract_file(
         if hasattr(result, "extracted"):
             val = result.extracted
             output["extracted"] = (
-                val.model_dump() if hasattr(val, "model_dump") else val
+                val.model_dump(mode="json") if hasattr(val, "model_dump") else val
             )
         return output
 
@@ -213,10 +213,10 @@ def extract_file(
     if hasattr(result, "extracted"):
         val = result.extracted
         output["extracted"] = (
-            val.model_dump() if hasattr(val, "model_dump") else val
+            val.model_dump(mode="json") if hasattr(val, "model_dump") else val
         )
     if hasattr(result, "inferred_schema"):
-        output["inferred_schema"] = result.inferred_schema.model_dump()
+        output["inferred_schema"] = result.inferred_schema.model_dump(mode="json")
     return output
 
 

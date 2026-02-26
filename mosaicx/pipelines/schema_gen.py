@@ -953,7 +953,7 @@ def _runtime_validate_schema(
         result = extractor(document_text=str(document_text)[:30000])
         extracted = getattr(result, "extracted", result)
         if hasattr(extracted, "model_dump"):
-            payload = extracted.model_dump()
+            payload = extracted.model_dump(mode="json")
         elif isinstance(extracted, dict):
             payload = extracted
         else:
