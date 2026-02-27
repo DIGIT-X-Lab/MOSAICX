@@ -802,3 +802,51 @@ class TestThinkParameter:
 
         with pytest.raises(ValueError, match="think"):
             DocumentExtractor(output_schema=SimpleReport, think="invalid")
+
+
+class TestThinkFastMode:
+    """think=fast skips ChainOfThought, uses Predict fallback only."""
+
+    def test_fast_mode_uses_predict_not_cot(self, monkeypatch):
+        """Fast mode: Outlines fails -> dspy.Predict -> coerce. No ChainOfThought."""
+        from pydantic import BaseModel
+        from mosaicx.pipelines.extraction import DocumentExtractor
+
+        class SimpleReport(BaseModel):
+            summary: str
+            category: str
+
+        extractor = DocumentExtractor(output_schema=SimpleReport, think="fast")
+
+        # Track whether extract_custom (ChainOfThought) is called
+        cot_called = False
+
+        def _tracking_cot(**kwargs):
+            nonlocal cot_called
+            cot_called = True
+            raise RuntimeError("Should not be called in fast mode")
+
+        # Mock Outlines to fail (so we test the Predict fallback path)
+        monkeypatch.setattr(
+            "mosaicx.pipelines.extraction._recover_schema_instance_with_outlines",
+            lambda **kwargs: None,
+        )
+
+        # Mock the JSON fallback (Predict) to return valid data
+        class _FallbackPred:
+            extracted_json = '{"summary": "test summary", "category": "radiology"}'
+
+        monkeypatch.setattr(
+            extractor,
+            "extract_json_fallback",
+            lambda **kwargs: _FallbackPred(),
+        )
+
+        # Patch extract_custom to track calls
+        monkeypatch.setattr(extractor, "extract_custom", _tracking_cot)
+
+        result = extractor.forward("test document text")
+        assert result.extracted.summary == "test summary"
+        assert result.extracted.category == "radiology"
+        # ChainOfThought should NOT have been called in fast mode
+        assert not cot_called, "Fast mode should not use ChainOfThought"

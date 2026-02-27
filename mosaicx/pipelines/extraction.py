@@ -2177,6 +2177,7 @@ def _extract_schema_with_structured_chain(
     typed_extract: Any,
     json_extract: Any | None = None,
     planner_diag: dict[str, Any] | None = None,
+    think: str = "standard",
 ) -> tuple[BaseModel, dict[str, Any]]:
     """Run deterministic structured extraction fallback chain with diagnostics."""
     attempts: list[dict[str, Any]] = []
@@ -2216,6 +2217,44 @@ def _extract_schema_with_structured_chain(
         _record("dspy_import", False, exc)
         dspy = None
         has_lm = False
+
+    # ── Fast mode: Outlines only, fallback to json_extract (Predict) ──
+    if think == "fast":
+        if has_lm:
+            outlines_result = _recover_schema_instance_with_outlines(
+                document_text=document_text,
+                schema_class=schema_class,
+                error_hint="fast_mode",
+            )
+            if outlines_result is not None:
+                _record("outlines_fast", True)
+                return outlines_result, {
+                    "selected_path": "outlines_fast",
+                    "fallback_used": False,
+                    "attempts": attempts,
+                    "bestofn": bestofn_info,
+                    "adjudication": adjudication_info,
+                }
+            _record("outlines_fast", False, ValueError("outlines_fast_unavailable"))
+
+        # Predict fallback (no reasoning)
+        if json_extract is not None:
+            try:
+                fallback_pred = json_extract(document_text=document_text)
+                raw = getattr(fallback_pred, "extracted_json", "")
+                model_instance = _recover_schema_instance_from_raw(raw, schema_class)
+                _record("predict_fast", True)
+                return model_instance, {
+                    "selected_path": "predict_fast",
+                    "fallback_used": True,
+                    "attempts": attempts,
+                    "bestofn": bestofn_info,
+                    "adjudication": adjudication_info,
+                }
+            except Exception as exc:
+                _record("predict_fast", False, exc)
+
+        raise ValueError("Fast mode: both Outlines and Predict failed")
 
     if has_lm:
         outlines_primary = _recover_schema_instance_with_outlines(
@@ -2609,6 +2648,7 @@ def _build_dspy_classes():
                                 document_text=document_text
                             ),
                             planner_diag=planner_diag,
+                            think=self._think,
                         )
                     except Exception:
                         if planned_text != document_text:
@@ -2623,6 +2663,7 @@ def _build_dspy_classes():
                                     document_text=document_text
                                 ),
                                 planner_diag=planner_diag,
+                                think=self._think,
                             )
                         else:
                             raise
@@ -2715,6 +2756,7 @@ def _build_dspy_classes():
                             document_text=document_text
                         ),
                         planner_diag=planner_diag,
+                        think=self._think,
                     )
                 except Exception:
                     if planned_text != document_text:
@@ -2729,6 +2771,7 @@ def _build_dspy_classes():
                                 document_text=document_text
                             ),
                             planner_diag=planner_diag,
+                            think=self._think,
                         )
                     else:
                         raise

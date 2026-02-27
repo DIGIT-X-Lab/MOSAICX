@@ -740,7 +740,7 @@ Plan: `docs/plans/2026-02-27-think-flag-plan.md`
 Status: In progress
 
 - [x] Task 1: Add `think` parameter to `DocumentExtractor.__init__` with validation
-- [ ] Task 2: Implement `think=fast` mode in `_extract_schema_with_structured_chain`
+- [x] Task 2: Implement `think=fast` mode in `_extract_schema_with_structured_chain`
 - [ ] Task 3: Implement `think=deep` mode with `dspy.Refine`
 - [ ] Task 4: Wire `think` through `report.py`
 - [ ] Task 5: Wire `think` through SDK
