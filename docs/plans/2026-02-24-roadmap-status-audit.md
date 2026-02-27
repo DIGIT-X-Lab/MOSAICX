@@ -720,3 +720,15 @@ Execute in order:
 4. Add `EVAL-001` gates and baseline artifact generation.
 
 Only then mark roadmap progress upward from current partial state.
+
+## 8) Smooth Installation (#70)
+
+Status: In progress
+
+- [x] Task 1: Platform detection & backend probing module (`mosaicx/setup.py`)
+- [ ] Task 2: `mosaicx doctor` CLI command
+- [ ] Task 3: `mosaicx setup` CLI command
+- [ ] Task 4: Bootstrap shell script (`scripts/setup.sh`)
+- [ ] Task 5: Quickstart docs + README update
+- [ ] Task 6: Integration testing & polish
+- [ ] Task 7: Final review, lint, typecheck
