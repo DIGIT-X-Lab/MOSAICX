@@ -161,6 +161,7 @@ def extract_document(
     mode: str = "auto",
     template: str | None = None,
     score: bool = False,
+    think: str = "standard",
 ) -> str:
     """Extract structured data from a medical document.
 
@@ -240,7 +241,7 @@ def extract_document(
             elif template_model is not None:
                 from .pipelines.extraction import DocumentExtractor
 
-                extractor = DocumentExtractor(output_schema=template_model)
+                extractor = DocumentExtractor(output_schema=template_model, think=think)
                 prediction = extractor(document_text=document_text)
                 output: dict[str, Any] = {}
                 planner_diag = (
@@ -302,7 +303,7 @@ def extract_document(
 
         from .pipelines.extraction import DocumentExtractor
 
-        extractor = DocumentExtractor()
+        extractor = DocumentExtractor(think=think)
         prediction = extractor(document_text=document_text)
         output: dict[str, Any] = {}
         planner_diag = (

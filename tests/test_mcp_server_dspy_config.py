@@ -51,3 +51,12 @@ def test_ensure_dspy_requires_api_key(monkeypatch, tmp_path):
 
     with pytest.raises(RuntimeError, match="No API key configured"):
         mcp_mod._ensure_dspy()
+
+
+class TestMcpExtractThink:
+    def test_extract_document_accepts_think(self):
+        import inspect
+        from mosaicx.mcp_server import extract_document
+        sig = inspect.signature(extract_document)
+        assert "think" in sig.parameters
+        assert sig.parameters["think"].default == "standard"
