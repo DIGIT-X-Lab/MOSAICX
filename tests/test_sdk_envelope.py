@@ -204,3 +204,18 @@ class TestEnvelopeWithMetricsData:
         env = build_envelope(pipeline="radiology")
         assert env["duration_s"] is None
         assert env["tokens"] == {"input": 0, "output": 0}
+
+
+class TestSdkThinkParameter:
+    def test_extract_accepts_think_parameter(self):
+        import inspect
+        from mosaicx.sdk import extract
+        sig = inspect.signature(extract)
+        assert "think" in sig.parameters
+        assert sig.parameters["think"].default == "standard"
+
+    def test_extract_single_text_accepts_think(self):
+        import inspect
+        from mosaicx.sdk import _extract_single_text
+        sig = inspect.signature(_extract_single_text)
+        assert "think" in sig.parameters

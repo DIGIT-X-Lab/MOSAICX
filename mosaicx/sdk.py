@@ -1053,6 +1053,7 @@ def _extract_single_text(
     verify: bool,
     verify_level: str,
     provenance: bool,
+    think: str = "standard",
 ) -> dict[str, Any]:
     """Core extraction logic for a single text input.
 
@@ -1159,7 +1160,7 @@ def _extract_single_text(
         elif template_model is not None:
             from .pipelines.extraction import DocumentExtractor
 
-            extractor = DocumentExtractor(output_schema=template_model)
+            extractor = DocumentExtractor(output_schema=template_model, think=think)
             if optimized is not None:
                 from .evaluation.optimize import load_optimized
 
@@ -1228,7 +1229,7 @@ def _extract_single_text(
 
     from .pipelines.extraction import DocumentExtractor
 
-    extractor = DocumentExtractor()
+    extractor = DocumentExtractor(think=think)
 
     if optimized is not None:
         from .evaluation.optimize import load_optimized
@@ -1267,6 +1268,7 @@ def extract(
     verify: bool = False,
     verify_level: str = "quick",
     provenance: bool = False,
+    think: str = "standard",
     workers: int = 1,
     on_progress: Callable[[str, bool, dict[str, Any] | None], None] | None = None,
 ) -> dict[str, Any] | list[dict[str, Any]]:
@@ -1352,6 +1354,7 @@ def extract(
             verify=verify,
             verify_level=verify_level,
             provenance=provenance,
+            think=think,
         )
 
     # --- Document-based path ---
@@ -1380,6 +1383,7 @@ def extract(
                 verify=verify,
                 verify_level=verify_level,
                 provenance=provenance,
+                think=think,
             )
             result["_document"] = doc_meta
             _set_envelope_fields(result, document=doc_meta, provenance=provenance)
