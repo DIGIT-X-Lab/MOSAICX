@@ -955,6 +955,82 @@ class TestThinkDeepMode:
         assert result.extracted.summary == "findings"
 
 
+class TestThinkRefineControl:
+    """think level controls whether dspy.Refine is used for repair."""
+
+    def test_repair_function_accepts_think_parameter(self):
+        """_repair_failed_critical_fields_with_refine should accept think param."""
+        import inspect
+        from mosaicx.pipelines.extraction import _repair_failed_critical_fields_with_refine
+        sig = inspect.signature(_repair_failed_critical_fields_with_refine)
+        assert "think" in sig.parameters
+        assert sig.parameters["think"].default == "standard"
+
+    def test_deep_mode_enables_refine_regardless_of_config(self, monkeypatch):
+        """think=deep should enable Refine even when cfg.use_refine is False."""
+        from pydantic import BaseModel
+        from mosaicx.pipelines.extraction import _repair_failed_critical_fields_with_refine
+
+        class SimpleReport(BaseModel):
+            summary: str
+
+        # Start with a missing field to trigger repair path
+        instance = SimpleReport(summary="")
+
+        # Mock config to have use_refine=False
+        class _MockConfig:
+            use_refine = False
+            refine_only_missing = True
+            refine_max_fields = 3
+
+        monkeypatch.setattr("mosaicx.config.get_config", lambda: _MockConfig())
+
+        # With think=standard, should respect config (disabled)
+        _, diag_std = _repair_failed_critical_fields_with_refine(
+            model_instance=instance,
+            schema_class=SimpleReport,
+            source_text="some text",
+            think="standard",
+        )
+        assert diag_std.get("reason") == "use_refine_disabled"
+
+        # With think=deep, should bypass config and attempt Refine
+        # (will fail because dspy.Refine is not available in test env, but
+        #  it should NOT be blocked by use_refine_disabled)
+        _, diag_deep = _repair_failed_critical_fields_with_refine(
+            model_instance=instance,
+            schema_class=SimpleReport,
+            source_text="some text",
+            think="deep",
+        )
+        assert diag_deep.get("reason") != "use_refine_disabled"
+
+    def test_fast_mode_disables_refine_regardless_of_config(self, monkeypatch):
+        """think=fast should disable Refine even when cfg.use_refine is True."""
+        from pydantic import BaseModel
+        from mosaicx.pipelines.extraction import _repair_failed_critical_fields_with_refine
+
+        class SimpleReport(BaseModel):
+            summary: str
+
+        instance = SimpleReport(summary="")
+
+        class _MockConfig:
+            use_refine = True
+            refine_only_missing = True
+            refine_max_fields = 3
+
+        monkeypatch.setattr("mosaicx.config.get_config", lambda: _MockConfig())
+
+        _, diag_fast = _repair_failed_critical_fields_with_refine(
+            model_instance=instance,
+            schema_class=SimpleReport,
+            source_text="some text",
+            think="fast",
+        )
+        assert diag_fast.get("reason") == "use_refine_disabled"
+
+
 class TestRunReportThink:
     def test_run_report_accepts_think_parameter(self):
         """run_report should accept and forward think parameter."""

@@ -1946,6 +1946,7 @@ def _repair_failed_critical_fields_with_refine(
     model_instance: BaseModel,
     schema_class: type[BaseModel],
     source_text: str,
+    think: str = "standard",
 ) -> tuple[BaseModel, dict[str, Any]]:
     """Repair only failed critical fields using DSPy Refine when available."""
     payload = model_instance.model_dump(mode="json")
@@ -2040,10 +2041,14 @@ def _repair_failed_critical_fields_with_refine(
         diag["reason"] = "deterministic_backfill_applied"
         return updated, diag
 
-    # Respect use_refine config (defaults to False for fast extraction)
+    # think=fast always disables Refine; think=deep always enables it;
+    # think=standard defers to config
+    if think == "fast":
+        diag["reason"] = "use_refine_disabled"
+        return updated, diag
     from mosaicx.config import get_config
     cfg = get_config()
-    if not cfg.use_refine:
+    if think != "deep" and not cfg.use_refine:
         diag["reason"] = "use_refine_disabled"
         return updated, diag
 
@@ -2735,6 +2740,7 @@ def _build_dspy_classes():
                     model_instance=model_instance,
                     schema_class=schema,
                     source_text=document_text,
+                    think=self._think,
                 )
                 model_instance, semantic_validation_diag = _apply_deterministic_semantic_validation(
                     model_instance=model_instance,
@@ -2843,6 +2849,7 @@ def _build_dspy_classes():
                 model_instance=model_instance,
                 schema_class=model,
                 source_text=document_text,
+                think=self._think,
             )
             model_instance, semantic_validation_diag = _apply_deterministic_semantic_validation(
                 model_instance=model_instance,
