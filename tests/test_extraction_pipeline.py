@@ -953,3 +953,13 @@ class TestThinkDeepMode:
 
         result = extractor.forward("findings noted")
         assert result.extracted.summary == "findings"
+
+
+class TestRunReportThink:
+    def test_run_report_accepts_think_parameter(self):
+        """run_report should accept and forward think parameter."""
+        import inspect
+        from mosaicx.report import run_report
+        sig = inspect.signature(run_report)
+        assert "think" in sig.parameters
+        assert sig.parameters["think"].default == "standard"

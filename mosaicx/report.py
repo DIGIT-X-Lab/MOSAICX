@@ -233,6 +233,7 @@ def run_report(
     template_model: type[BaseModel] | None = None,
     template_name: str | None = None,
     mode: str | None = None,
+    think: str = "standard",
 ) -> ReportResult:
     """Run structured report extraction with completeness scoring.
 
@@ -247,6 +248,9 @@ def run_report(
     mode:
         Explicit pipeline mode override.  If ``None``, auto-detected
         from *template_name*.
+    think:
+        Thinking budget for DocumentExtractor: ``"standard"``,
+        ``"fast"``, or ``"deep"``.
 
     Returns
     -------
@@ -288,7 +292,7 @@ def run_report(
         # Use DocumentExtractor with schema
         from .pipelines.extraction import DocumentExtractor
 
-        extractor = DocumentExtractor(output_schema=template_model)
+        extractor = DocumentExtractor(output_schema=template_model, think=think)
         result = extractor(document_text=document_text)
         if hasattr(result, "extracted"):
             val = result.extracted
@@ -308,7 +312,7 @@ def run_report(
         # No mode, no template -- use auto extraction
         from .pipelines.extraction import DocumentExtractor
 
-        extractor = DocumentExtractor()
+        extractor = DocumentExtractor(think=think)
         result = extractor(document_text=document_text)
         if hasattr(result, "extracted"):
             val = result.extracted
