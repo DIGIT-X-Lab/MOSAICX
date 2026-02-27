@@ -312,6 +312,7 @@ def _extract_batch(
     formats: tuple[str, ...],
     workers: int,
     resume: bool,
+    think: str = "standard",
 ) -> None:
     """Batch-process a directory of documents (called from the extract command)."""
     # Preflight: check API key before expensive document loading
@@ -394,7 +395,7 @@ def _extract_batch(
             from mosaicx.pipelines.extraction import DocumentExtractor
 
             _configure_dspy()
-            extractor = DocumentExtractor(output_schema=template_model)
+            extractor = DocumentExtractor(output_schema=template_model, think=think)
             if optimized is not None:
                 from .evaluation.optimize import load_optimized
                 extractor = load_optimized(type(extractor), optimized)
@@ -427,7 +428,7 @@ def _extract_batch(
     else:
         from mosaicx.pipelines.extraction import DocumentExtractor
         _configure_dspy()
-        extractor = DocumentExtractor()
+        extractor = DocumentExtractor(think=think)
         if optimized is not None:
             from .evaluation.optimize import load_optimized
             extractor = load_optimized(type(extractor), optimized)
@@ -553,6 +554,13 @@ def _extract_batch(
 @click.option("--workers", type=int, default=1, show_default=True, help="Number of parallel workers for batch processing.")
 @click.option("--resume", is_flag=True, default=False, help="Resume batch processing from last checkpoint.")
 @click.option("--list-modes", is_flag=True, default=False, help="Print available modes and exit.")
+@click.option(
+    "--think",
+    type=click.Choice(["fast", "standard", "deep"], case_sensitive=False),
+    default="standard",
+    show_default=True,
+    help="Reasoning depth: fast (no reasoning), standard (cascade), deep (full reasoning).",
+)
 @click.pass_context
 def extract(
     ctx: click.Context,
@@ -571,6 +579,7 @@ def extract(
     workers: int,
     resume: bool,
     list_modes: bool,
+    think: str,
 ) -> None:
     """Extract structured data from a clinical document or directory.
 
@@ -655,6 +664,7 @@ def extract(
             formats=formats,
             workers=workers,
             resume=resume,
+            think=think,
         )
         return
 
@@ -749,7 +759,7 @@ def extract(
             from .pipelines.extraction import DocumentExtractor
 
             _configure_dspy()
-            extractor = DocumentExtractor(output_schema=template_model)
+            extractor = DocumentExtractor(output_schema=template_model, think=think)
             if optimized is not None:
                 from .evaluation.optimize import load_optimized
                 extractor = load_optimized(type(extractor), optimized)
@@ -809,7 +819,7 @@ def extract(
         from .pipelines.extraction import DocumentExtractor
 
         _configure_dspy()
-        extractor = DocumentExtractor()
+        extractor = DocumentExtractor(think=think)
         if optimized is not None:
             from .evaluation.optimize import load_optimized
             extractor = load_optimized(type(extractor), optimized)

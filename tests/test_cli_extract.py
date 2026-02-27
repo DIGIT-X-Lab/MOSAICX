@@ -180,3 +180,25 @@ class TestExtractAPIKeyCheck:
             assert result.exit_code != 0
 
         get_config.cache_clear()
+
+
+class TestExtractThinkFlag:
+    def test_extract_help_shows_think_flag(self):
+        from mosaicx.cli import cli
+        from click.testing import CliRunner
+        runner = CliRunner()
+        result = runner.invoke(cli, ["extract", "--help"])
+        assert result.exit_code == 0
+        assert "--think" in result.output
+        assert "fast" in result.output
+        assert "standard" in result.output
+        assert "deep" in result.output
+
+    def test_extract_rejects_invalid_think(self):
+        from mosaicx.cli import cli
+        from click.testing import CliRunner
+        runner = CliRunner()
+        result = runner.invoke(cli, [
+            "extract", "--document", "nonexistent.pdf", "--think", "invalid"
+        ])
+        assert result.exit_code != 0
