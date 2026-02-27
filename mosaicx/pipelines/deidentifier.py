@@ -177,9 +177,15 @@ def _build_dspy_classes():
                 )
             llm_text: str = llm_result.redacted_text
 
-            # Layer 2: regex safety net
-            with track_step(metrics, "Regex guard", tracker):
-                scrubbed_text = regex_scrub_phi(llm_text)
+            # Layer 2: regex safety net (only in "remove" mode — in
+            # pseudonymize/dateshift the LLM output intentionally
+            # contains date-like and phone-like fake values that the
+            # regex would incorrectly redact).
+            if mode == "remove":
+                with track_step(metrics, "Regex guard", tracker):
+                    scrubbed_text = regex_scrub_phi(llm_text)
+            else:
+                scrubbed_text = llm_text
 
             self._last_metrics = metrics
 
