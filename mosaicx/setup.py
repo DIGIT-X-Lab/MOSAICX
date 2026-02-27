@@ -27,9 +27,11 @@ _DGX_RELEASE_PATH: str = "/etc/dgx-release"
 """Path to the DGX release file. Overridden in tests via monkeypatch."""
 
 DEFAULT_PORTS: dict[str, int] = {
-    "ollama": 11434,
+    "vllm-mlx": 8000,
     "vllm": 8000,
-    "llama.cpp": 8080,
+    "ollama": 11434,
+    "llama-cpp": 8080,
+    "sglang": 30000,
 }
 """Well-known default ports for LLM backends."""
 
