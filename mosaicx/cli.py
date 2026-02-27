@@ -41,7 +41,7 @@ console = Console()
 # Version
 # ---------------------------------------------------------------------------
 
-_VERSION_NUMBER = "2.0.0a2"
+_VERSION_NUMBER = "2.0.0"
 
 
 def _print_version(
