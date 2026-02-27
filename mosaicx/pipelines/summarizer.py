@@ -38,7 +38,14 @@ from pydantic import BaseModel, Field
 class TimelineEvent(BaseModel):
     """A single event on a patient's clinical timeline."""
 
-    date: str = Field(..., description="Date of the exam or event (ISO 8601)")
+    date: str = Field(
+        "not present",
+        description=(
+            "Date of the exam or event (ISO 8601, e.g. 2025-06-15). "
+            "Use 'not present' if no explicit date appears in the report. "
+            "Never guess or infer a date."
+        ),
+    )
     exam_type: str = Field(..., description="Type of exam (e.g., CT chest, MRI brain)")
     key_finding: str = Field(..., description="Primary finding from the report")
     clinical_context: Optional[str] = Field(
@@ -66,7 +73,12 @@ def _build_dspy_classes():
     # -- Signatures --------------------------------------------------------
 
     class ExtractTimelineEvent(dspy.Signature):
-        """Extract a structured timeline event from a single medical report."""
+        """Extract a structured timeline event from a single medical report.
+
+        For the date field: only use a date that is explicitly written in the
+        report text. If no date is stated, set date to 'not present'. Never
+        guess or infer dates from context clues like 'recently'.
+        """
 
         report_text: str = dspy.InputField(
             desc="Full text of a single medical report"
