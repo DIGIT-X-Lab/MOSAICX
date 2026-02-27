@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "mosaicx"
-version = "2.0.0a1"
+version = "2.0.0a2"
 description = "Medical cOmputational Suite for Advanced Intelligent eXtraction"
 authors = [
     {name = "Lalith Kumar Shiyam Sundar", email = "lalith.shiyam@med.uni-muenchen.de"},
