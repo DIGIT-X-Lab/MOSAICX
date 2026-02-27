@@ -850,3 +850,106 @@ class TestThinkFastMode:
         assert result.extracted.category == "radiology"
         # ChainOfThought should NOT have been called in fast mode
         assert not cot_called, "Fast mode should not use ChainOfThought"
+
+
+class TestThinkDeepMode:
+    """think=deep runs both Outlines and ChainOfThought, picks best."""
+
+    def test_deep_mode_runs_both_and_picks_higher_score(self, monkeypatch):
+        from pydantic import BaseModel
+        from mosaicx.pipelines.extraction import DocumentExtractor
+
+        class SimpleReport(BaseModel):
+            summary: str
+            category: str
+
+        extractor = DocumentExtractor(output_schema=SimpleReport, think="deep")
+
+        outlines_called = False
+        cot_called = False
+
+        # Outlines returns a result with values NOT in the source text (low evidence)
+        def _mock_outlines(**kwargs):
+            nonlocal outlines_called
+            outlines_called = True
+            return SimpleReport(summary="wrong value", category="wrong value")
+
+        monkeypatch.setattr(
+            "mosaicx.pipelines.extraction._recover_schema_instance_with_outlines",
+            _mock_outlines,
+        )
+
+        # ChainOfThought returns values that ARE in the source text (high evidence)
+        class _CotPred:
+            extracted = SimpleReport(summary="chest pain", category="radiology")
+
+        def _mock_cot(**kwargs):
+            nonlocal cot_called
+            cot_called = True
+            return _CotPred()
+
+        monkeypatch.setattr(extractor, "extract_custom", _mock_cot)
+
+        source_text = "Patient presents with chest pain. Radiology report follows."
+        result = extractor.forward(source_text)
+
+        assert outlines_called, "Deep mode should try Outlines"
+        assert cot_called, "Deep mode should always run ChainOfThought"
+        # CoT result has evidence overlap ("chest pain" and "radiology" in source)
+        # Outlines result does not ("wrong value" not in source)
+        # So scorer should pick CoT
+        assert result.extracted.summary == "chest pain"
+        assert result.extracted.category == "radiology"
+
+    def test_deep_mode_picks_outlines_when_better(self, monkeypatch):
+        from pydantic import BaseModel
+        from mosaicx.pipelines.extraction import DocumentExtractor
+
+        class SimpleReport(BaseModel):
+            summary: str
+            category: str
+
+        extractor = DocumentExtractor(output_schema=SimpleReport, think="deep")
+
+        # Outlines returns values IN the source text
+        def _mock_outlines(**kwargs):
+            return SimpleReport(summary="headache", category="neurology")
+
+        monkeypatch.setattr(
+            "mosaicx.pipelines.extraction._recover_schema_instance_with_outlines",
+            _mock_outlines,
+        )
+
+        # CoT returns values NOT in the source text
+        class _CotPred:
+            extracted = SimpleReport(summary="wrong", category="wrong")
+
+        monkeypatch.setattr(extractor, "extract_custom", lambda **kw: _CotPred())
+
+        result = extractor.forward("Patient reports headache. Neurology consult requested.")
+        # Outlines has better evidence overlap, so should be chosen
+        assert result.extracted.summary == "headache"
+
+    def test_deep_mode_works_when_outlines_fails(self, monkeypatch):
+        from pydantic import BaseModel
+        from mosaicx.pipelines.extraction import DocumentExtractor
+
+        class SimpleReport(BaseModel):
+            summary: str
+
+        extractor = DocumentExtractor(output_schema=SimpleReport, think="deep")
+
+        # Outlines fails
+        monkeypatch.setattr(
+            "mosaicx.pipelines.extraction._recover_schema_instance_with_outlines",
+            lambda **kwargs: None,
+        )
+
+        # CoT succeeds
+        class _CotPred:
+            extracted = SimpleReport(summary="findings")
+
+        monkeypatch.setattr(extractor, "extract_custom", lambda **kw: _CotPred())
+
+        result = extractor.forward("findings noted")
+        assert result.extracted.summary == "findings"

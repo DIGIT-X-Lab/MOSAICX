@@ -2256,6 +2256,70 @@ def _extract_schema_with_structured_chain(
 
         raise ValueError("Fast mode: both Outlines and Predict failed")
 
+    # ── Deep mode: run both Outlines and CoT, score, pick best ──
+    if think == "deep":
+        candidates: list[tuple[str, BaseModel, float, dict[str, float]]] = []
+
+        # Candidate 1: Outlines (always attempted — try/except handles missing LM)
+        try:
+            outlines_result = _recover_schema_instance_with_outlines(
+                document_text=document_text,
+                schema_class=schema_class,
+                error_hint="deep_mode_baseline",
+            )
+            if outlines_result is not None:
+                score, components = _score_extraction_candidate(
+                    extracted=outlines_result,
+                    schema_class=schema_class,
+                    source_text=document_text,
+                )
+                candidates.append(("outlines_deep", outlines_result, score, components))
+                _record("outlines_deep", True)
+            else:
+                _record("outlines_deep", False, ValueError("outlines_deep_unavailable"))
+        except Exception as exc:
+            _record("outlines_deep", False, exc)
+
+        # Candidate 2: ChainOfThought (always runs in deep mode)
+        try:
+            cot_pred = typed_extract(document_text=document_text)
+            cot_extracted = getattr(cot_pred, "extracted", cot_pred)
+            cot_instance = _coerce_extracted_to_model_instance(
+                extracted=cot_extracted,
+                schema_class=schema_class,
+            )
+            score, components = _score_extraction_candidate(
+                extracted=cot_instance,
+                schema_class=schema_class,
+                source_text=document_text,
+            )
+            candidates.append(("cot_deep", cot_instance, score, components))
+            _record("cot_deep", True)
+        except Exception as exc:
+            _record("cot_deep", False, exc)
+
+        if not candidates:
+            raise ValueError("Deep mode: both Outlines and ChainOfThought failed")
+
+        # Pick highest-scoring candidate
+        candidates.sort(key=lambda c: c[2], reverse=True)
+        best_path, best_instance, best_score, best_components = candidates[0]
+
+        return best_instance, {
+            "selected_path": best_path,
+            "fallback_used": len(candidates) > 1 and best_path != "cot_deep",
+            "attempts": attempts,
+            "bestofn": bestofn_info,
+            "adjudication": {
+                "deep_mode": True,
+                "candidates": [
+                    {"path": c[0], "score": c[2], "components": c[3]}
+                    for c in candidates
+                ],
+                "chosen": best_path,
+            },
+        }
+
     if has_lm:
         outlines_primary = _recover_schema_instance_with_outlines(
             document_text=document_text,

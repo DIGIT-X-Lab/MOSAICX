@@ -741,7 +741,7 @@ Status: In progress
 
 - [x] Task 1: Add `think` parameter to `DocumentExtractor.__init__` with validation
 - [x] Task 2: Implement `think=fast` mode in `_extract_schema_with_structured_chain`
-- [ ] Task 3: Implement `think=deep` mode with `dspy.Refine`
+- [x] Task 3: Implement `think=deep` mode with dual-path scoring
 - [ ] Task 4: Wire `think` through `report.py`
 - [ ] Task 5: Wire `think` through SDK
 - [ ] Task 6: Wire `think` through MCP
