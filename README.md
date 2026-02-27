@@ -38,23 +38,33 @@ MOSAICX ships with specialized pipelines for **radiology** and **pathology** rep
 
 ## Quick Start
 
+**One-line install** (Mac or Linux):
+
 ```bash
-# Install MOSAICX
-pip install mosaicx               # core
+curl -fsSL https://raw.githubusercontent.com/DIGIT-X-Lab/MOSAICX/master/scripts/setup.sh | bash
+```
+
+Or install manually and let the setup wizard configure everything:
+
+```bash
+pip install mosaicx
+mosaicx setup
+```
+
+Then extract structured data from a report:
+
+```bash
+mosaicx extract --document report.pdf --mode radiology
+```
+
+Check health anytime with `mosaicx doctor`. See the full [Quickstart guide](docs/quickstart.md) for details.
+
+### Install Extras
+
+```bash
 pip install 'mosaicx[mcp]'       # + MCP server for AI agents
 pip install 'mosaicx[query]'     # + fast tabular query stack (duckdb + polars)
 pip install 'mosaicx[all]'       # everything
-
-# Start a local LLM (Apple Silicon via vLLM-MLX)
-uv tool install git+https://github.com/waybarrios/vllm-mlx.git
-vllm-mlx serve mlx-community/gpt-oss-20b-MXFP4-Q8 --port 8000
-
-# Point MOSAICX at it
-export MOSAICX_LM=openai/mlx-community/gpt-oss-20b-MXFP4-Q8
-export MOSAICX_API_BASE=http://localhost:8000/v1
-
-# Extract structured data from a report
-mosaicx extract --document report.pdf --mode radiology
 ```
 
 ### Developer Fast Loop (Mac + vLLM-MLX, 120B)
