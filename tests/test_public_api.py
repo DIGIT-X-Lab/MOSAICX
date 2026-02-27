@@ -3,9 +3,8 @@
 
 Verifies that the SDK convenience functions (extract, summarize,
 generate_schema, deidentify) are importable, callable, and have the
-expected signatures.  Also tests the regex-only deidentify path which
-requires no LLM, and the utility functions (list_schemas, list_modes,
-evaluate).
+expected signatures.  Also tests the utility functions (list_schemas,
+list_modes, evaluate).
 """
 
 import inspect
@@ -155,55 +154,7 @@ class TestSDKSignatures:
 
 
 @pytest.mark.unit
-class TestDeidentifyRegex:
-    """Test the regex-only path of deidentify (no LLM needed).
-
-    The SDK deidentify() returns a dict with 'redacted_text'.
-    """
-
-    def test_ssn_scrubbed(self):
-        from mosaicx import deidentify
-
-        result = deidentify("Patient SSN 123-45-6789", mode="regex")
-        assert "123-45-6789" not in result["redacted_text"]
-        assert "[REDACTED]" in result["redacted_text"]
-
-    def test_phone_scrubbed(self):
-        from mosaicx import deidentify
-
-        result = deidentify("Call 555-123-4567 for info", mode="regex")
-        assert "555-123-4567" not in result["redacted_text"]
-        assert "[REDACTED]" in result["redacted_text"]
-
-    def test_email_scrubbed(self):
-        from mosaicx import deidentify
-
-        result = deidentify("Contact: john.doe@hospital.com", mode="regex")
-        assert "john.doe@hospital.com" not in result["redacted_text"]
-        assert "[REDACTED]" in result["redacted_text"]
-
-    def test_mrn_scrubbed(self):
-        from mosaicx import deidentify
-
-        result = deidentify("MRN: 12345678", mode="regex")
-        assert "12345678" not in result["redacted_text"]
-        assert "[REDACTED]" in result["redacted_text"]
-
-    def test_no_phi_unchanged(self):
-        from mosaicx import deidentify
-
-        clean = "Normal chest radiograph. No acute findings."
-        result = deidentify(clean, mode="regex")
-        assert result["redacted_text"] == clean
-
-    def test_regex_returns_dict(self):
-        from mosaicx import deidentify
-
-        result = deidentify("Some text 123-45-6789", mode="regex")
-        assert isinstance(result, dict)
-        assert "redacted_text" in result
-        assert isinstance(result["redacted_text"], str)
-
+class TestDeidentifyValidation:
     def test_invalid_mode_raises(self):
         from mosaicx import deidentify
 

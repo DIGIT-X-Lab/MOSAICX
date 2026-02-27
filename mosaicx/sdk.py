@@ -1444,19 +1444,12 @@ def _deidentify_single_text(
     mode: str,
 ) -> dict[str, Any]:
     """Core de-identification logic for a single text input."""
-    valid_modes = {"remove", "pseudonymize", "dateshift", "regex"}
+    valid_modes = {"remove", "pseudonymize", "dateshift"}
     if mode not in valid_modes:
         raise ValueError(
             f"Unknown deidentify mode: {mode!r}. "
             f"Choose from: {sorted(valid_modes)}"
         )
-
-    from .pipelines.deidentifier import regex_scrub_phi
-
-    if mode == "regex":
-        output: dict[str, Any] = {"redacted_text": regex_scrub_phi(text)}
-        _attach_envelope(output, pipeline="deidentify")
-        return output
 
     _ensure_configured()
 

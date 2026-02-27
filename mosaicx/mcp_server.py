@@ -330,33 +330,21 @@ def extract_document(
 def deidentify_text(
     text: str,
     mode: str = "remove",
-    regex_only: bool = False,
 ) -> str:
     """Remove Protected Health Information (PHI) from clinical text.
 
-    Uses a two-layer approach by default:
+    Uses a two-layer approach:
     1. LLM-based redaction identifies context-dependent PHI (names, addresses, etc.).
     2. Regex safety net catches format-based PHI (SSNs, phone numbers, MRNs, emails).
-
-    Set regex_only=true to skip the LLM and use only regex pattern matching (faster, no API key needed).
 
     Args:
         text: The clinical text to de-identify.
         mode: De-identification strategy -- "remove" (replace with [REDACTED]), "pseudonymize" (replace with fake values), or "dateshift" (shift dates by a consistent offset).
-        regex_only: If true, skip LLM and use only regex-based scrubbing. Faster but less comprehensive.
 
     Returns:
         JSON string with "redacted_text" containing the de-identified text.
     """
     try:
-        from .pipelines.deidentifier import regex_scrub_phi
-
-        if regex_only:
-            return _json_result({
-                "redacted_text": regex_scrub_phi(text),
-                "mode": "regex",
-            })
-
         _ensure_dspy()
 
         from .pipelines.deidentifier import Deidentifier

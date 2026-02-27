@@ -5,12 +5,11 @@ Tests commands that do NOT require an LLM:
     - config show
     - template list
     - template validate (valid + invalid YAML)
-    - deidentify --regex-only
 
 Tests that LLM-dependent commands fail gracefully when no API key is set:
     - extract (no API key)
     - summarize (no API key)
-    - deidentify without --regex-only (no API key)
+    - deidentify (no API key)
     - schema generate (no API key)
     - optimize (displays config without crashing)
 """
@@ -204,115 +203,6 @@ class TestTemplateValidate:
         # Click should complain about missing required option
 
 
-# -------------------------------------------------------------------------
-# deidentify --regex-only
-# -------------------------------------------------------------------------
-
-
-class TestDeidentifyRegexOnly:
-    def test_regex_only_removes_ssn(
-        self, runner: CliRunner, tmp_text_file: Path
-    ):
-        result = runner.invoke(
-            cli,
-            ["deidentify", "--document", str(tmp_text_file), "--regex-only"],
-        )
-        assert result.exit_code == 0
-        assert "[REDACTED]" in result.output
-        # SSN should be scrubbed
-        assert "123-45-6789" not in result.output
-
-    def test_regex_only_removes_phone(
-        self, runner: CliRunner, tmp_text_file: Path
-    ):
-        result = runner.invoke(
-            cli,
-            ["deidentify", "--document", str(tmp_text_file), "--regex-only"],
-        )
-        assert result.exit_code == 0
-        assert "(555) 123-4567" not in result.output
-
-    def test_regex_only_removes_email(
-        self, runner: CliRunner, tmp_text_file: Path
-    ):
-        result = runner.invoke(
-            cli,
-            ["deidentify", "--document", str(tmp_text_file), "--regex-only"],
-        )
-        assert result.exit_code == 0
-        assert "john.doe@hospital.com" not in result.output
-
-    def test_regex_only_removes_mrn(
-        self, runner: CliRunner, tmp_text_file: Path
-    ):
-        result = runner.invoke(
-            cli,
-            ["deidentify", "--document", str(tmp_text_file), "--regex-only"],
-        )
-        assert result.exit_code == 0
-        assert "MRN: 12345678" not in result.output
-
-    def test_regex_only_preserves_clinical_content(
-        self, runner: CliRunner, tmp_text_file: Path
-    ):
-        result = runner.invoke(
-            cli,
-            ["deidentify", "--document", str(tmp_text_file), "--regex-only"],
-        )
-        assert result.exit_code == 0
-        assert "nodule" in result.output
-        assert "right upper lobe" in result.output
-
-    def test_regex_only_shows_filename_header(
-        self, runner: CliRunner, tmp_text_file: Path
-    ):
-        result = runner.invoke(
-            cli,
-            ["deidentify", "--document", str(tmp_text_file), "--regex-only"],
-        )
-        assert result.exit_code == 0
-        assert "sample_report.txt" in result.output
-
-    def test_regex_only_directory(self, runner: CliRunner, tmp_path: Path):
-        """Regex-only mode works with a directory of files via batch."""
-        input_dir = tmp_path / "input"
-        input_dir.mkdir()
-        output_dir = tmp_path / "output"
-        for i in range(3):
-            p = input_dir / f"report_{i}.txt"
-            p.write_text(f"Patient phone: (555) 000-{i:04d}\nFindings: normal.\n")
-
-        result = runner.invoke(
-            cli,
-            ["deidentify", "--dir", str(input_dir), "--regex-only",
-             "--output-dir", str(output_dir)],
-        )
-        assert result.exit_code == 0
-        # Batch success message
-        assert "3/3 succeeded" in result.output
-        # Output JSON files should exist with scrubbed content
-        for i in range(3):
-            out_file = output_dir / f"report_{i}.json"
-            assert out_file.exists(), f"Missing output: {out_file}"
-            import json
-            data = json.loads(out_file.read_text())
-            assert "(555) 000-" not in data["redacted_text"]
-            assert "normal" in data["redacted_text"]
-
-    def test_deidentify_no_input_shows_error(self, runner: CliRunner):
-        result = runner.invoke(cli, ["deidentify", "--regex-only"])
-        assert result.exit_code != 0
-        assert "Provide --document or --dir" in result.output
-
-    def test_deidentify_missing_document(self, runner: CliRunner, tmp_path: Path):
-        missing = tmp_path / "nonexistent.txt"
-        result = runner.invoke(
-            cli,
-            ["deidentify", "--document", str(missing), "--regex-only"],
-        )
-        assert result.exit_code != 0
-        assert "does not exist" in result.output
-
 
 # -------------------------------------------------------------------------
 # optimize (no LLM needed for config display)
@@ -401,7 +291,7 @@ class TestLLMCommandsGracefulFailure:
     def test_deidentify_llm_no_api_key(
         self, runner: CliRunner, tmp_text_file: Path, _no_api_key
     ):
-        """Without --regex-only, deidentify requires LLM and should fail gracefully."""
+        """deidentify requires LLM and should fail gracefully without an API key."""
         result = runner.invoke(
             cli, ["deidentify", "--document", str(tmp_text_file)]
         )
@@ -507,11 +397,6 @@ class TestVersionAndHelp:
         result = runner.invoke(cli, ["--help"])
         assert result.exit_code == 0
         assert "MOSAICX" in result.output
-
-    def test_deidentify_help_shows_regex_only(self, runner: CliRunner):
-        result = runner.invoke(cli, ["deidentify", "--help"])
-        assert result.exit_code == 0
-        assert "--regex-only" in result.output
 
     def test_optimize_help_shows_budget_choices(self, runner: CliRunner):
         result = runner.invoke(cli, ["optimize", "--help"])

@@ -8,7 +8,7 @@ Provides the ``mosaicx`` console entry-point declared in pyproject.toml as
 - extract:    DocumentExtractor (DSPy) -- single file or batch via --dir
 - template:   template management (create, list, show, refine, migrate, etc.)
 - summarize:  ReportSummarizer (DSPy)
-- deidentify: Deidentifier (DSPy) or regex_scrub_phi (--regex-only)
+- deidentify: Deidentifier (DSPy)
 - optimize:   get_optimizer_config
 - config:     MosaicxConfig display
 """
@@ -2048,15 +2048,13 @@ def summarize(
 def _deidentify_batch(
     directory: Path,
     mode: str,
-    regex_only: bool,
     output_dir_path: Optional[Path],
     formats: tuple[str, ...],
     workers: int,
     resume: bool,
 ) -> None:
     """Batch de-identify a directory of documents."""
-    if not regex_only:
-        _check_api_key()
+    _check_api_key()
 
     from .batch import BatchProcessor
 
@@ -2079,26 +2077,19 @@ def _deidentify_batch(
     t.add_row("Input directory", str(directory))
     t.add_row("Output directory", str(output_dir_path))
     t.add_row("Mode", mode)
-    t.add_row("Regex-only", theme.badge("Yes", "stable") if regex_only else "No")
     t.add_row("Export formats", ", ".join(effective_formats))
     t.add_row("Workers", str(workers))
     t.add_row("Resume", theme.badge("Yes", "stable") if resume else "No")
     console.print(Padding(t, (0, 0, 0, 2)))
 
-    if regex_only:
-        from .pipelines.deidentifier import regex_scrub_phi
+    _configure_dspy()
+    from .pipelines.deidentifier import Deidentifier
 
-        def process_fn(text: str) -> dict:
-            return {"redacted_text": regex_scrub_phi(text), "mode": "regex"}
-    else:
-        _configure_dspy()
-        from .pipelines.deidentifier import Deidentifier
+    deid = Deidentifier()
 
-        deid = Deidentifier()
-
-        def process_fn(text: str) -> dict:
-            result = deid(document_text=text, mode=mode)
-            return {"redacted_text": result.redacted_text, "mode": mode}
+    def process_fn(text: str) -> dict:
+        result = deid(document_text=text, mode=mode)
+        return {"redacted_text": result.redacted_text, "mode": mode}
 
     resume_id = "resume" if resume else None
     checkpoint_dir = output_dir_path / ".checkpoints" if resume else None
@@ -2187,7 +2178,6 @@ def _deidentify_batch(
     show_default=True,
     help="De-identification strategy.",
 )
-@click.option("--regex-only", is_flag=True, default=False, help="Use regex-only PHI scrubbing (no LLM needed).")
 @click.option("--workers", type=int, default=1, show_default=True, help="Number of parallel workers.")
 @click.option("--output", "-o", type=click.Path(path_type=Path), default=None, help="Save output to file (.json or .yaml/.yml) for single-file de-identification.")
 @click.option("--output-dir", type=click.Path(path_type=Path), default=None, help="Output directory for batch results (used with --dir).")
@@ -2197,7 +2187,6 @@ def deidentify(
     document: Optional[Path],
     directory: Optional[Path],
     mode: str,
-    regex_only: bool,
     workers: int,
     output: Optional[Path],
     output_dir: Optional[Path],
@@ -2208,13 +2197,11 @@ def deidentify(
 
     \b
     Accepts a single file (--document) or a directory (--dir).
-    Use --regex-only for fast rule-based scrubbing without an LLM.
 
     \b
     Examples:
       mosaicx deidentify --document note.pdf
       mosaicx deidentify --document note.pdf --mode pseudonymize
-      mosaicx deidentify --document note.pdf --regex-only -o clean.json
       mosaicx deidentify --dir notes/ --workers 4 --output-dir cleaned/
     """
     if document is None and directory is None:
@@ -2227,7 +2214,6 @@ def deidentify(
         _deidentify_batch(
             directory=directory,
             mode=mode,
-            regex_only=regex_only,
             output_dir_path=output_dir,
             formats=formats,
             workers=workers,
@@ -2236,8 +2222,7 @@ def deidentify(
         return
 
     # Single file processing
-    if not regex_only:
-        _check_api_key()
+    _check_api_key()
 
     from .documents.models import DocumentLoadError
 
@@ -2249,25 +2234,20 @@ def deidentify(
     if doc.quality_warning:
         console.print(theme.warn("Low OCR quality detected -- results may be unreliable"))
 
-    console.print(theme.info(f"De-identifying 1 document -- mode: {mode}{'  -- regex-only' if regex_only else ''}"))
+    console.print(theme.info(f"De-identifying 1 document -- mode: {mode}"))
 
-    if regex_only:
-        from .pipelines.deidentifier import regex_scrub_phi
+    _configure_dspy()
+    from .pipelines.deidentifier import Deidentifier
 
-        redacted = regex_scrub_phi(doc.text)
-    else:
-        _configure_dspy()
-        from .pipelines.deidentifier import Deidentifier
-
-        deid = Deidentifier()
-        with theme.spinner(f"Scrubbing {document.name}... nothing to see here", console):
-            result = deid(document_text=doc.text, mode=mode)
-        redacted = result.redacted_text
-        console.print(theme.ok("Scrubbed -- PHI has left the chat"))
+    deid = Deidentifier()
+    with theme.spinner(f"Scrubbing {document.name}... nothing to see here", console):
+        result = deid(document_text=doc.text, mode=mode)
+    redacted = result.redacted_text
+    console.print(theme.ok("Scrubbed -- PHI has left the chat"))
 
     # Save if --output
     if output is not None:
-        save_data = {"redacted_text": redacted, "mode": "regex" if regex_only else mode}
+        save_data = {"redacted_text": redacted, "mode": mode}
         suffix = output.suffix.lower()
         if suffix in (".yaml", ".yml"):
             try:
@@ -2307,13 +2287,11 @@ def deidentify(
         )
     )
 
-    # Metrics (LLM path only)
-    if not regex_only:
-        doc_metrics = getattr(deid, "_last_metrics", None)
-        if doc_metrics is not None:
-            from .cli_display import render_metrics
+    doc_metrics = getattr(deid, "_last_metrics", None)
+    if doc_metrics is not None:
+        from .cli_display import render_metrics
 
-            render_metrics(doc_metrics, console)
+        render_metrics(doc_metrics, console)
 
 
 # ---------------------------------------------------------------------------
