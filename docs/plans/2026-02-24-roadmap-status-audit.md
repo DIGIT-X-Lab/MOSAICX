@@ -732,3 +732,19 @@ Status: In progress
 - [ ] Task 5: Quickstart docs + README update
 - [ ] Task 6: Integration testing & polish
 - [ ] Task 7: Final review, lint, typecheck
+
+### --think extraction strategy flag (2026-02-27) #64
+
+Design: `docs/plans/2026-02-27-think-flag-design.md`
+Plan: `docs/plans/2026-02-27-think-flag-plan.md`
+Status: In progress
+
+- [x] Task 1: Add `think` parameter to `DocumentExtractor.__init__` with validation
+- [ ] Task 2: Implement `think=fast` mode in `_extract_schema_with_structured_chain`
+- [ ] Task 3: Implement `think=deep` mode with `dspy.Refine`
+- [ ] Task 4: Wire `think` through `report.py`
+- [ ] Task 5: Wire `think` through SDK
+- [ ] Task 6: Wire `think` through MCP
+- [ ] Task 7: Wire `think` through CLI (`--think` flag)
+- [ ] Task 8: Deep mode enables `dspy.Refine`
+- [ ] Task 9: Full test suite + lint + typecheck

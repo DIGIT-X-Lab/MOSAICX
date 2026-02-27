@@ -2511,8 +2511,13 @@ def _build_dspy_classes():
         - **Schema mode** (output_schema provided): extracts directly into schema.
         """
 
-        def __init__(self, output_schema: type[BaseModel] | None = None) -> None:
+        def __init__(self, output_schema: type[BaseModel] | None = None, think: str = "standard") -> None:
             super().__init__()
+            if think not in ("fast", "standard", "deep"):
+                raise ValueError(
+                    f"think must be 'fast', 'standard', or 'deep', got {think!r}"
+                )
+            self._think = think
             self._output_schema = output_schema
 
             if output_schema is not None:

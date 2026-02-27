@@ -758,3 +758,47 @@ class TestOutlinesTimeout:
 
         assert result is None  # Should have timed out
         assert elapsed < 5  # Should not wait the full 10s
+
+
+class TestThinkParameter:
+    """DocumentExtractor respects the think parameter."""
+
+    def test_default_think_is_standard(self):
+        from mosaicx.pipelines.extraction import DocumentExtractor
+        from pydantic import BaseModel
+
+        class SimpleReport(BaseModel):
+            summary: str
+
+        extractor = DocumentExtractor(output_schema=SimpleReport)
+        assert extractor._think == "standard"
+
+    def test_think_fast_stored(self):
+        from mosaicx.pipelines.extraction import DocumentExtractor
+        from pydantic import BaseModel
+
+        class SimpleReport(BaseModel):
+            summary: str
+
+        extractor = DocumentExtractor(output_schema=SimpleReport, think="fast")
+        assert extractor._think == "fast"
+
+    def test_think_deep_stored(self):
+        from mosaicx.pipelines.extraction import DocumentExtractor
+        from pydantic import BaseModel
+
+        class SimpleReport(BaseModel):
+            summary: str
+
+        extractor = DocumentExtractor(output_schema=SimpleReport, think="deep")
+        assert extractor._think == "deep"
+
+    def test_think_invalid_raises(self):
+        from mosaicx.pipelines.extraction import DocumentExtractor
+        from pydantic import BaseModel
+
+        class SimpleReport(BaseModel):
+            summary: str
+
+        with pytest.raises(ValueError, match="think"):
+            DocumentExtractor(output_schema=SimpleReport, think="invalid")
