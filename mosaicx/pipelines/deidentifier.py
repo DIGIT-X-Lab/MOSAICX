@@ -51,8 +51,19 @@ PHI_PATTERNS: List[re.Pattern[str]] = [
     re.compile(r"\bMRN\s*:?\s*\d{6,}\b", re.IGNORECASE),
     # Email: john.doe@hospital.com
     re.compile(r"\b[\w.+-]+@[\w-]+\.[\w.-]+\b"),
-    # US dates: 1/2/2024 or 01/02/24
+    # US/EU dates with slashes: 1/2/2024 or 01/02/24
     re.compile(r"\b\d{1,2}/\d{1,2}/\d{2,4}\b"),
+    # Dot-separated dates: 27.02.2026 or 27.02.26
+    re.compile(r"\b\d{1,2}\.\d{1,2}\.\d{2,4}\b"),
+    # ISO dates: 2026-02-27
+    re.compile(r"\b\d{4}-\d{1,2}-\d{1,2}\b"),
+    # German/English abbreviated month dates: 27.Feb.2026, 03.Mär.2024
+    re.compile(
+        r"\b\d{1,2}\."
+        r"(?:Jan|Feb|Mär|Mar|Apr|Mai|May|Jun|Jul|Aug|Sep|Okt|Oct|Nov|Dez|Dec)\."
+        r"\d{2,4}\b",
+        re.IGNORECASE,
+    ),
 ]
 
 _REDACTED = "[REDACTED]"
