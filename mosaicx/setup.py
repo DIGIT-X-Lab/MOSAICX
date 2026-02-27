@@ -315,6 +315,38 @@ def generate_env_content(
     return "\n".join(lines)
 
 
+def install_vllm_mlx() -> bool:
+    """Install vLLM-MLX on macOS. Returns True on success."""
+    # Prefer uv for speed
+    if shutil.which("uv"):
+        cmd = ["uv", "tool", "install", "git+https://github.com/waybarrios/vllm-mlx.git"]
+    else:
+        cmd = [sys.executable, "-m", "pip", "install", "vllm-mlx"]
+    try:
+        subprocess.run(cmd, check=True, timeout=300)
+        return True
+    except Exception:
+        return False
+
+
+def recommend_model(platform_name: str, ram_gb: float) -> str:
+    """Recommend a model based on platform and RAM."""
+    if platform_name.startswith("macos"):
+        if ram_gb >= 64:
+            return "mlx-community/gpt-oss-120b-4bit"
+        return "mlx-community/gpt-oss-20b-MXFP4-Q8"
+    if ram_gb >= 64:
+        return "gpt-oss:120b"
+    return "gpt-oss:20b"
+
+
+def recommended_lm_for_model(model: str) -> str:
+    """Return the MOSAICX_LM value for a model ID."""
+    if not model.startswith(("openai/", "ollama/", "anthropic/")):
+        return f"openai/{model}"
+    return model
+
+
 def write_env_file(
     content: str,
     path: str | Path | None = None,

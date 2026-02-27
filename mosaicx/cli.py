@@ -3340,6 +3340,179 @@ def runtime_install(assume_yes: bool, force: bool) -> None:
 
 
 # ---------------------------------------------------------------------------
+# setup
+# ---------------------------------------------------------------------------
+
+_PLATFORM_FRIENDLY: dict[str, str] = {
+    "macos-arm64": "Apple Silicon Mac",
+    "macos-x86_64": "Intel Mac",
+    "dgx-spark": "NVIDIA DGX Spark",
+    "linux-x86_64": "Linux x86_64",
+    "linux-aarch64": "Linux aarch64",
+    "unknown": "Unknown platform",
+}
+
+
+@cli.command()
+@click.option("--full", is_flag=True, default=False, help="Also install vLLM-MLX (Mac), pull model, install Deno.")
+@click.option("--non-interactive", is_flag=True, default=False, help="Accept all defaults, no prompts (for CI/scripts).")
+@click.option(
+    "--backend",
+    type=click.Choice(["auto", "ollama", "vllm", "vllm-mlx", "llama-cpp", "sglang"], case_sensitive=False),
+    default="auto",
+    help="Override backend auto-detection.",
+)
+def setup(full: bool, non_interactive: bool, backend: str) -> None:
+    """Interactive setup wizard -- detect platform, configure backend, write .env."""
+    from .runtime_env import get_deno_runtime_status, install_deno
+    from .setup import (
+        check_system_requirements,
+        detect_platform,
+        generate_env_content,
+        install_vllm_mlx,
+        probe_backends,
+        recommend_model,
+        recommended_lm_for_model,
+        write_env_file,
+    )
+
+    theme.section("SETUP", console, number="01")
+
+    # ------------------------------------------------------------------
+    # 1. Platform detection
+    # ------------------------------------------------------------------
+    plat = detect_platform()
+    friendly = _PLATFORM_FRIENDLY.get(plat, plat)
+    console.print(theme.ok(f"Platform: {friendly} ({plat})"))
+
+    # ------------------------------------------------------------------
+    # 2. System requirements
+    # ------------------------------------------------------------------
+    sysinfo = check_system_requirements()
+
+    t = theme.make_kv_table()
+    t.add_row("Python", f"{sysinfo.python_version} {'[green](ok)[/green]' if sysinfo.python_ok else '[red](too old)[/red]'}")
+    t.add_row("RAM", f"{sysinfo.ram_gb} GB {'[green](ok)[/green]' if sysinfo.ram_ok else '[red](low)[/red]'}")
+    t.add_row("Disk free", f"{sysinfo.disk_free_gb} GB {'[green](ok)[/green]' if sysinfo.disk_ok else '[red](low)[/red]'}")
+    t.add_row("uv", "available" if sysinfo.uv_available else "not found")
+    console.print(t)
+
+    if not sysinfo.python_ok:
+        console.print(theme.warn("Python >= 3.11 is required."))
+    if not sysinfo.ram_ok:
+        console.print(theme.warn(f"At least 8 GB RAM recommended (found {sysinfo.ram_gb} GB)."))
+    if not sysinfo.disk_ok:
+        console.print(theme.warn(f"At least 10 GB free disk recommended (found {sysinfo.disk_free_gb} GB)."))
+
+    # ------------------------------------------------------------------
+    # 3. Backend detection
+    # ------------------------------------------------------------------
+    theme.section("BACKEND", console, number="02")
+
+    if backend != "auto":
+        from .setup import DEFAULT_PORTS
+
+        port = DEFAULT_PORTS.get(backend, 8000)
+        backends = probe_backends(ports={backend: port}, timeout=3.0)
+    else:
+        backends = probe_backends(timeout=3.0)
+
+    if backends:
+        for b in backends:
+            models_str = ", ".join(b.models[:5]) if b.models else "(no models loaded)"
+            console.print(theme.ok(f"{b.name} on port {b.port} -- {models_str}"))
+    else:
+        console.print(theme.warn("No LLM backend detected."))
+        if full and plat.startswith("macos"):
+            console.print(theme.info("Attempting to install vLLM-MLX..."))
+            with theme.spinner("Installing vLLM-MLX...", console):
+                ok = install_vllm_mlx()
+            if ok:
+                console.print(theme.ok("vLLM-MLX installed."))
+                console.print(theme.info("Start it with: vllm serve <model> --host 0.0.0.0 --port 8000"))
+            else:
+                console.print(theme.err("vLLM-MLX installation failed."))
+        elif full and plat == "dgx-spark":
+            console.print(theme.info("Install vLLM: pip install vllm"))
+            console.print(theme.info("Start it with: vllm serve <model> --host 0.0.0.0 --port 8000"))
+        elif not full:
+            console.print(theme.info("Re-run with --full to install a backend, or start one manually."))
+
+    # ------------------------------------------------------------------
+    # 4. Deno check (--full only)
+    # ------------------------------------------------------------------
+    if full:
+        theme.section("DENO", console, number="03")
+        deno_status = get_deno_runtime_status()
+        if deno_status.ok:
+            console.print(theme.ok(f"Deno ready ({deno_status.deno_version or 'installed'})"))
+        else:
+            console.print(theme.warn("Deno not found."))
+            if non_interactive:
+                console.print(theme.info("Installing Deno..."))
+                try:
+                    install_deno(non_interactive=True)
+                    console.print(theme.ok("Deno installed."))
+                except Exception as exc:
+                    console.print(theme.err(f"Deno installation failed: {exc}"))
+            else:
+                proceed = click.confirm("Install Deno runtime now?", default=True)
+                if proceed:
+                    try:
+                        install_deno(non_interactive=False)
+                        console.print(theme.ok("Deno installed."))
+                    except Exception as exc:
+                        console.print(theme.err(f"Deno installation failed: {exc}"))
+
+    # ------------------------------------------------------------------
+    # 5. Write .env
+    # ------------------------------------------------------------------
+    if backends:
+        theme.section("ENVIRONMENT", console, number="04" if full else "03")
+
+        chosen_backend = backends[0]
+        rec_model = recommend_model(plat, sysinfo.ram_gb)
+        # Use first available model from backend, or recommended model
+        model_id = chosen_backend.models[0] if chosen_backend.models else rec_model
+        lm_value = recommended_lm_for_model(model_id)
+
+        env_content = generate_env_content(chosen_backend, model=model_id)
+        env_path = Path.cwd() / ".env"
+
+        should_write = True
+        if env_path.is_file() and not non_interactive:
+            console.print(theme.warn(f".env already exists at {env_path}"))
+            should_write = click.confirm("Overwrite existing .env?", default=False)
+
+        if should_write:
+            write_env_file(env_content, env_path)
+            console.print(theme.ok(f".env written to {env_path}"))
+        else:
+            console.print(theme.info("Skipped .env -- keeping existing file."))
+
+        # Show what was configured
+        console.print(theme.info(f"MOSAICX_LM={lm_value}"))
+        console.print(theme.info(f"MOSAICX_API_BASE={chosen_backend.url}"))
+    else:
+        console.print()
+        console.print(theme.info("No backend found -- skipping .env generation."))
+
+    # ------------------------------------------------------------------
+    # 6. Summary
+    # ------------------------------------------------------------------
+    theme.section("SUMMARY", console, number="05" if full else "04")
+
+    console.print(theme.ok(f"Platform: {friendly}"))
+    if backends:
+        console.print(theme.ok(f"Backend: {backends[0].name} (port {backends[0].port})"))
+        console.print(theme.info("Next: mosaicx doctor   -- verify full system health"))
+        console.print(theme.info("      mosaicx extract --document <file>   -- extract a report"))
+    else:
+        console.print(theme.warn("No backend configured yet."))
+        console.print(theme.info("Start an LLM backend, then re-run: mosaicx setup"))
+
+
+# ---------------------------------------------------------------------------
 # doctor
 # ---------------------------------------------------------------------------
 
