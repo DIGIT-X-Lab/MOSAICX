@@ -3340,6 +3340,249 @@ def runtime_install(assume_yes: bool, force: bool) -> None:
 
 
 # ---------------------------------------------------------------------------
+# doctor
+# ---------------------------------------------------------------------------
+
+
+@cli.command()
+@click.option("--json", "json_output", is_flag=True, default=False, help="Machine-readable JSON output.")
+@click.option("--fix", "auto_fix", is_flag=True, default=False, help="Auto-resolve fixable issues.")
+def doctor(json_output: bool, auto_fix: bool) -> None:
+    """Check system health and diagnose configuration issues."""
+    import importlib.metadata
+
+    from .runtime_env import get_deno_runtime_status, install_deno
+    from .setup import check_system_requirements, detect_platform, probe_backends
+
+    cfg = get_config()
+    checks: list[dict[str, Any]] = []
+
+    def _add(name: str, status: str, detail: str, fix: str | None = None) -> None:
+        checks.append({"name": name, "status": status, "detail": detail, "fix": fix})
+
+    # ------------------------------------------------------------------
+    # 1. Python >= 3.11
+    # ------------------------------------------------------------------
+    py_ver = f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
+    if sys.version_info[:2] >= (3, 11):
+        _add("python", "ok", f"Python {py_ver}")
+    else:
+        _add(
+            "python",
+            "fail",
+            f"Python {py_ver} (requires >= 3.11)",
+            fix="Install Python 3.11+ from https://www.python.org/downloads/",
+        )
+
+    # ------------------------------------------------------------------
+    # 2. MOSAICX version
+    # ------------------------------------------------------------------
+    try:
+        pkg_version = importlib.metadata.version("mosaicx")
+        _add("mosaicx_version", "ok", f"mosaicx {pkg_version}")
+    except importlib.metadata.PackageNotFoundError:
+        _add(
+            "mosaicx_version",
+            "warn",
+            "mosaicx not installed as package",
+            fix="pip install -e '.[dev]'",
+        )
+
+    # ------------------------------------------------------------------
+    # 3. .env file
+    # ------------------------------------------------------------------
+    env_path = Path.cwd() / ".env"
+    if env_path.is_file():
+        _add("env_file", "ok", f".env found at {env_path}")
+    else:
+        _add(
+            "env_file",
+            "warn",
+            ".env file not found in working directory",
+            fix="mosaicx setup",
+        )
+        if auto_fix:
+            # Delegate to setup logic: just note to run setup
+            pass
+
+    # ------------------------------------------------------------------
+    # 4. LLM backend reachable
+    # ------------------------------------------------------------------
+    backends = probe_backends(timeout=3.0)
+    if backends:
+        names = ", ".join(b.name for b in backends)
+        _add("llm_backend", "ok", f"Backend(s) reachable: {names}")
+    else:
+        plat = detect_platform()
+        if plat.startswith("macos"):
+            fix_hint = "Start vLLM-MLX: vllm serve <model> --host 0.0.0.0 --port 8000"
+        elif plat == "dgx-spark":
+            fix_hint = "Start vLLM: vllm serve <model> --host 0.0.0.0 --port 8000"
+        else:
+            fix_hint = "Start an LLM backend (vLLM, Ollama, llama.cpp, or sglang)"
+        _add("llm_backend", "fail", "No LLM backend reachable", fix=fix_hint)
+
+    # ------------------------------------------------------------------
+    # 5. Model loaded
+    # ------------------------------------------------------------------
+    if backends:
+        all_models: list[str] = []
+        for b in backends:
+            all_models.extend(b.models)
+        if all_models:
+            _add("model_loaded", "ok", f"Model(s): {', '.join(all_models[:5])}")
+        else:
+            first = backends[0]
+            if first.name == "ollama":
+                fix_hint = "ollama pull <model-name>"
+            else:
+                fix_hint = f"Load a model on {first.name} (port {first.port})"
+            _add("model_loaded", "warn", "Backend reachable but no models loaded", fix=fix_hint)
+    else:
+        _add("model_loaded", "warn", "Skipped (no backend reachable)")
+
+    # ------------------------------------------------------------------
+    # 6. LLM responds
+    # ------------------------------------------------------------------
+    if backends and any(b.models for b in backends):
+        from .runtime_env import check_openai_endpoint_ready
+
+        first_with_models = next(b for b in backends if b.models)
+        llm_status = check_openai_endpoint_ready(
+            api_base=first_with_models.url,
+            api_key=cfg.api_key or "ollama",
+            ping_model=first_with_models.models[0] if first_with_models.models else None,
+            timeout_s=10.0,
+        )
+        if llm_status.ok:
+            _add("llm_responds", "ok", f"LLM responded (model: {llm_status.model_id})")
+        else:
+            _add("llm_responds", "fail", f"LLM did not respond: {llm_status.reason}")
+    else:
+        _add("llm_responds", "warn", "Skipped (no backend/model available)")
+
+    # ------------------------------------------------------------------
+    # 7. OCR: surya
+    # ------------------------------------------------------------------
+    try:
+        import surya  # noqa: F401
+
+        _add("ocr_surya", "ok", "surya available")
+    except ImportError:
+        _add("ocr_surya", "fail", "surya not installed", fix="pip install surya-ocr")
+        if auto_fix:
+            try:
+                import subprocess
+
+                subprocess.check_call(
+                    [sys.executable, "-m", "pip", "install", "surya-ocr"],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+                _add("ocr_surya", "ok", "surya installed via --fix")
+            except Exception:
+                pass  # fix attempt failed, original entry stands
+
+    # ------------------------------------------------------------------
+    # 8. OCR: chandra (warn, not fail)
+    # ------------------------------------------------------------------
+    try:
+        import chandra  # noqa: F401
+
+        _add("ocr_chandra", "ok", "chandra available")
+    except ImportError:
+        _add("ocr_chandra", "warn", "chandra not installed (optional)", fix="pip install chandra-ocr")
+
+    # ------------------------------------------------------------------
+    # 9. Deno
+    # ------------------------------------------------------------------
+    deno_status = get_deno_runtime_status()
+    if deno_status.ok:
+        _add("deno", "ok", f"Deno ready ({deno_status.deno_version or deno_status.deno_path})")
+    else:
+        from .runtime_env import deno_install_instructions
+
+        fix_hint = deno_install_instructions()
+        _add("deno", "warn", "Deno not available", fix=fix_hint)
+        if auto_fix:
+            try:
+                install_deno(non_interactive=True)
+                new_status = get_deno_runtime_status()
+                if new_status.ok:
+                    # Replace the last check entry
+                    checks[-1] = {
+                        "name": "deno",
+                        "status": "ok",
+                        "detail": f"Deno installed via --fix ({new_status.deno_version})",
+                        "fix": None,
+                    }
+            except Exception:
+                pass  # fix attempt failed, original entry stands
+
+    # ------------------------------------------------------------------
+    # 10. Disk space
+    # ------------------------------------------------------------------
+    sysinfo = check_system_requirements()
+    if sysinfo.disk_ok:
+        _add("disk_space", "ok", f"{sysinfo.disk_free_gb} GB free")
+    else:
+        _add("disk_space", "fail", f"Only {sysinfo.disk_free_gb} GB free (need >= 10 GB)")
+
+    # ------------------------------------------------------------------
+    # 11. RAM
+    # ------------------------------------------------------------------
+    if sysinfo.ram_ok:
+        _add("ram", "ok", f"{sysinfo.ram_gb} GB RAM")
+    else:
+        _add("ram", "fail", f"Only {sysinfo.ram_gb} GB RAM (need >= 8 GB)")
+
+    # ------------------------------------------------------------------
+    # Summary
+    # ------------------------------------------------------------------
+    passed = sum(1 for c in checks if c["status"] == "ok")
+    warned = sum(1 for c in checks if c["status"] == "warn")
+    failed = sum(1 for c in checks if c["status"] == "fail")
+    total = len(checks)
+
+    if json_output:
+        payload = {
+            "checks": checks,
+            "summary": {
+                "total": total,
+                "passed": passed,
+                "warned": warned,
+                "failed": failed,
+            },
+        }
+        click.echo(json.dumps(payload, indent=2, ensure_ascii=False))
+    else:
+        theme.section("DOCTOR", console)
+        for c in checks:
+            label = f"{c['name']}: {c['detail']}"
+            if c["status"] == "ok":
+                console.print(theme.ok(label))
+            elif c["status"] == "warn":
+                console.print(theme.warn(label))
+                if c["fix"]:
+                    console.print(theme.info(f"  Fix: {c['fix']}"))
+            else:
+                console.print(theme.err(label))
+                if c["fix"]:
+                    console.print(theme.info(f"  Fix: {c['fix']}"))
+
+        console.print()
+        summary_parts = [f"{passed} passed"]
+        if warned:
+            summary_parts.append(f"{warned} warned")
+        if failed:
+            summary_parts.append(f"{failed} failed")
+        console.print(theme.info(f"Summary: {', '.join(summary_parts)} ({total} checks)"))
+
+    if failed > 0:
+        raise click.exceptions.Exit(1)
+
+
+# ---------------------------------------------------------------------------
 # query
 # ---------------------------------------------------------------------------
 
