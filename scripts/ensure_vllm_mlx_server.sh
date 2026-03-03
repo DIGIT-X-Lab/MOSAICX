@@ -23,12 +23,12 @@ if command -v pgrep >/dev/null 2>&1; then
     echo "[ensure_vllm] vllm-mlx process exists; waiting for readiness..."
   else
     echo "[ensure_vllm] starting vllm-mlx server (model=${MODEL}, port=${PORT})"
-    nohup vllm-mlx serve "${MODEL}" --port "${PORT}" --continuous-batching >"${LOG_PATH}" 2>&1 &
+    nohup vllm-mlx serve "${MODEL}" --port "${PORT}" --continuous-batching --use-paged-cache >"${LOG_PATH}" 2>&1 &
     echo "$!" >"${PID_PATH}"
   fi
 else
   echo "[ensure_vllm] starting vllm-mlx server (model=${MODEL}, port=${PORT})"
-  nohup vllm-mlx serve "${MODEL}" --port "${PORT}" --continuous-batching >"${LOG_PATH}" 2>&1 &
+  nohup vllm-mlx serve "${MODEL}" --port "${PORT}" --continuous-batching --use-paged-cache >"${LOG_PATH}" 2>&1 &
   echo "$!" >"${PID_PATH}"
 fi
 

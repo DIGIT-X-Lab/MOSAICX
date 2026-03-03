@@ -3429,7 +3429,7 @@ def setup(full: bool, non_interactive: bool, backend: str) -> None:
                 ok = install_vllm_mlx()
             if ok:
                 console.print(theme.ok("vLLM-MLX installed."))
-                console.print(theme.info("Start it with: vllm serve <model> --host 0.0.0.0 --port 8000"))
+                console.print(theme.info("Start it with: vllm-mlx serve <model> --port 8000 --continuous-batching --use-paged-cache"))
             else:
                 console.print(theme.err("vLLM-MLX installation failed."))
         elif full and plat == "dgx-spark":
@@ -3588,7 +3588,7 @@ def doctor(json_output: bool, auto_fix: bool) -> None:
     else:
         plat = detect_platform()
         if plat.startswith("macos"):
-            fix_hint = "Start vLLM-MLX: vllm serve <model> --host 0.0.0.0 --port 8000"
+            fix_hint = "Start vLLM-MLX: vllm-mlx serve <model> --port 8000 --continuous-batching --use-paged-cache"
         elif plat == "dgx-spark":
             fix_hint = "Start vLLM: vllm serve <model> --host 0.0.0.0 --port 8000"
         else:
