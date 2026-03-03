@@ -56,11 +56,15 @@ fi
 echo "ok mosaicx installed"
 # Add venv/bin to PATH in shell rc
 BIN_DIR="${VENV_DIR}/bin"
+MODIFIED_RC=""
 add_to_rc() {
   local rc="$1"
-  [ -f "$rc" ] && grep -qF "$BIN_DIR" "$rc" 2>/dev/null && return
+  if [ -f "$rc" ] && grep -qF "$BIN_DIR" "$rc" 2>/dev/null; then
+    return
+  fi
   printf '\n# Added by MOSAICX setup\nexport PATH="%s:$PATH"\n' "$BIN_DIR" >>"$rc"
   echo "ok updated $rc"
+  MODIFIED_RC="$rc"
 }
 case "$(basename "${SHELL:-/bin/bash}")" in
   zsh)  add_to_rc "${HOME}/.zshrc" ;;
@@ -69,6 +73,7 @@ case "$(basename "${SHELL:-/bin/bash}")" in
         if ! grep -qF "$BIN_DIR" "$rc" 2>/dev/null; then
           printf '\n# Added by MOSAICX setup\nfish_add_path %s\n' "$BIN_DIR" >>"$rc"
           echo "ok updated $rc"
+          MODIFIED_RC="$rc"
         fi ;;
   *)    add_to_rc "${HOME}/.bashrc" ;;
 esac
@@ -76,3 +81,17 @@ export PATH="${BIN_DIR}:${PATH}"
 # Hand off to mosaicx setup
 # shellcheck disable=SC2086
 "${BIN_DIR}/mosaicx" setup $FULL $NONINTERACTIVE
+
+# Print activation instructions if rc file was modified
+if [ -n "$MODIFIED_RC" ]; then
+  echo ""
+  echo ">> To use mosaicx in this terminal, run:"
+  case "$(basename "${SHELL:-/bin/bash}")" in
+    fish) echo "   source $MODIFIED_RC" ;;
+    *)    echo "   source $MODIFIED_RC" ;;
+  esac
+  echo "   (or open a new terminal)"
+  echo ""
+  echo ">> Then verify your setup with:"
+  echo "   mosaicx doctor"
+fi
