@@ -1080,6 +1080,7 @@ def template_validate(file_path: Path) -> None:
 @click.option("--from-url", "from_url", type=str, default=None, help="Infer template from a web page (e.g. RadReport URL).")
 @click.option("--from-radreport", "from_radreport", type=str, default=None, help="RadReport template ID (e.g. RPT50890 or 50890).")
 @click.option("--from-json", "from_json", type=click.Path(exists=True, path_type=Path), default=None, help="Convert a legacy JSON schema to YAML template.")
+@click.option("--from-pydantic", "from_pydantic", type=click.Path(exists=True, path_type=Path), default=None, help="Convert a Pydantic model (.py file) to YAML template.")
 @click.option("--name", type=str, default=None, help="Template name (default: LLM-chosen).")
 @click.option("--mode", type=str, default=None, help="Pipeline mode to embed (e.g. radiology, pathology).")
 @click.option("--output", type=click.Path(path_type=Path), default=None, help="Save to this path instead of ~/.mosaicx/templates/.")
@@ -1089,11 +1090,12 @@ def template_create(
     from_url: Optional[str],
     from_radreport: Optional[str],
     from_json: Optional[Path],
+    from_pydantic: Optional[Path],
     name: Optional[str],
     mode: Optional[str],
     output: Optional[Path],
 ) -> None:
-    """Create a new YAML template from a description, document, URL, or JSON schema.
+    """Create a new YAML template from a description, document, URL, JSON, or Pydantic schema.
 
     \b
     Provide exactly one source. The LLM generates a template and saves
@@ -1105,17 +1107,20 @@ def template_create(
       mosaicx template create --from-document sample_report.pdf
       mosaicx template create --from-radreport 50890
       mosaicx template create --from-json old_schema.json
+      mosaicx template create --from-pydantic schema.py
       mosaicx template create --from-url https://radreport.org/home/50
     """
     from .schemas.template_compiler import compile_template, schema_spec_to_template_yaml
 
-    sources = sum(x is not None for x in (describe, from_document, from_url, from_radreport, from_json))
+    sources = sum(x is not None for x in (describe, from_document, from_url, from_radreport, from_json, from_pydantic))
     if sources == 0:
         raise click.ClickException(
-            "Provide --describe, --from-document, --from-url, --from-radreport, or --from-json."
+            "Provide --describe, --from-document, --from-url, --from-radreport, --from-json, or --from-pydantic."
         )
     if sources > 1 and from_json is not None:
         raise click.ClickException("--from-json cannot be combined with other sources.")
+    if sources > 1 and from_pydantic is not None:
+        raise click.ClickException("--from-pydantic cannot be combined with other sources.")
 
     # --- Path 1: Convert existing JSON schema to YAML ---
     if from_json is not None:
@@ -1153,6 +1158,53 @@ def template_create(
         console.print(theme.info(f"Name: {spec.class_name}"))
         console.print(theme.info(f"Fields: {len(spec.fields)}"))
         console.print(theme.info(f"Saved: {dest}"))
+        return
+
+    # --- Path 1b: Convert Pydantic model (.py) to YAML ---
+    if from_pydantic is not None:
+        from .pipelines.schema_gen import (
+            load_pydantic_from_file,
+            normalize_schema_spec,
+            pydantic_to_schema_spec,
+            validate_schema_spec,
+        )
+
+        try:
+            root_models = load_pydantic_from_file(from_pydantic)
+        except (FileNotFoundError, ValueError, ImportError, TypeError) as exc:
+            raise click.ClickException(f"Failed to load Pydantic models: {exc}")
+
+        if len(root_models) > 1:
+            model_names = ", ".join(m.__name__ for m in root_models)
+            console.print(theme.info(f"Found {len(root_models)} root models: {model_names}"))
+
+        for model_class in root_models:
+            try:
+                spec = pydantic_to_schema_spec(model_class)
+            except (TypeError, ValueError) as exc:
+                raise click.ClickException(f"Failed to convert {model_class.__name__}: {exc}")
+
+            if name and len(root_models) == 1:
+                spec.class_name = name
+            spec = normalize_schema_spec(spec, default_class_name="GeneratedSchema")
+            issues = validate_schema_spec(spec)
+            if issues:
+                issues_preview = "\n".join(f"- {issue}" for issue in issues[:8])
+                raise click.ClickException(
+                    f"Schema {spec.class_name} failed validation:\n"
+                    f"{issues_preview}"
+                )
+
+            yaml_str = schema_spec_to_template_yaml(spec, mode=mode)
+            try:
+                compile_template(yaml_str)
+            except Exception as exc:
+                raise click.ClickException(f"Generated template failed validation: {exc}")
+            dest = _save_template_yaml(spec.class_name, yaml_str, output)
+            console.print(theme.ok(f"Template created from Pydantic model: {model_class.__name__}"))
+            console.print(theme.info(f"Name: {spec.class_name}"))
+            console.print(theme.info(f"Fields: {len(spec.fields)}"))
+            console.print(theme.info(f"Saved: {dest}"))
         return
 
     # --- Path 2: RadReport API (deterministic fetch + LLM enrichment) ---
