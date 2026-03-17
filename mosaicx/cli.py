@@ -3629,19 +3629,19 @@ def doctor(json_output: bool, auto_fix: bool) -> None:
     ocr_engines: list[str] = []
     ocr_missing: list[str] = []
     try:
-        import surya  # noqa: F401
-        ocr_engines.append("surya")
+        import paddleocr  # noqa: F401
+        ocr_engines.append("paddleocr")
     except ImportError:
-        ocr_missing.append("surya")
+        ocr_missing.append("paddleocr")
         if auto_fix:
             try:
                 import subprocess as _sp
                 _sp.check_call(
-                    [sys.executable, "-m", "pip", "install", "surya-ocr"],
+                    [sys.executable, "-m", "pip", "install", "paddleocr", "paddlepaddle"],
                     stdout=_sp.DEVNULL, stderr=_sp.DEVNULL,
                 )
-                ocr_engines.append("surya")
-                ocr_missing.remove("surya")
+                ocr_engines.append("paddleocr")
+                ocr_missing.remove("paddleocr")
             except Exception:
                 pass
     try:
@@ -3720,7 +3720,7 @@ def doctor(json_output: bool, auto_fix: bool) -> None:
         _add("ocr", "warn", f"{' + '.join(ocr_engines)} (missing: {', '.join(ocr_missing)})",
              fix=f"pip install {' '.join(m + '-ocr' for m in ocr_missing)}")
     else:
-        _add("ocr", "fail", "No OCR engines", fix="pip install surya-ocr")
+        _add("ocr", "fail", "No OCR engines", fix="pip install paddleocr paddlepaddle")
 
     if deno_status.ok:
         deno_ver = deno_status.deno_version or ""
