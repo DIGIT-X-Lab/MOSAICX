@@ -3432,8 +3432,11 @@ def setup(full: bool, non_interactive: bool, backend: str) -> None:
 
     if backends:
         for b in backends:
-            models_str = ", ".join(b.models[:5]) if b.models else "(no models loaded)"
-            console.print(theme.ok(f"{b.name} on port {b.port} -- {models_str}"))
+            models_str = ", ".join(b.models[:3]) if b.models else "(no models loaded)"
+            if b.models and len(b.models) > 3:
+                models_str += f", ... ({len(b.models)} total)"
+            label = f"{b.name} :{b.port}" if b.port else b.name
+            console.print(theme.ok(f"{label} -- {models_str}"))
     else:
         console.print(theme.warn("No LLM backend detected."))
         if full and plat.startswith("macos"):
@@ -3442,7 +3445,7 @@ def setup(full: bool, non_interactive: bool, backend: str) -> None:
                 ok = install_vllm_mlx()
             if ok:
                 console.print(theme.ok("vLLM-MLX installed."))
-                console.print(theme.info("Start it with: vllm-mlx serve <model> --port 8000 --continuous-batching --use-paged-cache"))
+                console.print(theme.info("Start it with: vllm-mlx serve <model> --port 8000"))
             else:
                 console.print(theme.err("vLLM-MLX installation failed."))
         elif full and plat == "dgx-spark":
@@ -3480,35 +3483,54 @@ def setup(full: bool, non_interactive: bool, backend: str) -> None:
     # ------------------------------------------------------------------
     # 5. Write .env
     # ------------------------------------------------------------------
-    if backends:
-        theme.section("ENVIRONMENT", console, number="04" if full else "03")
+    # ------------------------------------------------------------------
+    # 5. Write .env
+    # ------------------------------------------------------------------
+    theme.section("ENVIRONMENT", console, number="04" if full else "03")
+    env_path = Path.cwd() / ".env"
 
-        chosen_backend = backends[0]
+    if backends:
+        # Pick the configured backend if it matches, else first with models
+        from urllib.parse import urlparse
+        configured_url = cfg.api_base.rstrip("/")
+        chosen_backend = None
+        for b in backends:
+            if b.url.rstrip("/") == configured_url:
+                chosen_backend = b
+                break
+        if chosen_backend is None:
+            with_models = [b for b in backends if b.models]
+            chosen_backend = with_models[0] if with_models else backends[0]
+
         rec_model = recommend_model(plat, sysinfo.ram_gb)
-        # Use first available model from backend, or recommended model
         model_id = chosen_backend.models[0] if chosen_backend.models else rec_model
         lm_value = recommended_lm_for_model(model_id)
 
-        env_content = generate_env_content(chosen_backend, model=model_id)
-        env_path = Path.cwd() / ".env"
-
-        should_write = True
-        if env_path.is_file() and not non_interactive:
-            console.print(theme.warn(f".env already exists at {env_path}"))
-            should_write = click.confirm("Overwrite existing .env?", default=False)
-
-        if should_write:
+        if env_path.is_file():
+            # .env exists — show current config, don't overwrite by default
+            console.print(theme.ok(f".env found at {env_path}"))
+            console.print(theme.info(f"MOSAICX_LM={cfg.lm}"))
+            console.print(theme.info(f"MOSAICX_API_BASE={cfg.api_base}"))
+            if not non_interactive and click.confirm("Reconfigure .env?", default=False):
+                env_content = generate_env_content(chosen_backend, model=model_id)
+                write_env_file(env_content, env_path)
+                console.print(theme.ok(f".env updated"))
+        else:
+            env_content = generate_env_content(chosen_backend, model=model_id)
             write_env_file(env_content, env_path)
             console.print(theme.ok(f".env written to {env_path}"))
-        else:
-            console.print(theme.info("Skipped .env -- keeping existing file."))
-
-        # Show what was configured
-        console.print(theme.info(f"MOSAICX_LM={lm_value}"))
-        console.print(theme.info(f"MOSAICX_API_BASE={chosen_backend.url}"))
+            console.print(theme.info(f"MOSAICX_LM={lm_value}"))
+            console.print(theme.info(f"MOSAICX_API_BASE={chosen_backend.url}"))
     else:
-        console.print()
-        console.print(theme.info("No backend found -- skipping .env generation."))
+        if env_path.is_file():
+            # No backends found but .env exists — show it
+            console.print(theme.ok(f".env found at {env_path}"))
+            console.print(theme.info(f"MOSAICX_LM={cfg.lm}"))
+            console.print(theme.info(f"MOSAICX_API_BASE={cfg.api_base}"))
+            console.print(theme.warn("Backend not reachable — check your connection or .env settings"))
+        else:
+            console.print(theme.warn("No backend found and no .env exists."))
+            console.print(theme.info("Start an LLM backend, then re-run: mosaicx setup"))
 
     # ------------------------------------------------------------------
     # 6. Summary
@@ -3517,9 +3539,15 @@ def setup(full: bool, non_interactive: bool, backend: str) -> None:
 
     console.print(theme.ok(f"Platform: {friendly}"))
     if backends:
-        console.print(theme.ok(f"Backend: {backends[0].name} (port {backends[0].port})"))
+        label = chosen_backend.name
+        if chosen_backend.port:
+            label += f" :{chosen_backend.port}"
+        console.print(theme.ok(f"Backend: {label}"))
         console.print(theme.info("Next: mosaicx doctor   -- verify full system health"))
         console.print(theme.info("      mosaicx extract --document <file>   -- extract a report"))
+    elif env_path.is_file():
+        console.print(theme.warn(f"Backend: {cfg.api_base} (not reachable)"))
+        console.print(theme.info("Check your network or run: mosaicx doctor"))
     else:
         console.print(theme.warn("No backend configured yet."))
         console.print(theme.info("Start an LLM backend, then re-run: mosaicx setup"))
