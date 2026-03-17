@@ -288,6 +288,11 @@ class MosaicxCommand(click.Command):
 @click.pass_context
 def cli(ctx: click.Context) -> None:
     """MOSAICX -- Medical cOmputational Suite for Advanced Intelligent eXtraction."""
+    import warnings
+
+    warnings.filterwarnings("ignore", message=".*urllib3.*chardet.*charset_normalizer.*")
+    warnings.filterwarnings("ignore", category=DeprecationWarning, module="paddleocr")
+
     cfg = get_config()
     if ctx.invoked_subcommand is not None:
         # Subcommand execution — show banner before running the command
