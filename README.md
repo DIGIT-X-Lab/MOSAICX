@@ -47,7 +47,14 @@ curl -fsSL https://raw.githubusercontent.com/DIGIT-X-Lab/MOSAICX/master/scripts/
 Or install manually and let the setup wizard configure everything:
 
 ```bash
-pip install mosaicx
+pip install git+https://github.com/DIGIT-X-Lab/MOSAICX.git
+mosaicx setup
+```
+
+With [uv](https://docs.astral.sh/uv/) (faster):
+
+```bash
+uv pip install git+https://github.com/DIGIT-X-Lab/MOSAICX.git
 mosaicx setup
 ```
 
@@ -62,9 +69,9 @@ Check health anytime with `mosaicx doctor`. See the full [Quickstart guide](docs
 ### Install Extras
 
 ```bash
-pip install 'mosaicx[mcp]'       # + MCP server for AI agents
-pip install 'mosaicx[query]'     # + fast tabular query stack (duckdb + polars)
-pip install 'mosaicx[all]'       # everything
+pip install 'mosaicx[mcp] @ git+https://github.com/DIGIT-X-Lab/MOSAICX.git'       # + MCP server
+pip install 'mosaicx[query] @ git+https://github.com/DIGIT-X-Lab/MOSAICX.git'     # + query stack
+pip install 'mosaicx[all] @ git+https://github.com/DIGIT-X-Lab/MOSAICX.git'       # everything
 ```
 
 ### Developer Fast Loop (Mac + vLLM-MLX, 120B)
