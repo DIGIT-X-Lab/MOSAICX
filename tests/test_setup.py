@@ -1,7 +1,10 @@
 """Tests for mosaicx.setup -- platform detection, backend probing, env generation."""
 from __future__ import annotations
 
+import json
+
 import pytest
+import werkzeug.wrappers
 
 
 @pytest.mark.unit
@@ -73,6 +76,63 @@ class TestProbeBackends:
 
         result = probe_backends(ports={"test": 59999}, timeout=0.3)
         assert len(result) == 0
+
+    def test_probes_configured_api_base(self, monkeypatch, httpserver):
+        """When MOSAICX_API_BASE is set, probe_backends should check the
+        remote URL even if no localhost backends are reachable."""
+        from mosaicx.setup import probe_backends
+
+        # Fake remote server that returns an OpenAI-compatible /v1/models
+        httpserver.expect_request("/v1/models").respond_with_json({
+            "data": [{"id": "gpt-oss:120b", "object": "model"}],
+            "object": "list",
+        })
+        remote_url = httpserver.url_for("/v1")
+
+        monkeypatch.setenv("MOSAICX_API_BASE", remote_url)
+        monkeypatch.setenv("MOSAICX_API_KEY", "test-key")
+
+        # No localhost backends — only the remote one should appear
+        result = probe_backends(ports={"test": 59999}, timeout=1.0)
+        assert len(result) >= 1
+        remote = [b for b in result if b.url == remote_url]
+        assert len(remote) == 1
+        assert "gpt-oss:120b" in remote[0].models
+        assert remote[0].name == "localhost"  # httpserver runs on localhost
+
+    def test_probes_configured_api_base_with_auth(self, monkeypatch, httpserver):
+        """Remote backend behind an API key should be probed with Authorization header."""
+        from mosaicx.setup import probe_backends
+
+        def handler(request):
+            auth = request.headers.get("Authorization", "")
+            if auth != "Bearer test-secret":
+                return werkzeug.wrappers.Response("Unauthorized", status=401)
+            return werkzeug.wrappers.Response(
+                json.dumps({"data": [{"id": "model-1"}], "object": "list"}),
+                content_type="application/json",
+            )
+
+        httpserver.expect_request("/v1/models").respond_with_handler(handler)
+        remote_url = httpserver.url_for("/v1")
+
+        monkeypatch.setenv("MOSAICX_API_BASE", remote_url)
+        monkeypatch.setenv("MOSAICX_API_KEY", "test-secret")
+
+        result = probe_backends(ports={"test": 59999}, timeout=1.0)
+        remote = [b for b in result if b.url == remote_url]
+        assert len(remote) == 1
+        assert "model-1" in remote[0].models
+
+    def test_ignores_api_base_when_unreachable(self, monkeypatch):
+        """If MOSAICX_API_BASE points to a dead server, probe_backends
+        should not crash — just return empty."""
+        from mosaicx.setup import probe_backends
+
+        monkeypatch.setenv("MOSAICX_API_BASE", "http://localhost:59998/v1")
+        result = probe_backends(ports={"test": 59999}, timeout=0.3)
+        # Should not crash, just no results
+        assert isinstance(result, list)
 
 
 @pytest.mark.unit

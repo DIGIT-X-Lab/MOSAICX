@@ -3533,6 +3533,10 @@ def setup(full: bool, non_interactive: bool, backend: str) -> None:
 def doctor(json_output: bool, auto_fix: bool) -> None:
     """Check system health and diagnose configuration issues."""
     import importlib.metadata
+    from urllib.parse import urlparse
+
+    from rich.panel import Panel
+    from rich.text import Text as RichText
 
     from .runtime_env import get_deno_runtime_status, install_deno
     from .setup import check_system_requirements, detect_platform, probe_backends
@@ -3543,185 +3547,197 @@ def doctor(json_output: bool, auto_fix: bool) -> None:
     def _add(name: str, status: str, detail: str, fix: str | None = None) -> None:
         checks.append({"name": name, "status": status, "detail": detail, "fix": fix})
 
-    # ------------------------------------------------------------------
-    # 1. Python >= 3.11
-    # ------------------------------------------------------------------
-    py_ver = f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
-    if sys.version_info[:2] >= (3, 11):
-        _add("python", "ok", f"Python {py_ver}")
-    else:
-        _add(
-            "python",
-            "fail",
-            f"Python {py_ver} (requires >= 3.11)",
-            fix="Install Python 3.11+ from https://www.python.org/downloads/",
-        )
+    # ==================================================================
+    # Gather data
+    # ==================================================================
 
-    # ------------------------------------------------------------------
-    # 2. MOSAICX version
-    # ------------------------------------------------------------------
+    # Python + mosaicx version
+    py_ver = f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
+    py_ok = sys.version_info[:2] >= (3, 11)
     try:
         pkg_version = importlib.metadata.version("mosaicx")
-        _add("mosaicx_version", "ok", f"mosaicx {pkg_version}")
     except importlib.metadata.PackageNotFoundError:
-        _add(
-            "mosaicx_version",
-            "warn",
-            "mosaicx not installed as package",
-            fix="pip install -e '.[dev]'",
-        )
+        pkg_version = None
 
-    # ------------------------------------------------------------------
-    # 3. .env file
-    # ------------------------------------------------------------------
+    # .env
     env_path = Path.cwd() / ".env"
-    if env_path.is_file():
-        _add("env_file", "ok", f".env found at {env_path}")
+    has_env = env_path.is_file()
+
+    # Config values
+    configured_lm = cfg.lm
+    configured_base = cfg.api_base
+    configured_key = cfg.api_key
+    backend_host = urlparse(configured_base).hostname or configured_base
+
+    # Mask API key for display
+    if configured_key and configured_key not in ("ollama", "no-key"):
+        masked_key = configured_key[:7] + "..." + configured_key[-4:]
     else:
-        _add(
-            "env_file",
-            "warn",
-            ".env file not found in working directory",
-            fix="mosaicx setup",
+        masked_key = configured_key
+
+    # Backend probing
+    backends = probe_backends(
+        timeout=3.0,
+        api_base=configured_base,
+        api_key=configured_key,
+    )
+
+    # Find the configured backend specifically
+    configured_backend = None
+    for b in backends:
+        if b.url.rstrip("/") == configured_base.rstrip("/"):
+            configured_backend = b
+            break
+    # Fallback: if api_base is localhost, match by URL prefix
+    if configured_backend is None:
+        for b in backends:
+            if configured_base.rstrip("/").startswith(b.url.rstrip("/")):
+                configured_backend = b
+                break
+    # Fallback: first backend with models
+    if configured_backend is None and backends:
+        with_models = [b for b in backends if b.models]
+        if with_models:
+            configured_backend = with_models[0]
+
+    # Check if configured model is available on configured backend
+    model_short = configured_lm.removeprefix("openai/")
+    model_found = False
+    if configured_backend:
+        model_found = model_short in configured_backend.models
+
+    # LLM responds check — test the CONFIGURED backend
+    llm_ok = False
+    llm_detail = ""
+    if configured_backend and configured_backend.models:
+        from .runtime_env import check_openai_endpoint_ready
+
+        ping_model = model_short if model_found else configured_backend.models[0]
+        llm_status = check_openai_endpoint_ready(
+            api_base=configured_backend.url,
+            api_key=configured_key or "ollama",
+            ping_model=ping_model,
+            timeout_s=10.0,
         )
+        llm_ok = llm_status.ok
+        llm_detail = llm_status.model_id if llm_ok else (llm_status.reason or "unknown error")
+
+    # OCR
+    ocr_engines: list[str] = []
+    ocr_missing: list[str] = []
+    try:
+        import surya  # noqa: F401
+        ocr_engines.append("surya")
+    except ImportError:
+        ocr_missing.append("surya")
         if auto_fix:
-            # Delegate to setup logic: just note to run setup
+            try:
+                import subprocess as _sp
+                _sp.check_call(
+                    [sys.executable, "-m", "pip", "install", "surya-ocr"],
+                    stdout=_sp.DEVNULL, stderr=_sp.DEVNULL,
+                )
+                ocr_engines.append("surya")
+                ocr_missing.remove("surya")
+            except Exception:
+                pass
+    try:
+        import chandra  # noqa: F401
+        ocr_engines.append("chandra")
+    except ImportError:
+        ocr_missing.append("chandra")
+
+    # Deno
+    deno_status = get_deno_runtime_status()
+    if not deno_status.ok and auto_fix:
+        try:
+            install_deno(non_interactive=True)
+            deno_status = get_deno_runtime_status()
+        except Exception:
             pass
 
-    # ------------------------------------------------------------------
-    # 4. LLM backend reachable
-    # ------------------------------------------------------------------
-    backends = probe_backends(timeout=3.0)
-    if backends:
-        names = ", ".join(b.name for b in backends)
-        _add("llm_backend", "ok", f"Backend(s) reachable: {names}")
+    # System
+    sysinfo = check_system_requirements()
+
+    # Other discovered backends (not the configured one)
+    other_backends = [b for b in backends if b is not configured_backend]
+
+    # ==================================================================
+    # Build checks list (for --json and exit code)
+    # ==================================================================
+    if py_ok:
+        _add("python", "ok", f"Python {py_ver}")
+    else:
+        _add("python", "fail", f"Python {py_ver} (requires >= 3.11)",
+             fix="Install Python 3.11+")
+
+    if pkg_version:
+        _add("mosaicx", "ok", f"mosaicx {pkg_version}")
+    else:
+        _add("mosaicx", "warn", "not installed as package",
+             fix="pip install -e '.[dev]'")
+
+    if has_env:
+        _add("config", "ok", f".env at {env_path}")
+    else:
+        _add("config", "warn", "No .env found", fix="mosaicx setup")
+
+    if configured_backend:
+        n = len(configured_backend.models)
+        _add("backend", "ok", f"{backend_host} reachable ({n} models)")
     else:
         plat = detect_platform()
         if plat.startswith("macos"):
-            fix_hint = "Start vLLM-MLX: vllm-mlx serve <model> --port 8000 --continuous-batching --use-paged-cache"
+            fix_hint = "vllm-mlx serve <model> --port 8000"
         elif plat == "dgx-spark":
-            fix_hint = "Start vLLM: vllm serve <model> --host 0.0.0.0 --port 8000"
+            fix_hint = "vllm serve <model> --port 8000"
         else:
-            fix_hint = "Start an LLM backend (vLLM, Ollama, llama.cpp, or sglang)"
-        _add("llm_backend", "fail", "No LLM backend reachable", fix=fix_hint)
+            fix_hint = "Start an LLM backend, then mosaicx setup"
+        _add("backend", "fail", f"{backend_host} not reachable", fix=fix_hint)
 
-    # ------------------------------------------------------------------
-    # 5. Model loaded
-    # ------------------------------------------------------------------
-    if backends:
-        all_models: list[str] = []
-        for b in backends:
-            all_models.extend(b.models)
-        if all_models:
-            _add("model_loaded", "ok", f"Model(s): {', '.join(all_models[:5])}")
-        else:
-            first = backends[0]
-            if first.name == "ollama":
-                fix_hint = "ollama pull <model-name>"
-            else:
-                fix_hint = f"Load a model on {first.name} (port {first.port})"
-            _add("model_loaded", "warn", "Backend reachable but no models loaded", fix=fix_hint)
+    if model_found:
+        _add("model", "ok", f"{model_short} available")
+    elif configured_backend:
+        avail = ", ".join(configured_backend.models[:5])
+        _add("model", "fail", f"{model_short} not on backend",
+             fix=f"Available: {avail}")
     else:
-        _add("model_loaded", "warn", "Skipped (no backend reachable)")
+        _add("model", "warn", "Skipped (no backend)")
 
-    # ------------------------------------------------------------------
-    # 6. LLM responds
-    # ------------------------------------------------------------------
-    if backends and any(b.models for b in backends):
-        from .runtime_env import check_openai_endpoint_ready
-
-        first_with_models = next(b for b in backends if b.models)
-        llm_status = check_openai_endpoint_ready(
-            api_base=first_with_models.url,
-            api_key=cfg.api_key or "ollama",
-            ping_model=first_with_models.models[0] if first_with_models.models else None,
-            timeout_s=10.0,
-        )
-        if llm_status.ok:
-            _add("llm_responds", "ok", f"LLM responded (model: {llm_status.model_id})")
-        else:
-            _add("llm_responds", "fail", f"LLM did not respond: {llm_status.reason}")
+    if llm_ok:
+        _add("llm_responds", "ok", f"LLM responds ({llm_detail})")
+    elif configured_backend:
+        _add("llm_responds", "fail", f"LLM error: {llm_detail}")
     else:
-        _add("llm_responds", "warn", "Skipped (no backend/model available)")
+        _add("llm_responds", "warn", "Skipped (no backend)")
 
-    # ------------------------------------------------------------------
-    # 7. OCR: surya
-    # ------------------------------------------------------------------
-    try:
-        import surya  # noqa: F401
+    if ocr_engines and not ocr_missing:
+        _add("ocr", "ok", " + ".join(ocr_engines))
+    elif ocr_engines:
+        _add("ocr", "warn", f"{' + '.join(ocr_engines)} (missing: {', '.join(ocr_missing)})",
+             fix=f"pip install {' '.join(m + '-ocr' for m in ocr_missing)}")
+    else:
+        _add("ocr", "fail", "No OCR engines", fix="pip install surya-ocr")
 
-        _add("ocr_surya", "ok", "surya available")
-    except ImportError:
-        _add("ocr_surya", "fail", "surya not installed", fix="pip install surya-ocr")
-        if auto_fix:
-            try:
-                import subprocess
-
-                subprocess.check_call(
-                    [sys.executable, "-m", "pip", "install", "surya-ocr"],
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                )
-                _add("ocr_surya", "ok", "surya installed via --fix")
-            except Exception:
-                pass  # fix attempt failed, original entry stands
-
-    # ------------------------------------------------------------------
-    # 8. OCR: chandra (warn, not fail)
-    # ------------------------------------------------------------------
-    try:
-        import chandra  # noqa: F401
-
-        _add("ocr_chandra", "ok", "chandra available")
-    except ImportError:
-        _add("ocr_chandra", "warn", "chandra not installed (optional)", fix="pip install chandra-ocr")
-
-    # ------------------------------------------------------------------
-    # 9. Deno
-    # ------------------------------------------------------------------
-    deno_status = get_deno_runtime_status()
     if deno_status.ok:
-        _add("deno", "ok", f"Deno ready ({deno_status.deno_version or deno_status.deno_path})")
+        deno_ver = deno_status.deno_version or ""
+        # Extract just the version number
+        deno_short = deno_ver.split("(")[0].strip() if deno_ver else "available"
+        _add("deno", "ok", deno_short)
     else:
         from .runtime_env import deno_install_instructions
+        _add("deno", "warn", "not available", fix=deno_install_instructions())
 
-        fix_hint = deno_install_instructions()
-        _add("deno", "warn", "Deno not available", fix=fix_hint)
-        if auto_fix:
-            try:
-                install_deno(non_interactive=True)
-                new_status = get_deno_runtime_status()
-                if new_status.ok:
-                    # Replace the last check entry
-                    checks[-1] = {
-                        "name": "deno",
-                        "status": "ok",
-                        "detail": f"Deno installed via --fix ({new_status.deno_version})",
-                        "fix": None,
-                    }
-            except Exception:
-                pass  # fix attempt failed, original entry stands
-
-    # ------------------------------------------------------------------
-    # 10. Disk space
-    # ------------------------------------------------------------------
-    sysinfo = check_system_requirements()
-    if sysinfo.disk_ok:
-        _add("disk_space", "ok", f"{sysinfo.disk_free_gb} GB free")
+    if sysinfo.ram_ok and sysinfo.disk_ok:
+        _add("system", "ok", f"{sysinfo.ram_gb} GB RAM, {sysinfo.disk_free_gb} GB free")
+    elif not sysinfo.ram_ok:
+        _add("system", "fail", f"Only {sysinfo.ram_gb} GB RAM (need >= 8 GB)")
     else:
-        _add("disk_space", "fail", f"Only {sysinfo.disk_free_gb} GB free (need >= 10 GB)")
+        _add("system", "fail", f"Only {sysinfo.disk_free_gb} GB free (need >= 10 GB)")
 
-    # ------------------------------------------------------------------
-    # 11. RAM
-    # ------------------------------------------------------------------
-    if sysinfo.ram_ok:
-        _add("ram", "ok", f"{sysinfo.ram_gb} GB RAM")
-    else:
-        _add("ram", "fail", f"Only {sysinfo.ram_gb} GB RAM (need >= 8 GB)")
-
-    # ------------------------------------------------------------------
-    # Summary
-    # ------------------------------------------------------------------
+    # ==================================================================
+    # Render
+    # ==================================================================
     passed = sum(1 for c in checks if c["status"] == "ok")
     warned = sum(1 for c in checks if c["status"] == "warn")
     failed = sum(1 for c in checks if c["status"] == "fail")
@@ -3729,6 +3745,11 @@ def doctor(json_output: bool, auto_fix: bool) -> None:
 
     if json_output:
         payload = {
+            "config": {
+                "lm": configured_lm,
+                "backend": configured_base,
+                "env_path": str(env_path) if has_env else None,
+            },
             "checks": checks,
             "summary": {
                 "total": total,
@@ -3740,26 +3761,87 @@ def doctor(json_output: bool, auto_fix: bool) -> None:
         click.echo(json.dumps(payload, indent=2, ensure_ascii=False))
     else:
         theme.section("DOCTOR", console)
-        for c in checks:
-            label = f"{c['name']}: {c['detail']}"
-            if c["status"] == "ok":
-                console.print(theme.ok(label))
-            elif c["status"] == "warn":
-                console.print(theme.warn(label))
-                if c["fix"]:
-                    console.print(theme.info(f"  Fix: {c['fix']}"))
+
+        # ── Config panel ──────────────────────────────────────────
+        config_lines = RichText()
+        if has_env:
+            config_lines.append("  LM        ", style=f"bold {theme.GREIGE}")
+            config_lines.append(f"{configured_lm}\n")
+            config_lines.append("  Backend   ", style=f"bold {theme.GREIGE}")
+            config_lines.append(f"{backend_host}\n")
+            config_lines.append("  Auth      ", style=f"bold {theme.GREIGE}")
+            config_lines.append(f"{masked_key}\n")
+            config_lines.append("  .env      ", style=f"bold {theme.GREIGE}")
+            # Show relative path if under cwd, else just filename
+            try:
+                rel = env_path.relative_to(Path.cwd())
+                config_lines.append(f"./{rel}", style="dim")
+            except ValueError:
+                config_lines.append(str(env_path), style="dim")
+        else:
+            config_lines.append("  No .env found\n", style="yellow")
+            config_lines.append(f"  [{theme.CORAL}]\u203a[/{theme.CORAL}] ", style="")
+            config_lines.append("Run: mosaicx setup", style="dim")
+
+        console.print(Panel(
+            config_lines,
+            title=f"[{theme.GREIGE}]Config[/{theme.GREIGE}]",
+            title_align="left",
+            border_style=theme.GREIGE,
+            padding=(0, 1),
+            width=63,
+        ))
+        console.print()
+
+        # ── Check lines ──────────────────────────────────────────
+        def _render_check(label: str, detail: str, status: str, fix: str | None) -> None:
+            pad = 26 - len(label)
+            if pad < 2:
+                pad = 2
+            spacing = " " * pad
+            if status == "ok":
+                console.print(f"  [bold green]\u2713[/bold green]  {label}{spacing}[dim]{detail}[/dim]")
+            elif status == "warn":
+                console.print(f"  [bold yellow]![/bold yellow]  [yellow]{label}[/yellow]{spacing}[dim]{detail}[/dim]")
+                if fix:
+                    console.print(f"     [{theme.CORAL}]\u203a[/{theme.CORAL}] [dim]{fix}[/dim]")
             else:
-                console.print(theme.err(label))
-                if c["fix"]:
-                    console.print(theme.info(f"  Fix: {c['fix']}"))
+                console.print(f"  [bold red]\u2717[/bold red]  {label}{spacing}{detail}")
+                if fix:
+                    console.print(f"     [{theme.CORAL}]\u203a[/{theme.CORAL}] [dim]{fix}[/dim]")
+
+        # Label map for clean display names
+        _LABELS = {
+            "python": "Python",
+            "mosaicx": "MOSAICX",
+            "backend": "Backend",
+            "model": "Model",
+            "llm_responds": "LLM Responds",
+            "ocr": "OCR",
+            "deno": "Deno",
+            "system": "System",
+        }
+        for c in checks:
+            if c["name"] == "config":
+                continue  # already rendered in panel
+            label = _LABELS.get(c["name"], c["name"].replace("_", " ").title())
+            _render_check(label, c["detail"], c["status"], c["fix"])
+
+        # ── Other backends footnote ───────────────────────────────
+        if other_backends:
+            # Deduplicate by URL
+            seen_urls: set[str] = set()
+            unique: list[str] = []
+            for b in other_backends:
+                if b.url not in seen_urls:
+                    seen_urls.add(b.url)
+                    label = f"{b.name} :{b.port}" if b.port else b.name
+                    unique.append(label)
+            if unique:
+                console.print()
+                console.print(f"  [dim]Also found: {', '.join(unique)}[/dim]")
 
         console.print()
-        summary_parts = [f"{passed} passed"]
-        if warned:
-            summary_parts.append(f"{warned} warned")
-        if failed:
-            summary_parts.append(f"{failed} failed")
-        console.print(theme.info(f"Summary: {', '.join(summary_parts)} ({total} checks)"))
 
     if failed > 0:
         raise click.exceptions.Exit(1)

@@ -187,8 +187,14 @@ def probe_backends(
     *,
     ports: dict[str, int] | None = None,
     timeout: float = 2.0,
+    api_base: str | None = None,
+    api_key: str | None = None,
 ) -> list[BackendInfo]:
     """Probe well-known LLM backend ports and return reachable backends.
+
+    Also checks the remote URL in *api_base* (or ``MOSAICX_API_BASE`` env
+    var) so that ``mosaicx doctor`` can detect remote backends (e.g. CORE
+    Ollama).
 
     Parameters
     ----------
@@ -196,6 +202,11 @@ def probe_backends(
         Mapping of backend name to port.  Defaults to :data:`DEFAULT_PORTS`.
     timeout:
         HTTP request timeout in seconds.
+    api_base:
+        Explicit remote API base URL.  Falls back to ``MOSAICX_API_BASE``.
+    api_key:
+        Explicit API key for the remote backend.  Falls back to
+        ``MOSAICX_API_KEY``.
 
     Returns
     -------
@@ -210,6 +221,14 @@ def probe_backends(
         info = _probe_single(name, port, timeout)
         if info is not None:
             found.append(info)
+
+    # Also probe the configured remote backend (MOSAICX_API_BASE).
+    remote = _probe_remote(timeout, api_base=api_base, api_key=api_key)
+    if remote is not None:
+        # Avoid duplicates if the remote URL matches a localhost backend.
+        if not any(b.url == remote.url for b in found):
+            found.append(remote)
+
     return found
 
 
@@ -247,6 +266,54 @@ def _probe_single(
         name=name,
         port=port,
         url=api_url,
+        models=models,
+        reachable=True,
+    )
+
+
+def _probe_remote(
+    timeout: float,
+    *,
+    api_base: str | None = None,
+    api_key: str | None = None,
+) -> BackendInfo | None:
+    """Probe the remote backend configured via ``MOSAICX_API_BASE``."""
+    if api_base is None:
+        api_base = os.environ.get("MOSAICX_API_BASE", "").strip()
+    if not api_base:
+        return None
+
+    if api_key is None:
+        api_key = os.environ.get("MOSAICX_API_KEY", "").strip()
+
+    # Normalise: ensure we hit /v1/models
+    models_url = api_base.rstrip("/")
+    if models_url.endswith("/v1"):
+        models_url += "/models"
+    elif not models_url.endswith("/models"):
+        models_url += "/v1/models"
+
+    try:
+        req = Request(models_url, method="GET")
+        if api_key:
+            req.add_header("Authorization", f"Bearer {api_key}")
+        with urlopen(req, timeout=timeout) as resp:  # noqa: S310
+            body = resp.read().decode("utf-8", errors="ignore")
+            payload = json.loads(body) if body else {}
+    except (HTTPError, URLError, OSError, TimeoutError, json.JSONDecodeError):
+        return None
+
+    models = _extract_model_ids("openai", payload)
+
+    # Extract a readable hostname for the backend name.
+    from urllib.parse import urlparse
+
+    host = urlparse(api_base).hostname or "remote"
+
+    return BackendInfo(
+        name=host,
+        port=0,
+        url=api_base.rstrip("/"),
         models=models,
         reachable=True,
     )
