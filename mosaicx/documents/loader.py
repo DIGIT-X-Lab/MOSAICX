@@ -32,7 +32,7 @@ _scorer = QualityScorer()
 
 def load_document(
     path: Path,
-    ocr_engine: str = "both",
+    ocr_engine: str = "chandra",
     force_ocr: bool = False,
     ocr_langs: list[str] | None = None,
     chandra_backend: str | None = None,
@@ -168,16 +168,39 @@ def _run_engines(
         engine = ChandraEngine(backend=chandra_backend)
         return engine.ocr_pages(images)
 
+    # When running a single engine, run directly in the main thread to avoid
+    # PyTorch MPS threading issues.  Only use ThreadPoolExecutor for "both".
+    if ocr_engine == "chandra":
+        try:
+            chandra_pages = run_chandra()
+        except Exception:
+            logger.warning("OCR engine 'chandra' failed, skipping", exc_info=True)
+            chandra_pages = [
+                PageResult(page_number=i + 1, text="", engine="chandra", confidence=0.0)
+                for i in range(len(images))
+            ]
+        return surya_pages, chandra_pages
+
+    if ocr_engine == "surya":
+        try:
+            surya_pages = run_surya()
+        except Exception:
+            logger.warning("OCR engine 'surya' failed, skipping", exc_info=True)
+            surya_pages = [
+                PageResult(page_number=i + 1, text="", engine="surya", confidence=0.0)
+                for i in range(len(images))
+            ]
+        return surya_pages, chandra_pages
+
+    # "both": run in parallel threads
     futures = {}
     with ThreadPoolExecutor(max_workers=2) as pool:
-        if ocr_engine in ("both", "surya"):
-            futures["surya"] = pool.submit(run_surya)
-        if ocr_engine in ("both", "chandra"):
-            futures["chandra"] = pool.submit(run_chandra)
+        futures["surya"] = pool.submit(run_surya)
+        futures["chandra"] = pool.submit(run_chandra)
 
         for name, future in futures.items():
             try:
-                max_timeout = min(page_timeout * len(images), 600)  # cap at 10 min
+                max_timeout = min(page_timeout * len(images), 600)
                 result = future.result(timeout=max_timeout)
             except Exception:
                 logger.warning("OCR engine '%s' failed, skipping", name)

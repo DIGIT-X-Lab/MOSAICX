@@ -31,8 +31,8 @@ dependencies = [
     "pydantic-settings>=2.0.0",
     "dspy>=2.6.0",
     "outlines>=1.2.0",
-    "surya-ocr>=0.17.0",
     "chandra-ocr>=0.1.8",
+    "transformers>=5.0.0",
     "python-cfonts>=1.5.0",
     "pypdfium2>=4.0.0",
     "Pillow>=10.0.0",
@@ -43,6 +43,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+surya = ["surya-ocr>=0.17.0"]
 hf = ["datasets>=2.0"]
 mcp = ["mcp[cli]>=1.0.0"]
 query = [
