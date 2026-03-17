@@ -3657,7 +3657,9 @@ def doctor(json_output: bool, auto_fix: bool) -> None:
     ocr_engines: list[str] = []
     ocr_missing: list[str] = []
     try:
-        import paddleocr  # noqa: F401
+        from importlib.util import find_spec
+        if find_spec("paddleocr") is None:
+            raise ImportError("paddleocr not installed")
         ocr_engines.append("paddleocr")
     except ImportError:
         ocr_missing.append("paddleocr")
@@ -3673,7 +3675,8 @@ def doctor(json_output: bool, auto_fix: bool) -> None:
             except Exception:
                 pass
     try:
-        import chandra  # noqa: F401
+        if find_spec("chandra") is None:
+            raise ImportError("chandra not installed")
         ocr_engines.append("chandra")
     except ImportError:
         ocr_missing.append("chandra")
