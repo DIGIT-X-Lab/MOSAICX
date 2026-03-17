@@ -23,10 +23,34 @@ logger = logging.getLogger(__name__)
 @lru_cache(maxsize=1)
 def _get_paddleocr():
     """Lazily load and cache the PaddleOCR instance."""
-    os.environ["PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK"] = "True"
-    from paddleocr import PaddleOCR
+    import io
+    import sys
+    import warnings
 
-    return PaddleOCR(lang="german")
+    os.environ["PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK"] = "True"
+
+    # Suppress noisy PaddlePaddle and requests warnings
+    warnings.filterwarnings("ignore", category=DeprecationWarning, module="paddleocr")
+    warnings.filterwarnings("ignore", message=".*urllib3.*chardet.*charset_normalizer.*")
+    warnings.filterwarnings("ignore", message=".*No ccache found.*")
+
+    # Redirect paddle's verbose logging to WARNING+
+    for name in ("paddle", "paddleocr", "paddlex", "ppocr"):
+        logging.getLogger(name).setLevel(logging.WARNING)
+
+    # PaddleOCR prints "Creating model" and cache messages directly via
+    # print() — silence them by redirecting stdout/stderr during init.
+    _out, _err = sys.stdout, sys.stderr
+    sys.stdout = io.StringIO()
+    sys.stderr = io.StringIO()
+    try:
+        from paddleocr import PaddleOCR
+
+        ocr = PaddleOCR(lang="german")
+    finally:
+        sys.stdout, sys.stderr = _out, _err
+
+    return ocr
 
 
 class PaddleOCREngine:
@@ -54,7 +78,16 @@ class PaddleOCREngine:
                     tmp_path = tmp.name
 
                 try:
-                    results = list(ocr.predict(tmp_path))
+                    import io
+                    import sys
+
+                    _out, _err = sys.stdout, sys.stderr
+                    sys.stdout = io.StringIO()
+                    sys.stderr = io.StringIO()
+                    try:
+                        results = list(ocr.predict(tmp_path))
+                    finally:
+                        sys.stdout, sys.stderr = _out, _err
                 finally:
                     os.unlink(tmp_path)
 
