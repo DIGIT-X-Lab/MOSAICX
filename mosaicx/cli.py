@@ -3386,6 +3386,7 @@ def setup(full: bool, non_interactive: bool, backend: str) -> None:
         write_env_file,
     )
 
+    cfg = get_config()
     theme.section("SETUP", console, number="01")
 
     # ------------------------------------------------------------------
@@ -3423,9 +3424,11 @@ def setup(full: bool, non_interactive: bool, backend: str) -> None:
         from .setup import DEFAULT_PORTS
 
         port = DEFAULT_PORTS.get(backend, 8000)
-        backends = probe_backends(ports={backend: port}, timeout=3.0)
+        backends = probe_backends(ports={backend: port}, timeout=3.0,
+                                  api_base=cfg.api_base, api_key=cfg.api_key)
     else:
-        backends = probe_backends(timeout=3.0)
+        backends = probe_backends(timeout=3.0,
+                                  api_base=cfg.api_base, api_key=cfg.api_key)
 
     if backends:
         for b in backends:
