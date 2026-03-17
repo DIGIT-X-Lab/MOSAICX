@@ -80,7 +80,7 @@ class MosaicxConfig(BaseSettings):
     )
 
     # --- Document loading ---
-    ocr_engine: Literal["both", "surya", "chandra"] = "chandra"
+    ocr_engine: Literal["paddleocr", "chandra"] = "paddleocr"
     chandra_backend: Literal["vllm", "hf", "auto"] = "auto"
     chandra_server_url: str = ""
     quality_threshold: float = 0.6
