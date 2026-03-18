@@ -26,7 +26,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Literal, Union, get_args, get_origin
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 logger = logging.getLogger(__name__)
 
@@ -2590,6 +2590,561 @@ def extract_with_mode_raw(document_text: str, mode_name: str) -> tuple[dict[str,
 
 
 # ---------------------------------------------------------------------------
+# Think-mode routing, chunking, deterministic compute, verify & fix
+# ---------------------------------------------------------------------------
+
+_THINK_LEVEL_ORDER = {"fast": 0, "standard": 1, "deep": 2}
+_THINK_LEVEL_BY_RANK = {0: "fast", 1: "standard", 2: "deep"}
+
+_CALC_KEYWORDS = re.compile(
+    r"\b(count|calculate|calculated\s+as|max\(|sum\(|number\s+of|percentage)\b",
+    flags=re.IGNORECASE,
+)
+
+
+def _count_schema_fields(schema_class: type[BaseModel], *, _depth: int = 0) -> tuple[int, int]:
+    """Recursively count total fields and max nesting depth of list[object] chains.
+
+    Returns (field_count, max_depth).
+    """
+    if _depth > 20:
+        return 0, _depth
+    count = 0
+    max_d = _depth
+    for _name, field_info in schema_class.model_fields.items():
+        count += 1
+        ann = field_info.annotation
+        # Unwrap Optional
+        origin = get_origin(ann)
+        if origin in (Union, types.UnionType):
+            inner = [a for a in get_args(ann) if a is not type(None)]
+            ann = inner[0] if inner else ann
+            origin = get_origin(ann)
+
+        if origin in (list, tuple, set):
+            item_type = get_args(ann)[0] if get_args(ann) else Any
+            if _is_basemodel_type(item_type):
+                sub_count, sub_depth = _count_schema_fields(item_type, _depth=_depth + 1)
+                count += sub_count
+                max_d = max(max_d, sub_depth)
+        elif _is_basemodel_type(ann):
+            sub_count, sub_depth = _count_schema_fields(ann, _depth=_depth + 1)
+            count += sub_count
+            max_d = max(max_d, sub_depth)
+    return count, max_d
+
+
+def _has_calculated_fields(schema_class: type[BaseModel]) -> bool:
+    """Detect if any field description mentions calculated/derived values."""
+    for _name, field_info in schema_class.model_fields.items():
+        desc = str(field_info.description or "")
+        if _CALC_KEYWORDS.search(desc):
+            return True
+        # Check nested models
+        ann = field_info.annotation
+        origin = get_origin(ann)
+        if origin in (Union, types.UnionType):
+            inner = [a for a in get_args(ann) if a is not type(None)]
+            ann = inner[0] if inner else ann
+            origin = get_origin(ann)
+        if origin in (list, tuple, set):
+            item_type = get_args(ann)[0] if get_args(ann) else Any
+            if _is_basemodel_type(item_type) and _has_calculated_fields(item_type):
+                return True
+        elif _is_basemodel_type(ann):
+            if _has_calculated_fields(ann):
+                return True
+    return False
+
+
+def _has_list_object_nesting(schema_class: type[BaseModel]) -> bool:
+    """Return True if any field is a list[BaseModel]."""
+    for _name, field_info in schema_class.model_fields.items():
+        ann = field_info.annotation
+        origin = get_origin(ann)
+        if origin in (Union, types.UnionType):
+            inner = [a for a in get_args(ann) if a is not type(None)]
+            ann = inner[0] if inner else ann
+            origin = get_origin(ann)
+        if origin in (list, tuple, set):
+            item_type = get_args(ann)[0] if get_args(ann) else Any
+            if _is_basemodel_type(item_type):
+                return True
+    return False
+
+
+def _route_think_level(schema_class: type[BaseModel]) -> str:
+    """Deterministic router: analyze schema complexity and return think level.
+
+    Rules:
+    - fields <= 8 and no list[object] nesting -> "fast"
+    - fields <= 20, nesting_depth <= 2, no calculated fields -> "standard"
+    - everything else -> "deep"
+    """
+    field_count, nesting_depth = _count_schema_fields(schema_class)
+    has_list_obj = _has_list_object_nesting(schema_class)
+    has_calc = _has_calculated_fields(schema_class)
+
+    if field_count <= 8 and not has_list_obj:
+        level = "fast"
+    elif field_count <= 20 and nesting_depth <= 2 and not has_calc:
+        level = "standard"
+    else:
+        level = "deep"
+
+    logger.info(
+        "Think router: fields=%d, depth=%d, list_obj=%s, calc=%s -> %s",
+        field_count, nesting_depth, has_list_obj, has_calc, level,
+    )
+    return level
+
+
+def _resolve_think_level(user_think: str, schema_class: type[BaseModel] | None) -> str:
+    """Resolve effective think level from user choice and template analysis.
+
+    - "auto": let router pick freely
+    - "fast": max(fast, template_floor) -- won't go below template minimum
+    - "deep": always deep
+    """
+    if user_think == "deep":
+        return "deep"
+
+    if schema_class is None:
+        # No schema to analyze -- fall back to user choice or standard
+        return "standard" if user_think == "auto" else user_think
+
+    if user_think == "auto":
+        return _route_think_level(schema_class)
+
+    # user_think == "fast": enforce floor
+    template_floor = _route_think_level(schema_class)
+    user_rank = _THINK_LEVEL_ORDER.get(user_think, 0)
+    floor_rank = _THINK_LEVEL_ORDER.get(template_floor, 0)
+    effective_rank = max(user_rank, floor_rank)
+    return _THINK_LEVEL_BY_RANK.get(effective_rank, "standard")
+
+
+def _chunk_schema(schema_class: type[BaseModel]) -> list[dict[str, Any]]:
+    """Walk schema fields and split at list[object] boundaries.
+
+    Returns a list of chunk dicts:
+      [{"name": "scalars", "fields": [...], "schema_subset": <PydanticModel>},
+       {"name": "field_name", "fields": [...], "schema_subset": <PydanticModel>}, ...]
+
+    Each chunk has a dynamically-created Pydantic sub-model containing only
+    its fields, suitable for a focused extraction call.
+    """
+    from pydantic import create_model as pydantic_create_model
+
+    scalar_fields: list[str] = []
+    scalar_field_defs: dict[str, Any] = {}
+    chunks: list[dict[str, Any]] = []
+
+    for field_name, field_info in schema_class.model_fields.items():
+        ann = field_info.annotation
+        # Unwrap Optional to check inner type
+        inner_ann = ann
+        origin = get_origin(inner_ann)
+        if origin in (Union, types.UnionType):
+            inner = [a for a in get_args(inner_ann) if a is not type(None)]
+            inner_ann = inner[0] if inner else inner_ann
+            origin = get_origin(inner_ann)
+
+        is_list_of_obj = False
+        if origin in (list, tuple, set):
+            item_type = get_args(inner_ann)[0] if get_args(inner_ann) else Any
+            if _is_basemodel_type(item_type):
+                is_list_of_obj = True
+
+        if is_list_of_obj:
+            # This field becomes its own chunk
+            default = field_info.default if field_info.default is not None else ...
+            if not field_info.is_required():
+                default = field_info.default
+            chunk_field_def = (ann, Field(
+                default=default,
+                description=field_info.description,
+            ))
+            chunk_model = pydantic_create_model(
+                f"_Chunk_{field_name}",
+                **{field_name: chunk_field_def},
+            )
+            chunks.append({
+                "name": field_name,
+                "fields": [field_name],
+                "schema_subset": chunk_model,
+                "original_field_info": {field_name: field_info},
+            })
+        else:
+            scalar_fields.append(field_name)
+            default = field_info.default if field_info.default is not None else ...
+            if not field_info.is_required():
+                default = field_info.default
+            scalar_field_defs[field_name] = (ann, Field(
+                default=default,
+                description=field_info.description,
+            ))
+
+    # Build scalar chunk
+    if scalar_fields:
+        scalar_model = pydantic_create_model(
+            "_Chunk_scalars",
+            **scalar_field_defs,
+        )
+        chunks.insert(0, {
+            "name": "scalars",
+            "fields": list(scalar_fields),
+            "schema_subset": scalar_model,
+        })
+
+    return chunks
+
+
+def _compute_derived_fields(
+    extracted: BaseModel,
+    schema_class: type[BaseModel],
+    source_text: str,
+) -> BaseModel:
+    """Detect calculated fields from descriptions and overwrite with deterministic values.
+
+    Patterns detected:
+    - "count all entries in X" / "count entries in X" -> len(extracted.X)
+    - "count entries where Y is true" / "number of tumor-positive" -> conditional count
+    - "maximum ... percentage" / "max(" -> max of values
+    - "calculate" / "calculated as" -> attempt formula parse
+
+    Best-effort: if pattern doesn't match or referenced field doesn't exist, keep LLM value.
+    """
+    payload = extracted.model_dump(mode="json")
+    updated = dict(payload)
+    changes: list[str] = []
+
+    # First: recurse into list[object] fields to compute their inner derived fields
+    for field_name, field_info in schema_class.model_fields.items():
+        ann = field_info.annotation
+        # Unwrap Optional
+        inner_ann = ann
+        origin = get_origin(inner_ann)
+        if origin in (Union, types.UnionType):
+            inner = [a for a in get_args(inner_ann) if a is not type(None)]
+            inner_ann = inner[0] if inner else inner_ann
+            origin = get_origin(inner_ann)
+
+        if origin in (list, tuple, set):
+            item_type = get_args(inner_ann)[0] if get_args(inner_ann) else Any
+            if _is_basemodel_type(item_type) and _has_calculated_fields(item_type):
+                items = updated.get(field_name)
+                if isinstance(items, list):
+                    updated_items = []
+                    for item_data in items:
+                        if isinstance(item_data, dict):
+                            try:
+                                item_instance = item_type.model_validate(item_data)
+                                computed = _compute_derived_fields(
+                                    item_instance, item_type, source_text,
+                                )
+                                updated_items.append(computed.model_dump(mode="json"))
+                                changes.append(f"{field_name}[*]")
+                            except Exception:
+                                updated_items.append(item_data)
+                        else:
+                            updated_items.append(item_data)
+                    updated[field_name] = updated_items
+
+    # Then: compute derived fields at the current level
+    for field_name, field_info in schema_class.model_fields.items():
+        desc = str(field_info.description or "").lower()
+        if not _CALC_KEYWORDS.search(desc):
+            continue
+
+        try:
+            new_value = _compute_single_derived_field(
+                field_name=field_name,
+                description=desc,
+                payload=updated,  # Use updated payload so recursive values are available
+                schema_class=schema_class,
+            )
+            if new_value is not None:
+                updated[field_name] = new_value
+                changes.append(field_name)
+        except Exception as exc:
+            logger.debug("Derived field %s compute failed: %s", field_name, exc)
+            continue
+
+    if changes:
+        logger.info("Computed derived fields: %s", changes)
+        try:
+            coerced = _coerce_payload_to_schema(updated, schema_class)
+            return schema_class.model_validate(coerced)
+        except Exception as exc:
+            logger.warning("Failed to validate after compute: %s", exc)
+            return extracted
+    return extracted
+
+
+def _compute_single_derived_field(
+    *,
+    field_name: str,
+    description: str,
+    payload: dict[str, Any],
+    schema_class: type[BaseModel],
+) -> Any | None:
+    """Try to deterministically compute a single derived field value.
+
+    Returns the computed value, or None if no pattern matched.
+    """
+    # Pattern: "count entries ... where Y is true" / "number of ... where Y is true"
+    # (Must be checked BEFORE simple count_all to avoid matching "count entries in X where ...")
+    count_where_match = re.search(
+        r"(?:count\s+entries|number\s+of\s+\w+).+?where\s+(\w+)\s+is\s+true",
+        description,
+    )
+    if count_where_match:
+        cond_field = count_where_match.group(1).lower()
+        list_ref = _find_referenced_list_field(description, payload, schema_class)
+        if isinstance(list_ref, list):
+            return sum(
+                1 for item in list_ref
+                if isinstance(item, dict) and _is_truthy(item.get(cond_field))
+            )
+
+    # Pattern: "number of tumor-positive samples" (heuristic: look for list + bool field)
+    tumor_positive_match = re.search(
+        r"number\s+of\s+tumor.?positive", description
+    )
+    if tumor_positive_match:
+        list_ref = _find_referenced_list_field(description, payload, schema_class)
+        if isinstance(list_ref, list):
+            return sum(
+                1 for item in list_ref
+                if isinstance(item, dict) and _is_truthy(item.get("tumor"))
+            )
+
+    # Pattern: "count all entries in X" / "count entries in X" (simple count)
+    # Also handles "count all entries in Descriptive Name / actual_field_name"
+    count_all_match = re.search(
+        r"count\s+(?:all\s+)?entries\s+in\s+(.+?)(?:\.|$)", description
+    )
+    if count_all_match:
+        ref_text = count_all_match.group(1).strip()
+        # Remove trailing conditional clauses (e.g. "where tumor is true")
+        ref_text = re.sub(r"\s+where\s+.*$", "", ref_text).strip()
+        if ref_text:
+            # Try each word/token in the reference text as a potential field name
+            ref_candidates = [tok.strip().lower().replace("-", "_") for tok in re.split(r"[/,]|\s+", ref_text) if tok.strip()]
+            for candidate in ref_candidates:
+                ref_value = _find_field_by_name(payload, candidate, schema_class)
+                if isinstance(ref_value, list):
+                    return len(ref_value)
+            # Also try the full text as a fuzzy match
+            ref_value = _find_field_by_name(payload, ref_text.replace(" ", "_"), schema_class)
+            if isinstance(ref_value, list):
+                return len(ref_value)
+
+    # Pattern: "maximum ... percentage" / "max("
+    max_match = re.search(r"max(?:imum|imaler?)?\s*[\(]?", description)
+    if max_match and "percent" in description:
+        # Look for tumor percentage calculation pattern
+        # Prefer list that has 'tumor' or 'positive' field (for filtering)
+        list_ref = None
+        tumor_related = "tumor" in description or "positive" in description
+        if tumor_related:
+            for _key, val in payload.items():
+                if isinstance(val, list) and val and isinstance(val[0], dict):
+                    if any("tumor" in k or "positive" in k for k in val[0].keys()):
+                        list_ref = val
+                        break
+        if list_ref is None:
+            list_ref = _find_referenced_list_field(description, payload, schema_class)
+
+        # Build a lookup for length from other lists (by nr) for cross-list reference
+        length_by_nr: dict[int, float] = {}
+        for _key, val in payload.items():
+            if isinstance(val, list) and val is not list_ref:
+                for item in val:
+                    if isinstance(item, dict) and "nr" in item:
+                        length = item.get("laenge_cm") or item.get("length_cm")
+                        if isinstance(length, (int, float)) and length > 0:
+                            length_by_nr[int(item["nr"])] = float(length)
+
+        if isinstance(list_ref, list):
+            percentages = []
+            for item in list_ref:
+                if not isinstance(item, dict):
+                    continue
+                # Only consider tumor-positive items (require explicit field)
+                has_tumor_field = "tumor" in item or "positive" in item
+                if has_tumor_field:
+                    if not _is_truthy(item.get("tumor", item.get("positive", False))):
+                        continue
+                # Try direct percentage field
+                pct = item.get("tumor_prozent") or item.get("tumor_percent")
+                if pct is not None and isinstance(pct, (int, float)) and pct > 0:
+                    percentages.append(float(pct))
+                    continue
+                # Try calculate from extent/length (within same item)
+                extent = item.get("tumorausdehnung_mm") or item.get("tumor_extent_mm")
+                length_val = item.get("laenge_cm") or item.get("length_cm")
+                # Cross-reference length from makroskopie_liste if not in this item
+                if length_val is None and "nr" in item:
+                    length_val = length_by_nr.get(int(item["nr"]))
+                if (
+                    extent is not None and length_val is not None
+                    and isinstance(extent, (int, float))
+                    and isinstance(length_val, (int, float))
+                    and length_val > 0
+                ):
+                    # extent in mm, length in cm -> convert
+                    length_mm = length_val * 10
+                    if length_mm > 0:
+                        percentages.append(extent / length_mm * 100)
+            if percentages:
+                return round(max(percentages))
+
+    return None
+
+
+def _find_field_by_name(
+    payload: dict[str, Any],
+    target_name: str,
+    schema_class: type[BaseModel],
+) -> Any | None:
+    """Find a field value in the payload by fuzzy name matching."""
+    target_lower = target_name.lower().replace("_", "").replace("-", "")
+    for key, value in payload.items():
+        key_lower = key.lower().replace("_", "").replace("-", "")
+        if key_lower == target_lower or target_lower in key_lower or key_lower in target_lower:
+            return value
+    return None
+
+
+def _find_referenced_list_field(
+    description: str,
+    payload: dict[str, Any],
+    schema_class: type[BaseModel],
+) -> list | None:
+    """Find the list field referenced in a description."""
+    # Look for field names mentioned in the description
+    desc_lower = description.lower()
+    for key, value in payload.items():
+        if isinstance(value, list):
+            key_lower = key.lower()
+            # Direct match
+            if key_lower in desc_lower:
+                return value
+            # Match without underscores (e.g. "begutachtung liste" in desc)
+            key_nound = key_lower.replace("_", " ")
+            if key_nound in desc_lower:
+                return value
+            # Match without _liste suffix (e.g. "begutachtung" in desc)
+            key_short = key_lower.replace("_liste", "").replace("_list", "")
+            if key_short and key_short in desc_lower:
+                return value
+
+    # Fallback: find the first list-of-dicts field
+    for _key, value in payload.items():
+        if isinstance(value, list) and value and isinstance(value[0], dict):
+            return value
+    return None
+
+
+def _is_truthy(value: Any) -> bool:
+    """Check if a value is truthy for condition counting."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"true", "yes", "ja", "1", "positive"}
+    if isinstance(value, (int, float)):
+        return value > 0
+    return bool(value)
+
+
+def _apply_nested_fix(payload: dict[str, Any], field_path: str, value: Any) -> None:
+    """Best-effort apply a fix to a nested field path like 'befunde.0.gleason'."""
+    parts = re.split(r"\.|(?=\[)", field_path)
+    current = payload
+    for _i, part in enumerate(parts[:-1]):
+        # Handle array index
+        idx_match = re.match(r"\[?(\d+)\]?", part)
+        if idx_match and isinstance(current, list):
+            idx = int(idx_match.group(1))
+            if 0 <= idx < len(current):
+                current = current[idx]
+            else:
+                return
+        elif isinstance(current, dict) and part in current:
+            current = current[part]
+        else:
+            return
+
+    # Set the final value
+    last = parts[-1]
+    idx_match = re.match(r"\[?(\d+)\]?", last)
+    if idx_match and isinstance(current, list):
+        idx = int(idx_match.group(1))
+        if 0 <= idx < len(current):
+            current[idx] = value
+    elif isinstance(current, dict):
+        current[last] = value
+
+
+def _run_consistency_checks(
+    extracted: BaseModel,
+    schema_class: type[BaseModel],
+) -> list[dict[str, Any]]:
+    """Run deterministic consistency checks on the extracted data.
+
+    Checks:
+    - List counts match anzahl_* fields
+    - Enum values are valid
+    - Required fields are non-null
+    """
+    payload = extracted.model_dump(mode="json")
+    issues: list[dict[str, Any]] = []
+
+    for field_name, field_info in schema_class.model_fields.items():
+        value = payload.get(field_name)
+
+        # Check required fields are non-null
+        if field_info.is_required() and _is_missing_value(value):
+            issues.append({
+                "field": field_name,
+                "issue": "required_field_missing",
+                "severity": "error",
+            })
+
+        # Check anzahl_* consistency with lists
+        if field_name.startswith("anzahl_") and isinstance(value, (int, float)):
+            # Find a matching list field
+            for other_name, other_value in payload.items():
+                if isinstance(other_value, list) and other_name in field_name.replace("anzahl_", ""):
+                    if int(value) != len(other_value):
+                        issues.append({
+                            "field": field_name,
+                            "issue": f"count_mismatch: {field_name}={int(value)} but {other_name} has {len(other_value)} entries",
+                            "severity": "warning",
+                        })
+
+        # Check enum values
+        ann = field_info.annotation
+        origin = get_origin(ann)
+        if origin in (Union, types.UnionType):
+            inner = [a for a in get_args(ann) if a is not type(None)]
+            ann = inner[0] if inner else ann
+            origin = get_origin(ann)
+        if origin is Literal and value is not None:
+            allowed = get_args(ann)
+            if value not in allowed:
+                issues.append({
+                    "field": field_name,
+                    "issue": f"invalid_enum_value: {value!r} not in {allowed}",
+                    "severity": "warning",
+                })
+
+    return issues
+
+
+# ---------------------------------------------------------------------------
 # DSPy Signatures & Module (lazy)
 # ---------------------------------------------------------------------------
 
@@ -2611,22 +3166,64 @@ def _build_dspy_classes():
             desc="Inferred schema specification describing what to extract"
         )
 
+    # ── Verification signature (deep mode) ──
+    class VerifyExtractionSig(dspy.Signature):
+        """Review a structured extraction for correctness against the source."""
+
+        document_text: str = dspy.InputField(
+            desc="Original document text"
+        )
+        extraction_json: str = dspy.InputField(
+            desc="JSON of the extracted data to verify"
+        )
+        schema_description: str = dspy.InputField(
+            desc="Description of the target schema and its fields"
+        )
+        flagged_issues: str = dspy.OutputField(
+            desc=(
+                "JSON list of issues found. Each item: "
+                '{"field": "dot.path", "issue": "what is wrong", '
+                '"evidence": "text from document", "suggested_value": "correct value"}. '
+                "Empty list [] if everything is correct."
+            )
+        )
+
+    # ── Fix signature (deep mode, per flagged field) ──
+    class FixFieldSig(dspy.Signature):
+        """Extract the correct value for a single flagged field."""
+
+        field_name: str = dspy.InputField(desc="Name of the field to fix")
+        field_description: str = dspy.InputField(desc="Schema description for this field")
+        issue: str = dspy.InputField(desc="What was wrong with the extracted value")
+        evidence: str = dspy.InputField(desc="Evidence from the document")
+        document_section: str = dspy.InputField(desc="Relevant section of the document")
+        corrected_value: str = dspy.OutputField(desc="The correct value for this field")
+
     class DocumentExtractor(dspy.Module):
         """DSPy Module for document extraction.
 
         Two modes:
         - **Auto mode** (no output_schema): infers schema from doc, then extracts.
         - **Schema mode** (output_schema provided): extracts directly into schema.
+
+        Think levels: auto, fast, standard, deep.
         """
 
-        def __init__(self, output_schema: type[BaseModel] | None = None, think: str = "standard") -> None:
+        def __init__(self, output_schema: type[BaseModel] | None = None, think: str = "auto") -> None:
             super().__init__()
-            if think not in ("fast", "standard", "deep"):
+            if think not in ("auto", "fast", "standard", "deep"):
                 raise ValueError(
-                    f"think must be 'fast', 'standard', or 'deep', got {think!r}"
+                    f"think must be 'auto', 'fast', 'standard', or 'deep', got {think!r}"
                 )
-            self._think = think
+            self._user_think = think
             self._output_schema = output_schema
+
+            # Resolve effective think level (auto-routing happens here)
+            self._think = _resolve_think_level(think, output_schema)
+            logger.info(
+                "DocumentExtractor: user_think=%s, effective_think=%s, schema=%s",
+                think, self._think, output_schema.__name__ if output_schema else "auto",
+            )
 
             if output_schema is not None:
                 # Schema mode: single extraction step
@@ -2662,10 +3259,348 @@ def _build_dspy_classes():
                     type_=str,
                 )
                 self.extract_json_fallback = dspy.Predict(fallback_sig)
+                # Deep mode: verification + fix modules
+                self.verify_extraction = dspy.ChainOfThought(VerifyExtractionSig)
+                self.fix_field = dspy.ChainOfThought(FixFieldSig)
             else:
                 # Auto mode: infer schema then extract
                 self.infer_schema = dspy.ChainOfThought(InferSchemaFromDocument)
                 # extract_custom is created dynamically in forward()
+                self.verify_extraction = dspy.ChainOfThought(VerifyExtractionSig)
+                self.fix_field = dspy.ChainOfThought(FixFieldSig)
+
+        # ── Internal helpers for deep mode ──
+
+        def _deep_extract_chunked(self, document_text: str, schema: type[BaseModel], metrics, tracker):
+            """Deep mode: chunk schema, extract each chunk, assemble."""
+            from mosaicx.metrics import track_step
+
+            chunks = _chunk_schema(schema)
+            logger.info("Deep mode: %d chunks for %s", len(chunks), schema.__name__)
+            assembled: dict[str, Any] = {}
+            chunk_diags: list[dict[str, Any]] = []
+
+            for chunk in chunks:
+                chunk_name = chunk["name"]
+                chunk_schema = chunk["schema_subset"]
+                chunk_fields = chunk["fields"]
+
+                with track_step(metrics, f"Extract chunk: {chunk_name}", tracker):
+                    # Build a CoT extractor for just this chunk
+                    chunk_sig = dspy.Signature(
+                        "document_text -> extracted",
+                        instructions=(
+                            f"Extract ONLY the following fields from the document: "
+                            f"{', '.join(chunk_fields)}. "
+                            f"Match the {chunk_schema.__name__} schema. "
+                            f"Be thorough and extract every entry."
+                        ),
+                    ).with_updated_fields(
+                        "document_text",
+                        desc="Full text of the document",
+                        type_=str,
+                    ).with_updated_fields(
+                        "extracted",
+                        desc=f"Extracted {chunk_name} data",
+                        type_=chunk_schema,
+                    )
+                    chunk_extractor = dspy.ChainOfThought(chunk_sig)
+
+                    try:
+                        pred = chunk_extractor(document_text=document_text)
+                        extracted = getattr(pred, "extracted", pred)
+                        if hasattr(extracted, "model_dump"):
+                            chunk_data = extracted.model_dump(mode="json")
+                        elif isinstance(extracted, dict):
+                            chunk_data = extracted
+                        else:
+                            chunk_data = {}
+                        assembled.update(chunk_data)
+                        chunk_diags.append({
+                            "chunk": chunk_name,
+                            "fields": chunk_fields,
+                            "ok": True,
+                        })
+                    except Exception as exc:
+                        logger.warning("Chunk %s extraction failed: %s", chunk_name, exc)
+                        chunk_diags.append({
+                            "chunk": chunk_name,
+                            "fields": chunk_fields,
+                            "ok": False,
+                            "error": f"{type(exc).__name__}: {exc}",
+                        })
+
+            # Assemble into the full schema
+            try:
+                coerced = _coerce_payload_to_schema(assembled, schema)
+                model_instance = schema.model_validate(coerced)
+            except Exception as exc:
+                logger.warning("Deep chunk assembly failed: %s, falling back to CoT", exc)
+                # Fallback: run standard CoT on the full schema
+                pred = self.extract_custom(document_text=document_text)
+                extracted = getattr(pred, "extracted", pred)
+                model_instance = _coerce_extracted_to_model_instance(
+                    extracted=extracted, schema_class=schema,
+                )
+                chunk_diags.append({"fallback": "full_cot", "reason": str(exc)})
+
+            return model_instance, {"chunks": chunk_diags}
+
+        def _verify_extraction_pass(self, extracted, document_text: str, schema: type[BaseModel], metrics, tracker):
+            """Deep mode: verification pass. Returns list of flagged issues."""
+            from mosaicx.metrics import track_step
+            from mosaicx.verify.parse_utils import parse_json_like
+
+            extraction_json = json.dumps(
+                extracted.model_dump(mode="json") if hasattr(extracted, "model_dump") else extracted,
+                ensure_ascii=False, indent=2,
+            )
+            # Build schema description from field info
+            schema_desc_parts = [f"Schema: {schema.__name__}"]
+            for fname, finfo in schema.model_fields.items():
+                desc = finfo.description or ""
+                schema_desc_parts.append(f"  {fname}: {desc}")
+            schema_description = "\n".join(schema_desc_parts)
+
+            with track_step(metrics, "Verify extraction", tracker):
+                try:
+                    pred = self.verify_extraction(
+                        document_text=document_text[:30000],
+                        extraction_json=extraction_json[:15000],
+                        schema_description=schema_description[:5000],
+                    )
+                    raw_issues = str(getattr(pred, "flagged_issues", "[]") or "[]")
+                    parsed = parse_json_like(raw_issues)
+                    if isinstance(parsed, list):
+                        return [
+                            item for item in parsed
+                            if isinstance(item, dict) and item.get("field")
+                        ]
+                    return []
+                except Exception as exc:
+                    logger.warning("Verification pass failed: %s", exc)
+                    return []
+
+        def _fix_flagged_fields_pass(self, extracted, flagged_issues, document_text: str, schema: type[BaseModel], metrics, tracker):
+            """Deep mode: fix flagged fields with targeted CoT calls."""
+            from mosaicx.metrics import track_step
+            from mosaicx.verify.parse_utils import parse_json_like
+
+            if not flagged_issues:
+                return extracted, {"fixes_attempted": 0, "fixes_applied": 0}
+
+            payload = extracted.model_dump(mode="json") if hasattr(extracted, "model_dump") else dict(extracted)
+            updated = dict(payload)
+            fixes_applied = 0
+
+            with track_step(metrics, "Fix flagged fields", tracker):
+                for issue in flagged_issues[:10]:  # Cap at 10 fixes
+                    field_path = str(issue.get("field", ""))
+                    issue_text = str(issue.get("issue", ""))
+                    evidence = str(issue.get("evidence", ""))
+                    suggested = issue.get("suggested_value")
+
+                    # Resolve the top-level field name from dot path
+                    top_field = field_path.split(".")[0].split("[")[0]
+                    field_info = schema.model_fields.get(top_field)
+                    if field_info is None:
+                        continue
+
+                    field_desc = str(field_info.description or "")
+
+                    try:
+                        pred = self.fix_field(
+                            field_name=field_path,
+                            field_description=field_desc,
+                            issue=issue_text,
+                            evidence=evidence,
+                            document_section=document_text[:8000],
+                        )
+                        raw = str(getattr(pred, "corrected_value", "") or "").strip()
+                        if not raw:
+                            continue
+
+                        # Parse the corrected value
+                        if raw.startswith("{") or raw.startswith("["):
+                            corrected = parse_json_like(raw)
+                        else:
+                            corrected = raw
+
+                        # Apply fix to the appropriate field
+                        if "." in field_path or "[" in field_path:
+                            # Nested field -- use suggested_value if available
+                            if suggested is not None:
+                                corrected = suggested
+                            # For nested paths, try to update the top-level field
+                            # This is best-effort for simple cases
+                            _apply_nested_fix(updated, field_path, corrected)
+                        else:
+                            updated[top_field] = corrected
+                        fixes_applied += 1
+                    except Exception as exc:
+                        logger.debug("Fix for %s failed: %s", field_path, exc)
+
+            # Validate the updated payload
+            if fixes_applied > 0:
+                try:
+                    coerced = _coerce_payload_to_schema(updated, schema)
+                    result = schema.model_validate(coerced)
+                    return result, {
+                        "fixes_attempted": len(flagged_issues),
+                        "fixes_applied": fixes_applied,
+                    }
+                except Exception as exc:
+                    logger.warning("Fix validation failed: %s, keeping original", exc)
+
+            return extracted, {
+                "fixes_attempted": len(flagged_issues),
+                "fixes_applied": fixes_applied,
+            }
+
+        def _run_schema_mode_pipeline(
+            self,
+            document_text: str,
+            schema: type[BaseModel],
+            metrics,
+            tracker,
+            planner_diag: dict[str, Any],
+        ) -> dspy.Prediction:
+            """Schema mode extraction with think-level-aware pipeline."""
+            from mosaicx.metrics import track_step
+
+            think = self._think
+            chain_diag: dict[str, Any] = {}
+            verify_diag: dict[str, Any] = {}
+            fix_diag: dict[str, Any] = {}
+
+            planned_text = document_text
+            with track_step(metrics, "Plan extraction", tracker):
+                try:
+                    planned_text, planner_diag_update = _plan_extraction_document_text(
+                        document_text=document_text,
+                        schema_name=schema.__name__,
+                    )
+                    planner_diag.update(planner_diag_update)
+                except Exception as plan_exc:
+                    planner_diag["fallback_reason"] = f"planner_error:{type(plan_exc).__name__}"
+                    planned_text = document_text
+
+            if think == "deep":
+                # ── DEEP PATH ──
+                # Pass 1: Chunked extraction
+                with track_step(metrics, "Deep extract (chunked)", tracker):
+                    model_instance, chunk_diag = self._deep_extract_chunked(
+                        document_text=document_text,
+                        schema=schema,
+                        metrics=metrics,
+                        tracker=tracker,
+                    )
+                chain_diag = {"selected_path": "deep_chunked", "chunks": chunk_diag}
+
+                # Compute: deterministic overwrite of calculated fields
+                with track_step(metrics, "Compute derived fields", tracker):
+                    model_instance = _compute_derived_fields(
+                        model_instance, schema, document_text,
+                    )
+
+                # Pass 2: Verify
+                flagged = self._verify_extraction_pass(
+                    model_instance, document_text, schema, metrics, tracker,
+                )
+                verify_diag = {"flagged_count": len(flagged), "issues": flagged}
+
+                # Pass 3: Fix
+                if flagged:
+                    model_instance, fix_diag = self._fix_flagged_fields_pass(
+                        model_instance, flagged, document_text, schema, metrics, tracker,
+                    )
+                    # Recompute derived fields after fixes
+                    with track_step(metrics, "Recompute after fix", tracker):
+                        model_instance = _compute_derived_fields(
+                            model_instance, schema, document_text,
+                        )
+
+            else:
+                # ── FAST / STANDARD PATH ──
+                with track_step(metrics, "Extract", tracker):
+                    try:
+                        model_instance, chain_diag = _extract_schema_with_structured_chain(
+                            document_text=planned_text,
+                            schema_class=schema,
+                            typed_extract=lambda *, document_text: self.extract_custom(
+                                document_text=document_text
+                            ),
+                            json_extract=lambda *, document_text: self.extract_json_fallback(
+                                document_text=document_text
+                            ),
+                            planner_diag=planner_diag,
+                            think=think,
+                        )
+                    except Exception:
+                        if planned_text != document_text:
+                            planner_diag["full_text_rescue_used"] = True
+                            model_instance, chain_diag = _extract_schema_with_structured_chain(
+                                document_text=document_text,
+                                schema_class=schema,
+                                typed_extract=lambda *, document_text: self.extract_custom(
+                                    document_text=document_text
+                                ),
+                                json_extract=lambda *, document_text: self.extract_json_fallback(
+                                    document_text=document_text
+                                ),
+                                planner_diag=planner_diag,
+                                think=think,
+                            )
+                        else:
+                            raise
+
+                # Compute: runs at ALL levels
+                with track_step(metrics, "Compute derived fields", tracker):
+                    model_instance = _compute_derived_fields(
+                        model_instance, schema, document_text,
+                    )
+
+                # Standard mode: also run consistency checks
+                if think == "standard":
+                    with track_step(metrics, "Consistency checks", tracker):
+                        consistency_issues = _run_consistency_checks(model_instance, schema)
+                        if consistency_issues:
+                            logger.info(
+                                "Consistency issues: %s",
+                                [i.get("field") for i in consistency_issues],
+                            )
+
+            # Repair + semantic validation (all levels)
+            model_instance, repair_diag = _repair_failed_critical_fields_with_refine(
+                model_instance=model_instance,
+                schema_class=schema,
+                source_text=document_text,
+                think=think,
+            )
+            model_instance, semantic_validation_diag = _apply_deterministic_semantic_validation(
+                model_instance=model_instance,
+                schema_class=schema,
+            )
+
+            # Assemble diagnostics
+            planner_diag["planned_text_used"] = planned_text != document_text
+            planner_diag["structured_chain"] = chain_diag.get("attempts", chain_diag.get("chunks", []))
+            planner_diag["selected_structured_path"] = chain_diag.get("selected_path", f"{think}_path")
+            planner_diag["structured_fallback_used"] = bool(chain_diag.get("fallback_used", False))
+            planner_diag["bestofn"] = chain_diag.get("bestofn", {})
+            planner_diag["adjudication"] = chain_diag.get("adjudication", {})
+            planner_diag["repair"] = repair_diag
+            planner_diag["deterministic_validation"] = semantic_validation_diag
+            planner_diag["think_level"] = think
+            planner_diag["user_think"] = self._user_think
+            if verify_diag:
+                planner_diag["verification"] = verify_diag
+            if fix_diag:
+                planner_diag["fix"] = fix_diag
+
+            self._last_metrics = metrics
+            self._last_planner = planner_diag
+            return dspy.Prediction(extracted=model_instance, planner=planner_diag)
 
         def forward(self, document_text: str) -> dspy.Prediction:
             """Run the extraction pipeline."""
@@ -2687,78 +3622,12 @@ def _build_dspy_classes():
             }
 
             if hasattr(self, "extract_custom") and not hasattr(self, "infer_schema"):
-                # Schema mode: single step
+                # Schema mode
                 schema = self._output_schema
                 assert schema is not None
-
-                planned_text = document_text
-                with track_step(metrics, "Plan extraction", tracker):
-                    try:
-                        planned_text, planner_diag = _plan_extraction_document_text(
-                            document_text=document_text,
-                            schema_name=schema.__name__,
-                        )
-                    except Exception as plan_exc:
-                        planner_diag = {
-                            **planner_diag,
-                            "fallback_reason": f"planner_error:{type(plan_exc).__name__}",
-                        }
-                        planned_text = document_text
-
-                with track_step(metrics, "Extract", tracker):
-                    try:
-                        model_instance, chain_diag = _extract_schema_with_structured_chain(
-                            document_text=planned_text,
-                            schema_class=schema,
-                            typed_extract=lambda *, document_text: self.extract_custom(
-                                document_text=document_text
-                            ),
-                            json_extract=lambda *, document_text: self.extract_json_fallback(
-                                document_text=document_text
-                            ),
-                            planner_diag=planner_diag,
-                            think=self._think,
-                        )
-                    except Exception:
-                        if planned_text != document_text:
-                            planner_diag["full_text_rescue_used"] = True
-                            model_instance, chain_diag = _extract_schema_with_structured_chain(
-                                document_text=document_text,
-                                schema_class=schema,
-                                typed_extract=lambda *, document_text: self.extract_custom(
-                                    document_text=document_text
-                                ),
-                                json_extract=lambda *, document_text: self.extract_json_fallback(
-                                    document_text=document_text
-                                ),
-                                planner_diag=planner_diag,
-                                think=self._think,
-                            )
-                        else:
-                            raise
-                model_instance, repair_diag = _repair_failed_critical_fields_with_refine(
-                    model_instance=model_instance,
-                    schema_class=schema,
-                    source_text=document_text,
-                    think=self._think,
+                return self._run_schema_mode_pipeline(
+                    document_text, schema, metrics, tracker, planner_diag,
                 )
-                model_instance, semantic_validation_diag = _apply_deterministic_semantic_validation(
-                    model_instance=model_instance,
-                    schema_class=schema,
-                )
-                planner_diag["planned_text_used"] = planned_text != document_text
-                planner_diag["structured_chain"] = chain_diag.get("attempts", [])
-                planner_diag["selected_structured_path"] = chain_diag.get("selected_path")
-                planner_diag["structured_fallback_used"] = bool(
-                    chain_diag.get("fallback_used", False)
-                )
-                planner_diag["bestofn"] = chain_diag.get("bestofn", {})
-                planner_diag["adjudication"] = chain_diag.get("adjudication", {})
-                planner_diag["repair"] = repair_diag
-                planner_diag["deterministic_validation"] = semantic_validation_diag
-                self._last_metrics = metrics
-                self._last_planner = planner_diag
-                return dspy.Prediction(extracted=model_instance, planner=planner_diag)
 
             # Auto mode: infer schema, compile, extract
             with track_step(metrics, "Infer schema", tracker):
@@ -2767,6 +3636,9 @@ def _build_dspy_classes():
                 )
             spec: SchemaSpec = infer_result.schema_spec
             model = compile_schema(spec)
+
+            # Re-resolve think level now that we have a schema
+            self._think = _resolve_think_level(self._user_think, model)
 
             # Build dynamic extraction signature
             extract_sig = dspy.Signature(
@@ -2784,7 +3656,7 @@ def _build_dspy_classes():
                 desc=f"Extracted {model.__name__} data",
                 type_=model,
             )
-            extract_step = dspy.ChainOfThought(extract_sig)
+            self.extract_custom = dspy.ChainOfThought(extract_sig)
             extract_json_sig = dspy.Signature(
                 "document_text -> extracted_json",
                 instructions=(
@@ -2800,83 +3672,24 @@ def _build_dspy_classes():
                 desc="Strict JSON object as text",
                 type_=str,
             )
-            extract_json_step = dspy.Predict(extract_json_sig)
-            planned_text = document_text
-            with track_step(metrics, "Plan extraction", tracker):
-                try:
-                    planned_text, planner_diag = _plan_extraction_document_text(
-                        document_text=document_text,
-                        schema_name=model.__name__,
-                    )
-                except Exception as plan_exc:
-                    planner_diag = {
-                        **planner_diag,
-                        "fallback_reason": f"planner_error:{type(plan_exc).__name__}",
-                    }
-                    planned_text = document_text
-            with track_step(metrics, "Extract", tracker):
-                try:
-                    model_instance, chain_diag = _extract_schema_with_structured_chain(
-                        document_text=planned_text,
-                        schema_class=model,
-                        typed_extract=lambda *, document_text: extract_step(
-                            document_text=document_text
-                        ),
-                        json_extract=lambda *, document_text: extract_json_step(
-                            document_text=document_text
-                        ),
-                        planner_diag=planner_diag,
-                        think=self._think,
-                    )
-                except Exception:
-                    if planned_text != document_text:
-                        planner_diag["full_text_rescue_used"] = True
-                        model_instance, chain_diag = _extract_schema_with_structured_chain(
-                            document_text=document_text,
-                            schema_class=model,
-                            typed_extract=lambda *, document_text: extract_step(
-                                document_text=document_text
-                            ),
-                            json_extract=lambda *, document_text: extract_json_step(
-                                document_text=document_text
-                            ),
-                            planner_diag=planner_diag,
-                            think=self._think,
-                        )
-                    else:
-                        raise
-            model_instance, repair_diag = _repair_failed_critical_fields_with_refine(
-                model_instance=model_instance,
-                schema_class=model,
-                source_text=document_text,
-                think=self._think,
-            )
-            model_instance, semantic_validation_diag = _apply_deterministic_semantic_validation(
-                model_instance=model_instance,
-                schema_class=model,
-            )
-            planner_diag["planned_text_used"] = planned_text != document_text
-            planner_diag["structured_chain"] = chain_diag.get("attempts", [])
-            planner_diag["selected_structured_path"] = chain_diag.get("selected_path")
-            planner_diag["structured_fallback_used"] = bool(
-                chain_diag.get("fallback_used", False)
-            )
-            planner_diag["bestofn"] = chain_diag.get("bestofn", {})
-            planner_diag["adjudication"] = chain_diag.get("adjudication", {})
-            planner_diag["repair"] = repair_diag
-            planner_diag["deterministic_validation"] = semantic_validation_diag
+            self.extract_json_fallback = dspy.Predict(extract_json_sig)
 
-            self._last_metrics = metrics
-            self._last_planner = planner_diag
-
+            # Store schema and run the unified pipeline
+            self._output_schema = model
+            result = self._run_schema_mode_pipeline(
+                document_text, model, metrics, tracker, planner_diag,
+            )
+            # Add inferred schema to prediction
             return dspy.Prediction(
-                extracted=model_instance,
+                extracted=result.extracted,
                 inferred_schema=spec,
-                planner=planner_diag,
+                planner=result.planner,
             )
 
     return {
         "InferSchemaFromDocument": InferSchemaFromDocument,
+        "VerifyExtractionSig": VerifyExtractionSig,
+        "FixFieldSig": FixFieldSig,
         "DocumentExtractor": DocumentExtractor,
     }
 
@@ -2886,6 +3699,8 @@ _dspy_classes: dict[str, type] | None = None
 
 _DSPY_CLASS_NAMES = frozenset({
     "InferSchemaFromDocument",
+    "VerifyExtractionSig",
+    "FixFieldSig",
     "DocumentExtractor",
 })
 

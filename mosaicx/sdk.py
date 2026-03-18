@@ -1053,7 +1053,7 @@ def _extract_single_text(
     verify: bool,
     verify_level: str,
     provenance: bool,
-    think: str = "standard",
+    think: str = "auto",
 ) -> dict[str, Any]:
     """Core extraction logic for a single text input.
 
@@ -1268,7 +1268,7 @@ def extract(
     verify: bool = False,
     verify_level: str = "quick",
     provenance: bool = False,
-    think: str = "standard",
+    think: str = "auto",
     workers: int = 1,
     on_progress: Callable[[str, bool, dict[str, Any] | None], None] | None = None,
 ) -> dict[str, Any] | list[dict[str, Any]]:
