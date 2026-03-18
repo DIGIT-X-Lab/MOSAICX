@@ -1171,17 +1171,23 @@ def template_create(
 
         try:
             root_models = load_pydantic_from_file(from_pydantic)
-        except (FileNotFoundError, ValueError, ImportError, TypeError) as exc:
+        except (FileNotFoundError, ValueError, ImportError, TypeError, SyntaxError) as exc:
             raise click.ClickException(f"Failed to load Pydantic models: {exc}")
 
         if len(root_models) > 1:
             model_names = ", ".join(m.__name__ for m in root_models)
             console.print(theme.info(f"Found {len(root_models)} root models: {model_names}"))
+            if output is not None:
+                console.print(theme.warn(
+                    f"--output specified with {len(root_models)} root models; "
+                    f"only the last will be saved to {output}. "
+                    f"Omit --output to save each to ~/.mosaicx/templates/."
+                ))
 
         for model_class in root_models:
             try:
                 spec = pydantic_to_schema_spec(model_class)
-            except (TypeError, ValueError) as exc:
+            except (TypeError, ValueError, RecursionError) as exc:
                 raise click.ClickException(f"Failed to convert {model_class.__name__}: {exc}")
 
             if name and len(root_models) == 1:

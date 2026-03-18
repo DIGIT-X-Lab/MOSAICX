@@ -378,7 +378,8 @@ def _normalize_field_spec(field: FieldSpec, *, index: int, used_names: set[str])
 def pydantic_to_schema_spec(model_class: type) -> SchemaSpec:
     """Convert a Pydantic BaseModel class into a SchemaSpec.
 
-    Recursively handles nested models, enums, Optional, and List types.
+    Recursively handles nested models, enums, Optional (both ``Optional[X]``
+    and ``X | None``), Literal, List, dict, and scalar types.
 
     Args:
         model_class: A Pydantic BaseModel subclass.
@@ -386,23 +387,34 @@ def pydantic_to_schema_spec(model_class: type) -> SchemaSpec:
     Returns:
         A SchemaSpec describing the model's fields.
     """
+    import datetime
+    import decimal
     import enum
+    import types
     import typing
     from typing import get_args, get_origin
 
     from pydantic import BaseModel as _BaseModel
 
+    def _is_union(annotation: Any) -> bool:
+        """Check if annotation is a Union type (typing.Union or X | Y)."""
+        return (
+            get_origin(annotation) is typing.Union
+            or isinstance(annotation, types.UnionType)
+        )
+
     def _is_optional(annotation: Any) -> tuple[bool, Any]:
         """Check if a type annotation is Optional[X] and return (is_optional, inner_type)."""
-        origin = get_origin(annotation)
-        if origin is typing.Union:
+        if _is_union(annotation):
             args = get_args(annotation)
             non_none = [a for a in args if a is not type(None)]
             if len(non_none) == 1 and len(args) == 2:
                 return True, non_none[0]
         return False, annotation
 
-    def _type_to_field_spec(name: str, annotation: Any, *, required: bool, description: str) -> FieldSpec:
+    def _type_to_field_spec(
+        name: str, annotation: Any, *, required: bool, description: str, _seen: set[type],
+    ) -> FieldSpec:
         """Convert a single type annotation to a FieldSpec."""
         # Unwrap Optional
         is_opt, inner = _is_optional(annotation)
@@ -411,6 +423,17 @@ def pydantic_to_schema_spec(model_class: type) -> SchemaSpec:
             annotation = inner
 
         origin = get_origin(annotation)
+
+        # Literal types -> enum
+        if origin is typing.Literal:
+            values = list(get_args(annotation))
+            return FieldSpec(
+                name=name,
+                type="enum",
+                description=description,
+                required=required,
+                enum_values=[str(v) for v in values],
+            )
 
         # Enum types
         if isinstance(annotation, type) and issubclass(annotation, enum.Enum):
@@ -431,7 +454,7 @@ def pydantic_to_schema_spec(model_class: type) -> SchemaSpec:
             _, item_type = _is_optional(item_type)
 
             if isinstance(item_type, type) and issubclass(item_type, _BaseModel):
-                nested_fields = _model_to_field_specs(item_type)
+                nested_fields = _model_to_field_specs(item_type, _seen=_seen)
                 return FieldSpec(
                     name=name,
                     type="list[object]",
@@ -440,10 +463,11 @@ def pydantic_to_schema_spec(model_class: type) -> SchemaSpec:
                     fields=nested_fields,
                 )
             if isinstance(item_type, type) and issubclass(item_type, enum.Enum):
+                values = [str(m.value) for m in item_type]
                 return FieldSpec(
                     name=name,
                     type="list[str]",
-                    description=description,
+                    description=description + (f" Values: {', '.join(values)}" if values else ""),
                     required=required,
                 )
             type_name = _python_type_to_str(item_type)
@@ -454,9 +478,18 @@ def pydantic_to_schema_spec(model_class: type) -> SchemaSpec:
                 required=required,
             )
 
+        # Dict types -> str (serialized as JSON string since dict keys are unknown)
+        if origin is dict or (isinstance(annotation, type) and issubclass(annotation, dict)):
+            return FieldSpec(
+                name=name,
+                type="str",
+                description=description + " (JSON object)" if "json" not in description.lower() else description,
+                required=required,
+            )
+
         # Nested Pydantic model
         if isinstance(annotation, type) and issubclass(annotation, _BaseModel):
-            nested_fields = _model_to_field_specs(annotation)
+            nested_fields = _model_to_field_specs(annotation, _seen=_seen)
             return FieldSpec(
                 name=name,
                 type="object",
@@ -484,20 +517,32 @@ def pydantic_to_schema_spec(model_class: type) -> SchemaSpec:
             return "float"
         if t is bool:
             return "bool"
-        return "str"  # fallback
+        if t in (datetime.date, datetime.datetime):
+            return "str"
+        if t is decimal.Decimal:
+            return "float"
+        logger.debug("Unknown type %r mapped to 'str'", t)
+        return "str"
 
-    def _model_to_field_specs(model: type) -> list[FieldSpec]:
+    def _model_to_field_specs(model: type, *, _seen: set[type] | None = None) -> list[FieldSpec]:
         """Extract FieldSpecs from a Pydantic model's fields."""
+        if _seen is None:
+            _seen = set()
+        if model in _seen:
+            return []  # break circular reference
+        _seen.add(model)
+
         specs: list[FieldSpec] = []
         for field_name, field_info in model.model_fields.items():
             annotation = field_info.annotation
             desc = field_info.description or ""
-            # If no explicit description, use the field title or docstring of nested types
             if not desc and field_info.title:
                 desc = field_info.title
 
             is_required = field_info.is_required()
-            specs.append(_type_to_field_spec(field_name, annotation, required=is_required, description=desc))
+            specs.append(
+                _type_to_field_spec(field_name, annotation, required=is_required, description=desc, _seen=_seen)
+            )
         return specs
 
     if not (isinstance(model_class, type) and issubclass(model_class, _BaseModel)):
@@ -575,6 +620,7 @@ def load_pydantic_from_file(file_path: Path) -> list[type]:
 
 def _collect_nested_models(annotation: Any, nested: set[type], candidates: list[type]) -> None:
     """Recursively collect Pydantic model types used in an annotation."""
+    import types
     import typing
     from typing import get_args, get_origin
 
@@ -585,7 +631,7 @@ def _collect_nested_models(annotation: Any, nested: set[type], candidates: list[
         return
 
     origin = get_origin(annotation)
-    if origin is typing.Union or origin is list:
+    if origin is typing.Union or origin is list or isinstance(annotation, types.UnionType):
         for arg in get_args(annotation):
             _collect_nested_models(arg, nested, candidates)
 
