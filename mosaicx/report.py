@@ -233,7 +233,7 @@ def run_report(
     template_model: type[BaseModel] | None = None,
     template_name: str | None = None,
     mode: str | None = None,
-    think: str = "standard",
+    think: str = "auto",
 ) -> ReportResult:
     """Run structured report extraction with completeness scoring.
 
@@ -249,8 +249,8 @@ def run_report(
         Explicit pipeline mode override.  If ``None``, auto-detected
         from *template_name*.
     think:
-        Thinking budget for DocumentExtractor: ``"standard"``,
-        ``"fast"``, or ``"deep"``.
+        Thinking budget for DocumentExtractor: ``"auto"`` (default,
+        router picks), ``"fast"``, or ``"deep"``.
 
     Returns
     -------

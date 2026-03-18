@@ -317,7 +317,7 @@ def _extract_batch(
     formats: tuple[str, ...],
     workers: int,
     resume: bool,
-    think: str = "standard",
+    think: str = "auto",
 ) -> None:
     """Batch-process a directory of documents (called from the extract command)."""
     # Preflight: check API key before expensive document loading
@@ -561,10 +561,10 @@ def _extract_batch(
 @click.option("--list-modes", is_flag=True, default=False, help="Print available modes and exit.")
 @click.option(
     "--think",
-    type=click.Choice(["fast", "standard", "deep"], case_sensitive=False),
-    default="standard",
+    type=click.Choice(["auto", "fast", "deep"], case_sensitive=False),
+    default="auto",
     show_default=True,
-    help="Reasoning depth: fast (no reasoning), standard (cascade), deep (full reasoning).",
+    help="Reasoning depth: auto (router picks based on template complexity), fast (minimal reasoning), deep (chunked extraction + verify + fix).",
 )
 @click.pass_context
 def extract(

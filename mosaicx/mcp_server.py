@@ -161,7 +161,7 @@ def extract_document(
     mode: str = "auto",
     template: str | None = None,
     score: bool = False,
-    think: str = "standard",
+    think: str = "auto",
 ) -> str:
     """Extract structured data from a medical document.
 
