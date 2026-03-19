@@ -2,7 +2,7 @@
 
 > Automatic prompt optimization via DSPy GEPA on CORE (gpt-oss:120b)
 > Training set: 20 synthetic German prostate pathology reports
-> Total proposals: 5 | Last updated: 19:01:17
+> Total proposals: 6 | Last updated: 19:11:19
 
 ---
 
@@ -728,6 +728,127 @@ befunde=[ProstatapatientItem(
 10. **Provide** a brief `reasoning` paragraph describing any assumptions or ambiguities.
 
 Follow these instructions precisely for every new pathology report you receive.
+````
+
+---
+
+## Iteration 21 — extract_custom.predict
+
+**Score:** 0.8612740943608522
+
+````
+**Task Overview**
+You must read a German‑language pathology report that describes a prostate specimen and produce a JSON object that conforms exactly to the **ProstataPatient** schema.  
+The report will always contain a header with the pathology institute, a “Journalnummer” (submission number), patient address, entry (“Eingang”) and exit (“Ausgang”) dates, a list of submitted material, clinical information, a “Makroskopie” section (size/number of cores), a “Mikroskopie”/“Begutachtung” section (tumor presence, Gleason scores, tumor length, invasion), and a “Klassifikation” section (ICD‑10, ICD‑O‑3, optional OncoTree).
+
+Your output must include **all required fields** and **any optional fields that can be reliably extracted**. If a field cannot be found, set it to `null` (or omit it if the schema permits). Do **not** fabricate information.
+
+---
+
+### 1. General Extraction Rules
+| Schema Field | Source in Report | Extraction Details |
+|--------------|------------------|--------------------|
+| `patientenid` | **Journalnummer** (e.g. `E/2026/005789`) | Use the exact string. |
+| `einsendenummer` | Same as `patientenid`. |
+| `histologiedatum` | **Ausgang** date (format `DD.MM.YYYY`). |
+| `befundausgang` | Same as `histologiedatum` (if you prefer you may leave it `null`; both are accepted). |
+| `ort` | City name from the address block (usually “München”). |
+| `pathologisches_institut` | First line of the header (e.g. “Pathologisches Institut der LMU”). |
+| `massgeblicher_befund` | Always set to `Ja` (the report is the definitive pathology report). |
+| `tumornachweis` | `Ja` if **any** core/section is described as containing carcinoma; otherwise `Nein`. |
+| `icdo3_histologie` | Value after “ICD‑O‑3:” (e.g. `8140/3`). |
+| `lokalisation_icd10` | Value after “ICD‑10‑GM‑2024:” (e.g. `C61`). |
+| `who_isup_grading` | The **highest** WHO/ISUP grade group mentioned in the report (e.g. `Graduierungsgruppe 5`). |
+| `gleason` | The **highest** Gleason score (including the “a/b” suffix if present) found among all tumor‑positive cores. |
+| `art_der_biopsie` | Determined from the clinical note (e.g. “Fusionsbiopsie”, “Stanzbiopsie”). If the report does **not** mention a specific type, set to `null`. |
+| `entnahmestelle_der_biopsie` | For prostate biopsies default to `Primärtumor`. If the report explicitly states another site, use that; otherwise `null`. |
+| `untersuchtes_praeparat` | `Biopsie` if the submitted material list contains any “Stanzzylinder” or “Biopsie”; `Resektat` if it contains “TUR‑Prostata Späne” or similar resection material. |
+| `anzahl_entnommener_stanzen` | **Sum** of all cores across the Makroskopie list. For entries like “Zwei bis 0,8 cm messende Stanzzylinder” → add 2 cores; “Drei bis 1,4 cm …” → add 3 cores; “Ein …” → add 1 core. If the specimen is a resection (`Resektat`), set to `null`. |
+| `anzahl_befallener_stanzen` | Count of cores that are reported as tumor‑positive in the Begutachtung section. |
+| `maximaler_anteil_befallener_stanzen` | For each tumor‑positive core compute **tumor % = (tumor length mm ÷ core length mm) × 100**. Use the core length from Makroskopie (convert cm → mm). If the report gives a direct overall tumor percentage (e.g. “Tumoranteil: ca. 40 %”), use that value. Take the **maximum** percentage among all cores, round to the nearest whole number, and store it here. |
+| `makroskopie_liste` | List of objects `{nr, gesamt_stanzen, laenge_cm}` for every entry in the Makroskopie section. `gesamt_stanzen` is the number of cores for that entry (see rule above). If a length is not given, set `laenge_cm` to `null`. |
+| `begutachtung_liste` | List of objects `{nr, tumor, tumorausdehnung_mm, tumor_prozent, gleason}` for each core number. `tumor` = `True` if the core is described as containing carcinoma, else `False`. `tumorausdehnung_mm` = tumor length in mm (from Begutachtung). `tumor_prozent` = percentage computed as above (or `null` if not computable). `gleason` = Gleason score for that core (if given). |
+| `calculation_details` | Array of human‑readable strings describing each percentage calculation, e.g. `"Nr 15: 0.3 mm / 19.0 mm = 1.58 %"`. Include one entry per tumor‑positive core where a calculation was performed. |
+| `perineurale_invasion` | `Ja` if any core’s description contains “Perineurale Invasion”; otherwise `Nein` or `null`. |
+| `tnm_nach`, `ptnm`, `lymphgefaessinvasion`, `veneninvasion`, `lk_befallen_untersucht`, `r_klassifikation`, `resektionsrand` | Extract if explicitly mentioned (e.g., “pT3a”, “Lymphknotenbefall: nein”). If absent, set to `null`. |
+
+---
+
+### 2. Parsing the Makroskopie Section
+1. Split the section into lines that start with a number followed by a period.
+2. For each line:
+   - Detect the **quantity**:
+     - “Ein …” → 1
+     - “Zwei …” → 2
+     - “Drei …” → 3
+     - If the line contains “bis” followed by a length (e.g., “Zwei bis 0,8 cm messende Stanzzylinder”), the number before “bis” is the core count.
+   - Extract the **length in cm** (the number before “cm”). Use a comma as decimal separator (e.g., `1,6` → `1.6`).
+   - Store `nr` as the line’s leading number, `gesamt_stanzen` as the count, and `laenge_cm` as the extracted length (or `null`).
+
+---
+
+### 3. Parsing the Begutachtung / Mikroskopie Section
+1. Identify all core numbers that are listed as tumor‑positive (e.g., “3., 4., 5., …”).
+2. For each positive core, locate the corresponding detailed line that provides:
+   - Gleason score (pattern `Gleason … = X + Y …`).
+   - WHO‑Grading group (pattern `WHO‑Graduierungsgruppe X`).
+   - Tumor length (pattern `Längsausdehnung X,0 mm` or `Längsausdehnung X,0 mm`).
+   - Any invasion note (e.g., “Perineurale Invasion”).
+3. Convert the tumor length to a **float** in millimetres.
+4. Retrieve the core’s overall length from `makroskopie_liste` (convert cm → mm). If the core entry had multiple cores (`gesamt_stanzen > 1`), assume the length applies to **each** core individually.
+5. Compute `tumor_prozent = (tumor_length_mm / core_length_mm) * 100`. Round to two decimals for the calculation string, but keep the raw float for the JSON field.
+6. Populate the `begutachtung_liste` entry for that core with the extracted data.
+
+---
+
+### 4. Handling Special Cases
+- **Resektat (TUR‑Prostata)**: No individual cores. Set `untersuchtes_praeparat = Resektat`, `anzahl_entnommener_stanzen = null`, `anzahl_befallener_stanzen = 1` (the whole specimen is considered one “core”), `maximaler_anteil_befallener_stanzen` = the tumor percentage given directly (e.g., 40). `makroskopie_liste` contains a single entry with `gesamt_stanzen = 1` and `laenge_cm = null`.
+- **Missing Length**: If a core’s length is not listed, you cannot compute a percentage; set `tumor_prozent = null` and omit a calculation entry for that core.
+- **Multiple Gleason Scores**: Always keep the **highest** overall Gleason (compare primary + secondary; if equal, compare the “a/b” suffix where “b” > “a”). Store this highest score in the top‑level `gleason` field.
+- **WHO/ISUP Grade**: Use the highest grade group mentioned among all positive cores.
+- **Rounding of Maximal Percentage**: After computing percentages for all positive cores, take the maximum, round to the nearest integer (`round(value)`) and store it in `maximaler_anteil_befallener_stanzen`.
+
+---
+
+### 5. JSON Output Format
+Your final answer must be a **single JSON object** with the following top‑level keys:
+
+```json
+{
+  "patientenid": "...",
+  "befunde": [
+    {
+      "untersuchtes_praeparat": "...",
+      "histologiedatum": "...",
+      "befundausgang": "...",
+      "ort": "...",
+      "pathologisches_institut": "...",
+      "einsendenummer": "...",
+      "massgeblicher_befund": "...",
+      "tumornachweis": "...",
+      "icdo3_histologie": "...",
+      "who_isup_grading": "...",
+      "gleason": "...",
+      "makroskopie_liste": [ { "nr": ..., "gesamt_stanzen": ..., "laenge_cm": ... }, ... ],
+      "begutachtung_liste": [ { "nr": ..., "tumor": ..., "tumorausdehnung_mm": ..., "tumor_prozent": ..., "gleason": ... }, ... ],
+      "art_der_biopsie": "...",
+      "entnahmestelle_der_biopsie": "...",
+      "lokalisation_icd10": "...",
+      "anzahl_entnommener_stanzen": ...,
+      "anzahl_befallener_stanzen": ...,
+      "maximaler_anteil_befallener_stanzen": ...,
+      "calculation_details": [ "...", ... ],
+      "tnm_nach": "...",
+      "ptnm": "...",
+      "lymphgefaessinvasion": "...",
+      "veneninvasion": "...",
+      "perineurale_invasion": "...",
+      "lk_befallen_untersucht": "...",
+      "r_klassifikation": "...",
+      "resektionsrand": "..."
+    }
+  ]
+}
 ````
 
 ---
