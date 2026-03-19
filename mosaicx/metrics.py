@@ -258,6 +258,12 @@ def make_harmony_lm(model: str, **kwargs: object) -> object:
     if "base_url" in lm_kwargs:
         lm_kwargs["base_url"] = _normalize_local_api_base(lm_kwargs.get("base_url"))
 
+    # Pass num_ctx to Ollama via litellm's extra_body
+    num_ctx = lm_kwargs.pop("num_ctx", None)
+    if num_ctx is not None:
+        lm_kwargs.setdefault("extra_body", {})
+        lm_kwargs["extra_body"]["options"] = {"num_ctx": int(num_ctx)}
+
     effective_model = _normalize_model_for_api_base(
         model,
         lm_kwargs.get("api_base") if "api_base" in lm_kwargs else lm_kwargs.get("base_url"),

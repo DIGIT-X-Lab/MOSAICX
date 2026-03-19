@@ -85,7 +85,7 @@ def _ensure_configured() -> None:
 
     from .metrics import TokenTracker, make_harmony_lm, set_tracker
 
-    lm = make_harmony_lm(cfg.lm, api_key=cfg.api_key, api_base=cfg.api_base, temperature=cfg.lm_temperature)
+    lm = make_harmony_lm(cfg.lm, api_key=cfg.api_key, api_base=cfg.api_base, temperature=cfg.lm_temperature, max_tokens=cfg.max_tokens, num_ctx=cfg.num_ctx)
     try:
         dspy, _adapter_name = configure_dspy_lm(
             lm,
