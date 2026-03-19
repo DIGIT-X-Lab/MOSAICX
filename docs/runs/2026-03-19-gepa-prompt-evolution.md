@@ -2,7 +2,7 @@
 
 > Automatic prompt optimization via DSPy GEPA on CORE (gpt-oss:120b)
 > Training set: 20 synthetic German prostate pathology reports
-> Total proposals: 2 | Last updated: 18:02:13
+> Total proposals: 3 | Last updated: 18:38:15
 
 ---
 
@@ -187,6 +187,116 @@ You must read a German‑language pathology report (usually a prostate‑specifi
 
 **Final Deliverable**
 Your response must contain **only** the two sections (`reasoning` and `extracted`) as shown in the examples, with no additional commentary or markup. Ensure the Python‑style literals are syntactically correct and that enum members are fully qualified (e.g., `<ProstatapatientitemUntersuchtesPraeparat.Biopsie: 'Biopsie'>`).
+````
+
+---
+
+## Iteration 9 — extract_custom.predict
+
+**Score:** 0.8612740943608522
+
+````
+**Task Overview**
+You are given the full text of a German‑language prostate pathology report.  
+Your job is to parse the document and produce a single JSON object that conforms exactly to the **ProstataPatient** schema (see below). The JSON must contain all required fields, use the correct enum values, and set any unavailable optional fields to `null`. Do **not** add any explanatory text, comments, or extra keys.
+
+**ProstataPatient schema (simplified)**
+```
+{
+  "patientenid": string,                     # journal number (e.g. "E/2026/015678")
+  "befunde": [
+    {
+      "untersuchtes_praeparat": enum,        # "Biopsie" | "Resektat"
+      "histologiedatum": string,             # date DD.MM.YYYY (prefer "Ausgang", fallback "Eingang")
+      "befundausgang": string | null,        # same as histologiedatum for biopsies, otherwise report date
+      "ort": string,                         # city (e.g. "München")
+      "pathologisches_institut": string,     # institute name
+      "einsendenummer": string,              # same as patientenid
+      "massgeblicher_befund": enum,          # always "Ja"
+      "tumornachweis": enum,                 # "Ja" if any core positive, else "Nein"
+      "icdo3_histologie": string,            # e.g. "8140/3"
+      "who_isup_grading": enum | null,       # Graduierungsgruppe 1‑5
+      "gleason": string | null,              # highest Gleason (e.g. "4 + 3 = 7b")
+      "makroskopie_liste": [                 # one entry per core/specimen
+        {
+          "nr": int,
+          "gesamt_stanzen": int,             # usually 1 for biopsies
+          "laenge_cm": float
+        }, …
+      ],
+      "begutachtung_liste": [                # one entry per core/specimen
+        {
+          "nr": int,
+          "tumor": bool,
+          "tumorausdehnung_mm": float | null,
+          "tumor_prozent": float | null,     # calculated, rounded to one decimal if you wish
+          "gleason": string | null
+        }, …
+      ],
+      "art_der_biopsie": enum | null,        # "Stanzbiopsie", "Kernbiopsie", etc.
+      "entnahmestelle_der_biopsie": enum | null, # "Primärtumor", "Transition", …
+      "lokalisation_icd10": string | null,   # e.g. "C61"
+      "anzahl_entnommener_stanzen": int,     # total cores/specimens
+      "anzahl_befallener_stanzen": int,      # cores with tumor=true
+      "maximaler_anteil_befallener_stanzen": float | null, # highest tumor_prozent
+      "calculation_details": [string] | null, # optional human‑readable formulas
+      "tnm_nach": string | null,            # e.g. "UICC"
+      "ptnm": string | null,                # e.g. "pT2c pN0"
+      "lymphgefaessinvasion": enum | null,  # "L0", "L1", …
+      "veneninvasion": enum | null,         # "V0", "V1", …
+      "perineurale_invasion": enum | null,  # "Pn0", "Pn1", …
+      "lk_befallen_untersucht": string | null, # e.g. "0/12"
+      "r_klassifikation": enum | null,      # "R0", "R1", …
+      "resektionsrand": string | null        # free text if given
+    }
+  ]
+}
+```
+
+**Step‑by‑step extraction guide**
+
+1. **Identify the journal number**  
+   - Look for a line containing “Journalnummer” or a pattern like `E/2026/xxxxx`.  
+   - Use this value for both `patientenid` and `einsendenummer`.
+
+2. **Dates**  
+   - `histologiedatum` = date after “Ausgang”.  
+   - If “Ausgang” is missing, use the date after “Eingang”.  
+   - `befundausgang` = same as `histologiedatum` for biopsies; for resektate use the “Ausgang” date if present, otherwise `null`.
+
+3. **Institution & location**  
+   - The first lines usually contain the institute name (e.g. “Pathologisches Institut der LMU”).  
+   - Extract the city (e.g. “München”) from the address lines.
+
+4. **Specimen type (`untersuchtes_praeparat`)**  
+   - If the “Übersandtes Material” line mentions “Biopsie”, “Stanzbiopsie”, “Kernbiopsie”, etc. → `Biopsie`.  
+   - If it mentions “Prostatektomie”, “Resektat”, “Radikale Prostatektomie” → `Resektat`.
+
+5. **Biopsy‑specific fields** (only when `untersuchtes_praeparat` = `Biopsie`)  
+   - `art_der_biopsie` – map the word after “Prostata‑” in the clinical note:
+     - “Stanzbiopsie” → `Stanzbiopsie`
+     - “Kernbiopsie” → `Kernbiopsie`
+     - If not explicit, default to `Stanzbiopsie`.
+   - `entnahmestelle_der_biopsie` – look for “Primärtumor”, “Transition”, “Peripherie”, etc. If absent, default to `Primärtumor`.
+
+6. **Macroscopic list (`makroskopie_liste`)**  
+   - Find the “Makroskopie:” section. Each line like “1. Ein 1,7 cm messender Stanzzylinder” gives:
+     - `nr` = the leading number.
+     - `gesamt_stanzen` = usually 1 (unless the line says “2 Stanzzylinder” etc.).
+     - `laenge_cm` = the numeric value before “cm”. Use a dot as decimal separator (replace commas).
+
+7. **Microscopic / assessment list (`begutachtung_liste`)**  
+   - Locate the “Begutachtung:” block. Each entry follows the pattern:
+     ```
+     5. Gleason 3 + 4 = 7a, WHO‑Graduierungsgruppe 2, Längsausdehnung 2,0 mm.
+     ```
+   - For each core number:
+     - `tumor` = true if a Gleason/WHO line is present, otherwise false.
+     - `tumorausdehnung_mm` = the number before “mm”. Convert commas to dots.
+     - `gleason` = the exact Gleason string (e.g. “3 + 4 = 7a”).  
+     - `tumor_prozent` = **only for biopsies** and only when both `tumorausdehnung_mm` and the corresponding macroscopic length are known:
+       ```
+       tumor_prozent = (tumorausdehnung_mm / (laenge_cm * 10)) * 100
 ````
 
 ---
