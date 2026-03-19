@@ -2,7 +2,7 @@
 
 > Automatic prompt optimization via DSPy GEPA on CORE (gpt-oss:120b)
 > Training set: 20 synthetic German prostate pathology reports
-> Total proposals: 1 | Last updated: 17:23:11
+> Total proposals: 2 | Last updated: 18:02:13
 
 ---
 
@@ -18,7 +18,7 @@ Extract structured data matching the ProstataPatient schema from the document.
 
 ## Iteration 1 — extract_custom.predict
 
-**Score:** 0.8612740943608522
+**Score:** 1.834625850340136
 
 ````
 **Task Overview**
@@ -94,6 +94,99 @@ Your final answer must be a single code block containing:
 
 ### extracted
 patientenid='...' befunde=[ProstatapatientItem(...), ...]
+````
+
+---
+
+## Iteration 5 — extract_custom.predict
+
+**Score:** 0.8612740943608522
+
+````
+**Task Overview**
+You must read a German‑language pathology report (usually a prostate‑specific report) and extract every piece of information required by the **ProstataPatient** data schema. The output must contain two parts:
+
+1. **reasoning** – a concise, human‑readable explanation of how you derived each field.
+2. **extracted** – a literal Python‑style representation of the populated `ProstataPatient` object (or list of objects if the document contains multiple reports). Use the exact field names and enum values shown in the examples.
+
+**Document Structure (Typical)**
+- Header with institution, contact data, and **Journalnummer** (submission number).
+- Patient block: `Name`, `Vorname`, `Geboren am`, `Eingang` (date material received), `Ausgang` (date report finalized).  
+- Section titles (all German, may appear in any order, often separated by blank lines):
+  - `Übersandtes Material:` – list of specimens (e.g., “1. Rechtes AFS medial”, “1. Radikale Prostatektomie …”).
+  - `Klinische Angaben:` – clinical context, may contain PSA, prior Gleason, biopsy type, etc.
+  - `Makroskopie:` – description of each specimen/core. For biopsies each line is “Ein X cm messender Stanzzylinder”. For resections it may give overall size, weight, number of blocks, etc.
+  - `Mikroskopie:` – microscopic technique list (e.g., “12x HE”) and any immunohistochemistry.
+  - `Begutachtung:` – narrative of findings, often followed by a concise list of tumor‑positive cores with Gleason, WHO‑grading, and tumor extension in **mm**.
+  - `Kommentar:` – optional free text.
+  - `Klassifikation:` – ICD‑10, ICD‑O‑3, WHO/ISUP grading, Gleason score, pTNM or TNM classification, resection‑margin status, etc.
+- Optional footers or page breaks.
+
+**General Extraction Rules**
+
+| Schema Field | Source / Derivation | Notes |
+|--------------|---------------------|-------|
+| `patientenid` | Use the **Journalnummer** (e.g., `E/2026/011890`). If the report lacks a journal number, set to the literal string `"unknown"`. |
+| `einsendenummer` | Same as `patientenid`. |
+| `ort` | City name from the header (e.g., “München”). If not present, set to `None`. |
+| `pathologisches_institut` | Full institution line(s) at the top of the document (e.g., “Pathologisches Institut der LMU”). If missing, `None`. |
+| `histologiedatum` | The **Eingang** date (date the material arrived). Use the exact string as in the report (DD.MM.YYYY). |
+| `befundausgang` | The **Ausgang** date (date the report was finalized). |
+| `massgeblicher_befund` | Always `Ja` (the report is the definitive pathology result). |
+| `untersuchtes_praeparat` | • `"Biopsie"` if the `Übersandtes Material` lists individual cores (e.g., “Rechtes AFS medial”). <br>• `"Resektat"` if a whole organ or surgical specimen is described (e.g., “Radikale Prostatektomie”). |
+| `art_der_biopsie` | For biopsies only. Detect the biopsy type from the clinical or material description: <br>‑ `"Stanzbiopsie"` if “Stanz” or “Core” is mentioned. <br>‑ `"TUR‑P"` if TUR‑P is mentioned. <br>‑ `None` for resections. |
+| `entnahmestelle_der_biopsie` | For biopsies only. Default to `Primärtumor` unless the report explicitly states a different site (e.g., “Transition zone”). |
+| `makroskopie_liste` | Parse each numbered line under **Makroskopie**. For each core: <br>‑ `nr` = the line number. <br>‑ `gesamt_stanzen` = number of cores in that line (usually `1`). <br>‑ `laenge_cm` = length in centimeters (convert German decimal comma to dot). |
+| `begutachtung_liste` | For each core that appears in the **Begutachtung** (or narrative) with tumor: <br>‑ `nr` = core number. <br>‑ `tumor` = `True` if any malignant description is present, otherwise `False`. <br>‑ `tumorausdehnung_mm` = explicit tumor length in mm (if given). <br>‑ `tumor_prozent` = `(tumorausdehnung_mm / (laenge_cm*10)) * 100` rounded to one decimal place. <br>‑ `gleason` = Gleason pattern as written (e.g., `"3 + 4 = 7a"`). <br>For cores without tumor, set `tumor=False` and leave the other fields `None`. |
+| `anzahl_entnommener_stanzen` | Total number of cores/specimens (`len(makroskopie_liste)`). |
+| `anzahl_befallener_stanzen` | Count of entries in `begutachtung_liste` where `tumor=True`. |
+| `maximaler_anteil_befallener_stanzen` | Highest `tumor_prozent` among tumor‑positive cores, rounded to the nearest integer. If no tumor, set to `None`. |
+| `calculation_details` | List of strings describing each percentage calculation, e.g., `"Core 5: 3.5 mm / 17 mm * 100 = 20.6 %"`. Include one entry per tumor‑positive core. If no tumor, set to `None`. |
+| `icdo3_histologie` | Value after “ICD‑O‑3:” in **Klassifikation** (e.g., `8140/3`). |
+| `who_isup_grading` | Enum value after “WHO/ISUP‑Graduierungsgruppe” or “WHO‑Grading‑Group”. Map the textual group to the enum (e.g., `Graduierungsgruppe 3`). |
+| `gleason` | Overall Gleason score – use the highest‑grade pattern reported in **Begutachtung** or **Klassifikation** (e.g., `"4 + 3 = 7b"`). |
+| `tnm_nach` | The TNM system used (e.g., `"UICC"`). |
+| `ptnm` | Full pTNM string from **Klassifikation** (e.g., `"pT3b pN1 L1 V0 Pn1 R1"`). |
+| `lymphgefaessinvasion` | Enum based on “L1”, “L0”, etc. If not mentioned, `None`. |
+| `veneninvasion` | Enum based on “V1”, “V0”, etc. |
+| `perineurale_invasion` | Enum based on “Pn1”, “Pn0”, etc. |
+| `lk_befallen_untersucht` | Lymph‑node involvement expressed as “x/y” (e.g., `"2/22"`). |
+| `r_klassifikation` | Enum for resection‑margin status (`R0`, `R1`, etc.). |
+| `resektionsrand` | Enum for margin description (`fokal`, `diffus`, etc.). |
+| `lokalisation_icd10` | ICD‑10 code for the anatomical site if present (e.g., `C61`). If the report states “keine Kodierung (kein Malignom)”, set to `None`. |
+| `tumornachweis` | `Ja` if any core has `tumor=True`; otherwise `Nein`. |
+
+**Parsing Strategy (to be followed for every document)**
+1. **Normalize Text** – Replace line‑break variations, ensure consistent spacing, and convert German decimal commas to periods for numeric conversion.
+2. **Section Detection** – Locate headings (`Übersandtes Material:`, `Klinische Angaben:`, `Makroskopie:`, `Mikroskopie:`, `Begutachtung:`, `Klassifikation:`). The order may vary; treat each heading as a delimiter.
+3. **Extract Header Information** – Scan the top of the file for `Journalnummer`, city name, and institution lines.
+4. **Parse Dates** – Capture `Eingang` and `Ausgang` values; they are always in `DD.MM.YYYY` format.
+5. **Material List** – Determine whether the material list describes individual cores (biopsy) or a surgical specimen (resection). This decides `untersuchtes_praeparat`.
+6. **Makroskopie** – For each numbered line, extract the core number and length. If the line contains “Stanzzylinder”, set `gesamt_stanzen = 1`. For resections, treat the whole organ as a single entry (`nr=1`).
+7. **Begutachtung / Tumor Findings** –  
+   - Search for patterns like `Gleason X + Y = Z`, `WHO‑Grading‑Group`, `Länge … mm`.  
+   - When a core number is mentioned (e.g., “5.” or “Core 5”), associate the findings with that core.  
+   - If the narrative states “ohne Nachweis eines Malignoms” for all cores, set all `tumor=False`.
+8. **Compute Percentages** – Convert core length to mm (`laenge_cm * 10`). Use the explicit tumor extension (mm) to compute percentage. Round to one decimal place for the field, but keep the full value in `calculation_details`.
+9. **Aggregate Statistics** – Count cores, tumor‑positive cores, and derive the maximal percentage.
+10. **Classification Section** – Extract ICD‑10, ICD‑O‑3, WHO/ISUP group, Gleason, pTNM, and any invasion or margin descriptors. Map each to the appropriate enum/value.
+11. **Finalize Fields** – Populate any missing optional fields with `None`. Ensure enum fields use the exact enum member names shown in the examples (e.g., `ProstatapatientitemMassgeblicherBefund.Ja`).
+12. **Output Formatting** –  
+    - First line: `### reasoning` followed by the explanatory paragraph(s).  
+    - Second line: `### extracted` followed by the exact Python‑style object literal.  
+    - Preserve the ordering of fields as in the examples.
+
+**Edge Cases & Common Pitfalls**
+- **Missing Journalnummer** – Use `"unknown"` for `patientenid` and `einsendenummer`.
+- **Decimal Comma** – German numbers use commas (e.g., `1,8 cm`). Convert to float (`1.8`).
+- **Multiple Gleason Scores** – Choose the highest‑grade (largest primary + secondary) for the overall `gleason` field.
+- **No Tumor** – Set `tumornachweis` to `Nein`, `anzahl_befallener_stanzen` to `0`, and leave percentage‑related fields `None`.
+- **Inconsistent Core Numbering** – Core numbers may appear as Arabic numerals (`1.`) or spelled out (`Core 1`). Use regex to capture any number preceding a period or after the word “Core”.
+- **Redundant Information** – If the same data appears in both **Begutachtung** and **Klassifikation**, prefer the more detailed source (usually **Begutachtung** for per‑core data, **Klassifikation** for overall staging).
+- **Multiple Reports in One File** – If the document clearly contains separate reports (e.g., two distinct `Journalnummer` blocks), create a list of `ProstataPatient` objects, each with its own `befunde` list containing a single `ProstatapatientItem`.
+
+**Final Deliverable**
+Your response must contain **only** the two sections (`reasoning` and `extracted`) as shown in the examples, with no additional commentary or markup. Ensure the Python‑style literals are syntactically correct and that enum members are fully qualified (e.g., `<ProstatapatientitemUntersuchtesPraeparat.Biopsie: 'Biopsie'>`).
 ````
 
 ---
