@@ -152,19 +152,40 @@ def pathology_metric(example: Any, prediction: Any, trace: Any = None) -> float:
 # Extraction metric
 # ---------------------------------------------------------------------------
 
+def _flatten_dict(d: dict, prefix: str = "") -> dict[str, str]:
+    """Recursively flatten a nested dict into dot-notation scalar pairs."""
+    flat: dict[str, str] = {}
+    for k, v in d.items():
+        key = f"{prefix}.{k}" if prefix else k
+        if isinstance(v, dict):
+            flat.update(_flatten_dict(v, key))
+        elif isinstance(v, list):
+            for i, item in enumerate(v):
+                if isinstance(item, dict):
+                    flat.update(_flatten_dict(item, f"{key}.{i}"))
+                else:
+                    flat[f"{key}.{i}"] = _safe_str(item)
+        else:
+            flat[key] = _safe_str(v)
+    return flat
+
+
 def extraction_metric(example: Any, prediction: Any, trace: Any = None) -> float:
     """Score generic document extraction quality.
 
-    Compares predicted ``extracted`` dict against gold ``extracted`` dict:
+    Recursively flattens nested structures (lists, dicts) into dot-notation
+    scalar pairs, then compares:
     - key overlap (weight 0.5)
     - value exact match for shared keys (weight 0.5)
     """
-    gold = _safe_dict(getattr(example, "extracted", {}))
-    pred = _safe_dict(getattr(prediction, "extracted", {}))
+    gold_raw = _safe_dict(getattr(example, "extracted", {}))
+    pred_raw = _safe_dict(getattr(prediction, "extracted", {}))
 
-    if not gold:
-        # No gold labels — score based on non-emptiness
-        return 1.0 if pred else 0.0
+    if not gold_raw:
+        return 1.0 if pred_raw else 0.0
+
+    gold = _flatten_dict(gold_raw)
+    pred = _flatten_dict(pred_raw)
 
     gold_keys = set(gold.keys())
     pred_keys = set(pred.keys())
@@ -180,7 +201,7 @@ def extraction_metric(example: Any, prediction: Any, trace: Any = None) -> float
     if shared:
         matches = sum(
             1 for k in shared
-            if _safe_str(gold[k]).strip().lower() == _safe_str(pred[k]).strip().lower()
+            if gold[k].strip().lower() == pred[k].strip().lower()
         )
         val_score = matches / len(shared)
     else:

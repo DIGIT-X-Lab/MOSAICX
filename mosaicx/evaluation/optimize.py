@@ -215,15 +215,30 @@ def _build_optimizer(strategy: str, config: dict[str, Any], metric: Callable) ->
             logger.warning("GEPA unavailable, falling back to MIPROv2")
             return _build_optimizer("MIPROv2", config, metric)
         try:
-            return _instantiate(
-                gepa_cls,
-                metric=metric,
-                auto=None,
-                max_bootstrapped_demos=config.get("num_candidates", 20),
-                num_candidate_programs=config.get("num_candidates", 20),
+            # GEPA requires a 5-arg metric returning score or {score, feedback}
+            def _gepa_metric(gold, pred, trace=None, pred_name=None, pred_trace=None):
+                score = float(metric(gold, pred, trace))
+                feedback = f"Score: {score:.2f}"
+                if score < 1.0:
+                    gold_d = getattr(gold, "extracted", {})
+                    pred_d = getattr(pred, "extracted", {})
+                    if isinstance(gold_d, dict) and isinstance(pred_d, dict):
+                        missing = [k for k in gold_d if k not in pred_d or str(pred_d.get(k)) != str(gold_d[k])]
+                        if missing:
+                            feedback += f". Mismatched fields: {', '.join(missing[:5])}"
+                return {"score": score, "feedback": feedback}
+
+            # Use the configured LM as the reflection model
+            reflection_lm = config.get("reflection_lm")
+            if reflection_lm is None:
+                reflection_lm = dspy.settings.lm
+
+            return gepa_cls(
+                metric=_gepa_metric,
+                reflection_lm=reflection_lm,
+                auto="heavy",
                 num_threads=1,
                 candidate_selection_strategy=config.get("candidate_selection_strategy", "pareto"),
-                reflection_lm=config.get("reflection_lm"),
                 use_merge=bool(config.get("use_merge", True)),
             )
         except (TypeError, ValueError):

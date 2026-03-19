@@ -2734,6 +2734,7 @@ def verify(
 
 @cli.command()
 @click.option("--pipeline", type=str, default=None, help="Pipeline to optimize.")
+@click.option("--template", type=str, default=None, help="Template name for extract pipeline (e.g. ProstataPatient).")
 @click.option("--trainset", type=click.Path(exists=True, path_type=Path), help="Training dataset path.")
 @click.option("--valset", type=click.Path(exists=True, path_type=Path), help="Validation dataset path.")
 @click.option(
@@ -2759,6 +2760,7 @@ def verify(
 )
 def optimize(
     pipeline: Optional[str],
+    template: Optional[str],
     trainset: Optional[Path],
     valset: Optional[Path],
     budget: str,
@@ -2867,7 +2869,16 @@ def optimize(
 
     # Run optimization
     theme.section("Running Optimization", console, "03")
-    module = pipeline_cls()
+
+    # If --template provided for extract pipeline, compile template into Pydantic model
+    if template and pipeline == "extract":
+        from .report import resolve_template
+
+        template_model, _mode = resolve_template(template)
+        module = pipeline_cls(output_schema=template_model)
+        console.print(theme.info(f"Template: {template} ({len(template_model.model_fields)} fields)"))
+    else:
+        module = pipeline_cls()
     with theme.spinner("Optimizing... patience you must have", console):
         optimized, results = run_optimization(
             module=module,
