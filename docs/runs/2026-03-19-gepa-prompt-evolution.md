@@ -2,7 +2,7 @@
 
 > Automatic prompt optimization via DSPy GEPA on CORE (gpt-oss:120b)
 > Training set: 20 synthetic German prostate pathology reports
-> Total proposals: 3 | Last updated: 18:38:15
+> Total proposals: 4 | Last updated: 18:55:46
 
 ---
 
@@ -193,7 +193,7 @@ Your response must contain **only** the two sections (`reasoning` and `extracted
 
 ## Iteration 9 — extract_custom.predict
 
-**Score:** 0.8612740943608522
+**Score:** 2.233296888365879
 
 ````
 **Task Overview**
@@ -297,6 +297,189 @@ Your job is to parse the document and produce a single JSON object that conforms
      - `tumor_prozent` = **only for biopsies** and only when both `tumorausdehnung_mm` and the corresponding macroscopic length are known:
        ```
        tumor_prozent = (tumorausdehnung_mm / (laenge_cm * 10)) * 100
+````
+
+---
+
+## Iteration 13 — extract_custom.predict
+
+**Score:** 0.8612740943608522
+
+````
+# Task Overview
+You must read a German‑language prostate pathology report (usually a PDF‑text dump) and produce a **single JSON object** that conforms exactly to the `ProstataPatient` schema described below.  
+The report contains a header, a list of submitted specimens, a macroscopic (Makroskopie) description, a microscopic (Mikroskopie/Begutachtung) description, and a classification block. Your output must capture every piece of information required by the schema, compute derived values, and follow the conventions demonstrated in the example responses.
+
+---
+
+## 1. ProstataPatient Schema (exact field names & types)
+
+```
+ProstataPatient {
+    patientenid: string                     # unique identifier – use the Journalnummer (e.g. "E/2026/010567")
+    befunde: [ProstatapatientItem]          # list with exactly ONE item (the current report)
+}
+```
+
+```
+ProstatapatientItem {
+    untersuchtes_praeparat: enum[Biopsie, ...]          # always "Biopsie" for these reports
+    histologiedatum: string (DD.MM.YYYY)               # date from “Ausgang” (finalisation)
+    befundausgang: string (DD.MM.YYYY)                 # same as histologiedatum
+    ort: string                                        # city of the pathology institute (e.g. "München")
+    pathologisches_institut: string                    # full institute name from the header
+    einsendenummer: string                             # same as patientenid (Journalnummer)
+    massgeblicher_befund: enum[Ja, Nein]               # always "Ja" for the definitive report
+    tumornachweis: enum[Ja, Nein]                     # "Ja" if any core contains tumor, else "Nein"
+    icdo3_histologie: string                          # value after “ICD-O-3:” (e.g. "8140/3")
+    who_isup_grading: enum[
+        Graduierungsgruppe 1,
+        Graduierungsgruppe 2,
+        Graduierungsgruppe 3,
+        Graduierungsgruppe 4,
+        Graduierungsgruppe 5,
+        Graduierungsgruppe 6,
+        Graduierungsgruppe 7,
+        Graduierungsgruppe 8,
+        Graduierungsgruppe 9,
+        Graduierungsgruppe 10,
+        Graduierungsgruppe 11,
+        Graduierungsgruppe 12,
+        Graduierungsgruppe 13,
+        Graduierungsgruppe 14,
+        Graduierungsgruppe 15,
+        Graduierungsgruppe 16,
+        Graduierungsgruppe 17,
+        Graduierungsgruppe 18,
+        Graduierungsgruppe 19,
+        Graduierungsgruppe 20,
+        Graduierungsgruppe 21,
+        Graduierungsgruppe 22,
+        Graduierungsgruppe 23,
+        Graduierungsgruppe 24,
+        Graduierungsgruppe 25,
+        Graduierungsgruppe 26,
+        Graduierungsgruppe 27,
+        Graduierungsgruppe 28,
+        Graduierungsgruppe 29,
+        Graduierungsgruppe 30,
+        Graduierungsgruppe 31,
+        Graduierungsgruppe 32,
+        Graduierungsgruppe 33,
+        Graduierungsgruppe 34,
+        Graduierungsgruppe 35,
+        Graduierungsgruppe 36,
+        Graduierungsgruppe 37,
+        Graduierungsgruppe 38,
+        Graduierungsgruppe 39,
+        Graduierungsgruppe 40,
+        Graduierungsgruppe 41,
+        Graduierungsgruppe 42,
+        Graduierungsgruppe 43,
+        Graduierungsgruppe 44,
+        Graduierungsgruppe 45,
+        Graduierungsgruppe 46,
+        Graduierungsgruppe 47,
+        Graduierungsgruppe 48,
+        Graduierungsgruppe 49,
+        Graduierungsgruppe 50,
+        Graduierungsgruppe 51,
+        Graduierungsgruppe 52,
+        Graduierungsgruppe 53,
+        Graduierungsgruppe 54,
+        Graduierungsgruppe 55,
+        Graduierungsgruppe 56,
+        Graduierungsgruppe 57,
+        Graduierungsgruppe 58,
+        Graduierungsgruppe 59,
+        Graduierungsgruppe 60,
+        Graduierungsgruppe 61,
+        Graduierungsgruppe 62,
+        Graduierungsgruppe 63,
+        Graduierungsgruppe 64,
+        Graduierungsgruppe 65,
+        Graduierungsgruppe 66,
+        Graduierungsgruppe 67,
+        Graduierungsgruppe 68,
+        Graduierungsgruppe 69,
+        Graduierungsgruppe 70,
+        Graduierungsgruppe 71,
+        Graduierungsgruppe 72,
+        Graduierungsgruppe 73,
+        Graduierungsgruppe 74,
+        Graduierungsgruppe 75,
+        Graduierungsgruppe 76,
+        Graduierungsgruppe 77,
+        Graduierungsgruppe 78,
+        Graduierungsgruppe 79,
+        Graduierungsgruppe 80,
+        Graduierungsgruppe 81,
+        Graduierungsgruppe 82,
+        Graduierungsgruppe 83,
+        Graduierungsgruppe 84,
+        Graduierungsgruppe 85,
+        Graduierungsgruppe 86,
+        Graduierungsgruppe 87,
+        Graduierungsgruppe 88,
+        Graduierungsgruppe 89,
+        Graduierungsgruppe 90,
+        Graduierungsgruppe 91,
+        Graduierungsgruppe 92,
+        Graduierungsgruppe 93,
+        Graduierungsgruppe 94,
+        Graduierungsgruppe 95,
+        Graduierungsgruppe 96,
+        Graduierungsgruppe 97,
+        Graduierungsgruppe 98,
+        Graduierungsgruppe 99,
+        Graduierungsgruppe 100
+    ]                                                   # highest WHO‑ISUP grade among all tumor‑positive cores
+    gleason: string                                     # highest Gleason pattern (e.g. "4 + 5 = 9")
+    makroskopie_liste: [MakroskopieItem]                # one entry per line in the Makroskopie section
+    begutachtung_liste: [BegutachtungItem]              # one entry per core number (including benign cores)
+    art_der_biopsie: enum[
+        Fusionsbiopsie,
+        Stanzbiopsie,
+        Standardbiopsie,
+        Andere
+    ]                                                   # derived from the clinical text (see below)
+    entnahmestelle_der_biopsie: enum[
+        Primärtumor,
+        Periprostatisch,
+        Andere
+    ]                                                   # default = Primärtumor for all prostate biopsies
+    lokalisation_icd10: string | null                   # optional – not present in examples
+    anzahl_entnommener_stanzen: int                     # total number of cores (sum of “Gesamt Stanzen”)
+    anzahl_befallener_stanzen: int                      # number of cores with tumor
+    maximaler_anteil_befallener_stanzen: int            # max tumor‑percentage among positive cores, rounded to nearest integer
+    calculation_details: [string]                       # human‑readable list of the percentage calculations
+    tnm_nach: string | null
+    ptnm: string | null
+    lymphgefaessinvasion: string | null
+    veneninvasion: string | null
+    perineurale_invasion: string | null
+    lk_befallen_untersucht: string | null
+    r_klassifikation: string | null
+    resektionsrand: string | null
+}
+```
+
+```
+MakroskopieItem {
+    nr: int                     # core number as listed in the “Übersandtes Material” section
+    gesamt_stanzen: int         # number of cores represented by this line (default 1; if “(nx)” appears, n = number)
+    laenge_cm: float            # length in centimeters (the value before “cm”)
+}
+```
+
+```
+BegutachtungItem {
+    nr: int                     # core number (matches MakroskopieItem.nr)
+    tumor: bool                 # true if this core contains tumor (i.e. a Gleason entry exists)
+    tumorausdehnung_mm: float | null   # tumor length in mm from the “Begutachtung” line
+    tumor_prozent: float | null         # (tumor length mm) / (core length mm) * 100, rounded to two decimals
+    gleason: string | null              # Gleason string from the “Begutachtung” line (e.g. "3 + 4 = 7a")
+}
 ````
 
 ---
