@@ -31,8 +31,8 @@ class MosaicxConfig(BaseSettings):
     api_key: str = "ollama"
     api_base: str = "http://localhost:11434/v1"
     lm_temperature: float = 0.0
-    max_tokens: int = 16384
-    num_ctx: int = 32768
+    max_tokens: int = 32768
+    num_ctx: int = 131072
 
     # --- Self-healing ---
     # Keep extraction fast by default; enable targeted LLM repair via MOSAICX_USE_REFINE=1.
