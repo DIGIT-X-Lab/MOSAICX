@@ -2815,7 +2815,7 @@ def optimize(
     theme.section("Optimization", console, "01")
     t = theme.make_kv_table()
     t.add_row("Pipeline", pipeline)
-    t.add_row("Budget", theme.badge(budget.upper()))
+    t.add_row("Budget", budget.upper())
     t.add_row("Strategy", opt_config.get("strategy", "N/A"))
     t.add_row("Max iterations", str(opt_config.get("max_iterations", "N/A")))
     t.add_row("Num candidates", str(opt_config.get("num_candidates", "N/A")))

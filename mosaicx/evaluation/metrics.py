@@ -45,9 +45,19 @@ def _safe_str(val: Any) -> str:
 
 
 def _safe_dict(val: Any) -> dict:
-    """Coerce *val* to dict."""
+    """Coerce *val* to dict — handles dicts, Pydantic models, and JSON strings."""
     if isinstance(val, dict):
         return val
+    if hasattr(val, "model_dump"):
+        return val.model_dump()
+    if isinstance(val, str):
+        try:
+            import json
+            parsed = json.loads(val)
+            if isinstance(parsed, dict):
+                return parsed
+        except (json.JSONDecodeError, TypeError):
+            pass
     return {}
 
 
