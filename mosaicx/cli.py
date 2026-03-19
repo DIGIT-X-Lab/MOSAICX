@@ -2875,10 +2875,10 @@ def optimize(
         from .report import resolve_template
 
         template_model, _mode = resolve_template(template)
-        module = pipeline_cls(output_schema=template_model)
+        module = pipeline_cls(output_schema=template_model, optimize_mode=True)
         console.print(theme.info(f"Template: {template} ({len(template_model.model_fields)} fields)"))
     else:
-        module = pipeline_cls()
+        module = pipeline_cls(optimize_mode=True)
     with theme.spinner("Optimizing... patience you must have", console):
         optimized, results = run_optimization(
             module=module,

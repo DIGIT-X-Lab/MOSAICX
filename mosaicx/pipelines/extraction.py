@@ -3328,7 +3328,7 @@ def _build_dspy_classes():
         Think levels: auto, fast, standard, deep.
         """
 
-        def __init__(self, output_schema: type[BaseModel] | None = None, think: str = "auto") -> None:
+        def __init__(self, output_schema: type[BaseModel] | None = None, think: str = "auto", optimize_mode: bool = False) -> None:
             super().__init__()
             if think not in ("auto", "fast", "standard", "deep"):
                 raise ValueError(
@@ -3336,6 +3336,7 @@ def _build_dspy_classes():
                 )
             self._user_think = think
             self._output_schema = output_schema
+            self._optimize_mode = optimize_mode
 
             # Resolve effective think level (auto-routing happens here)
             self._think = _resolve_think_level(think, output_schema)
@@ -3588,6 +3589,29 @@ def _build_dspy_classes():
             from mosaicx.metrics import track_step
 
             think = self._think
+
+            # ── OPTIMIZE MODE: single clean CoT call for DSPy trace collection ──
+            if self._optimize_mode:
+                with track_step(metrics, "Extract (optimize mode)", tracker):
+                    pred = self.extract_custom(document_text=document_text)
+                    extracted = getattr(pred, "extracted", pred)
+                    if hasattr(extracted, "model_dump"):
+                        model_instance = extracted
+                    else:
+                        model_instance = _coerce_extracted_to_model_instance(
+                            extracted=extracted, schema_class=schema,
+                        )
+                # Apply enum coercion so the output validates
+                model_instance, _ = _apply_deterministic_semantic_validation(
+                    model_instance=model_instance,
+                    schema_class=schema,
+                )
+                planner_diag["optimize_mode"] = True
+                planner_diag["think_level"] = think
+                self._last_metrics = metrics
+                self._last_planner = planner_diag
+                return dspy.Prediction(extracted=model_instance, planner=planner_diag)
+
             chain_diag: dict[str, Any] = {}
             verify_diag: dict[str, Any] = {}
             fix_diag: dict[str, Any] = {}
