@@ -865,13 +865,132 @@ def _annotation_allows_none(annotation: Any) -> bool:
     return False
 
 
+def _coerce_enum_values(
+    payload: dict[str, Any],
+    schema_class: type[BaseModel],
+) -> tuple[dict[str, Any], list[str]]:
+    """Fuzzy-match enum field values to their closest valid option.
+
+    Walks the schema recursively and for each enum/Literal field, if the
+    current value isn't a valid option, attempts substring and token
+    matching to find the closest one.  Returns the updated payload and
+    a list of coerced field names.
+    """
+    import enum as _enum
+    from typing import get_args, get_origin
+
+    coerced: list[str] = []
+
+    def _get_enum_values(annotation: Any) -> list[str] | None:
+        """Extract allowed string values from an enum or Literal annotation."""
+        origin = get_origin(annotation)
+        # Unwrap Optional
+        if origin in (Union, types.UnionType):
+            for arg in get_args(annotation):
+                if arg is type(None):
+                    continue
+                vals = _get_enum_values(arg)
+                if vals is not None:
+                    return vals
+            return None
+        # Literal["a", "b", ...]
+        if origin is Literal:
+            return [str(v) for v in get_args(annotation)]
+        # Python enum
+        if isinstance(annotation, type) and issubclass(annotation, _enum.Enum):
+            return [str(m.value) for m in annotation]
+        return None
+
+    def _fuzzy_match(value: str, options: list[str]) -> str | None:
+        """Find the best matching option for a value."""
+        val_lower = value.strip().lower()
+        # Exact match (case-insensitive)
+        for opt in options:
+            if opt.lower() == val_lower:
+                return opt
+        # Substring: value contains an option or option contains value
+        for opt in options:
+            opt_lower = opt.lower()
+            if opt_lower in val_lower or val_lower in opt_lower:
+                return opt
+        # Token overlap: split both into words, find best overlap
+        val_tokens = set(val_lower.split())
+        best_opt, best_score = None, 0
+        for opt in options:
+            opt_tokens = set(opt.lower().split())
+            overlap = len(val_tokens & opt_tokens)
+            if overlap > best_score:
+                best_score = overlap
+                best_opt = opt
+        if best_score > 0:
+            return best_opt
+        return None
+
+    def _coerce_dict(d: dict[str, Any], model: type[BaseModel], prefix: str = "") -> None:
+        for field_name, field_info in model.model_fields.items():
+            if field_name not in d:
+                continue
+            value = d[field_name]
+            annotation = field_info.annotation
+            path = f"{prefix}.{field_name}" if prefix else field_name
+
+            # Check if this field has enum values
+            enum_vals = _get_enum_values(annotation)
+            if enum_vals is not None and isinstance(value, str):
+                if value not in enum_vals:
+                    matched = _fuzzy_match(value, enum_vals)
+                    if matched is not None:
+                        d[field_name] = matched
+                        coerced.append(f"{path}: {value!r} -> {matched!r}")
+                continue
+
+            # Recurse into nested objects
+            origin = get_origin(annotation)
+            if origin in (Union, types.UnionType):
+                inner_args = [a for a in get_args(annotation) if a is not type(None)]
+                if inner_args:
+                    annotation = inner_args[0]
+                    origin = get_origin(annotation)
+
+            if isinstance(value, dict) and isinstance(annotation, type) and issubclass(annotation, BaseModel):
+                _coerce_dict(value, annotation, path)
+            elif isinstance(value, list) and origin is list:
+                item_args = get_args(annotation)
+                if item_args:
+                    item_type = item_args[0]
+                    if isinstance(item_type, type) and issubclass(item_type, BaseModel):
+                        for i, item in enumerate(value):
+                            if isinstance(item, dict):
+                                _coerce_dict(item, item_type, f"{path}.{i}")
+
+            # Coerce float-as-string to int where schema expects int
+            if isinstance(value, (float, str)) and annotation is int:
+                try:
+                    d[field_name] = int(round(float(value)))
+                    if str(value) != str(d[field_name]):
+                        coerced.append(f"{path}: {value!r} -> {d[field_name]!r}")
+                except (ValueError, TypeError):
+                    pass
+
+    updated = dict(payload)
+    _coerce_dict(updated, schema_class)
+    return updated, coerced
+
+
 def _apply_deterministic_semantic_validation(
     *,
     model_instance: BaseModel,
     schema_class: type[BaseModel],
 ) -> tuple[BaseModel, dict[str, Any]]:
     """Normalize model payload with deterministic semantic validators."""
-    payload = model_instance.model_dump(mode="json")
+    # First coerce enum values to closest valid option
+    raw_payload = model_instance.model_dump(mode="json")
+    payload, coerced_fields = _coerce_enum_values(raw_payload, schema_class)
+    if coerced_fields:
+        try:
+            model_instance = schema_class.model_validate(payload)
+        except Exception:
+            payload = raw_payload  # revert if coercion broke something
     updated = dict(payload)
     issues: list[dict[str, Any]] = []
     changed_fields: list[str] = []
