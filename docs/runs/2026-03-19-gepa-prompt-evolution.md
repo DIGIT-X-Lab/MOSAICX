@@ -2,7 +2,7 @@
 
 > Automatic prompt optimization via DSPy GEPA on CORE (gpt-oss:120b)
 > Training set: 20 synthetic German prostate pathology reports
-> Total proposals: 15 | Last updated: 16:41:08
+> Total proposals: 16 | Last updated: 16:43:09
 
 ---
 
@@ -2349,7 +2349,7 @@ patientenid='<ID>' befunde=[ProstatapatientItem(
 
 ## Iteration 59 — extract_custom.predict
 
-**Score:** 0.8599858162868598
+**Score:** 2.7925502704638046
 
 ````
 # Prostata‑Pathologie‑Extraktions‑Aufgabe
@@ -2614,6 +2614,106 @@ Gib **ein einziges Python‑ähnliches Dictionary** zurück, das exakt dem Schem
     # ggf. weitere Items für weitere Berichte …
   ]
 }
+````
+
+---
+
+## Iteration 61 — extract_custom.predict
+
+**Score:** 0.8620964627819049
+
+````
+**Task Overview**
+You are given the full text of a German prostate pathology report. Your job is to extract every piece of information required by the **ProstataPatient** data model and produce a single JSON object that conforms exactly to that schema.
+
+**Key Concepts & Domain Knowledge**
+
+1. **Report Header**
+   - **Journalnummer** (e.g., `E/2026/017890`) is the unique case identifier. Use it for both `patientenid` and `einsendenummer`.
+   - **Eingang** = date the specimen arrived.  
+   - **Ausgang** = date the report was finalized. Use this as `histologiedatum` and `befundausgang`.
+   - Institution line(s) contain the pathology institute name, the hospital, and the city. Extract:
+     - `pathologisches_institut` → the exact institute name (e.g., “Pathologisches Institut der LMU”).
+     - `ort` → the city (e.g., “München”).
+
+2. **Specimen Type**
+   - If the “Übersandtes Material” list contains “TUR‑Prostata …” or “Späne”, the specimen is a **resection** → `untersuchtes_praeparat = "Resektat"`.
+   - If the list contains numbered cores (e.g., “Rechtes AFS medial”, “Stanzzylinder”), it is a **biopsy** → `untersuchtes_praeparat = "Biopsie"`.
+   - For biopsies set:
+     - `art_der_biopsie = "Stanzbiopsie"` (the only supported value for core biopsies).
+     - `entnahmestelle_der_biopsie = "Primärtumor"` unless the report explicitly states a different site (rare).
+
+3. **Macroscopic (Makroskopie) Section**
+   - Each numbered entry corresponds to a **core** (or group of cores).  
+   - Extract:
+     - `nr` → the entry number.
+     - `gesamt_stanzen` → how many cores are described in that entry.  
+       *If the text says “Ein … Stanzzylinder” → 1.  
+       *If it says “Zwei … Stanzzylinder” or “Zwei bis 0,8 cm messende Stanzzylinder” → 2 (or the exact number if given).  
+     - `laenge_cm` → the length in centimeters (numeric). If no length is given, set `null`.
+   - Build a list `makroskopie_liste` preserving the order of entries.
+
+4. **Microscopic (Mikroskopie / Begutachtung) Section**
+   - For each core number that appears in the **Begutachtung** (or in the detailed description after “Gleason …”) create an entry in `begutachtung_liste`:
+     - `nr` → core number.
+     - `tumor` → `true` if the core contains any carcinoma; otherwise `false`.
+     - `tumorausdehnung_mm` → the longest tumor length reported for that core, in millimeters (numeric). If not reported, `null`.
+     - `tumor_prozent` → **calculate** only when both `tumorausdehnung_mm` and the corresponding `laenge_cm` are known:
+       ```
+       tumor_prozent = (tumorausdehnung_mm / (laenge_cm * 10)) * 100
+       ```
+       Round to one decimal place (e.g., 14.7). If either value is missing, set `null`.
+     - `gleason` → the exact Gleason string from the report for that core (e.g., “4 + 3 = 7b”). If the core is tumor‑negative, set `null`.
+   - For tumor‑negative cores still list an entry with `tumor = false` and all other fields `null`.
+
+5. **Overall Summary Fields**
+   - `anzahl_entnommener_stanzen` → total number of cores taken (sum of `gesamt_stanzen` across all macro entries).
+   - `anzahl_befallener_stanzen` → count of cores where `tumor = true`.
+   - `maximaler_anteil_befallener_stanzen` → the **maximum** `tumor_prozent` among all positive cores, rounded to the nearest integer. If no percentages are available, set `null`.
+   - `tumornachweis` → `"Ja"` if any core is tumor‑positive, otherwise `"Nein"`.
+   - `massgeblicher_befund` → always `"Ja"` for the final pathology report.
+   - `gleason` → the **highest** Gleason score present in any positive core (use the exact string from that core).
+   - `who_isup_grading` → the highest WHO/ISUP grading group present (e.g., “Graduierungsgruppe 4”). Map directly from the report text.
+   - `icdo3_histologie` → the ICD‑O‑3 code after “ICD‑O‑3:” (e.g., “8140/3”).
+   - `lokalisation_icd10` → the ICD‑10 code after “ICD‑10‑GM‑2024:” (e.g., “C61”). If the code includes a trailing “/G”, strip the “/G”.
+   - `tnm_nach`, `ptnm`, `lymphgefaessinvasion`, `veneninvasion`, `perineurale_invasion`, `lk_befallen_untersucht`, `r_klassifikation`, `resektionsrand` → set to `null` unless explicitly mentioned (these fields are rare in biopsy reports).
+
+6. **Derived Calculation Details**
+   - Populate `calculation_details` with a human‑readable string for each tumor‑positive core, e.g.:
+     ```
+     "Nr 4: 2.5 mm / 17.0 mm = 14.7%"
+     ```
+   - If no calculations are performed, set this field to `null`.
+
+7. **Enum Handling**
+   - All enum fields must contain the exact string value defined by the schema (e.g., `ProstatapatientitemUntersuchtesPraeparat.Biopsie` → `"Biopsie"`). Do **not** output the enum name, only the string value.
+
+8. **Missing or Ambiguous Data**
+   - If a required numeric field cannot be found, use `null`.
+   - Do not guess values; only apply the explicit rules above (e.g., assume `gesamt_stanzen = 1` when a single core is described without an explicit count).
+
+9. **Output Format**
+   - Produce a single JSON object with two top‑level keys:
+     ```json
+     {
+       "patientenid": "...",
+       "befunde": [ { ... } ]   // list with exactly one ProstataPatientItem
+     }
+     ```
+   - The inner object must contain **all** fields defined by the schema, using `null` for any that are not applicable or not found.
+   - Do **not** include any explanatory text, markdown, or additional keys.
+
+**Step‑by‑Step Procedure**
+1. Parse the header to obtain identifiers, dates, institute, and city.
+2. Determine `untersuchtes_praeparat` (Biopsie vs Resektat) and set related biopsy enums if needed.
+3. Build `makroskopie_liste` by iterating over the numbered macro entries, extracting `nr`, `gesamt_stanzen`, and `laenge_cm`.
+4. Build `begutachtung_liste`:
+   - For each core number mentioned in the Begutachtung/Gleason block, extract tumor presence, Gleason, and tumor length.
+   - For all other core numbers (1‑N) create a negative entry.
+5. Compute summary statistics (`anzahl_*`, `maximaler_anteil_*`, overall Gleason, WHO grade, etc.).
+6. Assemble the final JSON object exactly as specified.
+
+Follow these rules precisely for every report you process.
 ````
 
 ---
