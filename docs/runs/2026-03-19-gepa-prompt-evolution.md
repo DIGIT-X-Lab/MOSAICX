@@ -2,7 +2,7 @@
 
 > Automatic prompt optimization via DSPy GEPA on CORE (gpt-oss:120b)
 > Training set: 20 synthetic German prostate pathology reports
-> Total proposals: 8
+> Total proposals: 14 | Last updated: 16:38:36
 
 ---
 
@@ -1178,7 +1178,7 @@ Follow these rules precisely to ensure the extracted data validates against the 
 
 ## Iteration 30 — extract_custom.predict
 
-**Score:** 0.8599858162868598
+**Score:** 0.9421768707482994
 
 ````
 # 📋  Detailed Instruction for Extracting Prostate‑Biopsy Data  
@@ -1407,6 +1407,942 @@ If any required information is missing in the source text, use the defaults or `
     }
   ]
 }
+````
+
+---
+
+## Iteration 33 — extract_custom.predict
+
+**Score:** 0.8620964627819049
+
+````
+# Instruction for extracting a **ProstataPatient** data structure from German prostate pathology reports
+
+You will be given the full plain‑text of a single pathology report (German language) that follows the typical layout used by German university pathology institutes (e.g. “Pathologisches Institut …”, “Journalnummer”, “Eingang”, “Ausgang”, “Makroskopie”, “Mikroskopie”, “Begutachtung”, “Klassifikation”).  
+Your task is to **populate every field of the `ProstataPatient` schema** (see the schema definition below) with the information contained in the document, applying the rules and conventions described in this instruction.
+
+---
+
+## 1. Overall structure of the output
+
+Your final answer must contain **two sections**:
+
+1. **`reasoning`** – a short, human‑readable description of how you derived the values (optional but highly recommended for debugging).
+2. **`extracted`** – a literal Python‑style representation of the populated data structure, exactly matching the schema (see examples).  
+   Use the enum members shown in the schema (e.g. `ProstatapatientitemUntersuchtesPraeparat.Biopsie`).  
+   If a field cannot be determined, set it to `None`.  
+   Lists (`makroskopie_liste`, `begutachtung_liste`, `calculation_details`) must be present (empty list `[]` if no data).
+
+---
+
+## 2. Schema reference (simplified)
+
+```python
+class ProstataPatient:
+    patientenid: str
+    befunde: List[ProstatapatientItem]
+
+class ProstatapatientItem:
+    untersuchtes_praeparat: ProstatapatientitemUntersuchtesPraeparat   # Biopsie | Resektat
+    histologiedatum: str                                            # DD.MM.YYYY (Ausgang)
+    befundausgang: str                                              # same as histologiedatum
+    ort: str                                                        # city from address line
+    pathologisches_institut: str
+    einsendenummer: str                                             # Journalnummer
+    massgeblicher_befund: ProstatapatientitemMassgeblicherBefund   # Ja (default) | Nein
+    tumornachweis: ProstatapatientitemTumornachweis               # Ja if any tumor, else Nein
+    icdo3_histologie: str                                           # from ICD‑O‑3 line
+    who_isup_grading: ProstatapatientitemWhoIsupGrading            # enum value, see below
+    gleason: str                                                    # overall (worst) Gleason string
+    makroskopie_liste: List[ProstatapatientitemItem]               # one entry per macro line
+    begutachtung_liste: List[ProstatapatientitemItem]              # one entry per core (nr)
+    art_der_biopsie: Optional[ProstatapatientitemArtDerBiopsie]    # Fusionsbiopsie, Stanzbiopsie, …
+    entnahmestelle_der_biopsie: Optional[ProstatapatientitemEntnahmestelleDerBiopsie]
+    lokalisation_icd10: Optional[str]                              # e.g. "C61"
+    anzahl_entnommener_stanzen: int                                 # sum of gesamt_stanzen
+    anzahl_befallener_stanzen: int                                  # count of cores with tumor=True
+    maximaler_anteil_befallener_stanzen: Optional[int]             # rounded % of the core with highest % involvement
+    calculation_details: Optional[List[str]]                        # human‑readable % calculations
+    tnm_nach: Optional[str]                                        # e.g. "UICC"
+    ptnm: Optional[str]                                            # e.g. "pT2c pN0"
+    lymphgefaessinvasion: Optional[ProstatapatientitemLymphgefaessinvasion]
+    veneninvasion: Optional[ProstatapatientitemVeneninvasion]
+    perineurale_invasion: Optional[ProstatapatientitemPerineuraleInvasion]
+    lk_befallen_untersucht: Optional[str]                           # e.g. "0/12"
+    r_klassifikation: Optional[ProstatapatientitemRKlassifikation]  # R0, R1, …
+    resektionsrand: Optional[str]                                   # free text if given
+```
+
+### Enum values you may need
+| Enum | Members (use exactly as shown) |
+|------|--------------------------------|
+| `ProstatapatientitemUntersuchtesPraeparat` | `Biopsie`, `Resektat` |
+| `ProstatapatientitemMassgeblicherBefund` | `Ja`, `Nein` |
+| `ProstatapatientitemTumornachweis` | `Ja`, `Nein` |
+| `ProstatapatientitemWhoIsupGrading` | `Graduierungsgruppe 1`, `Graduierungsgruppe 2`, `Graduierungsgruppe 3`, `Graduierungsgruppe 4`, `Graduierungsgruppe 5` |
+| `ProstatapatientitemArtDerBiopsie` | `Fusionsbiopsie`, `Stanzbiopsie`, `Systematische Biopsie` (any exact wording from the report) |
+| `ProstatapatientitemEntnahmestelleDerBiopsie` | `Primärtumor`, `Periprostatik`, `Andere` |
+| `ProstatapatientitemLymphgefaessinvasion` | `L0`, `L1` |
+| `ProstatapatientitemVeneninvasion` | `V0`, `V1` |
+| `ProstatapatientitemPerineuraleInvasion` | `Pn0`, `Pn1` |
+| `ProstatapatientitemRKlassifikation` | `R0`, `R1`, `R2` |
+
+---
+
+## 3. Extraction workflow (step‑by‑step)
+
+### 3.1 Basic identifiers
+| Document element | Target field | Extraction rule |
+|------------------|--------------|-----------------|
+| **Journalnummer** (e.g. `E/2026/010567`) | `einsendenummer` & `patientenid` | Use the exact string. |
+| **Ausgang** (final date) | `histologiedatum` & `befundausgang` | Keep format `DD.MM.YYYY`. |
+| **Eingang** (optional) | ignore unless you need it for other purposes. |
+| **Institution header** (first line containing “Pathologisches Institut …”) | `pathologisches_institut` | Full line as appears. |
+| **City** – usually part of the address line after “|” (e.g. `80337 München`) | `ort` | Take the city name (`München`). |
+| **ICD‑10‑GM‑2024** line (`C61/G`) | `lokalisation_icd10` | Take the code before the slash (`C61`). |
+| **ICD‑O‑3** line (`8140/3`) | `icdo3_histologie` | Take the whole code (`8140/3`). |
+| **Klassifikation** section – look for `pTNM (UICC, …): …` | `tnm_nach` = “UICC”, `ptnm` = the string after the colon (e.g. `pT2c pN0`). |
+| **R‑Klassifikation** (e.g. `R0`) | `r_klassifikation` | Map to enum member. |
+| **Lymphknoten** line (`12 untersuchte … (0/12)`) | `lk_befallen_untersucht` | Use the fraction part (`0/12`). |
+| **Lymph‑/Venen‑/Perineurale Invasion** lines (`Lymphgefäßinvasion: nicht nachweisbar`) | Map to enum: `L0`/`V0`/`Pn0` if “nicht nachweisbar”, otherwise `L1`/`V1`/`Pn1`. If the line mentions “Perineurale Invasion” without “nicht”, set `Pn1`. |
+| **Resektionsrand** – if a line like “Resektionsrand frei” appears, copy the free‑text; otherwise leave `None`. |
+
+### 3.2 Specimen type
+- If the **Klinische Angaben** or **Übersandtes Material** contains the word **„Biopsie“**, set `untersuchtes_praeparat = Biopsie`.
+- If it contains **„Prostatektomie“, „Resektat“, „Radikale Prostatektomie“**, set `untersuchtes_praeparat = Resektat`.
+- For biopsies, determine `art_der_biopsie`:
+  - Contains **„Fusionsbiopsie“** → `Fusionsbiopsie`.
+  - Contains **„Stanzbiopsie“** or the word **„Stanz“** → `Stanzbiopsie`.
+  - Otherwise, if only “Biopsie” → `Systematische Biopsie` (or `None` if uncertain).
+- Set `entnahmestelle_der_biopsie` to `Primärtumor` for all biopsy reports unless the text explicitly mentions a different location (e.g. “Periprostatik”). If unclear, use `None`.
+
+### 3.3 Macro‑section (Makroskopie)
+Each numbered line after “Makroskopie:” describes one **group of cores**.
+
+Parsing rules:
+1. Extract the **core number** (`nr` = the leading integer).
+2. Determine **`gesamt_stanzen`**:
+   - If the line starts with a number followed by “bis” (e.g. “Zwei bis 0,9 cm …”) → the word before “bis” is the count (German cardinal: *Ein* =1, *Zwei* =2, *Drei* =3, *Vier* =4, *Fünf* =5, *Sechs* =6, *Sieben* =7, *Acht* =8, *Neun* =9, *Zehn* =10).  
+   - If the line starts with “Ein” or a plain number without “bis”, set `gesamt_stanzen = 1`.
+3. Extract the **length in cm** (`laenge_cm`):
+   - The number after “bis” (or after “Ein … messender …”) is the length, using a decimal point (`.`) as separator (replace commas with dots).  
+   - Example: “0,9 cm” → `0.9`.
+4. Create a `ProstatapatientitemItem` with fields `nr`, `gesamt_stanzen`, `laenge_cm`.  
+   - Other fields (`tumor`, `tumorausdehnung_mm`, `tumor_prozent`, `gleason`) are left `None` for now; they will be filled from the microscopic section.
+
+Collect all macro items into `makroskopie_liste`.  
+Compute **`anzahl_entnommener_stanzen`** as the sum of all `gesamt_stanzen`.
+
+### 3.4 Micro‑section (Mikroskopie) & Begutachtung
+The **Mikroskopie** section lists, for each core number, a description that includes a **tumour length** in mm (e.g. “Längsausdehnung 4,0 mm”).  
+The **Begutachtung** section provides the Gleason score (and WHO‑grading) for the same core numbers.
+
+Processing steps for each core number `nr` (1‑N):
+1. **Tumor presence**: If the corresponding line in *Mikroskopie* mentions “Längsausdehnung … mm” **or** the Begutachtung line contains a Gleason score, set `tumor = True`; otherwise `False`.
+2. **Tumour length** (`tumorausdehnung_mm`): Extract the numeric value (replace commas with dots). If no length is given, keep `None`.
+3. **Tumour percentage** (`tumor_prozent`):
+   - Find the macro entry with the same `nr`. Use its `laenge_cm` (single length) as the length of **one** core.  
+   - Compute `percentage = (tumour_length_mm) / (laenge_cm * 10) * 100`.  
+   - Round to two decimal places (keep as float). If either value is missing, keep `None`.
+4. **Gleason**: Copy the exact Gleason string from the Begutachtung line (e.g. `"4 + 3 = 7b"`). If no Gleason, keep `None`.
+5. Build a `ProstatapatientitemItem` with the fields above and add it to `begutachtung_liste`.
+
+After processing all cores:
+- **`tumornachweis`** = `Ja` if any `tumor=True`, else `Nein`.
+- **`anzahl_befallener_stanzen`** = count of items with `tumor=True`.
+- **Overall Gleason (`gleason`)**: Choose the *worst* (highest numeric sum) Gleason among all tumour‑positive cores. If multiple have the same sum, keep the one with the highest secondary pattern (e.g., 5+4 > 4+5). If no tumour, set `None`.
+- **WHO/ISUP grading (`who_isup_grading`)**: Take the enum that matches the *worst* Graduierungsgruppe found in Begutachtung (e.g., “Graduierungsgruppe 5” → `Graduierungsgruppe 5`). If none, `None`.
+- **`maximaler_anteil_befallener_stanzen`**: From all cores with a calculated `tumor_prozent`, take the maximum, round to the nearest integer (`int(round(value))`). If no percentages, `None`.
+- **`calculation_details`**: For each tumour‑positive core, add a string `"Nr {nr}: {tumour_length_mm}mm / {laenge_cm*10}mm = {percentage:.2f}%"`. If no tumour cores, set `[]` or `None`.
+
+### 3.5 Default / fallback values
+- `massgeblicher_befund` is **always** `Ja` unless the report explicitly says it is a preliminary or addendum (rare).  
+- If any field cannot be found, use `None` (or an empty list where a list is required).  
+- Do **not** fabricate data; only use information present in the document.
+
+### 3.6 Special cases
+| Situation | Action |
+|-----------|--------|
+| **Multiple specimens** (e.g., both a biopsy and a resection in the same report) | Treat each specimen as a separate `ProstatapatientItem`. Use the same `patientenid` but different `einsendenummer` if separate numbers are given; otherwise keep a single item. |
+| **Missing macro length** for a core that has tumour length | Skip percentage calculation for that core; set `tumor_prozent = None`. |
+| **Perineurale Invasion only mentioned in one core** | Set `perineurale_invasion = Pn1`. If never mentioned, `Pn0`. |
+| **Lymph‑/Venen‑invasion described as “nicht nachweisbar”** | Map to `L0`, `V0`, `Pn0`. |
+| **ICD‑10 line missing** | Keep `lokalisation_icd10 = None`. |
+| **Gleason line without WHO group** | Still record Gleason; WHO grading stays `None` unless found elsewhere. |
+
+---
+
+## 4. Example of a correctly formatted output (shortened)
+
+```python
+patientenid='E/2026/010567'
+befunde=[
+    ProstatapatientItem(
+        untersuchtes_praeparat=ProstatapatientitemUntersuchtesPraeparat.Biopsie,
+        histologiedatum='06.03.2026',
+        befundausgang='06.03.2026',
+        ort='München',
+        pathologisches_institut='Pathologisches Institut der LMU',
+        einsendenummer='E/2026/010567',
+        massgeblicher_befund=ProstatapatientitemMassgeblicherBefund.Ja,
+        tumornachweis=ProstatapatientitemTumornachweis.Ja,
+        icdo3_histologie='8140/3',
+        who_isup_grading=ProstatapatientitemWhoIsupGrading.Graduierungsgruppe_2,
+        gleason='3 + 4 = 7a',
+        makroskopie_liste=[ProstatapatientitemItem(nr=1, gesamt_stanzen=1, laenge_cm=1.7), …],
+        begutachtung_liste=[ProstatapatientitemItem(nr=1, tumor=False, …),
+                            ProstatapatientitemItem(nr=9, tumor=True, tumorausdehnung_mm=1.5,
+                                                    tumor_prozent=8.33, gleason='3 + 4 = 7a'), …],
+        art_der_biopsie=ProstatapatientitemArtDerBiopsie.Fusionsbiopsie,
+        entnahmestelle_der_biopsie=ProstatapatientitemEntnahmestelleDerBiopsie.Primärtumor,
+        lokalisation_icd10='C61',
+        anzahl_entnommener_stanzen=15,
+        anzahl_befallener_stanzen=2,
+        maximaler_anteil_befallener_stanzen=13,
+        calculation_details=['Nr 9: 1.5mm / 18.0mm = 8.33%', 'Nr 15: 2.0mm / 16.0mm = 12.5%'],
+        tnm_nach=None,
+        ptnm=None,
+        lymphgefaessinvasion=None,
+        veneninvasion=None,
+        perineurale_invasion=None,
+        lk_befallen_untersucht=None,
+        r_klassifikation=None,
+        resektionsrand=None
+    )
+]
+````
+
+---
+
+## Iteration 39 — extract_custom.predict
+
+**Score:** 0.8620964627819049
+
+````
+**Task Overview**
+You are given the full text of a German prostate pathology report.  
+Your job is to extract every piece of information required by the **ProstataPatient** data model and output a single Python‑style representation that can be directly used to instantiate the model (as shown in the examples).
+
+**General Extraction Rules**
+1. **Identifiers**
+   * `Journalnummer` → `patientenid` **and** `einsendenummer`.
+2. **Dates**
+   * Use the `Ausgang` date as both `histologiedatum` and `befundausgang`.
+3. **Institution & Location**
+   * `Pathologisches Institut …` → `pathologisches_institut`.
+   * The city (e.g., “München”) → `ort`.
+4. **Specimen Type**
+   * The report always concerns a prostate specimen → `untersuchtes_praeparat = Biopsie`.
+   * Determine `art_der_biopsie` from the clinical note:
+     * Contains “Stanzbiopsie” → `Stanzbiopsie`
+     * Contains “Fusionsbiopsie” → `Fusionsbiopsie`
+     * Otherwise default to `Stanzbiopsie`.
+   * `entnahmestelle_der_biopsie` is always `Primärtumor` for prostate biopsies.
+5. **Massgeblicher Befund**
+   * All supplied reports are final pathology reports → `massgeblicher_befund = Ja`.
+6. **Tumor Presence**
+   * If any core is listed as tumor‑positive in the **Begutachtung** paragraph → `tumornachweis = Ja`, otherwise `Nein`.
+7. **ICD / WHO / Gleason**
+   * `ICD‑10‑GM‑2024:` line → extract the code (e.g., `C61`). If the line says “keine Kodierung” or is missing → `lokalisation_icd10 = None`.
+   * `ICD‑O‑3:` line → `icdo3_histologie` (e.g., `8140/3`). If missing → `None`.
+   * `WHO‑Graduierungsgruppe X` → map to `who_isup_grading = Graduierungsgruppe X`. If missing → `None`.
+   * The highest Gleason sum appearing in the **Begutachtung** paragraph becomes the overall `gleason` (e.g., `5 + 5 = 10`). If no invasive carcinoma → `None`.
+8. **Macroscopic (Makroskopie) List**
+   * Each numbered line under **Makroskopie** corresponds to one entry in `makroskopie_liste`.
+   * Parse the pattern:
+     * “Ein 1,6 cm messender Stanzzylinder” → `gesamt_stanzen = 1`, `laenge_cm = 1.6`.
+     * “Drei bis 1,4 cm messende Stanzzylinder” → `gesamt_stanzen = 3`, `laenge_cm = 1.4`.
+     * “Zwei bis 0,8 cm messende Stanzzylinder” → `gesamt_stanzen = 2`, `laenge_cm = 0.8`.
+   * Numbers may be written as words (Ein, Zwei, Drei, Vier, …) – map them to integers.
+   * Store each as `ProstatapatientitemItem(nr=<nr>, gesamt_stanzen=<int>, laenge_cm=<float>)`.
+9. **Microscopic (Begutachtung) List**
+   * The **Begutachtung** paragraph enumerates which cores contain carcinoma and which are tumor‑free.
+   * For every core (1 … N) create an entry:
+     * `nr` = core number.
+     * `tumor` = `True` if the core appears in the positive list, else `False`.
+     * If `tumor = True` extract:
+       * Gleason score from the corresponding line in **Begutachtung** (e.g., “Gleason 4 + 4 = 8” → `gleason='4 + 4 = 8'`).
+       * Tumor length in mm from the same line (e.g., “Längsausdehnung 9,0 mm” → `tumorausdehnung_mm = 9.0`). If not given → `None`.
+       * `tumor_prozent` is **not** directly reported; compute it in step 10.
+     * If `tumor = False` set all three fields to `None`.
+10. **Derived Quantities**
+    * `anzahl_entnommener_stanzen` = sum of `gesamt_stanzen` over **all** entries in `makroskopie_liste`.
+    * `anzahl_befallener_stanzen` = count of cores with `tumor = True`.
+    * **Maximum tumor‑percentage per core** (`maximaler_anteil_befallener_stanzen`):
+      * For each tumor‑positive core:
+        * Convert the macroscopic length to millimetres: `laenge_mm = laenge_cm * 10`.
+        * If the core contains multiple cylinders (`gesamt_stanzen > 1`), total length = `laenge_mm * gesamt_stanzen`.
+        * Compute `percentage = (tumorausdehnung_mm / total_length_mm) * 100`.
+        * Round to the nearest integer.
+      * The maximum of these percentages becomes `maximaler_anteil_befallener_stanzen`.
+      * Store each intermediate calculation as a string in `calculation_details`, e.g. `"Nr 3: 9.0mm / 21.0mm = 42%"`.
+    * If there is no tumor, both `maximaler_anteil_befallener_stanzen` and `calculation_details` are `None`.
+11. **Optional / Not‑Applicable Fields**
+    * For biopsy reports, the following fields are always `None` (unless explicitly present):  
+      `tnm_nach`, `ptnm`, `lymphgefaessinvasion`, `veneninvasion`, `perineurale_invasion`, `lk_befallen_untersucht`, `r_klassifikation`, `resektionsrand`, `lokalisation_icd10` (if not given), `icdo3_histologie` (if not given), `who_isup_grading` (if not given), `gleason` (if no invasive carcinoma), `tumor_prozent` (individual core percentages are not stored, only the max is).
+12. **Output Formatting**
+    * Produce **exactly** one Python‑like assignment:
+      ```
+      patientenid='<Journalnummer>' befunde=[ProstatapatientItem(...)]
+      ```
+    * Use the enum names exactly as shown in the examples (e.g., `ProstatapatientitemUntersuchtesPraeparat.Biopsie`, `ProstatapatientitemMassgeblicherBefund.Ja`, etc.).
+    * Omit any fields that are `None` **only** if the schema permits omission; otherwise include them with a literal `None`.
+    * Preserve the order of fields as in the example outputs.
+
+**Step‑by‑Step Strategy (to be followed by the assistant)**
+1. **Parse Header** – locate `Journalnummer`, `Eingang`, `Ausgang`, institution lines, and city.
+2. **Detect Biopsy Type** – scan the `Klinische Angaben` line for keywords.
+3. **Build Makroskopie List** – iterate over the numbered lines after “Makroskopie:”, translate German number words, extract length and count.
+4. **Identify Positive Cores** – from the “Begutachtung:” paragraph, read the list of core numbers that contain carcinoma.
+5. **Extract Per‑Core Details** – for each positive core, locate its detailed description line (e.g., “3. Gleason … Längsausdehnung …”) and pull Gleason and length.
+6. **Create Begutachtung List** – fill entries for all cores 1…N, inserting the data from step 5 where applicable.
+7. **Compute Derived Numbers** – total cores, tumor‑positive cores, percentages, max percentage, and build `calculation_details`.
+8. **Assemble Final JSON‑like Object** – fill all required fields, apply defaults, and output the single assignment line.
+
+**Important Domain Knowledge**
+* German decimal separator is a comma (`,`) – convert to `.` for numeric values.
+* “Ein”, “Zwei”, “Drei”, “Vier”, “Fünf”, “Sechs”, “Sieben”, “Acht”, “Neun”, “Zehn” map to 1‑10.
+* “bis” in the macroscopic description indicates the number of cylinders (e.g., “Zwei bis 0,8 cm messende Stanzzylinder” → 2 cylinders of 0.8 cm each).
+* Gleason scores may contain suffixes like “a”, “b” (e.g., “7a”, “7b”). Keep the full string after the `=` sign (including the suffix) as the Gleason value.
+* WHO‑Graduierungsgruppe numbers correspond directly to the enum values (e.g., “Graduierungsgruppe 5” → `Graduierungsgruppe 5`).
+* If the report states “ICD‑10‑GM‑2024: keine Kodierung (kein invasives Malignom)”, set `lokalisation_icd10 = None`.
+
+Follow these rules precisely to ensure the extracted data matches the `ProstataPatient` schema and achieves the highest evaluation score.
+````
+
+---
+
+## Iteration 44 — extract_custom.predict
+
+**Score:** 2.770262224710713
+
+````
+# Instruction for extracting a **ProstataPatient** record from German prostate pathology reports
+
+You will be given the full plain‑text of a single pathology report (German language) that follows the typical layout used by the Pathologisches Institut der LMU (and similar German pathology labs).  
+Your job is to **produce a single JSON object that conforms exactly to the `ProstataPatient` schema** (see the schema definition below).  
+All fields must be present; if a field cannot be determined from the report, set its value to `null` (or the enum value `Nein`/`Ja` where appropriate).  
+
+Below is a complete, step‑by‑step guide that you must follow for every report.
+
+---
+
+## 1. Overall structure of the output
+
+```json
+{
+  "patientenid": "<string>",
+  "befunde": [
+    {
+      "untersuchtes_praeparat": "<enum>",
+      "histologiedatum": "<DD.MM.YYYY>",
+      "befundausgang": "<DD.MM.YYYY>",
+      "ort": "<string>",
+      "pathologisches_institut": "<string>",
+      "einsendenummer": "<string>",
+      "massgeblicher_befund": "<enum>",
+      "tumornachweis": "<enum>",
+      "icdo3_histologie": "<string>",
+      "who_isup_grading": "<enum>",
+      "gleason": "<string>",
+      "makroskopie_liste": [
+        {
+          "nr": <int>,
+          "gesamt_stanzen": <int>,
+          "laenge_cm": <float>
+        },
+        …
+      ],
+      "begutachtung_liste": [
+        {
+          "nr": <int>,
+          "tumor": <enum>,
+          "tumorausdehnung_mm": <float|null>,
+          "tumor_prozent": <float|null>,
+          "gleason": "<string|null>"
+        },
+        …
+      ],
+      "art_der_biopsie": "<enum>",
+      "entnahmestelle_der_biopsie": "<enum>",
+      "lokalisation_icd10": "<string|null>",
+      "anzahl_entnommener_stanzen": <int>,
+      "anzahl_befallener_stanzen": <int>,
+      "maximaler_anteil_befallener_stanzen": <int|null>,
+      "calculation_details": ["<string>", …],
+      "tnm_nach": "<string|null>",
+      "ptnm": "<string|null>",
+      "lymphgefaessinvasion": "<enum|null>",
+      "veneninvasion": "<enum|null>",
+      "perineurale_invasion": "<enum|null>",
+      "lk_befallen_untersucht": "<enum|null>",
+      "r_klassifikation": "<enum|null>",
+      "resektionsrand": "<enum|null>"
+    }
+  ]
+}
+```
+
+All enum values must match the exact names defined in the schema (see the **Enum reference** section).
+
+---
+
+## 2. Section‑wise extraction strategy
+
+### 2.1 Header (institution & city)
+* The first line that contains “Pathologisches Institut” is the **`pathologisches_institut`**.
+* The city is the last part of the address line (e.g. “München”). Use it for **`ort`**.
+
+### 2.2 Journal information
+* **`patientenid`** and **`einsendenummer`** are the *Journalnummer* (e.g. `E/2026/005789`).
+* **`histologiedatum`** and **`befundausgang`** are the *Ausgang* date (format `DD.MM.YYYY`).
+
+### 2.3 Clinical information (determine biopsy type)
+Search the **Klinische Angaben** paragraph:
+* If the text contains **“Fusionsbiopsie”** → `art_der_biopsie = Fusionsbiopsie`.
+* Else if it contains **“Stanzbiopsie”** or “Stanz” → `art_der_biopsie = Stanzbiopsie`.
+* Otherwise default to `Stanzbiopsie`.
+
+The same paragraph tells you the **`untersuchtes_praeparat`** – always `Biopsie` for these reports.
+
+### 2.4 Sampling site
+Unless the report explicitly mentions a different site (e.g. “nach vorheriger Therapie” etc.), set **`entnahmestelle_der_biopsie` = Primärtumor**.
+
+### 2.5 Massgeblicher Befund
+All supplied examples are final pathology reports → set **`massgeblicher_befund = Ja`**. If a report is clearly a *Vorbericht* (e.g., contains “Vorbericht” or “vorläufig”), use `Nein`.
+
+### 2.6 ICD codes
+* Look for a line starting with **“Klassifikation:”**.
+* Extract the ICD‑10 code after `ICD-10-GM-2024:` – it appears as `C61/G`. Use the part before the slash (`C61`) for **`lokalisation_icd10`**.
+* Extract the ICD‑O‑3 morphology code after `ICD-O-3:` (e.g. `8140/3`) for **`icdo3_histologie`**.
+* If a line `TNM‑Nach:` or `pTNM:` is present, copy the value to **`tnm_nach`** / **`ptnm`** respectively; otherwise set them to `null`.
+
+### 2.7 WHO‑ISUP grading & overall Gleason
+* In the **Begutachtung** section each positive core lists a WHO‑Grading‑Gruppe (e.g. “WHO‑Graduierungsgruppe 4”).  
+  – Keep the highest numeric group and map it to the enum `Graduierungsgruppe X` (X = 1‑5).  
+* The Gleason sum is the highest “Gleason A + B = C” found. Store the full string (e.g. `5 + 5 = 10`) in **`gleason`**.
+
+### 2.8 Makroskopie list
+Parse the **Makroskopie** block line by line (numbers 1‑…):
+* Typical line: `1. Ein 1,8 cm messender Stanzzylinder`
+  – `nr` = the leading number.
+  – `gesamt_stanzen` = **1** (default).
+  – `laenge_cm` = the decimal number (comma `,` → dot `.`) as a float.
+* Special case: `4. Drei bis 1,4 cm messende Stanzzylinder`
+  – `gesamt_stanzen` = **3** (the word “Drei” indicates three cores).
+  – `laenge_cm` = the length after the word “bis” (here `1,4` → `1.4`).
+* If a line contains “Ein … Stanzzylinder” with no explicit count, assume `gesamt_stanzen = 1`.
+* Preserve the order; the list must contain an entry for **every** numbered line.
+
+### 2.9 Begutachtung list
+Parse the **Begutachtung** block. For each core number that appears (whether tumor‑positive or not) create an entry:
+
+| Field | How to fill |
+|-------|-------------|
+| `nr` | core number |
+| `tumor` | `Ja` if the core is listed in the Begutachtung paragraph with a Gleason/WHO entry **or** the preceding Mikroskopie paragraph mentions a tumor length for that core; otherwise `Nein`. |
+| `tumorausdehnung_mm` | The numeric length in **mm** that follows “Längsausdehnung … mm”. If the core is tumor‑negative, set `null`. |
+| `gleason` | The Gleason string from the same line (e.g. `4 + 3 = 7b`). If `tumor = Nein`, set `null`. |
+| `tumor_prozent` | **Leave null for now** – it will be calculated in step 2.10. |
+
+If a core number is **not** mentioned anywhere in Begutachtung (e.g., only listed in Makroskopie as tumor‑free), still create an entry with `tumor = Nein` and all other fields `null`.
+
+### 2.10 Derived numeric values
+
+1. **`anzahl_entnommener_stanzen`**  
+   Sum of `gesamt_stanzen` over the whole `makroskopie_liste`.
+
+2. **`anzahl_befallener_stanzen`**  
+   Count of entries in `begutachtung_liste` where `tumor = Ja`.
+
+3. **`tumor_prozent`** for each tumor‑positive core  
+   ```
+   tumor_prozent = (tumorausdehnung_mm) / (laenge_cm * 10) * 100
+````
+
+---
+
+## Iteration 48 — extract_custom.predict
+
+**Score:** 2.8058558558558557
+
+````
+# --------------------------------------------------------------
+#  Prostata‑Pathologie‑Extraction – Detailed Assistant Instructions
+# --------------------------------------------------------------
+
+## 1.  Goal
+You will receive the full plain‑text of one or more German pathology reports that describe prostate needle biopsies (e.g. “Biopsie”, “Fusionsbiopsie”, “Stanzbiopsie”).  
+Your task is to **extract every piece of information required by the `ProstataPatient` data model** and output a **single JSON‑compatible Python‑like object** that follows the schema exactly.
+
+The output must contain **all required fields** and **only the allowed enum values**. Optional fields are set to `null` unless they appear explicitly in the text.
+
+---
+
+## 2.  Target Schema (Python‑like)
+
+```python
+{
+    "patientenid": str,                     # = Journalnummer (E/xxxx/xxxx)
+    "befunde": List[ProstatapatientItem]    # one item per report in the document
+}
+```
+
+`ProstatapatientItem` (all fields required unless marked optional):
+
+```python
+{
+    "untersuchtes_praeparat": "Biopsie",                     # constant for these reports
+    "histologiedatum": "dd.mm.yyyy",                        # = Ausgang‑Datum
+    "befundausgang": "dd.mm.yyyy",                          # same as histologiedatum
+    "ort": str,                                             # city from header (e.g. "München")
+    "pathologisches_institut": str,                         # first line of the header
+    "einsendenummer": str,                                  # Journalnummer
+    "massgeblicher_befund": "Ja",                           # always “Ja” for definitive reports
+    "tumornachweis": "Ja" | "Nein",                        # “Ja” if any core is tumor‑positive
+    "icdo3_histologie": str,                                # value after “ICD‑O‑3:”
+    "who_isup_grading": str,                                # highest WHO‑Graduierungsgruppe, e.g. "Graduierungsgruppe 3"
+    "gleason": str,                                         # highest Gleason string, e.g. "4 + 3 = 7b"
+    "makroskopie_liste": List[MakroItem],                   # one entry per line in Makroskopie
+    "begutachtung_liste": List[BegItem],                    # one entry per core (1‑15)
+    "art_der_biopsie": "Fusionsbiopsie" | "Stanzbiopsie",   # see §4
+    "entnahmestelle_der_biopsie": "Primärtumor",            # default for prostate biopsies
+    "lokalisation_icd10": str | None,                      # value after “ICD‑10‑GM‑2024:”, else null
+    "anzahl_entnommener_stanzen": int,                      # sum of gesamt_stanzen over all makroskopie entries
+    "anzahl_befallener_stanzen": int,                       # count of cores with tumor=True
+    "maximaler_anteil_befallener_stanzen": int,            # round(max tumor_prozent) to nearest whole percent
+    "calculation_details": List[str] | None,               # optional, human‑readable calculations
+    # The following fields are set only if explicitly mentioned, otherwise null:
+    "tnm_nach": str | None,
+    "ptnm": str | None,
+    "lymphgefaessinvasion": str | None,
+    "veneninvasion": str | None,
+    "perineurale_invasion": str | None,
+    "lk_befallen_untersucht": str | None,
+    "r_klassifikation": str | None,
+    "resektionsrand": str | None
+}
+```
+
+`MakroItem` (used in `makroskopie_liste`):
+
+```python
+{
+    "nr": int,                # core number (1‑15)
+    "gesamt_stanzen": int,    # total tissue pieces taken from this core
+    "laenge_cm": float        # length of the core in cm (single value)
+}
+```
+
+`BegItem` (used in `begutachtung_liste`):
+
+```python
+{
+    "nr": int,                     # core number
+    "tumor": bool,                 # True if a Gleason entry exists for this core
+    "tumorausdehnung_mm": float | None,   # length in mm from “Längsausdehnung … mm”
+    "tumor_prozent": float | None,        # (tumorausdehnung_mm / (laenge_cm*10))*100, rounded to 2 decimals
+    "gleason": str | None                 # Gleason string from the “Begutachtung” line
+}
+```
+
+**Enum values must match exactly** (including capitalisation and spelling).
+
+---
+
+## 3.  General Extraction Strategy (to be followed for every report)
+
+1. **Split the document into separate reports**  
+   - A new report always starts with a line containing the institution name (e.g. “Pathologisches Institut …”) followed by a “Journalnummer” line.  
+   - If only one report is present, treat the whole text as one report.
+
+2. **Header parsing** (first block before “Pathologische Begutachtung”):
+   - `pathologisches_institut` = first non‑empty line.
+   - `ort` = city name that appears after the postal code (pattern `\d{5}\s+([A-Za-zÄÖÜäöüß]+)`).
+   - `einsendenummer` = value after “Journalnummer”.
+   - `histologiedatum` & `befundausgang` = value after “Ausgang” (format `dd.mm.yyyy`).
+
+3. **Determine `art_der_biopsie`**  
+   - Search the **Klinische Angaben** section.  
+   - If the exact word **“Fusionsbiopsie”** appears → `art_der_biopsie = "Fusionsbiopsie"`.  
+   - Otherwise → `art_der_biopsie = "Stanzbiopsie"`.
+
+4. **Parse `makroskopie_liste`** (section titled **Makroskopie**):
+   - Each line starts with a number “n.” followed by a description.  
+   - Extract the core number `nr`.  
+   - Find **all** occurrences of “Stanzzylinder” (or “Stanzzylinder” synonyms) and read the length in cm (`X, Y` → replace comma with dot).  
+   - Count how many “Stanzzylinder” (or “Stanzstücke”) appear → this is `gesamt_stanzen`.  
+   - If multiple lengths are listed for the same core, **use the first length** for `laenge_cm` (the specification expects a single value).  
+   - Append a `MakroItem` with the extracted values.
+
+5. **Parse `begutachtung_liste`** (section titled **Begutachtung**):
+   - Each line begins with the core number followed by a period.  
+   - If the line contains the word **“Gleason”**, set `tumor = True`; otherwise `tumor = False`.  
+   - When `tumor = True` extract:
+     - `gleason` = the exact Gleason string (e.g. “3 + 4 = 7a”). Preserve the suffix (a/b) if present.
+     - `tumorausdehnung_mm` = number before “mm” after “Längsausdehnung”. Convert commas to dots.
+   - When `tumor = False` set the three optional fields to `None`.
+
+6. **Calculate tumor percentages** for each tumor‑positive core:
+   - Retrieve the matching `laenge_cm` from `makroskopie_liste` (same `nr`).  
+   - Compute `tumor_prozent = (tumorausdehnung_mm / (laenge_cm * 10)) * 100`.  
+   - Round **to two decimal places** (Python `round(value, 2)`).  
+   - Store the value in the corresponding `BegItem`.  
+   - If `calculation_details` is requested, add a string:  
+     `"Nr {nr}: {tumorausdehnung_mm} mm / {laenge_cm} cm = {tumor_prozent}%"`  
+     (use the same rounding as above).
+
+7. **Derive aggregate fields**:
+   - `anzahl_entnommener_stanzen` = sum of `gesamt_stanzen` over all `MakroItem`s.
+   - `anzahl_befallener_stanzen` = count of `BegItem`s where `tumor == True`.
+   - `maximaler_anteil_befallener_stanzen` = `int(round(max(tumor_prozent values)))`. If no tumor, set to `0`.
+   - `tumornachweis` = `"Ja"` if any `tumor == True`, else `"Nein"`.
+
+8. **WHO‑ISUP grading & Gleason**:
+   - Scan all `BegItem`s for the pattern `WHO‑Graduierungsgruppe X`.  
+   - Keep the **highest numeric X** → map to string `"Graduierungsgruppe X"` for `who_isup_grading`.  
+   - Scan all Gleason strings, keep the **highest overall Gleason score** (compare the numeric sum after the “=” sign; if equal, prefer the one with higher primary pattern). Store that exact string in `gleason`.
+
+9. **ICD codes**:
+   - `icdo3_histologie` = text after “ICD‑O‑3:” (strip whitespace).  
+   - `lokalisation_icd10` = text after “ICD‑10‑GM‑2024:” (strip). If the line is missing → `null`.
+
+10. **Optional TNM‑related fields**:  
+    - Look for exact keywords (case‑insensitive):
+      - “TNM nach …”, “pTNM …”, “Lymphgefäßinvasion …”, “Veneninvasion …”, “perineurale Invasion …”, “Lymphknoten befallen …”, “R‑Klassifikation …”, “Resektionsrand …”.
+    - If found, capture the value that follows the keyword (up to line end) and assign to the corresponding field.  
+    - If not found, set the field to `null`.
+
+11. **Finalize the `ProstatapatientItem`**:
+    - Populate all fields as described, ensuring correct Python types (`str`, `int`, `float`, `bool`, `list`, `None`).  
+    - The order of keys does **not** matter, but the structure must be exactly as the schema.
+
+12. **Wrap into the top‑level object**:
+    ```python
+    {
+        "patientenid": "<einsendenummer>",
+        "befunde": [ <ProstatapatientItem for report 1>, <ProstatapatientItem for report 2>, ... ]
+    }
+    ```
+
+---
+
+## 4.  Important Formatting Rules
+
+* **Numbers**: German decimal commas (e.g. “1,8 cm”) must be converted to a dot before casting to `float`.
+* **Dates**: Keep the original format `dd.mm.yyyy` (do not reformat).
+* **Boolean values**: Use Python booleans `True` / `False` inside `BegItem`; the outer enum fields use the strings `"Ja"` / `"Nein"`.
+* **Null values**: Represent missing optional fields with the literal `None` (Python null).
+* **Lists**: Use standard Python list syntax (`[item1, item2, …]`). Items themselves are Python‑like dicts.
+* **Enum strings**: Must match exactly the values listed in the schema (including capitalisation, spaces, and umlauts).
+* **Rounding**:
+  - `tumor_prozent` → two decimal places.
+  - `maximaler_anteil_befallener_stanzen` → nearest whole percent (`int(round(...))`).
+
+---
+
+## 5.  Example (single report)
+
+Given the sample text in the prompt, the correct output is:
+
+```python
+{
+    "patientenid": "E/2026/007456",
+    "befunde": [
+        {
+            "untersuchtes_praeparat": "Biopsie",
+            "histologiedatum": "03.02.2026",
+            "befundausgang": "03.02.2026",
+            "ort": "München",
+            "pathologisches_institut": "Pathologisches Institut der LMU",
+            "einsendenummer": "E/2026/007456",
+            "massgeblicher_befund": "Ja",
+            "tumornachweis": "Ja",
+            "icdo3_histologie": "8140/3",
+            "who_isup_grading": "Graduierungsgruppe 3",
+            "gleason": "4 + 3 = 7b",
+            "makroskopie_liste": [
+                {"nr": 1, "gesamt_stanzen": 1, "laenge_cm": 1.8},
+                {"nr": 2, "gesamt_stanzen": 1, "laenge_cm": 1.5},
+                {"nr": 3, "gesamt_stanzen": 1, "laenge_cm": 2.0},
+                {"nr": 4, "gesamt_stanzen": 1, "laenge_cm": 1.6},
+                {"nr": 5, "gesamt_stanzen": 1, "laenge_cm": 1.4},
+                {"nr": 6, "gesamt_stanzen": 1, "laenge_cm": 1.7},
+                {"nr": 7, "gesamt_stanzen": 1, "laenge_cm": 1.9},
+                {"nr": 8, "gesamt_stanzen": 1, "laenge_cm": 1.3},
+                {"nr": 9, "gesamt_stanzen": 1, "laenge_cm": 1.6},
+                {"nr": 10, "gesamt_stanzen": 1, "laenge_cm": 2.1},
+                {"nr": 11, "gesamt_stanzen": 1, "laenge_cm": 1.5},
+                {"nr": 12, "gesamt_stanzen": 1, "laenge_cm": 1.8},
+                {"nr": 13, "gesamt_stanzen": 1, "laenge_cm": 1.4},
+                {"nr": 14, "gesamt_stanzen": 1, "laenge_cm": 1.7},
+                {"nr": 15, "gesamt_stanzen": 1, "laenge_cm": 1.6}
+            ],
+            "begutachtung_liste": [
+                {"nr": 1, "tumor": False, "tumorausdehnung_mm": None, "tumor_prozent": None, "gleason": None},
+                {"nr": 2, "tumor": False, "tumorausdehnung_mm": None, "tumor_prozent": None, "gleason": None},
+                {"nr": 3, "tumor": True,  "tumorausdehnung_mm": 2.5, "tumor_prozent": 12.5,  "gleason": "3 + 4 = 7a"},
+                {"nr": 4, "tumor": False, "tumorausdehnung_mm": None, "tumor_prozent": None, "gleason": None},
+                {"nr": 5, "tumor": False, "tumorausdehnung_mm": None, "tumor_prozent": None, "gleason": None},
+                {"nr": 6, "tumor": False, "tumorausdehnung_mm": None, "tumor_prozent": None, "gleason": None},
+                {"nr": 7, "tumor": False, "tumorausdehnung_mm": None, "tumor_prozent": None, "gleason": None},
+                {"nr": 8, "tumor": False, "tumorausdehnung_mm": None, "tumor_prozent": None, "gleason": None},
+                {"nr": 9, "tumor": True,  "tumorausdehnung_mm": 1.0, "tumor_prozent": 6.25,  "gleason": "3 + 3 = 6"},
+                {"nr": 10,"tumor": True,  "tumorausdehnung_mm": 3.0, "tumor_prozent": 14.29, "gleason": "3 + 4 = 7a"},
+                {"nr": 11,"tumor": False, "tumorausdehnung_mm": None, "tumor_prozent": None, "gleason": None},
+                {"nr": 12,"tumor": False, "tumorausdehnung_mm": None, "tumor_prozent": None, "gleason": None},
+                {"nr": 13,"tumor": False, "tumorausdehnung_mm": None, "tumor_prozent": None, "gleason": None},
+                {"nr": 14,"tumor": False, "tumorausdehnung_mm": None, "tumor_prozent": None, "gleason": None},
+                {"nr": 15,"tumor": True,  "tumorausdehnung_mm": 4.0, "tumor_prozent": 25.0,  "gleason": "4 + 3 = 7b"}
+            ],
+            "art_der_biopsie": "Stanzbiopsie",
+            "entnahmestelle_der_biopsie": "Primärtumor",
+            "lokalisation_icd10": "C61/G",
+            "anzahl_entnommener_stanzen": 15,
+            "anzahl_befallener_stanzen": 4,
+            "maximaler_anteil_befallener_stanzen": 25,
+            "calculation_details": [
+                "Nr 3: 2.5 mm / 2.0 cm = 12.5%",
+                "Nr 9: 1.0 mm / 1.6 cm = 6.25%",
+                "Nr 10: 3.0 mm / 2.1 cm = 14.29%",
+                "Nr 15: 4.0 mm / 1.6 cm = 25.0%"
+            ],
+            "tnm_nach": None,
+            "ptnm": None,
+            "lymphgefaessinvasion": None,
+            "veneninvasion": None,
+            "perineurale_invasion": None,
+            "lk_befallen_untersucht": None,
+            "r_klassifikation": None,
+            "resektionsrand": None
+        }
+    ]
+}
+```
+
+*The above example demonstrates the exact formatting, types, and enum values expected.*
+
+---
+
+## 6.  Checklist for Every Report
+
+- [ ] Header fields extracted (`pathologisches_institut`, `ort`, `einsendenummer`, dates).
+- [ ] `art_der_biopsie` correctly identified.
+- [ ] All 15 (or fewer) `MakroItem`s created with correct `nr`, `gesamt_stanzen`, `laenge_cm`.
+- [ ] All 15 `BegItem`s created, tumor status, lengths, percentages, Gleason strings.
+- [ ] Percentages calculated with two‑decimal precision; `calculation_details` optional but correct if present.
+- [ ] Aggregate counts (`anzahl_*`) computed.
+- [ ] Highest WHO‑group and Gleason selected.
+- [ ] ICD‑O‑3 and ICD‑10 values captured (or `None`).
+- [ ] Optional TNM‑related fields set to `None` unless found.
+- [ ] Final Python‑like object matches the schema exactly.
+
+Follow this procedure verbatim for every input you receive. Good luck!
+````
+
+---
+
+## Iteration 49 — extract_custom.predict
+
+**Score:** 0.8620964627819049
+
+````
+**Task Overview**
+You must read a German‑language pathology report concerning the prostate and produce a structured representation that conforms exactly to the **ProstataPatient** schema (see below).  
+The report may describe either a surgical specimen (radical prostatectomy, TUR‑P, etc.) or a core‑needle biopsy (Stanzbiopsie). All relevant clinical, macroscopic, microscopic and staging information has to be extracted, transformed and placed into the correct fields, using the enumerated values defined in the schema.
+
+**Schema Summary (Python‑like notation)**
+```
+ProstataPatient:
+    patientenid: str                     # journal number, e.g. "E/2026/016789"
+    befunde: List[ProstatapatientItem]
+
+ProstatapatientItem:
+    untersuchtes_praeparat: Enum[UntersuchtesPraeparat]   # "Resektat" or "Biopsie"
+    histologiedatum: str               # date of report finalisation (Ausgang) – format DD.MM.YYYY
+    befundausgang: str                 # same as histologiedatum
+    ort: str                           # city of the pathology institute (e.g. "München")
+    pathologisches_institut: str       # full institute name from header
+    einsendenummer: str                # same as patientenid
+    massgeblicher_befund: Enum[MassgeblicherBefund]      # always "Ja" for a final report
+    tumornachweis: Enum[Tumornachweis]                  # "Ja" if any tumor is present, else "Nein"
+    icdo3_histologie: Optional[str]    # ICD‑O‑3 morphology code (e.g. "8140/3")
+    who_isup_grading: Optional[Enum[WhoIsupGrading]]    # e.g. Graduierungsgruppe 2
+    gleason: Optional[str]             # highest Gleason pattern in the whole case (e.g. "4 + 3 = 7b")
+    makroskopie_liste: List[MakroskopieItem]
+    begutachtung_liste: List[BegutachtungItem]
+    art_der_biopsie: Optional[Enum[ArtDerBiopsie]]      # only for biopsies, value "Stanzbiopsie"
+    entnahmestelle_der_biopsie: Optional[Enum[EntnahmestelleDerBiopsie]]  # e.g. "Primärtumor"
+    lokalisation_icd10: Optional[str]  # topography code, e.g. "C61"
+    anzahl_entnommener_stanzen: int    # total number of cores / specimens listed under Makroskopie
+    anzahl_befallener_stanzen: int     # number of cores/specimens with tumor = true
+    maximaler_anteil_befallener_stanzen: Optional[int]   # max % (rounded to nearest integer)
+    calculation_details: Optional[List[str]]   # human‑readable formulas used for % calculation
+    tnm_nach: Optional[Enum[TnmNach]]            # e.g. "UICC"
+    ptnm: Optional[str]               # full pTNM string (e.g. "pT2c pN0")
+    lymphgefaessinvasion: Optional[Enum[Lymphgefaessinvasion]]   # L0/L1/…
+    veneninvasion: Optional[Enum[Veneninvasion]]               # V0/V1/…
+    perineurale_invasion: Optional[Enum[PerineuraleInvasion]]   # Pn0/Pn1/…
+    lk_befallen_untersucht: Optional[str]   # e.g. "0/12"
+    r_klassifikation: Optional[Enum[RKlassifikation]]           # R0/R1/…
+    resektionsrand: Optional[str]       # free‑text if reported, otherwise null
+
+MakroskopieItem:
+    nr: int                # sequential number as appears in the list
+    gesamt_stanzen: int    # usually 1 for a core; for a resection the total number of tissue pieces
+    laenge_cm: float       # length in centimeters (use decimal point)
+
+BegutachtungItem:
+    nr: int                # core/specimen number (matches MakroskopieItem.nr)
+    tumor: bool            # true if tumor is reported in this core/specimen
+    tumorausdehnung_mm: Optional[float]   # tumor length in mm (if given)
+    tumor_prozent: Optional[float]        # tumor length / core length * 100 (rounded to one decimal)
+    gleason: Optional[str]                # Gleason score for this core (if given)
+```
+
+**General Extraction Rules**
+
+1. **Identify the patient / case**
+   * `patientenid` and `einsendenummer` = the *Journalnummer* (e.g. `E/2026/016789`).
+   * `ort` = city name that appears in the institute header (usually “München”).
+   * `pathologisches_institut` = the full line(s) that contain “Pathologisches Institut …”.
+
+2. **Dates**
+   * Use the *Ausgang* date as both `histologiedatum` and `befundausgang`.  
+   * If *Ausgang* is missing, fall back to *Eingang*.
+
+3. **Specimen type (`untersuchtes_praeparat`)**
+   * If the report mentions “Radikale Prostatektomie”, “TUR‑P”, “Resektat”, “Prostatektomiepräparat”, etc. → **Resektat**.  
+   * If the report lists “Stanzbiopsien”, “Biopsie”, “Kernbiopsie” → **Biopsie**.
+
+4. **Biopsy‑specific fields**
+   * `art_der_biopsie` = **Stanzbiopsie** (the only supported value for this task).  
+   * `entnahmestelle_der_biopsie` = **Primärtumor** unless the report explicitly states a different site (e.g. “Transition zone”, “Periprostatik”).  
+   * `lokalisation_icd10` is taken from the *Klassifikation* section (topography code, e.g. “C61”). If absent, set to `null`.
+
+5. **Macroscopic description (`Makroskopie`)**
+   * The section starts with “Makroskopie:” and then enumerates items (1., 2., …).  
+   * For each enumerated line extract:
+     * `nr` = the leading number.
+     * `gesamt_stanzen` = the number of tissue pieces described for that line.  
+       – For biopsies this is always **1**.  
+       – For resections, if the line says “Ein nicht orientierbares Weichgewebsexzidat bis 6,2 cm.” treat it as a single specimen (`gesamt_stanzen = 1`).  
+     * `laenge_cm` = the numeric length before “cm” (replace commas with decimal points).  
+   * Build `makroskopie_liste` preserving the order.
+
+6. **Microscopic description (`Begutachtung` / `Mikroskopie`)**
+   * Locate the part where individual cores/specimens are described with Gleason scores, WHO groups, tumor length, etc.  
+   * For each core that has a tumor:
+     * `tumor = true`
+     * `tumorausdehnung_mm` = length in **mm** (the report gives “Längsausdehnung X mm”).  
+     * Compute `tumor_prozent = (tumorausdehnung_mm / (laenge_cm * 10)) * 100`.  
+       – Keep one decimal place (e.g. 20.6).  
+       – Add a string to `calculation_details` in the form `"Nr {nr}: {tumorausdehnung_mm} mm / {laenge_cm*10:.1f} mm = {tumor_prozent:.1f} %"` .  
+     * `gleason` = exact string from the report (e.g. “3 + 4 = 7a”).  
+   * For cores without tumor:
+     * `tumor = false` and all other fields `null`.  
+   * Append each core (both tumor‑positive and tumor‑negative) to `begutachtung_liste` in the order of their numbers.
+
+7. **Overall tumor presence**
+   * `tumornachweis = "Ja"` if **any** `begutachtung_liste` entry has `tumor = true`; otherwise `"Nein"`.
+
+8. **Overall Gleason & WHO grade**
+   * Determine the *highest* Gleason score present (compare primary + secondary pattern numerically; the larger primary+secondary sum wins; if equal, the higher secondary pattern wins).  
+   * Set `gleason` to that highest string.  
+   * Set `who_isup_grading` to the WHO/ISUP group that belongs to that highest Gleason (the report usually states it directly; otherwise map:  
+     – Gleason 3+3 → Graduierungsgruppe 1  
+     – Gleason 3+4 or 4+3 → Graduierungsgruppe 2 (3+4) or 3 (4+3) as reported)  
+     – Gleason 4+4 → Graduierungsgruppe 4, etc.).  
+   * Use the exact enum label from the schema, e.g. `Graduierungsgruppe 2`.
+
+9. **Staging (only for resections)**
+   * Extract the *pTNM* line (starts with “pTNM” or “pT…”) and store the whole string in `ptnm`.  
+   * Set `tnm_nach = "UICC"` (the only supported source).  
+   * From the same line or a separate “Klassifikation” line extract:
+     * `lymphgefaessinvasion` → L0/L1/… (look for “Lymphgefäßinvasion: nicht nachweisbar” → L0).  
+     * `veneninvasion` → V0/V1 (e.g. “Venöse Invasion: nicht nachweisbar” → V0).  
+     * `perineurale_invasion` → Pn0/Pn1 (e.g. “Perineurale Invasion: nicht nachweisbar” → Pn0).  
+   * `lk_befallen_untersucht` = “{positive}/{examined}” from the lymph‑node statement (e.g. “0/12”).  
+   * `r_klassifikation` = R0/R1 based on margin statements (“R0” = tumor‑free).  
+   * `resektionsrand` = any free‑text description of the resection margin if present; otherwise `null`.
+
+10. **Counts**
+    * `anzahl_entnommener_stanzen` = length of `makroskopie_liste`.  
+    * `anzahl_befallener_stanzen` = count of entries in `begutachtung_liste` where `tumor = true`.  
+    * `maximaler_anteil_befallener_stanzen` = the **rounded** integer of the highest `tumor_prozent` among all positive cores (round half‑up). If no tumor, set to `null`.
+
+11. **Missing / optional data**
+    * Whenever a field cannot be found, set it to `null` (or omit the enum value).  
+    * Do **not** fabricate values; only use what is explicitly stated or can be derived mathematically as described above.
+
+12. **Output format**
+    * First provide a short **reasoning** paragraph (plain text) that explains how you derived the key fields and any assumptions made.  
+    * Then output the **extracted** data exactly as shown in the examples:
+      ```
+      patientenid='...' befunde=[ProstatapatientItem(...), ...]
+      ```
+    * Use the enum syntax shown in the examples (e.g. `<ProstatapatientitemUntersuchtesPraeparat.Resektat: 'Resektat'>`).  
+    * Preserve the order of items in lists exactly as they appear in the source document.
+
+**Domain‑specific notes**
+* German decimal separator is a comma (“,”). Convert it to a dot for numeric fields.  
+* Lengths in the macroscopic section are always given in centimeters; tumor lengths are given in millimeters.  
+* Gleason scores may contain a trailing letter (“a”, “b”) – keep it verbatim.  
+* WHO/ISUP grading may be written as “WHO‑Graduierungsgruppe 2” or “WHO‑ISUP‑Gruppe 2”; map both to the same enum.  
+* The report may contain a “Kommentar” section – ignore it unless it contains additional numeric data needed for the fields above.  
+* For resection reports, the “Makroskopie” may describe a single large specimen; still create one `MakroskopieItem` with `gesamt_stanzen = 1`.  
+* If the report lists multiple tumor foci within the **same** specimen (as in Example 1), you may reuse the same `nr` for those entries; the schema permits duplicate `nr` values.
+
+Follow these rules precisely to achieve a high evaluation score. Good luck!
+````
+
+---
+
+## Iteration 55 — extract_custom.predict
+
+**Score:** 0.8620964627819049
+
+````
+**Task Overview**
+You are given the full text of a German pathology report concerning the prostate.  
+Your job is to **extract every piece of information required by the `ProstataPatient` schema** and present it in a structured, program‑friendly format.
+
+**Output Requirements**
+1. **Reasoning section** – a short, bullet‑point summary (≈5‑10 lines) that explains how you derived each field from the source text.  
+2. **Extracted data section** – a literal Python‑style representation exactly matching the examples, i.e.:
+
+```python
+patientenid='<ID>' befunde=[ProstatapatientItem(
+    untersuchtes_praeparat=<ProstatapatientitemUntersuchtesPraeparat. ... >,
+    histologiedatum='<DD.MM.YYYY>',
+    befundausgang='<DD.MM.YYYY>',
+    ort='<Stadt>',
+    pathologisches_institut='<Institut>',
+    einsendenummer='<Journalnummer>',
+    massgeblicher_befund=<ProstatapatientitemMassgeblicherBefund.Ja|Nein>,
+    tumornachweis=<ProstatapatientitemTumornachweis.Ja|Nein>,
+    icdo3_histologie='<ICD‑O‑3>'|None,
+    who_isup_grading=<ProstatapatientitemWhoIsupGrading.Graduierungsgruppe X>|None,
+    gleason='<Gleason‑Score>'|None,
+    makroskopie_liste=[ProstatapatientitemItem(nr=1, gesamt_stanzen=1, laenge_cm=<float>|None), ...],
+    begutachtung_liste=[ProstatapatientitemItem(nr=1, tumor=True|False, tumorausdehnung_mm=<float>|None,
+                         tumor_prozent=<float>|None, gleason='<Gleason>'|None), ...],
+    art_der_biopsie=<ProstatapatientitemArtDerBiopsie.Stanzbiopsie|...>|None,
+    entnahmestelle_der_biopsie=<ProstatapatientitemEntnahmestelleDerBiopsie.Primärtumor|...>|None,
+    lokalisation_icd10='<ICD‑10>'|None,
+    anzahl_entnommener_stanzen=<int>,
+    anzahl_befallener_stanzen=<int>,
+    maximaler_anteil_befallener_stanzen=<float>|None,
+    calculation_details=[<optional strings>]|None,
+    tnm_nach='<UICC|...>'|None,
+    ptnm='<pTNM‑String>'|None,
+    lymphgefaessinvasion=<ProstatapatientitemLymphgefaessinvasion.L0|L1|...>|None,
+    veneninvasion=<ProstatapatentitemVeneninvasion.V0|V1|...>|None,
+    perineurale_invasion=<ProstatapatientitemPerineuraleInvasion.Pn0|Pn1|...>|None,
+    lk_befallen_untersucht='<positiv>/<gesamt>'|None,
+    r_klassifikation=<ProstatapatientitemRKlassifikation.R0|R1|...>|None,
+    resektionsrand='<Text>'|None
+)]
 ````
 
 ---
