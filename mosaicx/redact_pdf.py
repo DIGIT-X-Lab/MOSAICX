@@ -13,20 +13,8 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-# PHI type → redaction fill color (RGB 0-1)
-_PHI_COLORS: dict[str, tuple[float, float, float]] = {
-    "NAME": (0.91, 0.46, 0.38),      # coral
-    "DATE": (0.31, 0.80, 0.77),      # teal
-    "EMAIL": (0.27, 0.55, 0.82),     # blue
-    "SSN": (0.97, 0.76, 0.23),       # gold
-    "PHONE": (0.73, 0.44, 0.81),     # purple
-    "MRN": (0.95, 0.55, 0.25),       # orange
-    "ADDRESS": (0.30, 0.75, 0.44),   # green
-    "ID": (0.45, 0.70, 0.85),        # sky blue
-    "OTHER": (0.55, 0.55, 0.55),     # grey
-}
-
-_DEFAULT_COLOR = (0.55, 0.55, 0.55)
+# Uniform redaction color — black bars, no PHI type leakage
+_REDACTION_COLOR = (0.0, 0.0, 0.0)
 
 
 def create_redacted_pdf(
@@ -69,7 +57,7 @@ def create_redacted_pdf(
         original = entry.get("original", "")
         phi_type = entry.get("phi_type", "OTHER")
         replacement = entry.get("replacement", "[REDACTED]")
-        color = _PHI_COLORS.get(phi_type, _DEFAULT_COLOR)
+        color = _REDACTION_COLOR
         spans = entry.get("spans", [])
 
         if spans:
