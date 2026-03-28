@@ -1639,6 +1639,7 @@ def summarize(
     documents: str | Path | list[str | Path] | None = None,
     patient_id: str = "unknown",
     optimized: str | Path | None = None,
+    provenance: bool = False,
 ) -> dict[str, Any]:
     """Summarize multiple reports into a patient timeline.
 
@@ -1655,6 +1656,16 @@ def summarize(
         Patient identifier for the summary.
     optimized:
         Path to an optimized DSPy program to load.
+    provenance:
+        If ``True``, include source provenance data in the result.
+
+        .. note::
+            Full per-field provenance across multiple source documents is
+            not yet implemented for the summarizer.  When *provenance* is
+            ``True``, ``_provenance_requested`` is set to ``True`` in the
+            ``_mosaicx`` envelope as a signal that the caller requested it,
+            but no ``_provenance`` key is added to the output.
+            TODO: implement multi-document provenance for summarize.
 
     Returns
     -------
@@ -1715,6 +1726,7 @@ def summarize(
         output,
         pipeline="summarize",
         metrics=getattr(summarizer, "_last_metrics", None),
+        provenance=provenance,
     )
     return output
 
