@@ -168,6 +168,64 @@ def regex_scrub_phi_with_mappings(
 # ---------------------------------------------------------------------------
 
 
+def _build_redaction_map_from_entities(
+    original: str,
+    phi_entities: list[dict[str, str]],
+) -> list[dict[str, Any]]:
+    """Build redaction map by locating LLM-reported PHI entities in the source.
+
+    Instead of diffing original vs redacted text (which breaks on whitespace
+    differences), this function takes the PHI entities reported by the LLM
+    and ``find()``s each one in the original text.  This is robust to any
+    formatting differences between the LLM output and the source.
+
+    Parameters
+    ----------
+    original:
+        The original document text (unmodified).
+    phi_entities:
+        List of dicts with ``text`` (exact PHI string) and ``type``
+        (PHI category like NAME, DATE, etc.) as reported by the LLM.
+
+    Returns
+    -------
+    list[dict]
+        Redaction mappings with ``original``, ``replacement``, ``start``,
+        ``end``, ``phi_type``, ``method`` keys.  Sorted by ``start``.
+    """
+    mappings: list[dict[str, Any]] = []
+    claimed: set[tuple[int, int]] = set()
+
+    for entity in phi_entities:
+        phi_text = entity.get("text", "").strip()
+        phi_type = entity.get("type", "OTHER").upper()
+        if not phi_text:
+            continue
+
+        # Find the entity in the original text, skipping claimed positions
+        search_start = 0
+        while True:
+            pos = original.find(phi_text, search_start)
+            if pos == -1:
+                break
+            end = pos + len(phi_text)
+            if (pos, end) not in claimed:
+                claimed.add((pos, end))
+                mappings.append({
+                    "original": phi_text,
+                    "replacement": _REDACTED,
+                    "start": pos,
+                    "end": end,
+                    "phi_type": phi_type,
+                    "method": "llm",
+                })
+                break
+            search_start = pos + 1
+
+    mappings.sort(key=lambda m: m["start"])
+    return mappings
+
+
 def _compute_redaction_mappings(
     original: str,
     redacted: str,
@@ -408,6 +466,14 @@ def _build_dspy_classes():
         redacted_text: str = dspy.OutputField(
             desc="De-identified text with PHI removed or replaced"
         )
+        phi_entities: str = dspy.OutputField(
+            desc="JSON list of PHI entities found, each with 'text' (the "
+                 "exact original PHI string as it appears in document_text) "
+                 "and 'type' (one of: NAME, DATE, ADDRESS, ID, PHONE, EMAIL, "
+                 "SSN, MRN, OTHER). Example: "
+                 '[{"text": "Jane Doe", "type": "NAME"}, '
+                 '{"text": "1988-03-22", "type": "DATE"}]'
+        )
 
     # -- Module ------------------------------------------------------------
 
@@ -479,35 +545,36 @@ def _build_dspy_classes():
 
             # -- Build redaction map ------------------------------------------
             # Strategy:
-            # 1. Run regex on the ORIGINAL text to get regex mappings with
-            #    original-text positions and precise PHI type labels.
-            # 2. Diff original vs final scrubbed_text to find ALL redactions
-            #    (both LLM and regex) with original-text positions.
-            # 3. Label the diff mappings with PHI types using regex matching.
+            # 1. Parse the LLM's phi_entities output to get PHI text + type.
+            # 2. find() each entity in the ORIGINAL text to get positions.
+            # 3. Run regex on the ORIGINAL text to get regex mappings.
             # 4. Merge: regex mappings take priority for type labeling;
-            #    diff mappings add LLM-only detections.
+            #    LLM mappings add context-dependent detections.
             with track_step(metrics, "Redaction mapping", tracker):
+                # Parse LLM-reported PHI entities
+                import json as _json
+                try:
+                    raw_entities = _json.loads(
+                        getattr(llm_result, "phi_entities", "[]")
+                    )
+                    if not isinstance(raw_entities, list):
+                        raw_entities = []
+                except (ValueError, TypeError):
+                    raw_entities = []
+
+                llm_mappings = _build_redaction_map_from_entities(
+                    document_text, raw_entities,
+                )
+
                 if mode == "remove":
                     _, regex_mappings = regex_scrub_phi_with_mappings(
                         document_text,
                     )
-                    diff_mappings = _compute_redaction_mappings(
-                        document_text, scrubbed_text,
-                    )
-                    diff_mappings = _label_phi_types(
-                        document_text, diff_mappings,
-                    )
                     redaction_map = _merge_mappings(
-                        diff_mappings, regex_mappings,
+                        llm_mappings, regex_mappings,
                     )
                 else:
-                    # For pseudonymize/dateshift, diff to find LLM changes
-                    diff_mappings = _compute_redaction_mappings(
-                        document_text, scrubbed_text,
-                    )
-                    redaction_map = _label_phi_types(
-                        document_text, diff_mappings,
-                    )
+                    redaction_map = llm_mappings
 
             self._last_metrics = metrics
 
