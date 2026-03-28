@@ -149,62 +149,82 @@ def _redact_image(
 ) -> Path:
     """Create a redacted image with PHI removed.
 
-    Strategy: image → PDF → Tesseract OCR text layer → text-search
-    redaction → render back to image.  Tesseract (via PyMuPDF's
-    ``get_textpage_ocr``) produces bounding boxes in the image's
-    native pixel space, guaranteeing pixel-accurate redaction.
+    Runs in a **subprocess** to avoid memory corruption between
+    PaddlePaddle (loaded during document extraction) and
+    Tesseract/PyMuPDF (used for redaction).  The subprocess uses
+    image → PDF → Tesseract OCR → text-search redaction → render
+    back to image.
 
     Requires: PyMuPDF + Tesseract (``brew install tesseract``).
     """
-    try:
-        import fitz
-    except ImportError:
-        raise ImportError(
-            "PyMuPDF required for image redaction: pip install pymupdf"
-        )
+    import json
+    import subprocess
+    import sys
 
-    from PIL import Image as PILImage
+    phi_texts = [
+        entry.get("original", "").strip()
+        for entry in redaction_map
+        if entry.get("original", "").strip()
+    ]
 
-    orig = PILImage.open(source_image)
-    orig_w, orig_h = orig.size
-
-    # Step 1: Create a PDF page at the image's pixel dimensions
-    pdf_doc = fitz.open()
-    page = pdf_doc.new_page(width=orig_w, height=orig_h)
-    page.insert_image(page.rect, filename=str(source_image))
-
-    # Step 2: Run Tesseract OCR via PyMuPDF to create a text layer
-    try:
-        tp = page.get_textpage_ocr(dpi=150, full=True)
-    except Exception:
-        logger.warning(
-            "Tesseract OCR not available — cannot redact image. "
-            "Install with: brew install tesseract"
-        )
-        # Fallback: save original unredacted
+    if not phi_texts:
+        from PIL import Image as PILImage
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        orig.save(str(output_path))
-        pdf_doc.close()
+        PILImage.open(source_image).save(str(output_path))
         return output_path
 
-    # Step 3: Search for each PHI item and apply redactions
-    for entry in redaction_map:
-        original = entry.get("original", "").strip()
-        if not original:
-            continue
-        rects = page.search_for(original, textpage=tp)
-        for rect in rects:
-            page.add_redact_annot(rect, text="", fill=_REDACTION_COLOR)
-
-    page.apply_redactions()
-
-    # Step 4: Render back to image at original resolution
-    pix = page.get_pixmap(dpi=72)  # page is in pixel units
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    pix.save(str(output_path))
 
-    pdf_doc.close()
+    result = subprocess.run(
+        [sys.executable, "-c", _IMAGE_REDACT_SCRIPT],
+        input=json.dumps({
+            "source": str(source_image),
+            "output": str(output_path),
+            "phi_texts": phi_texts,
+        }),
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"Image redaction failed: {result.stderr.strip()}"
+        )
+
     return output_path
+
+
+_IMAGE_REDACT_SCRIPT = """\
+import json, sys
+from pathlib import Path
+
+data = json.loads(sys.stdin.read())
+source = data["source"]
+output = data["output"]
+phi_texts = data["phi_texts"]
+
+import fitz
+from PIL import Image
+
+orig_w, orig_h = Image.open(source).size
+
+doc = fitz.open()
+page = doc.new_page(width=orig_w, height=orig_h)
+page.insert_image(page.rect, filename=source)
+
+tp = page.get_textpage_ocr(dpi=150, full=True)
+
+for phi in phi_texts:
+    for rect in page.search_for(phi, textpage=tp):
+        page.add_redact_annot(rect, text="", fill=(0, 0, 0))
+
+page.apply_redactions()
+
+Path(output).parent.mkdir(parents=True, exist_ok=True)
+page.get_pixmap(dpi=72).save(output)
+doc.close()
+"""
 
 
 def _redact_text(
