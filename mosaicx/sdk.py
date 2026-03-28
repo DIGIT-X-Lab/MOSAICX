@@ -1059,6 +1059,7 @@ def _extract_single_text(
     verify_level: str,
     provenance: bool,
     think: str = "auto",
+    loaded_doc: Any | None = None,
 ) -> dict[str, Any]:
     """Core extraction logic for a single text input.
 
@@ -1090,9 +1091,23 @@ def _extract_single_text(
         verification_summary: dict[str, Any] | None = None
 
         if provenance:
-            from .provenance.resolve import build_provenance
+            from .pipelines.provenance import gather_evidence, resolve_provenance
 
-            output["_provenance"] = build_provenance(output, text)
+            extracted_fields = output.get("extracted", output)
+            evidence = gather_evidence(text, extracted_fields)
+            if loaded_doc is not None:
+                doc_for_provenance = loaded_doc
+            else:
+                from pathlib import Path as _Path
+
+                from .documents.models import LoadedDocument as _LoadedDocument
+
+                doc_for_provenance = _LoadedDocument(
+                    text=text,
+                    source_path=_Path("<text>"),
+                    format="text",
+                )
+            output["_provenance"] = resolve_provenance(doc_for_provenance, evidence)
 
         if verify:
             from .verify.engine import verify as _verify
@@ -1376,7 +1391,7 @@ def extract(
 
     # Extract from each loaded document
     def _do_extract(
-        name: str, doc_text: str, doc_meta: dict[str, Any],
+        name: str, doc_text: str, doc_meta: dict[str, Any], ldoc: Any,
     ) -> tuple[str, dict[str, Any] | None, str | None]:
         try:
             result = _extract_single_text(
@@ -1389,6 +1404,7 @@ def extract(
                 verify_level=verify_level,
                 provenance=provenance,
                 think=think,
+                loaded_doc=ldoc,
             )
             result["_document"] = doc_meta
             _set_envelope_fields(result, document=doc_meta, provenance=provenance)
@@ -1399,7 +1415,7 @@ def extract(
     if len(loaded) == 1:
         # Single document -- no threading needed
         name, doc_text, doc_meta, _loaded_doc = loaded[0]
-        name, result, error = _do_extract(name, doc_text, doc_meta)
+        name, result, error = _do_extract(name, doc_text, doc_meta, _loaded_doc)
         if error:
             result_dict: dict[str, Any] = {
                 "error": error, "_document": doc_meta,
@@ -1422,8 +1438,8 @@ def extract(
     max_w = min(max(1, workers), 32)
     with ThreadPoolExecutor(max_workers=max_w) as pool:
         futures = {
-            pool.submit(_do_extract, name, doc_text, doc_meta): (name, doc_meta)
-            for name, doc_text, doc_meta, _ldoc in loaded
+            pool.submit(_do_extract, name, doc_text, doc_meta, ldoc): (name, doc_meta)
+            for name, doc_text, doc_meta, ldoc in loaded
         }
         for future in as_completed(futures):
             name, doc_meta = futures[future]
@@ -1451,6 +1467,8 @@ def _deidentify_single_text(
     text: str,
     *,
     mode: str,
+    loaded_doc: Any | None = None,
+    provenance: bool = False,
 ) -> dict[str, Any]:
     """Core de-identification logic for a single text input."""
     valid_modes = {"remove", "pseudonymize", "dateshift"}
@@ -1469,6 +1487,10 @@ def _deidentify_single_text(
     output: dict[str, Any] = {"redacted_text": result.redacted_text}
     redaction_map = getattr(result, "redaction_map", None)
     if redaction_map is not None:
+        if provenance and loaded_doc is not None and redaction_map:
+            from .pipelines.provenance import enrich_redaction_map
+
+            redaction_map = enrich_redaction_map(loaded_doc, redaction_map)
         output["redaction_map"] = redaction_map
     _attach_envelope(
         output,
@@ -1537,7 +1559,7 @@ def deidentify(
 
     # --- Text-only path (single result) ---
     if text is not None:
-        return _deidentify_single_text(text, mode=mode)
+        return _deidentify_single_text(text, mode=mode, provenance=provenance)
 
     # --- Document-based path ---
     assert documents is not None
@@ -1550,10 +1572,12 @@ def deidentify(
     )
 
     def _do_deid(
-        name: str, doc_text: str, doc_meta: dict[str, Any],
+        name: str, doc_text: str, doc_meta: dict[str, Any], loaded_doc: Any,
     ) -> tuple[str, dict[str, Any] | None, str | None]:
         try:
-            result = _deidentify_single_text(doc_text, mode=mode)
+            result = _deidentify_single_text(
+                doc_text, mode=mode, loaded_doc=loaded_doc, provenance=provenance
+            )
             result["_document"] = doc_meta
             return name, result, None
         except Exception as exc:
@@ -1561,7 +1585,7 @@ def deidentify(
 
     if len(loaded) == 1:
         name, doc_text, doc_meta, _loaded_doc = loaded[0]
-        name, result, error = _do_deid(name, doc_text, doc_meta)
+        name, result, error = _do_deid(name, doc_text, doc_meta, _loaded_doc)
         if error:
             result_dict: dict[str, Any] = {
                 "error": error, "_document": doc_meta,
@@ -1584,8 +1608,8 @@ def deidentify(
     max_w = min(max(1, workers), 32)
     with ThreadPoolExecutor(max_workers=max_w) as pool:
         futures = {
-            pool.submit(_do_deid, name, doc_text, doc_meta): (name, doc_meta)
-            for name, doc_text, doc_meta, _ldoc in loaded
+            pool.submit(_do_deid, name, doc_text, doc_meta, ldoc): (name, doc_meta)
+            for name, doc_text, doc_meta, ldoc in loaded
         }
         for future in as_completed(futures):
             name, doc_meta = futures[future]

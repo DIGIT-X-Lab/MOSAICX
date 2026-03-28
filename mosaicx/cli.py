@@ -846,9 +846,11 @@ def extract(
         metrics = getattr(extractor, "_last_metrics", None)
 
     if provenance:
-        from .provenance.resolve import build_provenance
+        from .pipelines.provenance import gather_evidence, resolve_provenance
 
-        output_data["_provenance"] = build_provenance(output_data, doc.text)
+        extracted_fields = output_data.get("extracted", output_data)
+        evidence = gather_evidence(doc.text, extracted_fields)
+        output_data["_provenance"] = resolve_provenance(doc, evidence)
 
     if do_verify:
         from .sdk import verify as sdk_verify
@@ -2260,6 +2262,7 @@ def _deidentify_batch(
 @click.option("--output-dir", type=click.Path(path_type=Path), default=None, help="Output directory for batch results (used with --dir).")
 @click.option("--format", "formats", type=click.Choice(["json", "jsonl", "csv", "parquet"], case_sensitive=False), multiple=True, default=("json",), show_default=True, help="Output format(s) for batch results.")
 @click.option("--resume", is_flag=True, default=False, help="Resume batch processing from last checkpoint.")
+@click.option("--provenance", is_flag=True, default=False, help="Include source coordinates in redaction map.")
 def deidentify(
     document: Optional[Path],
     directory: Optional[Path],
@@ -2269,6 +2272,7 @@ def deidentify(
     output_dir: Optional[Path],
     formats: tuple[str, ...],
     resume: bool,
+    provenance: bool,
 ) -> None:
     """De-identify clinical documents by removing or replacing PHI.
 
@@ -2321,6 +2325,12 @@ def deidentify(
         result = deid(document_text=doc.text, mode=mode)
     redacted = result.redacted_text
     redaction_map = getattr(result, "redaction_map", None) or []
+
+    if provenance and redaction_map:
+        from .pipelines.provenance import enrich_redaction_map
+
+        redaction_map = enrich_redaction_map(doc, redaction_map)
+
     console.print(theme.ok("Scrubbed -- PHI has left the chat"))
 
     # Save if --output
@@ -2328,6 +2338,10 @@ def deidentify(
         save_data: dict[str, Any] = {"redacted_text": redacted, "mode": mode}
         if redaction_map:
             save_data["redaction_map"] = redaction_map
+        if provenance and doc.page_dimensions:
+            save_data.setdefault("_mosaicx", {}).setdefault("_document", {})[
+                "page_dimensions"
+            ] = doc.page_dimensions
         suffix = output.suffix.lower()
         if suffix in (".yaml", ".yml"):
             try:
