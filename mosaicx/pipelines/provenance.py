@@ -395,7 +395,7 @@ def gather_evidence(
     """
     import dspy
 
-    predict = dspy.Predict(GatherEvidence)  # type: ignore[name-defined]
+    predict = dspy.Predict(GatherEvidence)  # type: ignore[name-defined]  # noqa: F821
     result = predict(
         document_text=document_text,
         extracted_fields=json.dumps(extracted_fields),
