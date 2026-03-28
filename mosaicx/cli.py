@@ -2349,26 +2349,25 @@ def deidentify(
     if output is not None:
         suffix = output.suffix.lower()
 
-        # PDF output: produce a redacted copy of the source document
-        if suffix == ".pdf":
-            if doc.format != "pdf":
-                raise click.ClickException(
-                    "PDF output requires a PDF input document."
-                )
+        # Native format output: produce a redacted copy of the source document
+        _native_formats = {".pdf", ".png", ".jpg", ".jpeg", ".tiff", ".tif",
+                           ".bmp", ".txt", ".md"}
+        if suffix in _native_formats:
             # Auto-enable provenance for coordinate mapping
             if not provenance and redaction_map:
                 from .pipelines.provenance import enrich_redaction_map as _enrich
                 redaction_map = _enrich(doc, redaction_map)
 
-            from .redact_pdf import create_redacted_pdf
+            from .redact import create_redacted_document
 
-            create_redacted_pdf(
-                source_pdf=document,
+            create_redacted_document(
+                source_path=document,
                 output_path=output,
+                redacted_text=redacted,
                 redaction_map=redaction_map,
                 page_dimensions=doc.page_dimensions,
             )
-            console.print(theme.ok(f"Redacted PDF saved to {output}"))
+            console.print(theme.ok(f"Redacted document saved to {output}"))
         elif suffix in (".yaml", ".yml"):
             save_data: dict[str, Any] = {"redacted_text": redacted, "mode": mode}
             if redaction_map:
