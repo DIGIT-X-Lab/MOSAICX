@@ -104,3 +104,69 @@ class TestPypdfium2TextBlocks:
         txt_file.write_text("Patient presents with cough.")
         doc = load_document(txt_file)
         assert doc.page_dimensions == [], "text files should have no page_dimensions"
+
+
+class TestPaddleOCRTextBlocks:
+    def test_polygon_to_bbox_conversion(self):
+        """Normal 4-point axis-aligned polygon -> correct (x0, y0, x1, y1)."""
+        from mosaicx.documents.engines.paddleocr_engine import _polygon_to_bbox
+
+        poly = [[10, 20], [90, 20], [90, 50], [10, 50]]
+        assert _polygon_to_bbox(poly) == (10, 20, 90, 50)
+
+    def test_polygon_to_bbox_rotated(self):
+        """Rotated polygon -> axis-aligned bounding box."""
+        from mosaicx.documents.engines.paddleocr_engine import _polygon_to_bbox
+
+        # A diamond rotated 45 degrees: points not axis-aligned
+        poly = [[50, 10], [90, 30], [50, 50], [10, 30]]
+        assert _polygon_to_bbox(poly) == (10, 10, 90, 50)
+
+    def test_build_textblocks_from_ocr_result(self):
+        """2 texts + 2 polys -> 2 TextBlocks with correct offsets."""
+        from mosaicx.documents.engines.paddleocr_engine import _build_ocr_textblocks
+
+        rec_texts = ["Hello", "World"]
+        dt_polys = [
+            [[0, 0], [50, 0], [50, 10], [0, 10]],
+            [[0, 15], [60, 15], [60, 25], [0, 25]],
+        ]
+        blocks = _build_ocr_textblocks(rec_texts, dt_polys, page_num=1, global_offset=0)
+
+        assert len(blocks) == 2
+
+        # First block: "Hello", offset 0..5
+        assert blocks[0].text == "Hello"
+        assert blocks[0].start == 0
+        assert blocks[0].end == 5
+        assert blocks[0].page == 1
+        assert blocks[0].bbox == (0, 0, 50, 10)
+
+        # Second block: "World", offset 6..11 (5 + 1 for "\n" separator)
+        assert blocks[1].text == "World"
+        assert blocks[1].start == 6
+        assert blocks[1].end == 11
+        assert blocks[1].page == 1
+        assert blocks[1].bbox == (0, 15, 60, 25)
+
+    def test_build_textblocks_empty_input(self):
+        """Empty lists -> empty result."""
+        from mosaicx.documents.engines.paddleocr_engine import _build_ocr_textblocks
+
+        blocks = _build_ocr_textblocks([], [], page_num=1, global_offset=0)
+        assert blocks == []
+
+    def test_build_textblocks_mismatched_lengths(self):
+        """3 texts + 2 polys -> 2 TextBlocks (skip missing polys)."""
+        from mosaicx.documents.engines.paddleocr_engine import _build_ocr_textblocks
+
+        rec_texts = ["Alpha", "Beta", "Gamma"]
+        dt_polys = [
+            [[0, 0], [40, 0], [40, 10], [0, 10]],
+            [[0, 15], [35, 15], [35, 25], [0, 25]],
+        ]
+        blocks = _build_ocr_textblocks(rec_texts, dt_polys, page_num=2, global_offset=0)
+
+        assert len(blocks) == 2
+        assert blocks[0].text == "Alpha"
+        assert blocks[1].text == "Beta"
