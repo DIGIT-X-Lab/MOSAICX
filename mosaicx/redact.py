@@ -147,145 +147,64 @@ def _redact_image(
     redaction_map: list[dict[str, Any]],
     loaded_doc: Any = None,
 ) -> Path:
-    """Create a redacted image with black rectangles over PHI regions.
+    """Create a redacted image with PHI removed.
 
-    PaddleOCR internally preprocesses images (resize, unwarp) before
-    detection, so its bounding box coordinates are in the preprocessed
-    image's coordinate space — not the original.
+    Strategy: image → PDF → Tesseract OCR text layer → text-search
+    redaction → render back to image.  Tesseract (via PyMuPDF's
+    ``get_textpage_ocr``) produces bounding boxes in the image's
+    native pixel space, guaranteeing pixel-accurate redaction.
 
-    Strategy: draw redaction rectangles on the preprocessed image
-    (where coordinates are guaranteed correct), then resize back to
-    original dimensions.  The preprocessed image is captured during
-    document loading and stored on the LoadedDocument.
+    Requires: PyMuPDF + Tesseract (``brew install tesseract``).
     """
-    from PIL import Image, ImageDraw
+    try:
+        import fitz
+    except ImportError:
+        raise ImportError(
+            "PyMuPDF required for image redaction: pip install pymupdf"
+        )
 
-    orig_img = Image.open(source_image).convert("RGB")
-    orig_size = orig_img.size
+    from PIL import Image as PILImage
 
-    phi_texts = [
-        entry.get("original", "").strip()
-        for entry in redaction_map
-        if entry.get("original", "").strip()
-    ]
+    orig = PILImage.open(source_image)
+    orig_w, orig_h = orig.size
 
-    if not phi_texts:
+    # Step 1: Create a PDF page at the image's pixel dimensions
+    pdf_doc = fitz.open()
+    page = pdf_doc.new_page(width=orig_w, height=orig_h)
+    page.insert_image(page.rect, filename=str(source_image))
+
+    # Step 2: Run Tesseract OCR via PyMuPDF to create a text layer
+    try:
+        tp = page.get_textpage_ocr(dpi=150, full=True)
+    except Exception:
+        logger.warning(
+            "Tesseract OCR not available — cannot redact image. "
+            "Install with: brew install tesseract"
+        )
+        # Fallback: save original unredacted
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        orig_img.save(str(output_path))
+        orig.save(str(output_path))
+        pdf_doc.close()
         return output_path
 
-    # Run a SINGLE OCR pass to get coordinates and the preprocessed
-    # image dimensions. PaddleOCR's dt_polys are in the preprocessed
-    # image's coordinate space (which may differ from the original by
-    # padding/resizing). We scale coordinates back to the original
-    # image and draw directly on it.
-    ocr_blocks, ocr_pre_img = _single_ocr_pass(source_image)
+    # Step 3: Search for each PHI item and apply redactions
+    for entry in redaction_map:
+        original = entry.get("original", "").strip()
+        if not original:
+            continue
+        rects = page.search_for(original, textpage=tp)
+        for rect in rects:
+            page.add_redact_annot(rect, text="", fill=_REDACTION_COLOR)
 
-    if ocr_blocks:
-        draw = ImageDraw.Draw(orig_img)
+    page.apply_redactions()
 
-        # Compute scale factor: OCR coords are in preprocessed space
-        # (panel 0 of the triptych), original image may differ in size.
-        if ocr_pre_img is not None:
-            if hasattr(ocr_pre_img, "size"):
-                pre_w, pre_h = ocr_pre_img.size
-            else:
-                pre_h, pre_w = ocr_pre_img.shape[:2]
-            # Panel 0 width = total width / 3
-            panel_w = pre_w // 3
-            panel_h = pre_h
-        else:
-            panel_w, panel_h = orig_size
-
-        sx = orig_size[0] / panel_w if panel_w > 0 else 1.0
-        sy = orig_size[1] / panel_h if panel_h > 0 else 1.0
-
-        for block_text, block_bbox in ocr_blocks:
-            bt = block_text.strip()
-            for phi in phi_texts:
-                if phi in bt or bt in phi:
-                    x0, y0, x1, y1 = block_bbox
-                    # Scale from OCR space to original image space
-                    rx0 = x0 * sx - 3
-                    ry0 = y0 * sy - 3
-                    rx1 = x1 * sx + 3
-                    ry1 = y1 * sy + 3
-                    draw.rectangle(
-                        [rx0, ry0, rx1, ry1],
-                        fill=_REDACTION_COLOR,
-                    )
-                    break
-
-        result = orig_img
-    else:
-        logger.warning(
-            "OCR unavailable for image redaction — cannot redact."
-        )
-        result = orig_img
-
+    # Step 4: Render back to image at original resolution
+    pix = page.get_pixmap(dpi=72)  # page is in pixel units
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    out_suffix = output_path.suffix.lower()
-    fmt_map = {
-        ".jpg": "JPEG", ".jpeg": "JPEG",
-        ".png": "PNG",
-        ".tiff": "TIFF", ".tif": "TIFF",
-        ".bmp": "BMP",
-    }
-    img_format = fmt_map.get(out_suffix, "PNG")
-    result.save(str(output_path), format=img_format)
+    pix.save(str(output_path))
+
+    pdf_doc.close()
     return output_path
-
-
-def _single_ocr_pass(
-    image_path: Path,
-) -> tuple[list[tuple[str, tuple[float, float, float, float]]], Any]:
-    """Run PaddleOCR once and return blocks + preprocessed image together.
-
-    This ensures coordinates and image come from the SAME OCR run,
-    avoiding non-determinism issues across separate runs.
-    """
-    try:
-        from paddleocr import PaddleOCR
-    except ImportError:
-        logger.warning("PaddleOCR not available for image redaction")
-        return [], None
-
-    import io
-    import os
-    import sys
-
-    os.environ.setdefault("PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK", "True")
-
-    _out, _err = sys.stdout, sys.stderr
-    sys.stdout = io.StringIO()
-    sys.stderr = io.StringIO()
-    try:
-        ocr = PaddleOCR(lang="german")
-        results = list(ocr.predict(str(image_path)))
-    finally:
-        sys.stdout, sys.stderr = _out, _err
-
-    if not results:
-        return [], None
-
-    page_data = results[0]
-    res = page_data.json.get("res", {})
-    rec_texts = res.get("rec_texts", [])
-    dt_polys = res.get("dt_polys", [])
-
-    blocks: list[tuple[str, tuple[float, float, float, float]]] = []
-    for i in range(min(len(rec_texts), len(dt_polys))):
-        poly = dt_polys[i]
-        xs = [p[0] for p in poly]
-        ys = [p[1] for p in poly]
-        blocks.append((rec_texts[i], (min(xs), min(ys), max(xs), max(ys))))
-
-    pre_img = None
-    img_dict = getattr(page_data, "img", None)
-    if isinstance(img_dict, dict):
-        pre_img = img_dict.get("preprocessed_img")
-
-    return blocks, pre_img
 
 
 def _redact_text(
