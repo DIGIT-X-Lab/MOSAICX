@@ -353,10 +353,15 @@ def deidentify_text(
         deid = Deidentifier()
         result = deid(document_text=text, mode=mode)
 
-        return _json_result({
+        payload: dict[str, Any] = {
             "redacted_text": result.redacted_text,
             "mode": mode,
-        })
+        }
+        redaction_map = getattr(result, "redaction_map", None)
+        if redaction_map is not None:
+            payload["redaction_map"] = redaction_map
+
+        return _json_result(payload)
 
     except Exception as exc:
         logger.exception("deidentify_text failed")

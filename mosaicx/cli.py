@@ -2162,7 +2162,11 @@ def _deidentify_batch(
 
     def process_fn(text: str) -> dict:
         result = deid(document_text=text, mode=mode)
-        return {"redacted_text": result.redacted_text, "mode": mode}
+        payload: dict[str, Any] = {"redacted_text": result.redacted_text, "mode": mode}
+        redaction_map = getattr(result, "redaction_map", None)
+        if redaction_map is not None:
+            payload["redaction_map"] = redaction_map
+        return payload
 
     resume_id = "resume" if resume else None
     checkpoint_dir = output_dir_path / ".checkpoints" if resume else None
@@ -2316,11 +2320,14 @@ def deidentify(
     with theme.spinner(f"Scrubbing {document.name}... nothing to see here", console):
         result = deid(document_text=doc.text, mode=mode)
     redacted = result.redacted_text
+    redaction_map = getattr(result, "redaction_map", None) or []
     console.print(theme.ok("Scrubbed -- PHI has left the chat"))
 
     # Save if --output
     if output is not None:
-        save_data = {"redacted_text": redacted, "mode": mode}
+        save_data: dict[str, Any] = {"redacted_text": redacted, "mode": mode}
+        if redaction_map:
+            save_data["redaction_map"] = redaction_map
         suffix = output.suffix.lower()
         if suffix in (".yaml", ".yml"):
             try:
@@ -2359,6 +2366,32 @@ def deidentify(
             padding=(1, 2),
         )
     )
+
+    # Display redaction map summary
+    if redaction_map:
+        theme.section("PHI Detected", console, "02")
+        console.print(theme.info(f"{len(redaction_map)} items"))
+        original_text = doc.text
+        rt = theme.make_clean_table(show_header=True)
+        rt.add_column("Type", style=f"bold {theme.CORAL}", no_wrap=True)
+        rt.add_column("Original")
+        rt.add_column("Position", no_wrap=True)
+        rt.add_column("Method", no_wrap=True)
+        for entry in redaction_map:
+            phi_type = entry.get("phi_type", "OTHER")
+            orig_text = entry.get("original", "")
+            start = entry.get("start", 0)
+            end = entry.get("end", 0)
+            entry_method = entry.get("method", "")
+            # Compute line number from original text
+            line_no = original_text[:start].count("\n") + 1
+            rt.add_row(
+                phi_type,
+                _esc(repr(orig_text)),
+                f"line {line_no}, pos {start}-{end}",
+                f"[{entry_method}]",
+            )
+        console.print(Padding(rt, (0, 0, 0, 2)))
 
     doc_metrics = getattr(deid, "_last_metrics", None)
     if doc_metrics is not None:

@@ -1461,7 +1461,10 @@ def _deidentify_single_text(
 
     deid = Deidentifier()
     result = deid(document_text=text, mode=mode)
-    output = {"redacted_text": result.redacted_text}
+    output: dict[str, Any] = {"redacted_text": result.redacted_text}
+    redaction_map = getattr(result, "redaction_map", None)
+    if redaction_map is not None:
+        output["redaction_map"] = redaction_map
     _attach_envelope(
         output,
         pipeline="deidentify",
