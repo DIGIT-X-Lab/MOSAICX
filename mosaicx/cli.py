@@ -2294,6 +2294,7 @@ def deidentify(
     Examples:
       mosaicx deidentify --document note.pdf
       mosaicx deidentify --document note.pdf --mode pseudonymize
+      mosaicx deidentify --document note.pdf -o redacted.pdf
       mosaicx deidentify --dir notes/ --workers 4 --output-dir cleaned/
     """
     if document is None and directory is None:
@@ -2346,15 +2347,36 @@ def deidentify(
 
     # Save if --output
     if output is not None:
-        save_data: dict[str, Any] = {"redacted_text": redacted, "mode": mode}
-        if redaction_map:
-            save_data["redaction_map"] = redaction_map
-        if provenance and doc.page_dimensions:
-            save_data.setdefault("_mosaicx", {}).setdefault("_document", {})[
-                "page_dimensions"
-            ] = doc.page_dimensions
         suffix = output.suffix.lower()
-        if suffix in (".yaml", ".yml"):
+
+        # PDF output: produce a redacted copy of the source document
+        if suffix == ".pdf":
+            if doc.format != "pdf":
+                raise click.ClickException(
+                    "PDF output requires a PDF input document."
+                )
+            # Auto-enable provenance for coordinate mapping
+            if not provenance and redaction_map:
+                from .pipelines.provenance import enrich_redaction_map as _enrich
+                redaction_map = _enrich(doc, redaction_map)
+
+            from .redact_pdf import create_redacted_pdf
+
+            create_redacted_pdf(
+                source_pdf=document,
+                output_path=output,
+                redaction_map=redaction_map,
+                page_dimensions=doc.page_dimensions,
+            )
+            console.print(theme.ok(f"Redacted PDF saved to {output}"))
+        elif suffix in (".yaml", ".yml"):
+            save_data: dict[str, Any] = {"redacted_text": redacted, "mode": mode}
+            if redaction_map:
+                save_data["redaction_map"] = redaction_map
+            if provenance and doc.page_dimensions:
+                save_data.setdefault("_mosaicx", {}).setdefault("_document", {})[
+                    "page_dimensions"
+                ] = doc.page_dimensions
             try:
                 import yaml
             except ImportError:
@@ -2371,7 +2393,15 @@ def deidentify(
                 ),
                 encoding="utf-8",
             )
+            console.print(theme.ok(f"Saved to {output}"))
         else:
+            save_data = {"redacted_text": redacted, "mode": mode}
+            if redaction_map:
+                save_data["redaction_map"] = redaction_map
+            if provenance and doc.page_dimensions:
+                save_data.setdefault("_mosaicx", {}).setdefault("_document", {})[
+                    "page_dimensions"
+                ] = doc.page_dimensions
             if not suffix:
                 output = output.with_suffix(".json")
             output.parent.mkdir(parents=True, exist_ok=True)
@@ -2379,7 +2409,7 @@ def deidentify(
                 json.dumps(save_data, indent=2, default=str, ensure_ascii=False),
                 encoding="utf-8",
             )
-        console.print(theme.ok(f"Saved to {output}"))
+            console.print(theme.ok(f"Saved to {output}"))
 
     # Display
     theme.section(document.name, console, uppercase=False)
