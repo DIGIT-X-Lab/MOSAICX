@@ -395,7 +395,10 @@ def gather_evidence(
     """
     import dspy
 
-    predict = dspy.Predict(GatherEvidence)  # type: ignore[name-defined]  # noqa: F821
+    # Access lazy-loaded class via module __getattr__
+    import mosaicx.pipelines.provenance as _self
+    _GatherEvidence = getattr(_self, "GatherEvidence")
+    predict = dspy.Predict(_GatherEvidence)
     result = predict(
         document_text=document_text,
         extracted_fields=json.dumps(extracted_fields),
