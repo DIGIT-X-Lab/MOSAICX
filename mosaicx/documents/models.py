@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 
 class DocumentLoadError(Exception):
@@ -50,6 +50,7 @@ class LoadedDocument:
     pages: list[PageResult] = field(default_factory=list)
     text_blocks: list[TextBlock] = field(default_factory=list)
     page_dimensions: list[tuple[float, float]] = field(default_factory=list)
+    _ocr_preprocessed_img: Any = field(default=None, repr=False)
 
     @property
     def char_count(self) -> int:

@@ -364,6 +364,14 @@ def _assemble_document(
         if page.text:
             global_offset += len(page.text) + 2  # +2 for "\n\n" separator
 
+    # Capture preprocessed image from first OCR page (for image redaction)
+    ocr_preprocessed = None
+    for page in winners:
+        pre = getattr(page, "_preprocessed_img", None)
+        if pre is not None:
+            ocr_preprocessed = pre
+            break
+
     return LoadedDocument(
         text=full_text,
         source_path=source_path,
@@ -374,4 +382,5 @@ def _assemble_document(
         quality_warning=any_below,
         pages=winners,
         text_blocks=all_blocks,
+        _ocr_preprocessed_img=ocr_preprocessed,
     )

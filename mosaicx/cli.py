@@ -2366,6 +2366,7 @@ def deidentify(
                 redacted_text=redacted,
                 redaction_map=redaction_map,
                 page_dimensions=doc.page_dimensions,
+                loaded_doc=doc,
             )
             console.print(theme.ok(f"Redacted document saved to {output}"))
         elif suffix in (".yaml", ".yml"):

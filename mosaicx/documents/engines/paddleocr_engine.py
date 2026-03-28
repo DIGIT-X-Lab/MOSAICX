@@ -156,6 +156,7 @@ class PaddleOCREngine:
                 finally:
                     os.unlink(tmp_path)
 
+                preprocessed_img = None
                 if results:
                     page_data = results[0]
                     res = page_data.json.get("res", {})
@@ -172,6 +173,12 @@ class PaddleOCREngine:
                     ocr_blocks = _build_ocr_textblocks(
                         rec_texts, dt_polys, page_num=i + 1, global_offset=0
                     )
+                    # Capture the preprocessed image for coordinate-accurate
+                    # redaction later. PaddleOCR's dt_polys are in the
+                    # preprocessed image's coordinate space, not the original.
+                    img_dict = getattr(page_data, "img", None)
+                    if isinstance(img_dict, dict):
+                        preprocessed_img = img_dict.get("preprocessed_img")
                 else:
                     text = ""
                     confidence = 0.0
@@ -186,6 +193,9 @@ class PaddleOCREngine:
                         text_blocks=ocr_blocks,
                     )
                 )
+                # Store preprocessed image on the PageResult for later use
+                if preprocessed_img is not None:
+                    page_results[-1]._preprocessed_img = preprocessed_img
             except Exception:
                 logger.exception("PaddleOCR failed on page %d", i + 1)
                 page_results.append(
