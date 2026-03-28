@@ -241,3 +241,268 @@ class TestLocateInDocument:
         assert result[0]["bbox"] == (10, 10, 100, 45)
         assert result[0]["start"] == 5
         assert result[0]["end"] == 25
+
+
+# ---------------------------------------------------------------------------
+# Task 5: resolve_provenance()
+# ---------------------------------------------------------------------------
+
+
+def _make_doc_from_text(text: str, blocks: list[dict] | None = None) -> "LoadedDocument":
+    """Build a LoadedDocument from a text string with optional TextBlock list."""
+    from mosaicx.documents.models import LoadedDocument, TextBlock
+
+    text_blocks = []
+    if blocks:
+        text_blocks = [
+            TextBlock(
+                text=b["text"],
+                start=b["start"],
+                end=b["end"],
+                page=b["page"],
+                bbox=tuple(b["bbox"]),
+            )
+            for b in blocks
+        ]
+    return LoadedDocument(
+        text=text,
+        source_path=Path("/tmp/doc.pdf"),
+        format="pdf",
+        text_blocks=text_blocks,
+    )
+
+
+class TestResolveProvenance:
+    def test_exact_match(self):
+        from mosaicx.pipelines.provenance import resolve_provenance
+
+        text = "Patient has bilateral pleural effusion. No pneumothorax."
+        doc = _make_doc_from_text(
+            text,
+            [
+                {
+                    "text": "Patient has bilateral pleural effusion.",
+                    "start": 0,
+                    "end": 38,
+                    "page": 1,
+                    "bbox": [10, 10, 200, 25],
+                },
+                {
+                    "text": "No pneumothorax.",
+                    "start": 39,
+                    "end": 55,
+                    "page": 1,
+                    "bbox": [10, 30, 200, 45],
+                },
+            ],
+        )
+        evidence = {"finding": "bilateral pleural effusion"}
+        result = resolve_provenance(doc, evidence)
+
+        assert "finding" in result
+        entry = result["finding"]
+        assert entry["excerpt"] == "bilateral pleural effusion"
+        assert entry["resolution"] == "exact"
+        assert entry["start"] >= 0
+        assert entry["end"] > entry["start"]
+        assert isinstance(entry["spans"], list)
+
+    def test_fuzzy_match(self):
+        from mosaicx.pipelines.provenance import resolve_provenance
+
+        # Introduce a minor typo — should still fuzzy-match
+        text = "Patient has bilateral pleural effusion noted on imaging."
+        doc = _make_doc_from_text(text)
+        evidence = {"finding": "bilateral pleural efusion"}  # typo: efusion
+        result = resolve_provenance(doc, evidence)
+
+        assert "finding" in result
+        entry = result["finding"]
+        # Should resolve via fuzzy (typo won't exact-match)
+        assert entry["resolution"] in ("exact", "fuzzy")
+        assert entry["start"] >= 0
+
+    def test_unresolved_when_no_match(self):
+        from mosaicx.pipelines.provenance import resolve_provenance
+
+        doc = _make_doc_from_text("The liver appears normal in size and echogenicity.")
+        evidence = {"finding": "completely unrelated text xyz"}
+        result = resolve_provenance(doc, evidence)
+
+        entry = result["finding"]
+        assert entry["resolution"] == "unresolved"
+        assert entry["start"] == -1
+        assert entry["end"] == -1
+        assert entry["spans"] == []
+
+    def test_multiple_fields(self):
+        from mosaicx.pipelines.provenance import resolve_provenance
+
+        text = "Spleen is enlarged. Liver appears normal."
+        doc = _make_doc_from_text(text)
+        evidence = {
+            "spleen": "Spleen is enlarged",
+            "liver": "Liver appears normal",
+        }
+        result = resolve_provenance(doc, evidence)
+
+        assert "spleen" in result
+        assert "liver" in result
+        assert result["spleen"]["resolution"] == "exact"
+        assert result["liver"]["resolution"] == "exact"
+        # Offsets should not overlap
+        assert result["spleen"]["end"] <= result["liver"]["start"]
+
+    def test_no_text_blocks_still_returns_offsets(self):
+        from mosaicx.pipelines.provenance import resolve_provenance
+
+        text = "Bilateral atelectasis noted."
+        doc = _make_doc_from_text(text)  # no blocks
+        evidence = {"finding": "Bilateral atelectasis noted"}
+        result = resolve_provenance(doc, evidence)
+
+        entry = result["finding"]
+        assert entry["resolution"] == "exact"
+        assert entry["start"] == 0
+        assert entry["end"] == len("Bilateral atelectasis noted")
+        # No text_blocks => spans is empty list
+        assert entry["spans"] == []
+
+    def test_short_excerpt_higher_threshold(self):
+        """Short excerpts (< 40 chars) require >= 0.90 similarity."""
+        from mosaicx.pipelines.provenance import resolve_provenance
+
+        text = "Normal sinus rhythm."
+        doc = _make_doc_from_text(text)
+        # Completely different text — well below 0.90 for a short excerpt
+        evidence = {"rhythm": "xyz abc defgh"}
+        result = resolve_provenance(doc, evidence)
+
+        entry = result["rhythm"]
+        assert entry["resolution"] == "unresolved"
+
+
+# ---------------------------------------------------------------------------
+# Task 6: GatherEvidence DSPy Signature
+# ---------------------------------------------------------------------------
+
+
+class TestGatherEvidence:
+    def test_gather_evidence_importable(self):
+        """GatherEvidence should be importable from provenance without dspy error."""
+        # This just tests that lazy loading works and the class is accessible.
+        from mosaicx.pipelines import provenance
+
+        cls = provenance.GatherEvidence
+        assert cls is not None
+        # It should be a dspy.Signature subclass
+        import dspy
+
+        assert issubclass(cls, dspy.Signature)
+
+    def test_gather_evidence_has_expected_fields(self):
+        from mosaicx.pipelines import provenance
+
+        cls = provenance.GatherEvidence
+        # DSPy stores fields in model_fields for Signature classes
+        fields = cls.model_fields
+        assert "document_text" in fields
+        assert "extracted_fields" in fields
+        assert "evidence" in fields
+
+
+# ---------------------------------------------------------------------------
+# Task 7: enrich_redaction_map
+# ---------------------------------------------------------------------------
+
+
+class TestDeidentifierProvenance:
+    def test_enrich_redaction_map_with_coordinates(self):
+        from mosaicx.pipelines.provenance import enrich_redaction_map
+
+        text = "Patient: John Doe. DOB: 01/02/1990. Diagnosis: normal."
+        blocks = [
+            {
+                "text": "Patient: John Doe.",
+                "start": 0,
+                "end": 18,
+                "page": 1,
+                "bbox": [10, 10, 200, 25],
+            },
+            {
+                "text": "DOB: 01/02/1990.",
+                "start": 19,
+                "end": 35,
+                "page": 1,
+                "bbox": [10, 30, 200, 45],
+            },
+            {
+                "text": "Diagnosis: normal.",
+                "start": 36,
+                "end": 54,
+                "page": 1,
+                "bbox": [10, 50, 200, 65],
+            },
+        ]
+        doc = _make_doc_from_text(text, blocks)
+        redaction_map = [
+            {
+                "original": "John Doe",
+                "replacement": "[REDACTED]",
+                "start": 9,
+                "end": 17,
+                "phi_type": "OTHER",
+                "method": "llm",
+            },
+            {
+                "original": "01/02/1990",
+                "replacement": "[REDACTED]",
+                "start": 24,
+                "end": 34,
+                "phi_type": "DATE",
+                "method": "regex",
+            },
+        ]
+        enriched = enrich_redaction_map(doc, redaction_map)
+
+        assert len(enriched) == 2
+
+        # First entry: "John Doe" within block 0 (start=0, end=18)
+        e0 = enriched[0]
+        assert e0["original"] == "John Doe"
+        assert e0["resolution"] == "located"
+        assert isinstance(e0["spans"], list)
+        assert len(e0["spans"]) >= 1
+        assert e0["spans"][0]["page"] == 1
+        assert "excerpt" in e0
+
+        # Second entry: date
+        e1 = enriched[1]
+        assert e1["original"] == "01/02/1990"
+        assert e1["resolution"] == "located"
+        assert isinstance(e1["spans"], list)
+
+    def test_enrich_without_text_blocks(self):
+        from mosaicx.pipelines.provenance import enrich_redaction_map
+
+        text = "Patient: Jane Smith. MRN: 123456."
+        doc = _make_doc_from_text(text)  # no text_blocks
+        redaction_map = [
+            {
+                "original": "Jane Smith",
+                "replacement": "[REDACTED]",
+                "start": 9,
+                "end": 19,
+                "phi_type": "OTHER",
+                "method": "llm",
+            },
+        ]
+        enriched = enrich_redaction_map(doc, redaction_map)
+
+        assert len(enriched) == 1
+        e = enriched[0]
+        assert e["original"] == "Jane Smith"
+        # Without text blocks locate_in_document returns None => spans is empty
+        assert e["spans"] == []
+        assert e["resolution"] == "located"
+        assert "excerpt" in e
