@@ -15,9 +15,74 @@ from functools import lru_cache
 
 from PIL import Image
 
-from ..models import PageResult
+from ..models import PageResult, TextBlock
 
 logger = logging.getLogger(__name__)
+
+
+def _polygon_to_bbox(
+    poly: list[list[float]],
+) -> tuple[float, float, float, float]:
+    """Convert a 4-point polygon to an axis-aligned bounding box.
+
+    Args:
+        poly: List of [x, y] corner points (typically 4 corners).
+
+    Returns:
+        (x0, y0, x1, y1) axis-aligned bounding box.
+    """
+    xs = [p[0] for p in poly]
+    ys = [p[1] for p in poly]
+    return (min(xs), min(ys), max(xs), max(ys))
+
+
+def _build_ocr_textblocks(
+    rec_texts: list[str],
+    dt_polys: list[list[list[float]]],
+    page_num: int,
+    global_offset: int,
+) -> list[TextBlock]:
+    """Build TextBlock objects from PaddleOCR recognition results.
+
+    Character offsets are computed from ``"\\n".join(rec_texts)``, so each
+    text block is separated by a single newline character.  If ``dt_polys`` is
+    shorter than ``rec_texts``, only the entries that have a corresponding
+    polygon are included.
+
+    Args:
+        rec_texts: Recognised text strings, one per detection box.
+        dt_polys:  Polygon coordinates, one per detection box.
+        page_num:  1-indexed page number for the resulting TextBlocks.
+        global_offset: Character offset of the first character of this page
+            within the full document text (used when assembling multi-page
+            documents).
+
+    Returns:
+        List of TextBlock objects, one per paired (text, polygon) entry.
+    """
+    blocks: list[TextBlock] = []
+    cumulative = global_offset
+
+    for idx, text in enumerate(rec_texts):
+        if idx >= len(dt_polys):
+            break
+        poly = dt_polys[idx]
+        bbox = _polygon_to_bbox(poly)
+        start = cumulative
+        end = start + len(text)
+        blocks.append(
+            TextBlock(
+                text=text,
+                start=start,
+                end=end,
+                page=page_num,
+                bbox=bbox,
+            )
+        )
+        # Advance by text length + 1 for the "\n" separator
+        cumulative = end + 1
+
+    return blocks
 
 
 @lru_cache(maxsize=1)
@@ -96,6 +161,7 @@ class PaddleOCREngine:
                     res = page_data.json.get("res", {})
                     rec_texts = res.get("rec_texts", [])
                     rec_scores = res.get("rec_scores", [])
+                    dt_polys = res.get("dt_polys", [])
 
                     text = "\n".join(rec_texts)
                     confidence = (
@@ -103,9 +169,13 @@ class PaddleOCREngine:
                         if rec_scores
                         else 0.0
                     )
+                    ocr_blocks = _build_ocr_textblocks(
+                        rec_texts, dt_polys, page_num=i + 1, global_offset=0
+                    )
                 else:
                     text = ""
                     confidence = 0.0
+                    ocr_blocks = []
 
                 page_results.append(
                     PageResult(
@@ -113,6 +183,7 @@ class PaddleOCREngine:
                         text=text,
                         engine="paddleocr",
                         confidence=round(confidence, 4),
+                        text_blocks=ocr_blocks,
                     )
                 )
             except Exception:

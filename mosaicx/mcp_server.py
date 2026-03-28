@@ -162,6 +162,7 @@ def extract_document(
     template: str | None = None,
     score: bool = False,
     think: str = "auto",
+    provenance: bool = False,
 ) -> str:
     """Extract structured data from a medical document.
 
@@ -175,9 +176,10 @@ def extract_document(
         mode: Extraction strategy -- "auto", "radiology", or "pathology". Ignored if template is provided.
         template: Template name (built-in or user-created) or YAML file path. If provided, extraction uses this template.
         score: If true, compute completeness scoring against the template. Only effective with template or mode extraction (not auto).
+        provenance: If true, include source provenance data mapping each field to its verbatim excerpt and character offsets in the response.
 
     Returns:
-        JSON string containing the extracted structured data, with optional "_metrics" and "completeness" keys.
+        JSON string containing the extracted structured data, with optional "_metrics", "completeness", and "_provenance" keys.
     """
     try:
         # Validate mode early before configuring DSPy
@@ -202,6 +204,20 @@ def extract_document(
         ) -> str:
             if metrics is not None:
                 payload["_metrics"] = _metrics_to_dict(metrics)
+            if provenance:
+                from pathlib import Path as _Path
+
+                from .documents.models import LoadedDocument as _LoadedDocument
+                from .pipelines.provenance import gather_evidence, resolve_provenance
+
+                extracted_fields = payload.get("extracted", payload)
+                evidence = gather_evidence(document_text, extracted_fields)
+                doc_for_provenance = _LoadedDocument(
+                    text=document_text,
+                    source_path=_Path("<text>"),
+                    format="text",
+                )
+                payload["_provenance"] = resolve_provenance(doc_for_provenance, evidence)
             apply_extraction_contract(payload, source_text=document_text)
             return _json_result(payload)
 
@@ -331,6 +347,7 @@ def extract_document(
 def deidentify_text(
     text: str,
     mode: str = "remove",
+    provenance: bool = False,
 ) -> str:
     """Remove Protected Health Information (PHI) from clinical text.
 
@@ -341,9 +358,10 @@ def deidentify_text(
     Args:
         text: The clinical text to de-identify.
         mode: De-identification strategy -- "remove" (replace with [REDACTED]), "pseudonymize" (replace with fake values), or "dateshift" (shift dates by a consistent offset).
+        provenance: If true, enrich the redaction map with character offsets and page/bbox spans for each redacted item.
 
     Returns:
-        JSON string with "redacted_text" containing the de-identified text.
+        JSON string with "redacted_text" containing the de-identified text, and optionally an enriched "redaction_map".
     """
     try:
         _ensure_dspy()
@@ -353,10 +371,28 @@ def deidentify_text(
         deid = Deidentifier()
         result = deid(document_text=text, mode=mode)
 
-        return _json_result({
+        payload: dict[str, Any] = {
             "redacted_text": result.redacted_text,
             "mode": mode,
-        })
+        }
+        redaction_map = getattr(result, "redaction_map", None)
+        if redaction_map is not None:
+            if provenance and redaction_map:
+                from pathlib import Path as _Path
+
+                from .documents.models import LoadedDocument as _LoadedDocument
+                from .pipelines.provenance import enrich_redaction_map
+
+                doc = _LoadedDocument(
+                    text=text,
+                    source_path=_Path("<text>"),
+                    format="text",
+                )
+                payload["redaction_map"] = enrich_redaction_map(doc, redaction_map)
+            else:
+                payload["redaction_map"] = redaction_map
+
+        return _json_result(payload)
 
     except Exception as exc:
         logger.exception("deidentify_text failed")

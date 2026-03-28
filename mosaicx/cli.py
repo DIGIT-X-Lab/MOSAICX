@@ -21,7 +21,7 @@ import os
 import re
 import sys
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 import click
 from rich import box
@@ -30,7 +30,6 @@ from rich.markup import escape as _esc
 from rich.padding import Padding
 from rich.panel import Panel
 from rich.prompt import Prompt
-from rich.table import Table
 
 from . import cli_theme as theme
 from .config import get_config
@@ -310,10 +309,10 @@ def cli(ctx: click.Context) -> None:
 def _extract_batch(
     ctx: click.Context,
     directory: Path,
-    template: Optional[str],
-    mode: Optional[str],
-    optimized: Optional[Path],
-    output_dir_path: Optional[Path],
+    template: str | None,
+    mode: str | None,
+    optimized: Path | None,
+    output_dir_path: Path | None,
     formats: tuple[str, ...],
     workers: int,
     resume: bool,
@@ -327,6 +326,7 @@ def _extract_batch(
     if mode is not None and template is None:
         import mosaicx.pipelines.pathology  # noqa: F401
         import mosaicx.pipelines.radiology  # noqa: F401
+
         from .pipelines.modes import get_mode
         try:
             get_mode(mode)
@@ -384,8 +384,8 @@ def _extract_batch(
 
         if effective_mode is not None and template_model is None:
             # Mode pipeline (no YAML schema)
-            import mosaicx.pipelines.radiology  # noqa: F401
             import mosaicx.pipelines.pathology  # noqa: F401
+            import mosaicx.pipelines.radiology  # noqa: F401
             from mosaicx.pipelines.extraction import extract_with_mode
 
             console.print(theme.info(f"Mode: {effective_mode}"))
@@ -420,8 +420,8 @@ def _extract_batch(
                 f"Template {template!r} resolved but produced no extraction template."
             )
     elif mode:
-        import mosaicx.pipelines.radiology  # noqa: F401
         import mosaicx.pipelines.pathology  # noqa: F401
+        import mosaicx.pipelines.radiology  # noqa: F401
         from mosaicx.pipelines.extraction import extract_with_mode
         _configure_dspy()
 
@@ -569,17 +569,17 @@ def _extract_batch(
 @click.pass_context
 def extract(
     ctx: click.Context,
-    document: Optional[Path],
-    directory: Optional[Path],
-    template: Optional[str],
-    mode: Optional[str],
+    document: Path | None,
+    directory: Path | None,
+    template: str | None,
+    mode: str | None,
     score: bool,
     do_verify: bool,
     verify_level: str,
     provenance: bool,
-    optimized: Optional[Path],
-    output: Optional[Path],
-    output_dir: Optional[Path],
+    optimized: Path | None,
+    output: Path | None,
+    output_dir: Path | None,
     formats: tuple[str, ...],
     workers: int,
     resume: bool,
@@ -616,8 +616,9 @@ def extract(
 
     # --list-modes: print available modes and exit (no document needed)
     if list_modes:
-        import mosaicx.pipelines.radiology  # noqa: F401
         import mosaicx.pipelines.pathology  # noqa: F401
+        import mosaicx.pipelines.radiology  # noqa: F401
+
         from .pipelines.modes import list_modes as _list_modes
 
         theme.section("Extraction Modes", console)
@@ -684,6 +685,7 @@ def extract(
     if mode is not None and template is None:
         import mosaicx.pipelines.pathology  # noqa: F401
         import mosaicx.pipelines.radiology  # noqa: F401
+
         from .pipelines.modes import get_mode
         try:
             get_mode(mode)
@@ -739,8 +741,8 @@ def extract(
         if effective_mode is not None and template_model is None:
             # Built-in template with mode pipeline but no YAML schema
             # (e.g. chest_ct without a .yaml file) -- use the mode pipeline
-            import mosaicx.pipelines.radiology  # noqa: F401
             import mosaicx.pipelines.pathology  # noqa: F401
+            import mosaicx.pipelines.radiology  # noqa: F401
 
             console.print(theme.info(f"Mode: {effective_mode}"))
             _configure_dspy()
@@ -790,8 +792,9 @@ def extract(
 
     elif mode is not None:
         # --mode X: run registered mode pipeline
-        import mosaicx.pipelines.radiology  # noqa: F401
         import mosaicx.pipelines.pathology  # noqa: F401
+        import mosaicx.pipelines.radiology  # noqa: F401
+
         from .pipelines.modes import get_mode
 
         # Validate mode name early (before configuring DSPy)
@@ -846,9 +849,11 @@ def extract(
         metrics = getattr(extractor, "_last_metrics", None)
 
     if provenance:
-        from .provenance.resolve import build_provenance
+        from .pipelines.provenance import gather_evidence, resolve_provenance
 
-        output_data["_provenance"] = build_provenance(output_data, doc.text)
+        extracted_fields = output_data.get("extracted", output_data)
+        evidence = gather_evidence(doc.text, extracted_fields)
+        output_data["_provenance"] = resolve_provenance(doc, evidence)
 
     if do_verify:
         from .sdk import verify as sdk_verify
@@ -887,7 +892,12 @@ def extract(
         console.print(theme.ok(f"Saved to {output}"))
 
     theme.section("Extracted Data", console)
-    from .cli_display import render_completeness, render_extracted_data, render_metrics, render_verification
+    from .cli_display import (
+        render_completeness,
+        render_extracted_data,
+        render_metrics,
+        render_verification,
+    )
 
     render_extracted_data(output_data, console)
 
@@ -945,7 +955,7 @@ def pipeline_new(name: str, description: str) -> None:
       mosaicx pipeline new cardiology
       mosaicx pipeline new ophthalmology -d "Ophthalmic imaging reports"
     """
-    from .pipelines.scaffold import scaffold_pipeline, WIRING_CHECKLIST, _to_snake_case
+    from .pipelines.scaffold import WIRING_CHECKLIST, _to_snake_case, scaffold_pipeline
 
     snake = _to_snake_case(name)
 
@@ -1050,7 +1060,7 @@ def template_list() -> None:
     else:
         console.print()
         console.print(theme.info(
-            f"No user templates yet. Create one with: mosaicx template create --describe \"...\""
+            "No user templates yet. Create one with: mosaicx template create --describe \"...\""
         ))
 
 
@@ -1085,15 +1095,15 @@ def template_validate(file_path: Path) -> None:
 @click.option("--mode", type=str, default=None, help="Pipeline mode to embed (e.g. radiology, pathology).")
 @click.option("--output", type=click.Path(path_type=Path), default=None, help="Save to this path instead of ~/.mosaicx/templates/.")
 def template_create(
-    describe: Optional[str],
-    from_document: Optional[Path],
-    from_url: Optional[str],
-    from_radreport: Optional[str],
-    from_json: Optional[Path],
-    from_pydantic: Optional[Path],
-    name: Optional[str],
-    mode: Optional[str],
-    output: Optional[Path],
+    describe: str | None,
+    from_document: Path | None,
+    from_url: str | None,
+    from_radreport: str | None,
+    from_json: Path | None,
+    from_pydantic: Path | None,
+    name: str | None,
+    mode: str | None,
+    output: Path | None,
 ) -> None:
     """Create a new YAML template from a description, document, URL, JSON, or Pydantic schema.
 
@@ -1110,7 +1120,10 @@ def template_create(
       mosaicx template create --from-pydantic schema.py
       mosaicx template create --from-url https://radreport.org/home/50
     """
-    from .schemas.template_compiler import compile_template, schema_spec_to_template_yaml
+    from .schemas.template_compiler import (
+        compile_template,
+        schema_spec_to_template_yaml,
+    )
 
     sources = sum(x is not None for x in (describe, from_document, from_url, from_radreport, from_json, from_pydantic))
     if sources == 0:
@@ -1370,7 +1383,7 @@ def template_create(
 
         # Use page content as document context for the LLM
         if not description:
-            description = f"Infer a structured template from this web page content"
+            description = "Infer a structured template from this web page content"
         document_text = page_text
 
     if not description and not document_text:
@@ -1437,7 +1450,7 @@ def template_create(
 
 
 def _save_template_yaml(
-    template_name: str, yaml_str: str, output: Optional[Path]
+    template_name: str, yaml_str: str, output: Path | None
 ) -> Path:
     """Save a YAML template string to the templates directory or a custom path."""
     if output is not None:
@@ -1572,7 +1585,7 @@ def template_show(name: str) -> None:
 @click.argument("name")
 @click.option("--instruction", type=str, required=True, help="Natural-language refinement instruction.")
 @click.option("--output", type=click.Path(path_type=Path), default=None, help="Save refined template to a different path.")
-def template_refine(name: str, instruction: str, output: Optional[Path]) -> None:
+def template_refine(name: str, instruction: str, output: Path | None) -> None:
     """Refine an existing template using LLM-powered instructions.
 
     NAME is the template name (e.g. chest_ct, MedicalReport).
@@ -1965,7 +1978,7 @@ def template_diff(name: str, version_num: int) -> None:
         if os.get("type") != ns.get("type"):
             changes.append(f"type: {os.get('type')} -> {ns.get('type')}")
         if os.get("required") != ns.get("required"):
-            changes.append(f"required changed")
+            changes.append("required changed")
         if os.get("description") != ns.get("description"):
             changes.append("description changed")
         t.add_row("[yellow]~[/yellow]", n, "; ".join(changes) or "content changed")
@@ -1994,10 +2007,10 @@ def template_diff(name: str, version_num: int) -> None:
 @click.option("--output", "-o", type=click.Path(path_type=Path), default=None, help="Save output to file (.json or .yaml/.yml).")
 @click.option("--format", "formats", type=str, multiple=True, help="Output format(s): json, jsonl, csv, parquet.")
 def summarize(
-    document: Optional[Path],
-    directory: Optional[Path],
-    patient: Optional[str],
-    output: Optional[Path],
+    document: Path | None,
+    directory: Path | None,
+    patient: str | None,
+    output: Path | None,
     formats: tuple[str, ...],
 ) -> None:
     """Summarize clinical reports for a patient.
@@ -2121,7 +2134,7 @@ def summarize(
 def _deidentify_batch(
     directory: Path,
     mode: str,
-    output_dir_path: Optional[Path],
+    output_dir_path: Path | None,
     formats: tuple[str, ...],
     workers: int,
     resume: bool,
@@ -2162,7 +2175,11 @@ def _deidentify_batch(
 
     def process_fn(text: str) -> dict:
         result = deid(document_text=text, mode=mode)
-        return {"redacted_text": result.redacted_text, "mode": mode}
+        payload: dict[str, Any] = {"redacted_text": result.redacted_text, "mode": mode}
+        redaction_map = getattr(result, "redaction_map", None)
+        if redaction_map is not None:
+            payload["redaction_map"] = redaction_map
+        return payload
 
     resume_id = "resume" if resume else None
     checkpoint_dir = output_dir_path / ".checkpoints" if resume else None
@@ -2256,15 +2273,17 @@ def _deidentify_batch(
 @click.option("--output-dir", type=click.Path(path_type=Path), default=None, help="Output directory for batch results (used with --dir).")
 @click.option("--format", "formats", type=click.Choice(["json", "jsonl", "csv", "parquet"], case_sensitive=False), multiple=True, default=("json",), show_default=True, help="Output format(s) for batch results.")
 @click.option("--resume", is_flag=True, default=False, help="Resume batch processing from last checkpoint.")
+@click.option("--provenance", is_flag=True, default=False, help="Include source coordinates in redaction map.")
 def deidentify(
-    document: Optional[Path],
-    directory: Optional[Path],
+    document: Path | None,
+    directory: Path | None,
     mode: str,
     workers: int,
-    output: Optional[Path],
-    output_dir: Optional[Path],
+    output: Path | None,
+    output_dir: Path | None,
     formats: tuple[str, ...],
     resume: bool,
+    provenance: bool,
 ) -> None:
     """De-identify clinical documents by removing or replacing PHI.
 
@@ -2316,11 +2335,24 @@ def deidentify(
     with theme.spinner(f"Scrubbing {document.name}... nothing to see here", console):
         result = deid(document_text=doc.text, mode=mode)
     redacted = result.redacted_text
+    redaction_map = getattr(result, "redaction_map", None) or []
+
+    if provenance and redaction_map:
+        from .pipelines.provenance import enrich_redaction_map
+
+        redaction_map = enrich_redaction_map(doc, redaction_map)
+
     console.print(theme.ok("Scrubbed -- PHI has left the chat"))
 
     # Save if --output
     if output is not None:
-        save_data = {"redacted_text": redacted, "mode": mode}
+        save_data: dict[str, Any] = {"redacted_text": redacted, "mode": mode}
+        if redaction_map:
+            save_data["redaction_map"] = redaction_map
+        if provenance and doc.page_dimensions:
+            save_data.setdefault("_mosaicx", {}).setdefault("_document", {})[
+                "page_dimensions"
+            ] = doc.page_dimensions
         suffix = output.suffix.lower()
         if suffix in (".yaml", ".yml"):
             try:
@@ -2360,6 +2392,32 @@ def deidentify(
         )
     )
 
+    # Display redaction map summary
+    if redaction_map:
+        theme.section("PHI Detected", console, "02")
+        console.print(theme.info(f"{len(redaction_map)} items"))
+        original_text = doc.text
+        rt = theme.make_clean_table(show_header=True)
+        rt.add_column("Type", style=f"bold {theme.CORAL}", no_wrap=True)
+        rt.add_column("Original")
+        rt.add_column("Position", no_wrap=True)
+        rt.add_column("Method", no_wrap=True)
+        for entry in redaction_map:
+            phi_type = entry.get("phi_type", "OTHER")
+            orig_text = entry.get("original", "")
+            start = entry.get("start", 0)
+            end = entry.get("end", 0)
+            entry_method = entry.get("method", "")
+            # Compute line number from original text
+            line_no = original_text[:start].count("\n") + 1
+            rt.add_row(
+                phi_type,
+                _esc(repr(orig_text)),
+                f"line {line_no}, pos {start}-{end}",
+                f"[{entry_method}]",
+            )
+        console.print(Padding(rt, (0, 0, 0, 2)))
+
     doc_metrics = getattr(deid, "_last_metrics", None)
     if doc_metrics is not None:
         from .cli_display import render_metrics
@@ -2397,12 +2455,12 @@ def deidentify(
 )
 @click.option("--output", "-o", type=click.Path(path_type=Path), default=None, help="Save output to file (.json or .yaml/.yml).")
 def verify(
-    document: Optional[Path],
+    document: Path | None,
     sources: tuple[Path, ...],
     claim: str | None,
     extraction: Path | None,
     level: str,
-    output: Optional[Path],
+    output: Path | None,
 ) -> None:
     """Verify an extraction or claim against a source document.
 
@@ -2591,7 +2649,7 @@ def verify(
         if display_verdict == "contradicted" and is_claim_mode:
             console.print("  [bold yellow]WARN[/bold yellow]  Could not ground contradiction in source")
         else:
-            console.print(f"  [bold yellow]WARN[/bold yellow]  Not enough overlap between claim and source to verify")
+            console.print("  [bold yellow]WARN[/bold yellow]  Not enough overlap between claim and source to verify")
     else:
         console.print(f"  [{theme.MUTED}]{display_verdict}[/{theme.MUTED}]")
 
@@ -2759,12 +2817,12 @@ def verify(
     help="For query/verify, auto-rerun with heavy budget (GEPA) if gates fail on first pass.",
 )
 def optimize(
-    pipeline: Optional[str],
-    template: Optional[str],
-    trainset: Optional[Path],
-    valset: Optional[Path],
+    pipeline: str | None,
+    template: str | None,
+    trainset: Path | None,
+    valset: Path | None,
     budget: str,
-    save: Optional[Path],
+    save: Path | None,
     list_pipelines: bool,
     enforce_quality_gates: bool,
     auto_escalate: bool,
@@ -2783,11 +2841,12 @@ def optimize(
       mosaicx optimize --list-pipelines
     """
     from .evaluation.optimize import (
-        OPTIMIZATION_STRATEGY,
         get_optimizer_config,
         get_pipeline_class,
-        list_pipelines as _list_pipelines,
         run_optimization,
+    )
+    from .evaluation.optimize import (
+        list_pipelines as _list_pipelines,
     )
 
     # --list-pipelines: show available pipelines and exit
@@ -2892,7 +2951,10 @@ def optimize(
     quality_gate_report: dict[str, Any] | None = None
     effective_budget = budget
     if str(pipeline).strip().lower() in {"query", "verify"} and enforce_quality_gates:
-        from .evaluation.grounding import query_metric_components, verify_metric_components
+        from .evaluation.grounding import (
+            query_metric_components,
+            verify_metric_components,
+        )
         from .evaluation.quality_gates import evaluate_quality_gates
 
         eval_examples = val_examples if val_examples else train_examples
@@ -3015,8 +3077,8 @@ def optimize(
 def eval_cmd(
     pipeline: str,
     testset: Path,
-    optimized: Optional[Path],
-    output: Optional[Path],
+    optimized: Path | None,
+    output: Path | None,
     quality_gate: bool,
 ) -> None:
     """Evaluate a pipeline against a labeled test set.
@@ -3079,7 +3141,10 @@ def eval_cmd(
     pipeline_norm = str(pipeline).strip().lower()
     collect_gate_rows = quality_gate and pipeline_norm in {"query", "verify"}
     if collect_gate_rows:
-        from .evaluation.grounding import query_metric_components, verify_metric_components
+        from .evaluation.grounding import (
+            query_metric_components,
+            verify_metric_components,
+        )
 
     with theme.spinner("Evaluating... patience you must have", console):
         for i, example in enumerate(test_examples):
@@ -3400,7 +3465,11 @@ def runtime_check(json_output: bool) -> None:
 @click.option("--force", is_flag=True, default=False, help="Run installer even when Deno is already available.")
 def runtime_install(assume_yes: bool, force: bool) -> None:
     """Install Deno runtime for DSPy RLM code sandbox."""
-    from .runtime_env import deno_install_instructions, get_deno_runtime_status, install_deno
+    from .runtime_env import (
+        deno_install_instructions,
+        get_deno_runtime_status,
+        install_deno,
+    )
 
     status = get_deno_runtime_status()
     if status.ok and not force:
@@ -3565,7 +3634,6 @@ def setup(full: bool, non_interactive: bool, backend: str) -> None:
 
     if backends:
         # Pick the configured backend if it matches, else first with models
-        from urllib.parse import urlparse
         configured_url = cfg.api_base.rstrip("/")
         chosen_backend = None
         for b in backends:
@@ -3588,7 +3656,7 @@ def setup(full: bool, non_interactive: bool, backend: str) -> None:
             if not non_interactive and click.confirm("Reconfigure .env?", default=False):
                 env_content = generate_env_content(chosen_backend, model=model_id)
                 write_env_file(env_content, env_path)
-                console.print(theme.ok(f".env updated"))
+                console.print(theme.ok(".env updated"))
         else:
             env_content = generate_env_content(chosen_backend, model=model_id)
             write_env_file(env_content, env_path)
@@ -3983,13 +4051,13 @@ def doctor(json_output: bool, auto_fix: bool) -> None:
 def query(
     document: tuple[Path, ...],
     sources: tuple[str, ...],
-    question: Optional[str],
+    question: str | None,
     chat: bool,
     eda: bool,
     show_trace: bool,
     citations: int,
     max_iterations: int,
-    output: Optional[Path],
+    output: Path | None,
 ) -> None:
     """Query documents and data sources with natural language.
 
