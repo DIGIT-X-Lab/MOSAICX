@@ -43,7 +43,7 @@ def build_envelope(
     template_version: str | None = None,
     duration_s: float | None = None,
     tokens: dict[str, int] | None = None,
-    provenance: bool = False,
+    provenance_requested: bool = False,
     verification: dict[str, Any] | None = None,
     document: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
@@ -62,8 +62,8 @@ def build_envelope(
     tokens:
         Dict with ``input`` and ``output`` token counts.
         Defaults to ``{"input": 0, "output": 0}``.
-    provenance:
-        Whether provenance tracking was enabled.
+    provenance_requested:
+        Whether provenance tracking was requested by the caller.
     verification:
         Summary dict from the verification step, or ``None``.
     document:
@@ -86,7 +86,7 @@ def build_envelope(
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "duration_s": duration_s,
         "tokens": tokens if tokens is not None else {"input": 0, "output": 0},
-        "provenance": provenance,
+        "provenance_requested": provenance_requested,
         "verification": verification,
         "document": document,
     }

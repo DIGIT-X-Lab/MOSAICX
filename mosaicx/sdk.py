@@ -198,7 +198,7 @@ def _attach_envelope(
         template=template,
         duration_s=duration,
         tokens=tokens,
-        provenance=provenance,
+        provenance_requested=provenance,
         verification=verification,
         document=document,
     )
@@ -218,7 +218,7 @@ def _set_envelope_fields(
     if document is not None:
         env["document"] = document
     if provenance is not None:
-        env["provenance"] = provenance
+        env["provenance_requested"] = provenance
     if verification is not None:
         env["verification"] = verification
 
@@ -266,19 +266,21 @@ def _build_document_meta(doc: Any, filepath: str | Path | None = None) -> dict[s
         ``"ocr_engine_used"``, ``"quality_warning"``.
     """
     name = Path(filepath).name if filepath is not None else doc.source_path.name
-    return {
+    meta: dict[str, Any] = {
         "file": name,
         "format": doc.format,
         "page_count": doc.page_count,
         "ocr_engine_used": doc.ocr_engine_used,
         "quality_warning": doc.quality_warning if doc.quality_warning else None,
     }
+    meta["page_dimensions"] = list(doc.page_dimensions) if doc.page_dimensions else []
+    return meta
 
 
 def _resolve_documents(
     documents: str | Path | bytes | list[str | Path],
     filename: str | None = None,
-) -> list[tuple[str, str, dict[str, Any]]]:
+) -> list[tuple[str, str, dict[str, Any], Any]]:
     """Resolve the ``documents`` parameter into loaded document texts.
 
     Handles four input types:
@@ -299,9 +301,11 @@ def _resolve_documents(
 
     Returns
     -------
-    list[tuple[str, str, dict]]
-        List of ``(filepath_str, loaded_text, document_metadata)`` tuples.
-        ``filepath_str`` is the display name for progress callbacks.
+    list[tuple[str, str, dict, LoadedDocument]]
+        List of ``(filepath_str, loaded_text, document_metadata, loaded_doc)``
+        tuples.  ``filepath_str`` is the display name for progress callbacks.
+        ``loaded_doc`` is the ``LoadedDocument`` instance preserving
+        ``text_blocks`` and ``page_dimensions`` for provenance.
 
     Raises
     ------
@@ -311,8 +315,9 @@ def _resolve_documents(
         If a file path does not exist.
     """
     from .documents.engines.base import SUPPORTED_FORMATS
+    from .documents.models import LoadedDocument
 
-    results: list[tuple[str, str, dict[str, Any]]] = []
+    results: list[tuple[str, str, dict[str, Any], Any]] = []
 
     if isinstance(documents, bytes):
         # bytes -> write to temp file, load, cleanup
@@ -328,7 +333,7 @@ def _resolve_documents(
         try:
             doc = _load_doc_with_config(tmp_path)
             meta = _build_document_meta(doc, filepath=filename)
-            results.append((filename, doc.text, meta))
+            results.append((filename, doc.text, meta, doc))
         finally:
             tmp_path.unlink(missing_ok=True)
         return results
@@ -348,7 +353,7 @@ def _resolve_documents(
             for fp in file_list:
                 doc = _load_doc_with_config(fp)
                 meta = _build_document_meta(doc, filepath=fp)
-                results.append((fp.name, doc.text, meta))
+                results.append((fp.name, doc.text, meta, doc))
             return results
         else:
             # Single file
@@ -356,7 +361,7 @@ def _resolve_documents(
                 raise FileNotFoundError(f"Document not found: {doc_path}")
             doc = _load_doc_with_config(doc_path)
             meta = _build_document_meta(doc, filepath=doc_path)
-            results.append((doc_path.name, doc.text, meta))
+            results.append((doc_path.name, doc.text, meta, doc))
             return results
 
     if isinstance(documents, list):
@@ -366,7 +371,7 @@ def _resolve_documents(
                 raise FileNotFoundError(f"Document not found: {fp}")
             doc = _load_doc_with_config(fp)
             meta = _build_document_meta(doc, filepath=fp)
-            results.append((fp.name, doc.text, meta))
+            results.append((fp.name, doc.text, meta, doc))
         return results
 
     raise TypeError(
@@ -392,7 +397,7 @@ def _resolve_verification_sources(
             p = Path(item)
             if p.exists():
                 if p.is_dir():
-                    for name, text, _meta in _resolve_documents(p):
+                    for name, text, _meta, _ldoc in _resolve_documents(p):
                         chunks.append((name, text))
                 else:
                     doc = _load_doc_with_config(p)
@@ -1268,7 +1273,7 @@ def extract(
     verify: bool = False,
     verify_level: str = "quick",
     provenance: bool = False,
-    think: str = "auto",
+    think: str = "standard",
     workers: int = 1,
     on_progress: Callable[[str, bool, dict[str, Any] | None], None] | None = None,
 ) -> dict[str, Any] | list[dict[str, Any]]:
@@ -1393,7 +1398,7 @@ def extract(
 
     if len(loaded) == 1:
         # Single document -- no threading needed
-        name, doc_text, doc_meta = loaded[0]
+        name, doc_text, doc_meta, _loaded_doc = loaded[0]
         name, result, error = _do_extract(name, doc_text, doc_meta)
         if error:
             result_dict: dict[str, Any] = {
@@ -1412,13 +1417,13 @@ def extract(
 
     # Multiple documents -- parallel extraction
     results: list[dict[str, Any]] = [{}] * len(loaded)  # preserve order
-    index_map = {name: i for i, (name, _, _) in enumerate(loaded)}
+    index_map = {name: i for i, (name, _, _, _) in enumerate(loaded)}
 
     max_w = min(max(1, workers), 32)
     with ThreadPoolExecutor(max_workers=max_w) as pool:
         futures = {
             pool.submit(_do_extract, name, doc_text, doc_meta): (name, doc_meta)
-            for name, doc_text, doc_meta in loaded
+            for name, doc_text, doc_meta, _ldoc in loaded
         }
         for future in as_completed(futures):
             name, doc_meta = futures[future]
@@ -1479,6 +1484,7 @@ def deidentify(
     documents: str | Path | bytes | list[str | Path] | None = None,
     filename: str | None = None,
     mode: str = "remove",
+    provenance: bool = False,
     workers: int = 1,
     on_progress: Callable[[str, bool, dict[str, Any] | None], None] | None = None,
 ) -> dict[str, Any] | list[dict[str, Any]]:
@@ -1554,7 +1560,7 @@ def deidentify(
             return name, None, f"{type(exc).__name__}: {exc}"
 
     if len(loaded) == 1:
-        name, doc_text, doc_meta = loaded[0]
+        name, doc_text, doc_meta, _loaded_doc = loaded[0]
         name, result, error = _do_deid(name, doc_text, doc_meta)
         if error:
             result_dict: dict[str, Any] = {
@@ -1573,13 +1579,13 @@ def deidentify(
 
     # Multiple documents -- parallel
     results: list[dict[str, Any]] = [{}] * len(loaded)
-    index_map = {name: i for i, (name, _, _) in enumerate(loaded)}
+    index_map = {name: i for i, (name, _, _, _) in enumerate(loaded)}
 
     max_w = min(max(1, workers), 32)
     with ThreadPoolExecutor(max_workers=max_w) as pool:
         futures = {
             pool.submit(_do_deid, name, doc_text, doc_meta): (name, doc_meta)
-            for name, doc_text, doc_meta in loaded
+            for name, doc_text, doc_meta, _ldoc in loaded
         }
         for future in as_completed(futures):
             name, doc_meta = futures[future]
@@ -1652,7 +1658,7 @@ def summarize(
         loaded = _resolve_documents(documents)
         reports = []
         doc_metadata_list = []
-        for _name, doc_text, doc_meta in loaded:
+        for _name, doc_text, doc_meta, _ldoc in loaded:
             if doc_text:
                 reports.append(doc_text)
                 doc_metadata_list.append(doc_meta)

@@ -23,7 +23,7 @@ class TestBuildEnvelope:
             "timestamp",
             "duration_s",
             "tokens",
-            "provenance",
+            "provenance_requested",
             "verification",
             "document",
         }
@@ -41,7 +41,7 @@ class TestBuildEnvelope:
         env = build_envelope(pipeline="radiology")
         assert env["template"] is None
         assert env["template_version"] is None
-        assert env["provenance"] is False
+        assert env["provenance_requested"] is False
         assert env["verification"] is None
         assert env["document"] is None
         assert env["duration_s"] is None
@@ -122,8 +122,8 @@ class TestBuildEnvelope:
     def test_provenance_override(self):
         from mosaicx.envelope import build_envelope
 
-        env = build_envelope(pipeline="radiology", provenance=True)
-        assert env["provenance"] is True
+        env = build_envelope(pipeline="radiology", provenance_requested=True)
+        assert env["provenance_requested"] is True
 
     def test_verification_dict_preserved(self):
         from mosaicx.envelope import build_envelope
