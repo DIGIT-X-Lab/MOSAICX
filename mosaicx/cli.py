@@ -174,6 +174,33 @@ def _load_doc_with_config(path: Path) -> "LoadedDocument":
     )
 
 
+def _dump_ocr_text(doc: "LoadedDocument", output: Path) -> Path:
+    """Save raw OCR text to a .ocr.txt file for debugging.
+
+    Includes OCR metadata header so the user can see which engine
+    was used, confidence level, and page count.
+    """
+    ocr_path = output.with_suffix(".ocr.txt")
+    lines = [
+        f"# OCR Dump: {doc.source_path.name}",
+        f"# Engine: {doc.ocr_engine_used or 'native (pypdfium2)'}",
+        f"# Confidence: {doc.ocr_confidence or 'N/A'}",
+        f"# Pages: {doc.page_count or 'N/A'}",
+        f"# Format: {doc.format}",
+        f"# Quality warning: {doc.quality_warning}",
+        f"# Characters: {len(doc.text)}",
+        "#",
+        "# This is the exact text passed to the LLM.",
+        "# If this text is wrong, it's an OCR problem.",
+        "# If this text is correct but the output is wrong, it's an LLM problem.",
+        "",
+        doc.text,
+    ]
+    ocr_path.parent.mkdir(parents=True, exist_ok=True)
+    ocr_path.write_text("\n".join(lines), encoding="utf-8")
+    return ocr_path
+
+
 # ---------------------------------------------------------------------------
 # DIGITX-styled Click help
 # ---------------------------------------------------------------------------
@@ -566,6 +593,7 @@ def _extract_batch(
     show_default=True,
     help="Reasoning depth: auto (router picks based on template complexity), fast (minimal reasoning), deep (chunked extraction + verify + fix).",
 )
+@click.option("--dump-ocr", is_flag=True, default=False, help="Save raw OCR text to .ocr.txt for debugging.")
 @click.pass_context
 def extract(
     ctx: click.Context,
@@ -585,6 +613,7 @@ def extract(
     resume: bool,
     list_modes: bool,
     think: str,
+    dump_ocr: bool,
 ) -> None:
     """Extract structured data from a clinical document or directory.
 
@@ -702,6 +731,10 @@ def extract(
         doc = _load_doc_with_config(document)
     except (FileNotFoundError, ValueError, DocumentLoadError) as exc:
         raise click.ClickException(str(exc))
+
+    if dump_ocr and output is not None:
+        ocr_path = _dump_ocr_text(doc, output)
+        console.print(theme.ok(f"OCR text dumped to {ocr_path}"))
 
     if doc.quality_warning:
         console.print(theme.warn("Low OCR quality detected \u2014 results may be unreliable"))
@@ -2274,6 +2307,7 @@ def _deidentify_batch(
 @click.option("--format", "formats", type=click.Choice(["json", "jsonl", "csv", "parquet"], case_sensitive=False), multiple=True, default=("json",), show_default=True, help="Output format(s) for batch results.")
 @click.option("--resume", is_flag=True, default=False, help="Resume batch processing from last checkpoint.")
 @click.option("--provenance", is_flag=True, default=False, help="Include source coordinates in redaction map.")
+@click.option("--dump-ocr", is_flag=True, default=False, help="Save raw OCR text to .ocr.txt for debugging.")
 def deidentify(
     document: Path | None,
     directory: Path | None,
@@ -2284,6 +2318,7 @@ def deidentify(
     formats: tuple[str, ...],
     resume: bool,
     provenance: bool,
+    dump_ocr: bool,
 ) -> None:
     """De-identify clinical documents by removing or replacing PHI.
 
@@ -2323,6 +2358,10 @@ def deidentify(
         doc = _load_doc_with_config(document)
     except (FileNotFoundError, ValueError, DocumentLoadError) as exc:
         raise click.ClickException(str(exc))
+
+    if dump_ocr and output is not None:
+        ocr_path = _dump_ocr_text(doc, output)
+        console.print(theme.ok(f"OCR text dumped to {ocr_path}"))
 
     if doc.quality_warning:
         console.print(theme.warn("Low OCR quality detected -- results may be unreliable"))
