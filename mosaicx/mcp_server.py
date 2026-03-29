@@ -204,20 +204,21 @@ def extract_document(
         ) -> str:
             if metrics is not None:
                 payload["_metrics"] = _metrics_to_dict(metrics)
-            if provenance:
-                from pathlib import Path as _Path
+            # Always attach _source mapping (text search, no LLM)
+            from pathlib import Path as _Path
 
-                from .documents.models import LoadedDocument as _LoadedDocument
-                from .pipelines.provenance import gather_evidence, resolve_provenance
+            from .documents.models import LoadedDocument as _LoadedDocument
+            from .source_mapping import build_source_block
 
-                extracted_fields = payload.get("extracted", payload)
-                evidence = gather_evidence(document_text, extracted_fields)
-                doc_for_provenance = _LoadedDocument(
-                    text=document_text,
-                    source_path=_Path("<text>"),
-                    format="text",
-                )
-                payload["_provenance"] = resolve_provenance(doc_for_provenance, evidence)
+            extracted_fields = payload.get("extracted", payload)
+            doc_for_source = _LoadedDocument(
+                text=document_text,
+                source_path=_Path("<mcp>"),
+                format="text",
+            )
+            payload["_source"] = build_source_block(
+                doc_for_source, fields=extracted_fields
+            )
             apply_extraction_contract(payload, source_text=document_text)
             return _json_result(payload)
 
@@ -377,20 +378,22 @@ def deidentify_text(
         }
         redaction_map = getattr(result, "redaction_map", None)
         if redaction_map is not None:
-            if provenance and redaction_map:
-                from pathlib import Path as _Path
+            payload["redaction_map"] = redaction_map
 
-                from .documents.models import LoadedDocument as _LoadedDocument
-                from .pipelines.provenance import enrich_redaction_map
+            # Attach _source mapping (text search, no bboxes for plain text)
+            from pathlib import Path as _Path
 
-                doc = _LoadedDocument(
-                    text=text,
-                    source_path=_Path("<text>"),
-                    format="text",
-                )
-                payload["redaction_map"] = enrich_redaction_map(doc, redaction_map)
-            else:
-                payload["redaction_map"] = redaction_map
+            from .documents.models import LoadedDocument as _LoadedDocument
+            from .source_mapping import build_source_block
+
+            doc = _LoadedDocument(
+                text=text,
+                source_path=_Path("<mcp>"),
+                format="text",
+            )
+            payload["_source"] = build_source_block(
+                doc, redaction_map=redaction_map
+            )
 
         return _json_result(payload)
 

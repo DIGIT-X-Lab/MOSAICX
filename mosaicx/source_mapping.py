@@ -182,21 +182,43 @@ def build_source_block(
     # Build the guide
     page_dims = doc.page_dimensions or []
     is_image = doc.format in ("jpg", "jpeg", "png", "tiff", "tif", "bmp")
+    is_text = doc.format in ("txt", "md", "markdown")
 
     guide: dict[str, Any] = {
-        "coordinate_space": "image_pixels" if is_image else "pdf_points",
-        "origin": "top-left" if is_image else "bottom-left",
-        "page_dimensions": [list(d) for d in page_dims],
+        "version": "1.0",
+        "bbox_format": "[x0, y0, x1, y1]",
     }
-    if not is_image:
+
+    if is_text:
+        guide["coordinate_space"] = "none"
+        guide["how_to_use"] = (
+            "Text files have no spatial coordinates. "
+            "Fields have excerpts and grounded status but spans will be empty."
+        )
+    elif is_image:
+        guide["coordinate_space"] = "image_pixels"
+        guide["origin"] = "top-left"
+        guide["page_dimensions"] = [list(d) for d in page_dims]
+        guide["how_to_use"] = (
+            "Bbox coordinates are image pixels (origin top-left). "
+            "Use spans[].bbox directly for overlay rectangles."
+        )
+    else:
+        guide["coordinate_space"] = "pdf_points"
+        guide["origin"] = "bottom-left"
+        guide["render_dpi"] = 200
+        guide["page_dimensions"] = [list(d) for d in page_dims]
         guide["to_fitz_rect"] = "fitz.Rect(x0, page_h - y1, x1, page_h - y0)"
-        guide["to_image_px"] = "(x * dpi/72, (page_h - y) * dpi/72)"
-    guide["how_to_use"] = (
-        "Each field in 'fields' has 'spans' with page number and bbox. "
-        "Use page_dimensions[page-1] to get (width, height). "
-        "For PDFs, transform bbox with to_fitz_rect formula (y-axis flip). "
-        "For images, bbox coordinates are direct pixel positions."
-    )
+        guide["to_image_px"] = (
+            "scale = render_dpi / 72; "
+            "(x0 * scale, (page_h - y1) * scale, x1 * scale, (page_h - y0) * scale)"
+        )
+        guide["how_to_use"] = (
+            "Each field has 'spans' with page number and bbox in PDF points. "
+            "Use page_dimensions[page-1] for (width, height). "
+            "Transform bbox with to_fitz_rect for PyMuPDF overlay, "
+            "or to_image_px for rendered image overlay at render_dpi."
+        )
 
     # Build fields
     source_fields: dict[str, dict[str, Any]] = {}

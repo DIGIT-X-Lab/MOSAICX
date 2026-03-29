@@ -508,6 +508,23 @@ def _extract_batch(
     resume_id = "resume" if resume else None
     checkpoint_dir = output_dir_path / ".checkpoints" if resume else None
 
+    # Wrap process_fn to attach _source mapping per document
+    _last_loaded_doc: dict[str, Any] = {}
+
+    def _load_and_cache(p: Path) -> str:
+        doc = _load_doc_with_config(p)
+        _last_loaded_doc["doc"] = doc
+        return doc.text
+
+    def _process_with_source(text: str) -> dict:
+        output = process_fn(text)
+        doc = _last_loaded_doc.get("doc")
+        if doc is not None:
+            from .source_mapping import build_source_block
+            extracted_fields = output.get("extracted", output)
+            output["_source"] = build_source_block(doc, fields=extracted_fields)
+        return output
+
     # Count documents for progress bar
     supported = {".txt", ".md", ".pdf", ".docx", ".png", ".jpg", ".jpeg", ".tif", ".tiff"}
     total_docs = sum(1 for p in directory.iterdir() if p.is_file() and p.suffix.lower() in supported)
@@ -516,10 +533,10 @@ def _extract_batch(
         result = processor.process_directory(
             input_dir=directory,
             output_dir=output_dir_path,
-            process_fn=process_fn,
+            process_fn=_process_with_source,
             resume_id=resume_id,
             checkpoint_dir=checkpoint_dir,
-            load_fn=lambda p: _load_doc_with_config(p).text,
+            load_fn=_load_and_cache,
             on_progress=lambda name, success: advance(),
         )
 
@@ -542,7 +559,7 @@ def _extract_batch(
         with open(jsonl_path, "w", encoding="utf-8") as f:
             for jf in json_files:
                 data = json.loads(jf.read_text(encoding="utf-8"))
-                data["_source"] = jf.stem
+                data["_source_file"] = jf.stem
                 f.write(json.dumps(data, default=str, ensure_ascii=False) + "\n")
         console.print(theme.ok(f"Exported {jsonl_path}"))
 
@@ -553,7 +570,7 @@ def _extract_batch(
             records = []
             for jf in json_files:
                 data = json.loads(jf.read_text(encoding="utf-8"))
-                data["_source"] = jf.stem
+                data["_source_file"] = jf.stem
                 records.append(data)
             df = pd.json_normalize(records, sep="_")
             csv_path = output_dir_path / "results.csv"
@@ -571,7 +588,7 @@ def _extract_batch(
             records = []
             for jf in json_files:
                 data = json.loads(jf.read_text(encoding="utf-8"))
-                data["_source"] = jf.stem
+                data["_source_file"] = jf.stem
                 records.append(data)
             df = pd.json_normalize(records, sep="_")
             parquet_path = output_dir_path / "results.parquet"
@@ -912,11 +929,11 @@ def extract(
             output_data["_planner"] = planner_diag
         metrics = getattr(extractor, "_last_metrics", None)
 
-    if provenance:
-        from .source_mapping import build_source_block
+    # Always attach _source mapping (text search + coordinates — cheap, no LLM)
+    from .source_mapping import build_source_block
 
-        extracted_fields = output_data.get("extracted", output_data)
-        output_data["_source"] = build_source_block(doc, fields=extracted_fields)
+    extracted_fields = output_data.get("extracted", output_data)
+    output_data["_source"] = build_source_block(doc, fields=extracted_fields)
 
     if do_verify:
         from .sdk import verify as sdk_verify
@@ -2247,6 +2264,24 @@ def _deidentify_batch(
     resume_id = "resume" if resume else None
     checkpoint_dir = output_dir_path / ".checkpoints" if resume else None
 
+    # Wrap process_fn to attach _source mapping per document
+    _last_loaded_doc_deid: dict[str, Any] = {}
+
+    def _load_and_cache_deid(p: Path) -> str:
+        doc = _load_doc_with_config(p)
+        _last_loaded_doc_deid["doc"] = doc
+        return doc.text
+
+    def _process_with_source_deid(text: str) -> dict:
+        output = process_fn(text)
+        doc = _last_loaded_doc_deid.get("doc")
+        if doc is not None and output.get("redaction_map"):
+            from .source_mapping import build_source_block
+            output["_source"] = build_source_block(
+                doc, redaction_map=output["redaction_map"]
+            )
+        return output
+
     supported = {".txt", ".md", ".pdf", ".docx"}
     total_docs = sum(1 for p in directory.iterdir() if p.is_file() and p.suffix.lower() in supported)
 
@@ -2254,10 +2289,10 @@ def _deidentify_batch(
         result = processor.process_directory(
             input_dir=directory,
             output_dir=output_dir_path,
-            process_fn=process_fn,
+            process_fn=_process_with_source_deid,
             resume_id=resume_id,
             checkpoint_dir=checkpoint_dir,
-            load_fn=lambda p: _load_doc_with_config(p).text,
+            load_fn=_load_and_cache_deid,
             on_progress=lambda name, success: advance(),
         )
 
@@ -2280,7 +2315,7 @@ def _deidentify_batch(
         with open(jsonl_path, "w", encoding="utf-8") as f:
             for jf in json_files:
                 data = json.loads(jf.read_text(encoding="utf-8"))
-                data["_source"] = jf.stem
+                data["_source_file"] = jf.stem
                 f.write(json.dumps(data, default=str, ensure_ascii=False) + "\n")
         console.print(theme.ok(f"Exported {jsonl_path}"))
 
@@ -2291,7 +2326,7 @@ def _deidentify_batch(
             records = []
             for jf in json_files:
                 data = json.loads(jf.read_text(encoding="utf-8"))
-                data["_source"] = jf.stem
+                data["_source_file"] = jf.stem
                 records.append(data)
             df = pd.json_normalize(records, sep="_")
             csv_path = output_dir_path / "results.csv"
@@ -2309,7 +2344,7 @@ def _deidentify_batch(
             records = []
             for jf in json_files:
                 data = json.loads(jf.read_text(encoding="utf-8"))
-                data["_source"] = jf.stem
+                data["_source_file"] = jf.stem
                 records.append(data)
             df = pd.json_normalize(records, sep="_")
             parquet_path = output_dir_path / "results.parquet"

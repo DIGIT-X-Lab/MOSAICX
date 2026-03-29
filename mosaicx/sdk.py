@@ -1090,24 +1090,23 @@ def _extract_single_text(
     ) -> dict[str, Any]:
         verification_summary: dict[str, Any] | None = None
 
-        if provenance:
-            from .pipelines.provenance import gather_evidence, resolve_provenance
+        # Attach _source mapping (text search + coordinates, no LLM)
+        if loaded_doc is not None:
+            doc_for_source = loaded_doc
+        else:
+            from pathlib import Path as _Path
 
-            extracted_fields = output.get("extracted", output)
-            evidence = gather_evidence(text, extracted_fields)
-            if loaded_doc is not None:
-                doc_for_provenance = loaded_doc
-            else:
-                from pathlib import Path as _Path
+            from .documents.models import LoadedDocument as _LoadedDocument
 
-                from .documents.models import LoadedDocument as _LoadedDocument
+            doc_for_source = _LoadedDocument(
+                text=text,
+                source_path=_Path("<text>"),
+                format="text",
+            )
+        from .source_mapping import build_source_block
 
-                doc_for_provenance = _LoadedDocument(
-                    text=text,
-                    source_path=_Path("<text>"),
-                    format="text",
-                )
-            output["_provenance"] = resolve_provenance(doc_for_provenance, evidence)
+        extracted_fields = output.get("extracted", output)
+        output["_source"] = build_source_block(doc_for_source, fields=extracted_fields)
 
         if verify:
             from .verify.engine import verify as _verify
@@ -1492,6 +1491,15 @@ def _deidentify_single_text(
 
             redaction_map = enrich_redaction_map(loaded_doc, redaction_map)
         output["redaction_map"] = redaction_map
+
+        # Attach _source mapping
+        if loaded_doc is not None:
+            from .source_mapping import build_source_block
+
+            output["_source"] = build_source_block(
+                loaded_doc, redaction_map=redaction_map
+            )
+
     _attach_envelope(
         output,
         pipeline="deidentify",
