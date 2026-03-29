@@ -75,13 +75,15 @@ def load_document(
         if ocr_engine != "chandra":
             # PPStructure handles both PDF and image files directly
             lang = ocr_langs[0] if ocr_langs else None
-            pages = _run_ppstructure(path, lang=lang)
-            if pages is not None:
+            result = _run_ppstructure(path, lang=lang)
+            if result is not None:
+                pages, page_dims = result
                 return _assemble_document(
                     winners=pages,
                     source_path=path,
                     fmt=suffix.lstrip("."),
                     threshold=quality_threshold,
+                    page_dimensions=page_dims,
                 )
             # PPStructure failed — fall through to image-based path
             logger.info("PPStructure unavailable, using basic PaddleOCR")
@@ -137,13 +139,14 @@ def _get_pdf_page_dims(path: Path) -> list[tuple[float, float]] | None:
 def _run_ppstructure(
     path: Path,
     lang: str | None,
-) -> list[PageResult] | None:
+) -> tuple[list[PageResult], list[tuple[float, float]]] | None:
     """Run PPStructureV3 on a file (PDF or image) and return PageResults.
 
     PPStructureV3 accepts file paths directly — no image conversion needed.
     For PDFs, page dimensions are read separately so TextBlock coordinates
     can be transformed from image pixels to PDF points for redaction.
-    Returns None if PPStructure is unavailable or fails.
+
+    Returns (pages, page_dimensions) or None if PPStructure fails.
     """
     try:
         from .engines.ppstructure_engine import PPStructureEngine
@@ -154,7 +157,8 @@ def _run_ppstructure(
             pdf_page_dims = _get_pdf_page_dims(path)
 
         engine = PPStructureEngine(lang=lang)
-        return engine.process_file(path, pdf_page_dims=pdf_page_dims)
+        pages = engine.process_file(path, pdf_page_dims=pdf_page_dims)
+        return pages, pdf_page_dims or []
     except Exception:
         logger.warning(
             "PPStructure failed, falling back to basic PaddleOCR",
@@ -380,6 +384,7 @@ def _assemble_document(
     source_path: Path,
     fmt: str,
     threshold: float = 0.6,
+    page_dimensions: list[tuple[float, float]] | None = None,
 ) -> LoadedDocument:
     """Assemble a LoadedDocument from per-page results.
 
@@ -441,5 +446,6 @@ def _assemble_document(
         quality_warning=any_below,
         pages=winners,
         text_blocks=all_blocks,
+        page_dimensions=page_dimensions or [],
         _ocr_preprocessed_img=ocr_preprocessed,
     )
