@@ -298,3 +298,44 @@ def build_source_block(
         "fields": source_fields,
     }
     return result
+
+
+def strip_for_open_source(output_data: dict[str, Any]) -> dict[str, Any]:
+    """Strip a full extraction/deidentification JSON to open-source tier.
+
+    Keeps ``extracted`` + ``_evidence`` (reasoning + excerpt per field).
+    Removes ``_source`` (coordinates), ``_extraction_contract``,
+    ``_planner``, and other internal diagnostics.
+
+    The ``_evidence`` block is built from ``_source.fields`` — each field
+    gets its ``reasoning`` and ``excerpt`` but no coordinates or spans.
+    """
+    result: dict[str, Any] = {}
+
+    # Keep the primary output
+    if "extracted" in output_data:
+        result["extracted"] = output_data["extracted"]
+    if "redacted_text" in output_data:
+        result["redacted_text"] = output_data["redacted_text"]
+    if "mode" in output_data:
+        result["mode"] = output_data["mode"]
+
+    # Build _evidence from _source.fields (reasoning + excerpt only)
+    source = output_data.get("_source", {})
+    fields = source.get("fields", {})
+    if fields:
+        evidence: dict[str, dict[str, str]] = {}
+        for key, info in fields.items():
+            ev: dict[str, str] = {}
+            if info.get("excerpt"):
+                ev["excerpt"] = info["excerpt"]
+            if info.get("reasoning"):
+                ev["reasoning"] = info["reasoning"]
+            if info.get("llm_excerpt"):
+                ev["excerpt"] = info["llm_excerpt"]
+            if ev:
+                evidence[key] = ev
+        if evidence:
+            result["_evidence"] = evidence
+
+    return result

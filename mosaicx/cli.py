@@ -158,6 +158,16 @@ def _ensure_deno_runtime(*, command: str, allow_prompt: bool = True) -> None:
 # ---------------------------------------------------------------------------
 
 
+def _apply_output_tier(data: dict) -> dict:
+    """Apply output tier filtering based on MOSAICX_ZENTA config."""
+    cfg = get_config()
+    if cfg.zenta:
+        return data  # Full output for Luwak GUI
+    from .source_mapping import strip_for_open_source
+
+    return strip_for_open_source(data)
+
+
 def _load_doc_with_config(
     path: Path, *, force_ocr: bool | None = None,
 ) -> LoadedDocument:
@@ -989,7 +999,10 @@ def extract(
             if not suffix:
                 output = output.with_suffix(".json")
             output.parent.mkdir(parents=True, exist_ok=True)
-            output.write_text(json.dumps(output_data, indent=2, default=str, ensure_ascii=False), encoding="utf-8")
+            output.write_text(
+                json.dumps(_apply_output_tier(output_data), indent=2, default=str, ensure_ascii=False),
+                encoding="utf-8",
+            )
         console.print(theme.ok(f"Saved to {output}"))
 
     theme.section("Extracted Data", console)
@@ -2549,7 +2562,7 @@ def deidentify(
                 output = output.with_suffix(".json")
             output.parent.mkdir(parents=True, exist_ok=True)
             output.write_text(
-                json.dumps(save_data, indent=2, default=str, ensure_ascii=False),
+                json.dumps(_apply_output_tier(save_data), indent=2, default=str, ensure_ascii=False),
                 encoding="utf-8",
             )
             console.print(theme.ok(f"Saved to {output}"))

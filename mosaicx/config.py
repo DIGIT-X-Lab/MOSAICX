@@ -90,6 +90,9 @@ class MosaicxConfig(BaseSettings):
     force_ocr: bool = False
     ocr_langs: list[str] = Field(default_factory=lambda: ["en", "de"])
 
+    # --- Output tier ---
+    zenta: bool = False  # Full JSON with _source coordinates for Luwak GUI
+
 
 @lru_cache(maxsize=1)
 def get_config() -> MosaicxConfig:
