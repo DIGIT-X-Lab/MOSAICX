@@ -288,7 +288,8 @@ def build_source_block(
             entry["spans"] = spans
             source_fields[field_key] = entry
 
-    return {
+    result: dict[str, Any] = {
         "_guide": guide,
         "fields": source_fields,
     }
+    return result

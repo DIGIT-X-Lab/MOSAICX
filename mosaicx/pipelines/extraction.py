@@ -3610,7 +3610,12 @@ def _build_dspy_classes():
                 planner_diag["think_level"] = think
                 self._last_metrics = metrics
                 self._last_planner = planner_diag
-                return dspy.Prediction(extracted=model_instance, planner=planner_diag)
+                reasoning = getattr(self, "_last_reasoning", None)
+                return dspy.Prediction(
+                    extracted=model_instance,
+                    planner=planner_diag,
+                    reasoning=reasoning,
+                )
 
             chain_diag: dict[str, Any] = {}
             verify_diag: dict[str, Any] = {}
