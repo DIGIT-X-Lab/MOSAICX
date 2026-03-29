@@ -219,8 +219,45 @@ def _build_page_text(
     return result.strip()
 
 
-def _pages_from_raw(raw_pages: list[dict]) -> list[PageResult]:
-    """Convert deserialized subprocess output into PageResult objects."""
+def _transform_polys_to_pdf(
+    dt_polys: list,
+    img_w: int,
+    img_h: int,
+    pdf_w: float,
+    pdf_h: float,
+) -> list:
+    """Transform OCR polygon coordinates from image pixels to PDF points.
+
+    PPStructure coordinates are in image pixel space (origin top-left).
+    PDF coordinates are in points (origin bottom-left, 72 DPI).
+    """
+    scale_x = pdf_w / img_w
+    scale_y = pdf_h / img_h
+    transformed = []
+    for poly in dt_polys:
+        new_poly = []
+        for x, y in poly:
+            # Scale from pixels to points, flip Y axis
+            px = float(x) * scale_x
+            py = pdf_h - float(y) * scale_y
+            new_poly.append([px, py])
+        transformed.append(new_poly)
+    return transformed
+
+
+def _pages_from_raw(
+    raw_pages: list[dict],
+    pdf_page_dims: list[tuple[float, float]] | None = None,
+) -> list[PageResult]:
+    """Convert deserialized subprocess output into PageResult objects.
+
+    Parameters
+    ----------
+    pdf_page_dims:
+        If the source is a PDF, provide ``[(width, height), ...]`` in
+        PDF points so TextBlock bboxes can be transformed from image
+        pixel coordinates to PDF coordinates for accurate redaction.
+    """
     page_results: list[PageResult] = []
 
     for i, rp in enumerate(raw_pages):
@@ -229,6 +266,15 @@ def _pages_from_raw(raw_pages: list[dict]) -> list[PageResult]:
         rec_scores = rp.get("rec_scores", [])
         dt_polys = rp.get("dt_polys", [])
         blocks = rp.get("blocks", [])
+
+        # Transform coordinates from image pixels to PDF points
+        img_w = rp.get("img_width")
+        img_h = rp.get("img_height")
+        if pdf_page_dims and img_w and img_h and i < len(pdf_page_dims):
+            pdf_w, pdf_h = pdf_page_dims[i]
+            dt_polys = _transform_polys_to_pdf(
+                dt_polys, img_w, img_h, pdf_w, pdf_h
+            )
 
         page_text = _build_page_text(blocks, rec_texts, dt_polys)
 
@@ -346,12 +392,18 @@ def _serialize_results(results):
                 bbox = [int(x) for x in bbox]
             blocks.append({"label": label, "content": content, "bbox": bbox})
 
+        # Image dimensions for coordinate transformation
+        img_w = int(r["width"]) if r.get("width") else None
+        img_h = int(r["height"]) if r.get("height") else None
+
         pages.append({
             "page_num": page_num,
             "rec_texts": rec_texts,
             "rec_scores": rec_scores,
             "dt_polys": dt_polys,
             "blocks": blocks,
+            "img_width": img_w,
+            "img_height": img_h,
         })
     return pages
 
@@ -420,8 +472,21 @@ class PPStructureEngine:
     def __init__(self, lang: str | None = None):
         self._lang = lang
 
-    def process_file(self, path: Path) -> list[PageResult]:
-        """Process a document file and return one PageResult per page."""
+    def process_file(
+        self,
+        path: Path,
+        pdf_page_dims: list[tuple[float, float]] | None = None,
+    ) -> list[PageResult]:
+        """Process a document file and return one PageResult per page.
+
+        Parameters
+        ----------
+        pdf_page_dims:
+            For PDF files, provide page dimensions in PDF points so
+            TextBlock bboxes can be transformed from image pixels to
+            PDF coordinates for accurate redaction.
+        """
+        self._pdf_page_dims = pdf_page_dims
         try:
             return self._run_worker(path)
         except Exception:
@@ -469,7 +534,7 @@ class PPStructureEngine:
                 )
             ]
 
-        return _pages_from_raw(raw_pages)
+        return _pages_from_raw(raw_pages, pdf_page_dims=self._pdf_page_dims)
 
     def _run_oneshot_subprocess(self, path: Path) -> list[PageResult]:
         """Fallback: one-shot subprocess (re-inits model, slower)."""
@@ -510,6 +575,6 @@ class PPStructureEngine:
                         confidence=0.0,
                     )
                 ]
-            return _pages_from_raw(raw_pages)
+            return _pages_from_raw(raw_pages, pdf_page_dims=self._pdf_page_dims)
 
         raise RuntimeError("No output from PPStructure subprocess")

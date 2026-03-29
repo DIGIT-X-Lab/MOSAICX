@@ -121,6 +121,19 @@ def _load_text(path: Path, fmt: str) -> LoadedDocument:
     return LoadedDocument(text=text, source_path=path, format=fmt)
 
 
+def _get_pdf_page_dims(path: Path) -> list[tuple[float, float]] | None:
+    """Get PDF page dimensions in points for coordinate transformation."""
+    try:
+        import pypdfium2
+
+        pdf = pypdfium2.PdfDocument(str(path))
+        dims = [(page.get_width(), page.get_height()) for page in pdf]
+        pdf.close()
+        return dims
+    except Exception:
+        return None
+
+
 def _run_ppstructure(
     path: Path,
     lang: str | None,
@@ -128,13 +141,20 @@ def _run_ppstructure(
     """Run PPStructureV3 on a file (PDF or image) and return PageResults.
 
     PPStructureV3 accepts file paths directly — no image conversion needed.
+    For PDFs, page dimensions are read separately so TextBlock coordinates
+    can be transformed from image pixels to PDF points for redaction.
     Returns None if PPStructure is unavailable or fails.
     """
     try:
         from .engines.ppstructure_engine import PPStructureEngine
 
+        # Get PDF page dimensions for coordinate transformation
+        pdf_page_dims = None
+        if path.suffix.lower() == ".pdf":
+            pdf_page_dims = _get_pdf_page_dims(path)
+
         engine = PPStructureEngine(lang=lang)
-        return engine.process_file(path)
+        return engine.process_file(path, pdf_page_dims=pdf_page_dims)
     except Exception:
         logger.warning(
             "PPStructure failed, falling back to basic PaddleOCR",
