@@ -2469,7 +2469,8 @@ def deidentify(
             console.print(theme.ok(f"Saved to {output}"))
 
     # Display
-    theme.section(document.name, console, uppercase=False)
+    theme.section("Redacted Document", console, "01")
+    console.print(theme.info(document.name))
     console.print(
         Panel(
             redacted,
