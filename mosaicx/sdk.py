@@ -1493,12 +1493,19 @@ def _deidentify_single_text(
         output["redaction_map"] = redaction_map
 
         # Attach _source mapping
-        if loaded_doc is not None:
-            from .source_mapping import build_source_block
+        if loaded_doc is None:
+            from pathlib import Path as _Path
 
-            output["_source"] = build_source_block(
-                loaded_doc, redaction_map=redaction_map
+            from .documents.models import LoadedDocument as _LD
+
+            loaded_doc = _LD(
+                text=text, source_path=_Path("<text>"), format="text",
             )
+        from .source_mapping import build_source_block
+
+        output["_source"] = build_source_block(
+            loaded_doc, redaction_map=redaction_map
+        )
 
     _attach_envelope(
         output,

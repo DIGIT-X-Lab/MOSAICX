@@ -8,13 +8,11 @@ and returns Markdown with tables preserved.
 
 from __future__ import annotations
 
-import io
 import logging
-import os
 import re
+import subprocess
 import sys
-import warnings
-from functools import lru_cache
+import threading
 from pathlib import Path
 
 from ..models import PageResult, TextBlock
@@ -118,7 +116,7 @@ def _reconstruct_text_block(
     bx0, by0, bx1, by1 = block_bbox
     # Collect OCR entries inside this block's bbox
     entries: list[tuple[float, float, str]] = []
-    for text, poly in zip(rec_texts, dt_polys):
+    for text, poly in zip(rec_texts, dt_polys, strict=False):
         ys = [p[1] for p in poly]
         xs = [p[0] for p in poly]
         cy = sum(ys) / len(ys)
@@ -435,11 +433,11 @@ for line in sys.stdin:
 
 
 # Module-level persistent worker process
-_worker_proc: "subprocess.Popen | None" = None
-_worker_lock: "threading.Lock | None" = None
+_worker_proc: subprocess.Popen | None = None
+_worker_lock: threading.Lock | None = None
 
 
-def _get_worker() -> "subprocess.Popen":
+def _get_worker() -> subprocess.Popen:
     """Get or spawn the persistent PPStructure worker process."""
     import subprocess
     import threading
@@ -517,9 +515,17 @@ class PPStructureEngine:
         worker.stdin.write(request + "\n")
         worker.stdin.flush()
 
-        # Read exactly one response line (blocks until worker responds,
-        # but releases the GIL so Rich spinner can animate)
-        response_line = worker.stdout.readline()
+        # Read response with timeout to prevent infinite hangs
+        import concurrent.futures
+
+        def _read_line():
+            return worker.stdout.readline()
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            try:
+                response_line = pool.submit(_read_line).result(timeout=300)
+            except concurrent.futures.TimeoutError:
+                raise RuntimeError("Worker timed out (300s)") from None
         if not response_line:
             raise RuntimeError("Worker process died (no response)")
 
