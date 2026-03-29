@@ -913,11 +913,10 @@ def extract(
         metrics = getattr(extractor, "_last_metrics", None)
 
     if provenance:
-        from .pipelines.provenance import gather_evidence, resolve_provenance
+        from .source_mapping import build_source_block
 
         extracted_fields = output_data.get("extracted", output_data)
-        evidence = gather_evidence(doc.text, extracted_fields)
-        output_data["_provenance"] = resolve_provenance(doc, evidence)
+        output_data["_source"] = build_source_block(doc, fields=extracted_fields)
 
     if do_verify:
         from .sdk import verify as sdk_verify
@@ -2459,10 +2458,11 @@ def deidentify(
             save_data: dict[str, Any] = {"redacted_text": redacted, "mode": mode}
             if redaction_map:
                 save_data["redaction_map"] = redaction_map
-            if provenance and doc.page_dimensions:
-                save_data.setdefault("_mosaicx", {}).setdefault("_document", {})[
-                    "page_dimensions"
-                ] = doc.page_dimensions
+                from .source_mapping import build_source_block
+
+                save_data["_source"] = build_source_block(
+                    doc, redaction_map=redaction_map
+                )
             try:
                 import yaml
             except ImportError:
@@ -2484,10 +2484,11 @@ def deidentify(
             save_data = {"redacted_text": redacted, "mode": mode}
             if redaction_map:
                 save_data["redaction_map"] = redaction_map
-            if provenance and doc.page_dimensions:
-                save_data.setdefault("_mosaicx", {}).setdefault("_document", {})[
-                    "page_dimensions"
-                ] = doc.page_dimensions
+                from .source_mapping import build_source_block
+
+                save_data["_source"] = build_source_block(
+                    doc, redaction_map=redaction_map
+                )
             if not suffix:
                 output = output.with_suffix(".json")
             output.parent.mkdir(parents=True, exist_ok=True)
