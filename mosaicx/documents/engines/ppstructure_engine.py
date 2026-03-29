@@ -264,22 +264,26 @@ def _pages_from_raw(
         page_num = rp.get("page_num") or (i + 1)
         rec_texts = rp.get("rec_texts", [])
         rec_scores = rp.get("rec_scores", [])
-        dt_polys = rp.get("dt_polys", [])
+        dt_polys_orig = rp.get("dt_polys", [])
         blocks = rp.get("blocks", [])
 
-        # Transform coordinates from image pixels to PDF points
+        # Build page text using ORIGINAL pixel coordinates (same space
+        # as block bboxes from parsing_res_list).
+        page_text = _build_page_text(blocks, rec_texts, dt_polys_orig)
+
+        # Transform coordinates from image pixels to PDF points for
+        # TextBlocks (used by redaction/provenance).
+        dt_polys_final = dt_polys_orig
         img_w = rp.get("img_width")
         img_h = rp.get("img_height")
         if pdf_page_dims and img_w and img_h and i < len(pdf_page_dims):
             pdf_w, pdf_h = pdf_page_dims[i]
-            dt_polys = _transform_polys_to_pdf(
-                dt_polys, img_w, img_h, pdf_w, pdf_h
+            dt_polys_final = _transform_polys_to_pdf(
+                dt_polys_orig, img_w, img_h, pdf_w, pdf_h
             )
 
-        page_text = _build_page_text(blocks, rec_texts, dt_polys)
-
         text_blocks = _map_ocr_blocks_to_markdown(
-            page_text, rec_texts, dt_polys,
+            page_text, rec_texts, dt_polys_final,
             page_num=page_num, global_offset=0,
         )
 
