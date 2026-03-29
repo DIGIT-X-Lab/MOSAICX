@@ -103,28 +103,120 @@ def _html_table_to_markdown(html: str) -> str:
     return "\n".join(md_rows)
 
 
-def _clean_ppstructure_markdown(text: str) -> str:
-    """Post-process PPStructureV3 Markdown output.
+def _reconstruct_text_block(
+    block_bbox: list[int],
+    rec_texts: list[str],
+    dt_polys: list[list[list[float]]],
+) -> str:
+    """Reconstruct a text block's content using OCR y-coordinates.
 
-    - Strip ``<div>`` wrappers and inline styles
-    - Replace HTML ``<table>`` blocks with Markdown pipe tables
-    - Collapse excessive blank lines
-
-    Order matters: strip ``<div>`` first so the table regex doesn't
-    accidentally span across multiple ``<div>`` elements.
+    PPStructureV3 concatenates OCR lines within a ``text`` region into a
+    single paragraph, losing line breaks.  This function finds all OCR
+    detections that fall inside the block's bounding box, groups them by
+    y-coordinate (same row), and joins with proper newlines.
     """
-    # Step 1: Strip <div> wrappers (e.g. centered titles, table containers)
-    text = re.sub(r"<div[^>]*>(.*?)</div>", r"\1", text, flags=re.DOTALL)
-    # Step 2: Replace HTML tables with Markdown pipe tables
-    text = re.sub(
-        r"<(?:html><body>)?<table.*?</table>(?:</body></html>)?",
-        lambda m: _html_table_to_markdown(m.group(0)),
-        text,
-        flags=re.DOTALL,
-    )
-    # Step 3: Collapse 3+ blank lines to 2
-    text = re.sub(r"\n{3,}", "\n\n", text)
-    return text.strip()
+    bx0, by0, bx1, by1 = block_bbox
+    # Collect OCR entries inside this block's bbox
+    entries: list[tuple[float, float, str]] = []
+    for text, poly in zip(rec_texts, dt_polys):
+        ys = [p[1] for p in poly]
+        xs = [p[0] for p in poly]
+        cy = sum(ys) / len(ys)
+        cx = sum(xs) / len(xs)
+        # Check if center falls within the block bbox (with small margin)
+        margin = 10
+        if by0 - margin <= cy <= by1 + margin and bx0 - margin <= cx <= bx1 + margin:
+            entries.append((cy, cx, text))
+
+    if not entries:
+        return ""
+
+    # Group by y-coordinate into rows (entries within half median height
+    # are on the same row)
+    entries.sort(key=lambda e: (e[0], e[1]))
+    rows: list[list[tuple[float, float, str]]] = [[entries[0]]]
+    for entry in entries[1:]:
+        prev_y = rows[-1][0][0]
+        if abs(entry[0] - prev_y) < 20:  # same row threshold
+            rows[-1].append(entry)
+        else:
+            rows.append([entry])
+
+    # Sort entries within each row by x-position, join with space
+    lines: list[str] = []
+    for row in rows:
+        row.sort(key=lambda e: e[1])
+        lines.append(" ".join(e[2] for e in row))
+
+    return "\n".join(lines)
+
+
+_HEADING_LABELS = frozenset({"doc_title", "paragraph_title"})
+_TEXT_LABELS = frozenset({
+    "text", "abstract", "content", "reference", "reference_content",
+    "algorithm", "aside_text",
+})
+
+
+def _build_page_text(
+    parsing_res: list,
+    rec_texts: list[str],
+    dt_polys: list[list[list[float]]],
+) -> str:
+    """Build page text from layout blocks with proper structure.
+
+    Uses PPStructureV3's layout blocks for structure (headings, tables)
+    and OCR y-coordinates for line breaks within text regions.
+    """
+    parts: list[str] = []
+
+    for block in parsing_res:
+        label = getattr(block, "label", None)
+        if label is None and isinstance(block, dict):
+            label = block.get("label")
+        content = getattr(block, "content", None)
+        if content is None and isinstance(block, dict):
+            content = block.get("content")
+        bbox = getattr(block, "bbox", None)
+        if bbox is None and isinstance(block, dict):
+            bbox = block.get("bbox")
+
+        if not content and not bbox:
+            continue
+
+        if label == "table":
+            # Convert HTML table to Markdown pipe table
+            parts.append(_html_table_to_markdown(content or ""))
+        elif label == "doc_title":
+            text = (content or "").strip()
+            # Strip <div> wrappers if present
+            text = re.sub(r"<div[^>]*>(.*?)</div>", r"\1", text, flags=re.DOTALL)
+            parts.append(f"# {text}")
+        elif label in _HEADING_LABELS:
+            text = (content or "").strip()
+            text = re.sub(r"<div[^>]*>(.*?)</div>", r"\1", text, flags=re.DOTALL)
+            parts.append(f"## {text}")
+        elif label == "figure_title" or label == "chart_title":
+            text = (content or "").strip()
+            text = re.sub(r"<div[^>]*>(.*?)</div>", r"\1", text, flags=re.DOTALL)
+            parts.append(text)
+        elif label in _TEXT_LABELS and bbox is not None:
+            # Reconstruct with proper line breaks from OCR coordinates
+            reconstructed = _reconstruct_text_block(
+                list(bbox), rec_texts, dt_polys
+            )
+            parts.append(reconstructed if reconstructed else (content or "").strip())
+        elif content:
+            # Fallback for any other label
+            text = (content or "").strip()
+            text = re.sub(r"<div[^>]*>(.*?)</div>", r"\1", text, flags=re.DOTALL)
+            if text:
+                parts.append(text)
+
+    result = "\n\n".join(p for p in parts if p)
+    # Collapse 3+ blank lines to 2
+    result = re.sub(r"\n{3,}", "\n\n", result)
+    return result.strip()
 
 
 @lru_cache(maxsize=1)
@@ -195,21 +287,7 @@ class PPStructureEngine:
             page_index = page_result["page_index"]
             page_num = (page_index + 1) if page_index is not None else (i + 1)
 
-            # Extract Markdown text
-            markdown_data = page_result.markdown
-            if isinstance(markdown_data, dict):
-                markdown_text = markdown_data.get("markdown_texts", "")
-            else:
-                markdown_text = getattr(
-                    markdown_data, "markdown_texts", ""
-                )
-            if not isinstance(markdown_text, str):
-                markdown_text = str(markdown_text) if markdown_text else ""
-
-            # Convert HTML tables to Markdown pipe tables
-            markdown_text = _clean_ppstructure_markdown(markdown_text)
-
-            # Extract raw OCR data for TextBlock construction
+            # Extract raw OCR data
             ocr_res = page_result["overall_ocr_res"]
             if isinstance(ocr_res, dict):
                 rec_texts = ocr_res.get("rec_texts", [])
@@ -220,9 +298,15 @@ class PPStructureEngine:
                 rec_scores = getattr(ocr_res, "rec_scores", [])
                 dt_polys = getattr(ocr_res, "dt_polys", [])
 
-            # Build TextBlocks with offsets into the Markdown text
+            # Reconstruct page text from layout blocks + OCR coordinates.
+            # This preserves headings, tables as Markdown, and line breaks
+            # within text regions (PPStructure's markdown_texts loses them).
+            parsing_res = page_result["parsing_res_list"]
+            page_text = _build_page_text(parsing_res, rec_texts, dt_polys)
+
+            # Build TextBlocks with offsets into the reconstructed text
             text_blocks = _map_ocr_blocks_to_markdown(
-                markdown_text,
+                page_text,
                 rec_texts,
                 dt_polys,
                 page_num=page_num,
@@ -234,8 +318,7 @@ class PPStructureEngine:
                 sum(rec_scores) / len(rec_scores) if rec_scores else 0.0
             )
 
-            # Collect HTML from table blocks
-            parsing_res = page_result["parsing_res_list"]
+            # Collect HTML from table blocks for layout_html field
             table_htmls: list[str] = []
             for block in parsing_res:
                 label = getattr(block, "label", None)
@@ -253,7 +336,7 @@ class PPStructureEngine:
             page_results.append(
                 PageResult(
                     page_number=page_num,
-                    text=markdown_text,
+                    text=page_text,
                     engine="ppstructure",
                     confidence=round(confidence, 4),
                     text_blocks=text_blocks,

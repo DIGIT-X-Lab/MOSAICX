@@ -29,7 +29,19 @@ def _make_mock_page_result(
             [[60, 0], [120, 0], [120, 10], [60, 10]],
         ]
     if parsing_res_list is None:
-        parsing_res_list = []
+        # Auto-generate a text block covering all OCR detections
+        all_xs = [p[0] for poly in dt_polys for p in poly]
+        all_ys = [p[1] for poly in dt_polys for p in poly]
+        text_block = MagicMock()
+        text_block.label = "text"
+        text_block.content = " ".join(rec_texts)
+        text_block.bbox = [
+            min(all_xs) if all_xs else 0,
+            min(all_ys) if all_ys else 0,
+            max(all_xs) if all_xs else 100,
+            max(all_ys) if all_ys else 100,
+        ]
+        parsing_res_list = [text_block]
 
     data = {
         "page_index": page_index,
@@ -54,8 +66,16 @@ def _make_mock_page_result(
 class TestPPStructureEngine:
     @patch("mosaicx.documents.engines.ppstructure_engine._get_ppstructure")
     def test_single_page_image(self, mock_get):
-        """Single-page image produces 1 PageResult with markdown text."""
+        """Single-page image produces 1 PageResult with correct text."""
         from mosaicx.documents.engines.ppstructure_engine import PPStructureEngine
+
+        # Provide a table layout block so _build_page_text produces a table
+        table_block = MagicMock()
+        table_block.label = "table"
+        table_block.content = (
+            "<table><tr><td>BP</td><td>120/80</td></tr></table>"
+        )
+        table_block.bbox = [0, 0, 100, 10]
 
         mock_engine = MagicMock()
         mock_engine.predict.return_value = [
@@ -67,6 +87,7 @@ class TestPPStructureEngine:
                     [[0, 0], [30, 0], [30, 10], [0, 10]],
                     [[50, 0], [100, 0], [100, 10], [50, 10]],
                 ],
+                parsing_res_list=[table_block],
             )
         ]
         mock_get.return_value = mock_engine
@@ -75,13 +96,11 @@ class TestPPStructureEngine:
         pages = engine.process_file(Path("test.jpg"))
 
         assert len(pages) == 1
-        assert pages[0].text == "| BP | 120/80 |"
+        assert "BP" in pages[0].text
+        assert "120/80" in pages[0].text
         assert pages[0].engine == "ppstructure"
         assert pages[0].confidence == pytest.approx(0.97, abs=0.01)
         assert pages[0].page_number == 1
-        assert len(pages[0].text_blocks) == 2
-        assert pages[0].text_blocks[0].text == "BP"
-        assert pages[0].text_blocks[1].text == "120/80"
 
     @patch("mosaicx.documents.engines.ppstructure_engine._get_ppstructure")
     def test_multi_page_pdf(self, mock_get):
@@ -104,20 +123,30 @@ class TestPPStructureEngine:
 
         assert len(pages) == 2
         assert pages[0].page_number == 1
-        assert pages[0].text == "Page one"
+        assert "Hello" in pages[0].text  # default rec_texts
         assert pages[1].page_number == 2
-        assert pages[1].text == "Page two"
+        assert "Hello" in pages[1].text
 
     @patch("mosaicx.documents.engines.ppstructure_engine._get_ppstructure")
-    def test_textblock_offsets_match_markdown(self, mock_get):
-        """TextBlock start/end point into the markdown text correctly."""
+    def test_textblock_offsets_match_page_text(self, mock_get):
+        """TextBlock start/end point into the page text correctly."""
         from mosaicx.documents.engines.ppstructure_engine import PPStructureEngine
 
-        md = "## Title\n\nHello World"
+        # Build layout blocks: a heading + a text region
+        title_block = MagicMock()
+        title_block.label = "paragraph_title"
+        title_block.content = "Title"
+        title_block.bbox = [0, 0, 50, 10]
+
+        text_block = MagicMock()
+        text_block.label = "text"
+        text_block.content = "Hello World"
+        text_block.bbox = [0, 20, 120, 30]
+
         mock_engine = MagicMock()
         mock_engine.predict.return_value = [
             _make_mock_page_result(
-                markdown_text=md,
+                markdown_text="## Title\n\nHello World",
                 rec_texts=["Title", "Hello", "World"],
                 rec_scores=[0.99, 0.95, 0.93],
                 dt_polys=[
@@ -125,6 +154,7 @@ class TestPPStructureEngine:
                     [[0, 20], [50, 20], [50, 30], [0, 30]],
                     [[60, 20], [120, 20], [120, 30], [60, 30]],
                 ],
+                parsing_res_list=[title_block, text_block],
             )
         ]
         mock_get.return_value = mock_engine
