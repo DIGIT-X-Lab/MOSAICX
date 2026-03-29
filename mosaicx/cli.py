@@ -912,11 +912,11 @@ def extract(
             output_data["_planner"] = planner_diag
         metrics = getattr(extractor, "_last_metrics", None)
 
-    if provenance:
-        from .source_mapping import build_source_block
+    # Always attach _source mapping (text search + coordinates — cheap, no LLM)
+    from .source_mapping import build_source_block
 
-        extracted_fields = output_data.get("extracted", output_data)
-        output_data["_source"] = build_source_block(doc, fields=extracted_fields)
+    extracted_fields = output_data.get("extracted", output_data)
+    output_data["_source"] = build_source_block(doc, fields=extracted_fields)
 
     if do_verify:
         from .sdk import verify as sdk_verify
