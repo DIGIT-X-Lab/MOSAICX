@@ -24,6 +24,32 @@ from typing import Any
 from .documents.models import LoadedDocument
 
 
+def _date_alternatives(value: str) -> list[str]:
+    """Generate alternative date formats for an ISO or common date string."""
+    import datetime
+
+    alternatives: list[str] = []
+    # Try parsing ISO format (YYYY-MM-DD)
+    for fmt_in in ("%Y-%m-%d", "%Y/%m/%d", "%d.%m.%Y", "%m/%d/%Y"):
+        try:
+            dt = datetime.datetime.strptime(value.strip(), fmt_in)
+            # Generate common output formats
+            alternatives.extend([
+                dt.strftime("%B %d, %Y"),        # March 15, 1985
+                dt.strftime("%B %d,%Y"),         # March 15,1985
+                dt.strftime("%b %d, %Y"),        # Mar 15, 1985
+                dt.strftime("%d %B %Y"),         # 15 March 1985
+                dt.strftime("%d.%m.%Y"),         # 15.03.1985
+                dt.strftime("%m/%d/%Y"),         # 03/15/1985
+                dt.strftime("%d/%m/%Y"),         # 15/03/1985
+                dt.strftime("%Y-%m-%d"),         # 1985-03-15
+            ])
+            break
+        except ValueError:
+            continue
+    return alternatives
+
+
 def _find_tight_excerpt(
     source_text: str,
     value: str,
@@ -33,6 +59,9 @@ def _find_tight_excerpt(
     Returns ``(excerpt, start, end)`` where excerpt is the full line
     containing the value, trimmed to be readable but short.
     Returns ``(None, None, None)`` if not found.
+
+    Handles date reformatting: if the value is ``"1985-03-15"`` but the
+    document says ``"March 15, 1985"``, it tries alternative date formats.
     """
     if not value or not source_text:
         return None, None, None
@@ -49,6 +78,19 @@ def _find_tight_excerpt(
     if idx < 0:
         # Case-insensitive fallback
         idx = text_norm.lower().find(needle_norm.lower())
+
+    # If not found, try alternative date formats
+    if idx < 0:
+        for alt in _date_alternatives(needle):
+            alt_norm = " ".join(alt.split())
+            idx = text_norm.find(alt_norm)
+            if idx < 0:
+                idx = text_norm.lower().find(alt_norm.lower())
+            if idx >= 0:
+                needle = alt
+                needle_norm = alt_norm
+                break
+
     if idx < 0:
         return None, None, None
 
