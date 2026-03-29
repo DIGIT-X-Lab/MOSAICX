@@ -211,14 +211,19 @@ def _build_redaction_map_from_entities(
             end = pos + len(phi_text)
             if (pos, end) not in claimed:
                 claimed.add((pos, end))
-                mappings.append({
+                entry: dict[str, Any] = {
                     "original": phi_text,
                     "replacement": _REDACTED,
                     "start": pos,
                     "end": end,
                     "phi_type": phi_type,
                     "method": "llm",
-                })
+                }
+                if entity.get("reasoning"):
+                    entry["reasoning"] = entity["reasoning"]
+                if entity.get("excerpt"):
+                    entry["excerpt"] = entity["excerpt"]
+                mappings.append(entry)
                 break
             search_start = pos + 1
 
@@ -468,11 +473,14 @@ def _build_dspy_classes():
         )
         phi_entities: str = dspy.OutputField(
             desc="JSON list of PHI entities found, each with 'text' (the "
-                 "exact original PHI string as it appears in document_text) "
-                 "and 'type' (one of: NAME, DATE, ADDRESS, ID, PHONE, EMAIL, "
-                 "SSN, MRN, OTHER). Example: "
-                 '[{"text": "Jane Doe", "type": "NAME"}, '
-                 '{"text": "1988-03-22", "type": "DATE"}]'
+                 "exact original PHI string as it appears in document_text), "
+                 "'type' (one of: NAME, DATE, ADDRESS, ID, PHONE, EMAIL, "
+                 "SSN, MRN, OTHER), 'excerpt' (the full line from the document "
+                 "containing this PHI), and 'reasoning' (why this is PHI). "
+                 "Example: "
+                 '[{"text": "Jane Doe", "type": "NAME", '
+                 '"excerpt": "Patient Name: Jane Doe", '
+                 '"reasoning": "Patient name is protected health information"}]'
         )
 
     # -- Module ------------------------------------------------------------

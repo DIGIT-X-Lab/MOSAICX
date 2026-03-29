@@ -284,6 +284,11 @@ def build_source_block(
             }
             if excerpt:
                 entry["excerpt"] = excerpt
+            # Pass through LLM reasoning/excerpt if present
+            if item.get("reasoning"):
+                entry["reasoning"] = item["reasoning"]
+            if item.get("excerpt") and not excerpt:
+                entry["excerpt"] = item["excerpt"]
             entry["grounded"] = bool(spans)
             entry["spans"] = spans
             source_fields[field_key] = entry
