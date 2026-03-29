@@ -2468,13 +2468,16 @@ def deidentify(
             )
             console.print(theme.ok(f"Saved to {output}"))
 
-    # Display
+    # Display — highlight [REDACTED] markers in coral for visual hierarchy
+    display_text = redacted.replace(
+        "[REDACTED]", f"[white on {theme.CORAL}]\\[REDACTED][/white on {theme.CORAL}]"
+    )
     theme.section("Redacted Document", console, "01")
     console.print(theme.info(document.name))
     console.print(
         Padding(
             Panel(
-                redacted,
+                display_text,
                 box=box.ROUNDED,
                 border_style=theme.GREIGE,
                 padding=(1, 2),
