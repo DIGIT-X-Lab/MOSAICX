@@ -64,44 +64,84 @@ def load_document(
     if suffix in TEXT_FORMATS:
         return _load_text(path, suffix.lstrip("."))
 
-    # PDF: try native text extraction first, fall back to OCR
-    if suffix in PDF_FORMATS:
-        if not force_ocr:
+    # PDF and image files: use PPStructure (layout-aware) or Chandra
+    if suffix in PDF_FORMATS or suffix in IMAGE_FORMATS:
+        # For PDFs, try native text extraction first (unless force_ocr)
+        if suffix in PDF_FORMATS and not force_ocr:
             native = _try_native_pdf_text(path)
             if native is not None:
                 return native
-        images = pdf_to_images(path)
-    elif suffix in IMAGE_FORMATS:
-        images = image_to_pages(path)
-    else:
-        raise DocumentLoadError(f"Cannot process format: {suffix}")
 
-    if not images:
-        return LoadedDocument(
-            text="", source_path=path, format=suffix.lstrip("."),
-            page_count=0, quality_warning=True,
+        # OCR path: try PPStructure first (layout-aware), then basic
+        if ocr_engine != "chandra":
+            # PPStructure handles both PDF and image files directly
+            lang = ocr_langs[0] if ocr_langs else None
+            pages = _run_ppstructure(path, lang=lang)
+            if pages is not None:
+                return _assemble_document(
+                    winners=pages,
+                    source_path=path,
+                    fmt=suffix.lstrip("."),
+                    threshold=quality_threshold,
+                )
+            # PPStructure failed — fall through to image-based path
+            logger.info("PPStructure unavailable, using basic PaddleOCR")
+
+        # Chandra path or PPStructure fallback: convert to images first
+        if suffix in PDF_FORMATS:
+            images = pdf_to_images(path)
+        else:
+            images = image_to_pages(path)
+
+        if not images:
+            return LoadedDocument(
+                text="", source_path=path, format=suffix.lstrip("."),
+                page_count=0, quality_warning=True,
+            )
+
+        pages = _run_engine(
+            images=images,
+            ocr_engine=ocr_engine,
+            ocr_langs=ocr_langs or ["en"],
+            chandra_backend=chandra_backend,
         )
 
-    # Run OCR engine (single engine, main thread — avoids MPS threading issues)
-    pages = _run_engine(
-        images=images,
-        ocr_engine=ocr_engine,
-        ocr_langs=ocr_langs or ["en"],
-        chandra_backend=chandra_backend,
-    )
+        return _assemble_document(
+            winners=pages,
+            source_path=path,
+            fmt=suffix.lstrip("."),
+            threshold=quality_threshold,
+        )
 
-    return _assemble_document(
-        winners=pages,
-        source_path=path,
-        fmt=suffix.lstrip("."),
-        threshold=quality_threshold,
-    )
+    raise DocumentLoadError(f"Cannot process format: {suffix}")
 
 
 def _load_text(path: Path, fmt: str) -> LoadedDocument:
     """Load a plain text file."""
     text = path.read_text(encoding="utf-8")
     return LoadedDocument(text=text, source_path=path, format=fmt)
+
+
+def _run_ppstructure(
+    path: Path,
+    lang: str | None,
+) -> list[PageResult] | None:
+    """Run PPStructureV3 on a file (PDF or image) and return PageResults.
+
+    PPStructureV3 accepts file paths directly — no image conversion needed.
+    Returns None if PPStructure is unavailable or fails.
+    """
+    try:
+        from .engines.ppstructure_engine import PPStructureEngine
+
+        engine = PPStructureEngine(lang=lang)
+        return engine.process_file(path)
+    except Exception:
+        logger.warning(
+            "PPStructure failed, falling back to basic PaddleOCR",
+            exc_info=True,
+        )
+        return None
 
 
 def _try_native_pdf_text(path: Path) -> Optional[LoadedDocument]:

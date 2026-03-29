@@ -189,6 +189,7 @@ def _dump_ocr_text(doc: "LoadedDocument", output: Path) -> Path:
         f"# Format: {doc.format}",
         f"# Quality warning: {doc.quality_warning}",
         f"# Characters: {len(doc.text)}",
+        f"# TextBlocks: {len(doc.text_blocks)}",
         "#",
         "# This is the exact text passed to the LLM.",
         "# If this text is wrong, it's an OCR problem.",
@@ -196,6 +197,17 @@ def _dump_ocr_text(doc: "LoadedDocument", output: Path) -> Path:
         "",
         doc.text,
     ]
+
+    # Append layout block summary from page results
+    has_layout = any(p.layout_html for p in doc.pages)
+    if has_layout:
+        lines.append("")
+        lines.append("# --- Layout HTML (tables) ---")
+        for p in doc.pages:
+            if p.layout_html:
+                lines.append(f"# Page {p.page_number}:")
+                lines.append(p.layout_html)
+
     ocr_path.parent.mkdir(parents=True, exist_ok=True)
     ocr_path.write_text("\n".join(lines), encoding="utf-8")
     return ocr_path
