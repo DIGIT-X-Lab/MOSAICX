@@ -200,18 +200,48 @@ def err(msg: str) -> str:
 
 
 @contextmanager
-def spinner(label: str, console: Console) -> Generator[None, None, None]:
-    """Coral dots spinner for indeterminate operations (LLM calls, OCR, etc.)."""
+def spinner(
+    label: str,
+    console: Console,
+    quips: list[str] | None = None,
+    quip_interval: float = 3.0,
+) -> Generator[None, None, None]:
+    """Coral dots spinner for indeterminate operations (LLM calls, OCR, etc.).
+
+    If *quips* is provided, the label text cycles through them every
+    *quip_interval* seconds while the spinner runs.
+    """
     p = Progress(
         TextColumn(" "),
         SpinnerColumn("dots", style=Style(color=CORAL)),
-        TextColumn(f"[{MUTED}]{label}[/{MUTED}]"),
+        TextColumn(f"[{MUTED}]{{task.description}}[/{MUTED}]"),
         console=console,
         transient=True,
     )
     with p:
-        p.add_task(label, total=None)
-        yield
+        task_id = p.add_task(label, total=None)
+        if quips:
+            import random
+            import threading
+
+            stop = threading.Event()
+
+            def _rotate():
+                while not stop.wait(quip_interval):
+                    # Extract base prefix (everything before "...")
+                    base = label.rsplit("...", 1)[0]
+                    quip = random.choice(quips)
+                    p.update(task_id, description=f"{base}... {quip}")
+
+            t = threading.Thread(target=_rotate, daemon=True)
+            t.start()
+            try:
+                yield
+            finally:
+                stop.set()
+                t.join(timeout=1)
+        else:
+            yield
 
 
 @contextmanager

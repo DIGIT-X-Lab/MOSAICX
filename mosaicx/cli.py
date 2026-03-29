@@ -175,7 +175,11 @@ def _load_doc_with_config(
         "converting caffeine to text",
         "asking the pixels nicely",
     ]
-    with theme.spinner(f"Reading {path.name}... {random.choice(_READING_QUIPS)}", console):
+    with theme.spinner(
+        f"Reading {path.name}... {random.choice(_READING_QUIPS)}",
+        console,
+        quips=_READING_QUIPS,
+    ):
         return load_document(
             path,
             ocr_engine=cfg.ocr_engine,
@@ -2411,7 +2415,11 @@ def deidentify(
         "anonymizing like a pro",
         "hiding in plain sight",
     ]
-    with theme.spinner(f"Scrubbing {document.name}... {random.choice(_SCRUB_QUIPS)}", console):
+    with theme.spinner(
+        f"Scrubbing {document.name}... {random.choice(_SCRUB_QUIPS)}",
+        console,
+        quips=_SCRUB_QUIPS,
+    ):
         result = deid(document_text=doc.text, mode=mode)
     redacted = result.redacted_text
     redaction_map = getattr(result, "redaction_map", None) or []
