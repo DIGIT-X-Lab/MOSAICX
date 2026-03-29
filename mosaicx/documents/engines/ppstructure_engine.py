@@ -175,13 +175,10 @@ class PPStructureEngine:
         """Process a document file and return one PageResult per page."""
         engine = _get_ppstructure(self._lang)
 
-        _out, _err = sys.stdout, sys.stderr
-        sys.stdout = io.StringIO()
-        sys.stderr = io.StringIO()
-        try:
-            results = list(engine.predict(str(path)))
-        finally:
-            sys.stdout, sys.stderr = _out, _err
+        # Do NOT redirect stdout/stderr during predict — Rich's spinner
+        # needs stdout to animate.  PaddlePaddle's logging is already
+        # suppressed via logging.getLogger() in _get_ppstructure().
+        results = list(engine.predict(str(path)))
 
         if not results:
             return [
