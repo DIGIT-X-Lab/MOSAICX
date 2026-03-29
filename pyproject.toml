@@ -47,13 +47,14 @@ dependencies = [
 [project.optional-dependencies]
 hf = ["datasets>=2.0"]
 mcp = ["mcp[cli]>=1.0.0"]
+ocr = ["paddlex[ocr]>=3.4.0"]
 query = [
     "openpyxl>=3.1.0",
     "matplotlib>=3.7.0",
     "duckdb>=1.1.0",
     "polars>=1.0.0",
 ]
-all = ["mosaicx[hf]", "mosaicx[mcp]", "mosaicx[query]"]
+all = ["mosaicx[hf]", "mosaicx[mcp]", "mosaicx[query]", "mosaicx[ocr]"]
 dev = [
     "pytest>=8.0.0",
     "pytest-cov>=4.1.0",

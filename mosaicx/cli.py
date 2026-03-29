@@ -157,24 +157,26 @@ def _ensure_deno_runtime(*, command: str, allow_prompt: bool = True) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _load_doc_with_config(path: Path) -> "LoadedDocument":
+def _load_doc_with_config(
+    path: Path, *, force_ocr: bool | None = None,
+) -> LoadedDocument:
     """Load a document using OCR settings from config."""
     from .documents.loader import load_document
-    from .documents.models import LoadedDocument  # noqa: F811 — for type only
 
     cfg = get_config()
-    return load_document(
-        path,
-        ocr_engine=cfg.ocr_engine,
-        force_ocr=cfg.force_ocr,
-        ocr_langs=cfg.ocr_langs,
-        chandra_backend=cfg.chandra_backend if cfg.chandra_backend != "auto" else None,
-        quality_threshold=cfg.quality_threshold,
-        page_timeout=cfg.ocr_page_timeout,
-    )
+    with theme.spinner(f"Reading {path.name}... scanning the fine print", console):
+        return load_document(
+            path,
+            ocr_engine=cfg.ocr_engine,
+            force_ocr=force_ocr if force_ocr is not None else cfg.force_ocr,
+            ocr_langs=cfg.ocr_langs,
+            chandra_backend=cfg.chandra_backend if cfg.chandra_backend != "auto" else None,
+            quality_threshold=cfg.quality_threshold,
+            page_timeout=cfg.ocr_page_timeout,
+        )
 
 
-def _dump_ocr_text(doc: "LoadedDocument", output: Path) -> Path:
+def _dump_ocr_text(doc: LoadedDocument, output: Path) -> Path:
     """Save raw OCR text to a .ocr.txt file for debugging.
 
     Includes OCR metadata header so the user can see which engine
@@ -189,6 +191,7 @@ def _dump_ocr_text(doc: "LoadedDocument", output: Path) -> Path:
         f"# Format: {doc.format}",
         f"# Quality warning: {doc.quality_warning}",
         f"# Characters: {len(doc.text)}",
+        f"# TextBlocks: {len(doc.text_blocks)}",
         "#",
         "# This is the exact text passed to the LLM.",
         "# If this text is wrong, it's an OCR problem.",
@@ -196,6 +199,17 @@ def _dump_ocr_text(doc: "LoadedDocument", output: Path) -> Path:
         "",
         doc.text,
     ]
+
+    # Append layout block summary from page results
+    has_layout = any(p.layout_html for p in doc.pages)
+    if has_layout:
+        lines.append("")
+        lines.append("# --- Layout HTML (tables) ---")
+        for p in doc.pages:
+            if p.layout_html:
+                lines.append(f"# Page {p.page_number}:")
+                lines.append(p.layout_html)
+
     ocr_path.parent.mkdir(parents=True, exist_ok=True)
     ocr_path.write_text("\n".join(lines), encoding="utf-8")
     return ocr_path
@@ -594,6 +608,7 @@ def _extract_batch(
     help="Reasoning depth: auto (router picks based on template complexity), fast (minimal reasoning), deep (chunked extraction + verify + fix).",
 )
 @click.option("--dump-ocr", is_flag=True, default=False, help="Save raw OCR text to .ocr.txt for debugging.")
+@click.option("--force-ocr", is_flag=True, default=False, help="Run OCR even on PDFs with a text layer (enables layout-aware table detection).")
 @click.pass_context
 def extract(
     ctx: click.Context,
@@ -614,6 +629,7 @@ def extract(
     list_modes: bool,
     think: str,
     dump_ocr: bool,
+    force_ocr: bool,
 ) -> None:
     """Extract structured data from a clinical document or directory.
 
@@ -728,7 +744,7 @@ def extract(
     from .documents.models import DocumentLoadError
 
     try:
-        doc = _load_doc_with_config(document)
+        doc = _load_doc_with_config(document, force_ocr=force_ocr or None)
     except (FileNotFoundError, ValueError, DocumentLoadError) as exc:
         raise click.ClickException(str(exc))
 
@@ -2308,6 +2324,7 @@ def _deidentify_batch(
 @click.option("--resume", is_flag=True, default=False, help="Resume batch processing from last checkpoint.")
 @click.option("--provenance", is_flag=True, default=False, help="Include source coordinates in redaction map.")
 @click.option("--dump-ocr", is_flag=True, default=False, help="Save raw OCR text to .ocr.txt for debugging.")
+@click.option("--force-ocr", is_flag=True, default=False, help="Run OCR even on PDFs with a text layer (enables layout-aware table detection).")
 def deidentify(
     document: Path | None,
     directory: Path | None,
@@ -2319,6 +2336,7 @@ def deidentify(
     resume: bool,
     provenance: bool,
     dump_ocr: bool,
+    force_ocr: bool,
 ) -> None:
     """De-identify clinical documents by removing or replacing PHI.
 
@@ -2355,7 +2373,7 @@ def deidentify(
     from .documents.models import DocumentLoadError
 
     try:
-        doc = _load_doc_with_config(document)
+        doc = _load_doc_with_config(document, force_ocr=force_ocr or None)
     except (FileNotFoundError, ValueError, DocumentLoadError) as exc:
         raise click.ClickException(str(exc))
 
@@ -2450,14 +2468,21 @@ def deidentify(
             )
             console.print(theme.ok(f"Saved to {output}"))
 
-    # Display
-    theme.section(document.name, console, uppercase=False)
+    # Display — highlight [REDACTED] markers in coral for visual hierarchy
+    display_text = redacted.replace(
+        "[REDACTED]", f"[white on {theme.CORAL}]\\[REDACTED][/white on {theme.CORAL}]"
+    )
+    theme.section("Redacted Document", console, "01")
+    console.print(theme.info(document.name))
     console.print(
-        Panel(
-            redacted,
-            box=box.ROUNDED,
-            border_style=theme.GREIGE,
-            padding=(1, 2),
+        Padding(
+            Panel(
+                display_text,
+                box=box.ROUNDED,
+                border_style=theme.GREIGE,
+                padding=(1, 2),
+            ),
+            (0, 0, 0, 2),
         )
     )
 

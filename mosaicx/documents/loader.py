@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Optional
 
 from .engines.base import (
     IMAGE_FORMATS,
@@ -64,38 +63,56 @@ def load_document(
     if suffix in TEXT_FORMATS:
         return _load_text(path, suffix.lstrip("."))
 
-    # PDF: try native text extraction first, fall back to OCR
-    if suffix in PDF_FORMATS:
-        if not force_ocr:
+    # PDF and image files: use PPStructure (layout-aware) or Chandra
+    if suffix in PDF_FORMATS or suffix in IMAGE_FORMATS:
+        # For PDFs, try native text extraction first (unless force_ocr)
+        if suffix in PDF_FORMATS and not force_ocr:
             native = _try_native_pdf_text(path)
             if native is not None:
                 return native
-        images = pdf_to_images(path)
-    elif suffix in IMAGE_FORMATS:
-        images = image_to_pages(path)
-    else:
-        raise DocumentLoadError(f"Cannot process format: {suffix}")
 
-    if not images:
-        return LoadedDocument(
-            text="", source_path=path, format=suffix.lstrip("."),
-            page_count=0, quality_warning=True,
+        # OCR path: try PPStructure first (layout-aware), then basic
+        if ocr_engine != "chandra":
+            # PPStructure handles both PDF and image files directly
+            lang = ocr_langs[0] if ocr_langs else None
+            pages = _run_ppstructure(path, lang=lang)
+            if pages is not None:
+                return _assemble_document(
+                    winners=pages,
+                    source_path=path,
+                    fmt=suffix.lstrip("."),
+                    threshold=quality_threshold,
+                )
+            # PPStructure failed — fall through to image-based path
+            logger.info("PPStructure unavailable, using basic PaddleOCR")
+
+        # Chandra path or PPStructure fallback: convert to images first
+        if suffix in PDF_FORMATS:
+            images = pdf_to_images(path)
+        else:
+            images = image_to_pages(path)
+
+        if not images:
+            return LoadedDocument(
+                text="", source_path=path, format=suffix.lstrip("."),
+                page_count=0, quality_warning=True,
+            )
+
+        pages = _run_engine(
+            images=images,
+            ocr_engine=ocr_engine,
+            ocr_langs=ocr_langs or ["en"],
+            chandra_backend=chandra_backend,
         )
 
-    # Run OCR engine (single engine, main thread — avoids MPS threading issues)
-    pages = _run_engine(
-        images=images,
-        ocr_engine=ocr_engine,
-        ocr_langs=ocr_langs or ["en"],
-        chandra_backend=chandra_backend,
-    )
+        return _assemble_document(
+            winners=pages,
+            source_path=path,
+            fmt=suffix.lstrip("."),
+            threshold=quality_threshold,
+        )
 
-    return _assemble_document(
-        winners=pages,
-        source_path=path,
-        fmt=suffix.lstrip("."),
-        threshold=quality_threshold,
-    )
+    raise DocumentLoadError(f"Cannot process format: {suffix}")
 
 
 def _load_text(path: Path, fmt: str) -> LoadedDocument:
@@ -104,7 +121,49 @@ def _load_text(path: Path, fmt: str) -> LoadedDocument:
     return LoadedDocument(text=text, source_path=path, format=fmt)
 
 
-def _try_native_pdf_text(path: Path) -> Optional[LoadedDocument]:
+def _get_pdf_page_dims(path: Path) -> list[tuple[float, float]] | None:
+    """Get PDF page dimensions in points for coordinate transformation."""
+    try:
+        import pypdfium2
+
+        pdf = pypdfium2.PdfDocument(str(path))
+        dims = [(page.get_width(), page.get_height()) for page in pdf]
+        pdf.close()
+        return dims
+    except Exception:
+        return None
+
+
+def _run_ppstructure(
+    path: Path,
+    lang: str | None,
+) -> list[PageResult] | None:
+    """Run PPStructureV3 on a file (PDF or image) and return PageResults.
+
+    PPStructureV3 accepts file paths directly — no image conversion needed.
+    For PDFs, page dimensions are read separately so TextBlock coordinates
+    can be transformed from image pixels to PDF points for redaction.
+    Returns None if PPStructure is unavailable or fails.
+    """
+    try:
+        from .engines.ppstructure_engine import PPStructureEngine
+
+        # Get PDF page dimensions for coordinate transformation
+        pdf_page_dims = None
+        if path.suffix.lower() == ".pdf":
+            pdf_page_dims = _get_pdf_page_dims(path)
+
+        engine = PPStructureEngine(lang=lang)
+        return engine.process_file(path, pdf_page_dims=pdf_page_dims)
+    except Exception:
+        logger.warning(
+            "PPStructure failed, falling back to basic PaddleOCR",
+            exc_info=True,
+        )
+        return None
+
+
+def _try_native_pdf_text(path: Path) -> LoadedDocument | None:
     """Try to extract text from a PDF's native text layer.
 
     Returns a LoadedDocument if the PDF has a usable text layer (>50 chars),

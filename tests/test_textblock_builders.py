@@ -170,3 +170,117 @@ class TestPaddleOCRTextBlocks:
         assert len(blocks) == 2
         assert blocks[0].text == "Alpha"
         assert blocks[1].text == "Beta"
+
+
+class TestOffsetMapping:
+    """Tests for _map_ocr_blocks_to_markdown in ppstructure_engine."""
+
+    def test_simple_text_mapping(self):
+        """OCR texts found sequentially in markdown get correct offsets."""
+        from mosaicx.documents.engines.ppstructure_engine import (
+            _map_ocr_blocks_to_markdown,
+        )
+
+        markdown = "Hello World"
+        rec_texts = ["Hello", "World"]
+        dt_polys = [
+            [[0, 0], [50, 0], [50, 10], [0, 10]],
+            [[60, 0], [120, 0], [120, 10], [60, 10]],
+        ]
+        blocks = _map_ocr_blocks_to_markdown(
+            markdown, rec_texts, dt_polys, page_num=1, global_offset=0
+        )
+        assert len(blocks) == 2
+        assert blocks[0].text == "Hello"
+        assert blocks[0].start == 0
+        assert blocks[0].end == 5
+        assert blocks[0].bbox == (0, 0, 50, 10)
+        assert blocks[1].text == "World"
+        assert blocks[1].start == 6
+        assert blocks[1].end == 11
+
+    def test_table_markdown_mapping(self):
+        """OCR texts found inside markdown table rows."""
+        from mosaicx.documents.engines.ppstructure_engine import (
+            _map_ocr_blocks_to_markdown,
+        )
+
+        markdown = "| Name | Value |\n|---|---|\n| BP | 120/80 |"
+        rec_texts = ["Name", "Value", "BP", "120/80"]
+        dt_polys = [
+            [[0, 0], [40, 0], [40, 10], [0, 10]],
+            [[50, 0], [90, 0], [90, 10], [50, 10]],
+            [[0, 20], [30, 20], [30, 30], [0, 30]],
+            [[50, 20], [100, 20], [100, 30], [50, 30]],
+        ]
+        blocks = _map_ocr_blocks_to_markdown(
+            markdown, rec_texts, dt_polys, page_num=1, global_offset=0
+        )
+        assert len(blocks) == 4
+        for b in blocks:
+            assert markdown[b.start : b.end] == b.text, (
+                f"Mismatch: markdown[{b.start}:{b.end}]={markdown[b.start:b.end]!r} "
+                f"!= {b.text!r}"
+            )
+
+    def test_global_offset_applied(self):
+        """global_offset shifts all start/end positions."""
+        from mosaicx.documents.engines.ppstructure_engine import (
+            _map_ocr_blocks_to_markdown,
+        )
+
+        markdown = "Hello"
+        rec_texts = ["Hello"]
+        dt_polys = [[[0, 0], [50, 0], [50, 10], [0, 10]]]
+        blocks = _map_ocr_blocks_to_markdown(
+            markdown, rec_texts, dt_polys, page_num=2, global_offset=100
+        )
+        assert blocks[0].start == 100
+        assert blocks[0].end == 105
+        assert blocks[0].page == 2
+
+    def test_missing_text_uses_fallback(self):
+        """If an OCR text is not found in markdown, still produces a block."""
+        from mosaicx.documents.engines.ppstructure_engine import (
+            _map_ocr_blocks_to_markdown,
+        )
+
+        markdown = "Hello World"
+        rec_texts = ["Hello", "MISSING_TEXT"]
+        dt_polys = [
+            [[0, 0], [50, 0], [50, 10], [0, 10]],
+            [[60, 0], [120, 0], [120, 10], [60, 10]],
+        ]
+        blocks = _map_ocr_blocks_to_markdown(
+            markdown, rec_texts, dt_polys, page_num=1, global_offset=0
+        )
+        assert len(blocks) == 2
+        assert blocks[0].text == "Hello"
+
+    def test_empty_inputs(self):
+        """Empty rec_texts -> empty blocks."""
+        from mosaicx.documents.engines.ppstructure_engine import (
+            _map_ocr_blocks_to_markdown,
+        )
+
+        blocks = _map_ocr_blocks_to_markdown("", [], [], page_num=1, global_offset=0)
+        assert blocks == []
+
+    def test_mismatched_poly_count(self):
+        """More texts than polys -> only produce blocks for paired entries."""
+        from mosaicx.documents.engines.ppstructure_engine import (
+            _map_ocr_blocks_to_markdown,
+        )
+
+        markdown = "Alpha Beta Gamma"
+        rec_texts = ["Alpha", "Beta", "Gamma"]
+        dt_polys = [
+            [[0, 0], [40, 0], [40, 10], [0, 10]],
+            [[50, 0], [80, 0], [80, 10], [50, 10]],
+        ]
+        blocks = _map_ocr_blocks_to_markdown(
+            markdown, rec_texts, dt_polys, page_num=1, global_offset=0
+        )
+        assert len(blocks) == 2
+        assert blocks[0].text == "Alpha"
+        assert blocks[1].text == "Beta"
