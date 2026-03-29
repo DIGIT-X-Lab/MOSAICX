@@ -542,7 +542,7 @@ def _extract_batch(
         with open(jsonl_path, "w", encoding="utf-8") as f:
             for jf in json_files:
                 data = json.loads(jf.read_text(encoding="utf-8"))
-                data["_source"] = jf.stem
+                data["_source_file"] = jf.stem
                 f.write(json.dumps(data, default=str, ensure_ascii=False) + "\n")
         console.print(theme.ok(f"Exported {jsonl_path}"))
 
@@ -553,7 +553,7 @@ def _extract_batch(
             records = []
             for jf in json_files:
                 data = json.loads(jf.read_text(encoding="utf-8"))
-                data["_source"] = jf.stem
+                data["_source_file"] = jf.stem
                 records.append(data)
             df = pd.json_normalize(records, sep="_")
             csv_path = output_dir_path / "results.csv"
@@ -571,7 +571,7 @@ def _extract_batch(
             records = []
             for jf in json_files:
                 data = json.loads(jf.read_text(encoding="utf-8"))
-                data["_source"] = jf.stem
+                data["_source_file"] = jf.stem
                 records.append(data)
             df = pd.json_normalize(records, sep="_")
             parquet_path = output_dir_path / "results.parquet"
@@ -2280,7 +2280,7 @@ def _deidentify_batch(
         with open(jsonl_path, "w", encoding="utf-8") as f:
             for jf in json_files:
                 data = json.loads(jf.read_text(encoding="utf-8"))
-                data["_source"] = jf.stem
+                data["_source_file"] = jf.stem
                 f.write(json.dumps(data, default=str, ensure_ascii=False) + "\n")
         console.print(theme.ok(f"Exported {jsonl_path}"))
 
@@ -2291,7 +2291,7 @@ def _deidentify_batch(
             records = []
             for jf in json_files:
                 data = json.loads(jf.read_text(encoding="utf-8"))
-                data["_source"] = jf.stem
+                data["_source_file"] = jf.stem
                 records.append(data)
             df = pd.json_normalize(records, sep="_")
             csv_path = output_dir_path / "results.csv"
@@ -2309,7 +2309,7 @@ def _deidentify_batch(
             records = []
             for jf in json_files:
                 data = json.loads(jf.read_text(encoding="utf-8"))
-                data["_source"] = jf.stem
+                data["_source_file"] = jf.stem
                 records.append(data)
             df = pd.json_normalize(records, sep="_")
             parquet_path = output_dir_path / "results.parquet"
