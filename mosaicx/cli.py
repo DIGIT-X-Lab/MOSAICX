@@ -18,6 +18,7 @@ from __future__ import annotations
 import io
 import json
 import os
+import random
 import re
 import sys
 from pathlib import Path
@@ -164,7 +165,17 @@ def _load_doc_with_config(
     from .documents.loader import load_document
 
     cfg = get_config()
-    with theme.spinner(f"Reading {path.name}... scanning the fine print", console):
+    _READING_QUIPS = [
+        "scanning the fine print",
+        "squinting at pixels",
+        "decoding doctor handwriting",
+        "enhancing... enhancing...",
+        "teaching AI to read",
+        "OCR goes brrr",
+        "converting caffeine to text",
+        "asking the pixels nicely",
+    ]
+    with theme.spinner(f"Reading {path.name}... {random.choice(_READING_QUIPS)}", console):
         return load_document(
             path,
             ocr_engine=cfg.ocr_engine,
@@ -2390,7 +2401,17 @@ def deidentify(
     from .pipelines.deidentifier import Deidentifier
 
     deid = Deidentifier()
-    with theme.spinner(f"Scrubbing {document.name}... nothing to see here", console):
+    _SCRUB_QUIPS = [
+        "nothing to see here",
+        "witness protection program activated",
+        "shredding the evidence",
+        "what PHI? never heard of it",
+        "GDPR sends its regards",
+        "making it HIPAA-friendly",
+        "anonymizing like a pro",
+        "hiding in plain sight",
+    ]
+    with theme.spinner(f"Scrubbing {document.name}... {random.choice(_SCRUB_QUIPS)}", console):
         result = deid(document_text=doc.text, mode=mode)
     redacted = result.redacted_text
     redaction_map = getattr(result, "redaction_map", None) or []
