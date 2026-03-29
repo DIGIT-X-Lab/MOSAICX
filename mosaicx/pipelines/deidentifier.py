@@ -474,9 +474,15 @@ def _build_dspy_classes():
         phi_entities: str = dspy.OutputField(
             desc="JSON list of PHI entities found, each with 'text' (the "
                  "exact original PHI string as it appears in document_text), "
-                 "'type' (one of: NAME, DATE, ADDRESS, ID, PHONE, EMAIL, "
-                 "SSN, MRN, OTHER), 'excerpt' (the full line from the document "
+                 "'type' (one of the HIPAA Safe Harbor categories: "
+                 "NAME, DATE, AGE, ADDRESS, ZIP, PHONE, FAX, EMAIL, URL, "
+                 "SSN, MRN, ID, ACCOUNT, LICENSE, INSURANCE, CERTIFICATE, "
+                 "DEVICE_ID, IP_ADDRESS, BIOMETRIC, PHOTO, OTHER), "
+                 "'excerpt' (the full line from the document "
                  "containing this PHI), and 'reasoning' (why this is PHI). "
+                 "Be thorough: detect ALL identifiers including names of "
+                 "physicians, institutions, dates, locations, and any "
+                 "unique identifying numbers. "
                  "Example: "
                  '[{"text": "Jane Doe", "type": "NAME", '
                  '"excerpt": "Patient Name: Jane Doe", '
