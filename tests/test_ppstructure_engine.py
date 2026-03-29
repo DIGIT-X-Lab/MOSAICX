@@ -1,7 +1,7 @@
 # tests/test_ppstructure_engine.py
 """Tests for PPStructureEngine (mocked -- no model downloads needed).
 
-Mocks ``_run_subprocess`` to return raw dict data matching the subprocess
+Mocks ``_run_worker`` to return raw dict data matching the subprocess
 JSON output format, so tests never touch PaddlePaddle.
 """
 
@@ -93,7 +93,7 @@ class TestPagesFromRaw:
 
 
 class TestPPStructureEngine:
-    @patch.object(PPStructureEngine, "_run_subprocess")
+    @patch.object(PPStructureEngine, "_run_worker")
     def test_single_page_image(self, mock_sub):
         """Single-page image produces 1 PageResult with correct text."""
         mock_sub.return_value = _pages_from_raw([_make_raw_page(
@@ -120,7 +120,7 @@ class TestPPStructureEngine:
         assert pages[0].confidence == pytest.approx(0.97, abs=0.01)
         assert pages[0].page_number == 1
 
-    @patch.object(PPStructureEngine, "_run_subprocess")
+    @patch.object(PPStructureEngine, "_run_worker")
     def test_multi_page_pdf(self, mock_sub):
         """Multi-page PDF produces one PageResult per page."""
         mock_sub.return_value = _pages_from_raw([
@@ -135,7 +135,7 @@ class TestPPStructureEngine:
         assert pages[0].page_number == 1
         assert pages[1].page_number == 2
 
-    @patch.object(PPStructureEngine, "_run_subprocess")
+    @patch.object(PPStructureEngine, "_run_worker")
     def test_textblock_offsets_match_page_text(self, mock_sub):
         """TextBlock start/end point into the page text correctly."""
         mock_sub.return_value = _pages_from_raw([_make_raw_page(
@@ -164,7 +164,7 @@ class TestPPStructureEngine:
                 f"{page.text[tb.start:tb.end]!r} != {tb.text!r}"
             )
 
-    @patch.object(PPStructureEngine, "_run_subprocess")
+    @patch.object(PPStructureEngine, "_run_worker")
     def test_textblock_bboxes_are_valid(self, mock_sub):
         """Every TextBlock has x1 >= x0 and y1 >= y0."""
         mock_sub.return_value = _pages_from_raw([_make_raw_page()])
@@ -177,7 +177,7 @@ class TestPPStructureEngine:
             assert x1 >= x0
             assert y1 >= y0
 
-    @patch.object(PPStructureEngine, "_run_subprocess")
+    @patch.object(PPStructureEngine, "_run_worker")
     def test_table_html_captured(self, mock_sub):
         """Table blocks populate layout_html on PageResult."""
         mock_sub.return_value = _pages_from_raw([_make_raw_page(
@@ -194,7 +194,7 @@ class TestPPStructureEngine:
         assert pages[0].layout_html is not None
         assert "<table>" in pages[0].layout_html
 
-    @patch.object(PPStructureEngine, "_run_subprocess")
+    @patch.object(PPStructureEngine, "_run_worker")
     def test_empty_result(self, mock_sub):
         """Empty PPStructure output -> single empty PageResult."""
         from mosaicx.documents.models import PageResult
@@ -212,7 +212,7 @@ class TestPPStructureEngine:
         assert pages[0].text == ""
         assert pages[0].confidence == 0.0
 
-    @patch.object(PPStructureEngine, "_run_subprocess")
+    @patch.object(PPStructureEngine, "_run_worker")
     def test_fallback_on_subprocess_failure(self, mock_sub):
         """Falls back to in-process when subprocess fails."""
         mock_sub.side_effect = RuntimeError("subprocess crashed")
@@ -225,7 +225,7 @@ class TestPPStructureEngine:
 
         mock_sub.assert_called_once()
 
-    @patch.object(PPStructureEngine, "_run_subprocess")
+    @patch.object(PPStructureEngine, "_run_worker")
     def test_lang_stored(self, mock_sub):
         """Language parameter is stored on the engine."""
         mock_sub.return_value = _pages_from_raw([_make_raw_page()])
