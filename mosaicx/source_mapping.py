@@ -352,6 +352,7 @@ def strip_for_open_source(output_data: dict[str, Any]) -> dict[str, Any]:
 
         if phi_items:
             result["summary"] = _build_phi_summary(phi_items)
+            result["phi_types"] = sorted({item["type"] for item in phi_items})
             result["phi"] = phi_items
 
         return result
