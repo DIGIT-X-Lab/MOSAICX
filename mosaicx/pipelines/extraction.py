@@ -3474,13 +3474,15 @@ def _build_dspy_classes():
                 chunk_fields = chunk["fields"]
 
                 with track_step(metrics, f"Extract chunk: {chunk_name}", tracker):
-                    # Build a CoT extractor for just this chunk
+                    # Build a CoT extractor for this chunk with evidence
+                    augmented_chunk = _augment_schema_with_evidence(chunk_schema)
                     chunk_sig = dspy.Signature(
                         "document_text -> extracted",
                         instructions=(
                             f"Extract ONLY the following fields from the document: "
                             f"{', '.join(chunk_fields)}. "
-                            f"Match the {chunk_schema.__name__} schema. "
+                            f"Match the {augmented_chunk.__name__} schema. "
+                            f"For each field, also fill the _excerpt and _reasoning fields. "
                             f"Be thorough and extract every entry."
                         ),
                     ).with_updated_fields(
@@ -3489,8 +3491,8 @@ def _build_dspy_classes():
                         type_=str,
                     ).with_updated_fields(
                         "extracted",
-                        desc=f"Extracted {chunk_name} data",
-                        type_=chunk_schema,
+                        desc=f"Extracted {chunk_name} data with evidence",
+                        type_=augmented_chunk,
                     )
                     chunk_extractor = dspy.ChainOfThought(chunk_sig)
 
@@ -3503,7 +3505,12 @@ def _build_dspy_classes():
                             chunk_data = extracted
                         else:
                             chunk_data = {}
-                        assembled.update(chunk_data)
+                        # Split evidence from chunk data
+                        clean_chunk, chunk_evidence = _split_evidence_from_extracted(
+                            chunk_data, chunk_schema
+                        )
+                        assembled.update(clean_chunk)
+                        _last_outlines_evidence.update(chunk_evidence)
                         chunk_diags.append({
                             "chunk": chunk_name,
                             "fields": chunk_fields,
