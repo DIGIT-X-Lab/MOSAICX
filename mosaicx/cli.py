@@ -2472,11 +2472,14 @@ def deidentify(
     theme.section("Redacted Document", console, "01")
     console.print(theme.info(document.name))
     console.print(
-        Panel(
-            redacted,
-            box=box.ROUNDED,
-            border_style=theme.GREIGE,
-            padding=(1, 2),
+        Padding(
+            Panel(
+                redacted,
+                box=box.ROUNDED,
+                border_style=theme.GREIGE,
+                padding=(1, 2),
+            ),
+            (0, 0, 0, 2),
         )
     )
 
