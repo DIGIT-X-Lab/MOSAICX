@@ -11,6 +11,7 @@ from __future__ import annotations
 import io
 import logging
 import os
+import re
 import sys
 import warnings
 from functools import lru_cache
@@ -83,6 +84,49 @@ def _map_ocr_blocks_to_markdown(
     return blocks
 
 
+def _html_table_to_markdown(html: str) -> str:
+    """Convert an HTML ``<table>`` to a Markdown pipe table.
+
+    PPStructureV3 renders detected tables as raw HTML.  LLMs and the CLI
+    display work much better with Markdown ``| col | col |`` format.
+    """
+    rows = re.findall(r"<tr>(.*?)</tr>", html, re.DOTALL)
+    if not rows:
+        return html
+    md_rows: list[str] = []
+    for i, row in enumerate(rows):
+        cells = re.findall(r"<t[dh][^>]*>(.*?)</t[dh]>", row, re.DOTALL)
+        cells = [c.strip() for c in cells]
+        md_rows.append("| " + " | ".join(cells) + " |")
+        if i == 0:
+            md_rows.append("| " + " | ".join(["---"] * len(cells)) + " |")
+    return "\n".join(md_rows)
+
+
+def _clean_ppstructure_markdown(text: str) -> str:
+    """Post-process PPStructureV3 Markdown output.
+
+    - Strip ``<div>`` wrappers and inline styles
+    - Replace HTML ``<table>`` blocks with Markdown pipe tables
+    - Collapse excessive blank lines
+
+    Order matters: strip ``<div>`` first so the table regex doesn't
+    accidentally span across multiple ``<div>`` elements.
+    """
+    # Step 1: Strip <div> wrappers (e.g. centered titles, table containers)
+    text = re.sub(r"<div[^>]*>(.*?)</div>", r"\1", text, flags=re.DOTALL)
+    # Step 2: Replace HTML tables with Markdown pipe tables
+    text = re.sub(
+        r"<(?:html><body>)?<table.*?</table>(?:</body></html>)?",
+        lambda m: _html_table_to_markdown(m.group(0)),
+        text,
+        flags=re.DOTALL,
+    )
+    # Step 3: Collapse 3+ blank lines to 2
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
+
+
 @lru_cache(maxsize=1)
 def _get_ppstructure(lang: str | None = None):
     """Lazily load and cache the PPStructureV3 instance."""
@@ -150,9 +194,9 @@ class PPStructureEngine:
             ]
 
         page_results: list[PageResult] = []
-        for page_result in results:
+        for i, page_result in enumerate(results):
             page_index = page_result["page_index"]
-            page_num = page_index + 1
+            page_num = (page_index + 1) if page_index is not None else (i + 1)
 
             # Extract Markdown text
             markdown_data = page_result.markdown
@@ -164,6 +208,9 @@ class PPStructureEngine:
                 )
             if not isinstance(markdown_text, str):
                 markdown_text = str(markdown_text) if markdown_text else ""
+
+            # Convert HTML tables to Markdown pipe tables
+            markdown_text = _clean_ppstructure_markdown(markdown_text)
 
             # Extract raw OCR data for TextBlock construction
             ocr_res = page_result["overall_ocr_res"]
