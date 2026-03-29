@@ -300,39 +300,77 @@ def build_source_block(
     return result
 
 
+def _build_phi_summary(phi_items: list[dict[str, Any]]) -> str:
+    """Build a one-line summary of detected PHI items."""
+    from collections import Counter
+
+    counts = Counter(item.get("type", "OTHER") for item in phi_items)
+    parts = []
+    for phi_type in sorted(counts):
+        n = counts[phi_type]
+        label = phi_type.lower() + ("s" if n > 1 else "")
+        parts.append(f"{n} {label}")
+    total = len(phi_items)
+    return f"{total} PHI item{'s' if total != 1 else ''} redacted: {', '.join(parts)}"
+
+
 def strip_for_open_source(output_data: dict[str, Any]) -> dict[str, Any]:
     """Strip a full extraction/deidentification JSON to open-source tier.
 
-    Keeps ``extracted`` + ``_evidence`` (reasoning + excerpt per field).
+    **Extraction:** keeps ``extracted`` + ``_evidence`` (dict of field
+    name to reasoning + excerpt).
+
+    **Deidentification:** keeps ``redacted_text`` + ``phi`` (list of
+    detected PHI items with original, type, replacement, excerpt,
+    reasoning) + ``summary``.
+
     Removes ``_source`` (coordinates), ``_extraction_contract``,
-    ``_planner``, and other internal diagnostics.
-
-    The ``_evidence`` block is built from ``_source.fields`` — each field
-    gets its ``reasoning`` and ``excerpt`` but no coordinates or spans.
+    ``_planner``, ``redaction_map``, and other internal diagnostics.
     """
-    result: dict[str, Any] = {}
-
-    # Keep the primary output
-    if "extracted" in output_data:
-        result["extracted"] = output_data["extracted"]
-    if "redacted_text" in output_data:
-        result["redacted_text"] = output_data["redacted_text"]
-    if "mode" in output_data:
-        result["mode"] = output_data["mode"]
-
-    # Build _evidence from _source.fields (reasoning + excerpt only)
     source = output_data.get("_source", {})
     fields = source.get("fields", {})
+    is_deid = "redacted_text" in output_data
+
+    if is_deid:
+        # Deidentification: flat list of PHI items
+        result: dict[str, Any] = {
+            "redacted_text": output_data["redacted_text"],
+            "mode": output_data.get("mode", "remove"),
+        }
+        phi_items: list[dict[str, Any]] = []
+        for info in fields.values():
+            item: dict[str, Any] = {
+                "original": info.get("value", ""),
+                "type": info.get("phi_type", "OTHER"),
+                "replacement": info.get("replacement", "[REDACTED]"),
+            }
+            if info.get("excerpt"):
+                item["excerpt"] = info["excerpt"]
+            if info.get("reasoning"):
+                item["reasoning"] = info["reasoning"]
+            phi_items.append(item)
+
+        if phi_items:
+            result["summary"] = _build_phi_summary(phi_items)
+            result["phi"] = phi_items
+
+        return result
+
+    # Extraction: dict keyed by field name
+    result = {}
+    if "extracted" in output_data:
+        result["extracted"] = output_data["extracted"]
+
     if fields:
         evidence: dict[str, dict[str, str]] = {}
         for key, info in fields.items():
             ev: dict[str, str] = {}
-            if info.get("excerpt"):
+            if info.get("llm_excerpt"):
+                ev["excerpt"] = info["llm_excerpt"]
+            elif info.get("excerpt"):
                 ev["excerpt"] = info["excerpt"]
             if info.get("reasoning"):
                 ev["reasoning"] = info["reasoning"]
-            if info.get("llm_excerpt"):
-                ev["excerpt"] = info["llm_excerpt"]
             if ev:
                 evidence[key] = ev
         if evidence:
