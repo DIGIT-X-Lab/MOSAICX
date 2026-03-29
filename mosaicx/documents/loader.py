@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Optional
 
 from .engines.base import (
     IMAGE_FORMATS,
@@ -144,7 +143,7 @@ def _run_ppstructure(
         return None
 
 
-def _try_native_pdf_text(path: Path) -> Optional[LoadedDocument]:
+def _try_native_pdf_text(path: Path) -> LoadedDocument | None:
     """Try to extract text from a PDF's native text layer.
 
     Returns a LoadedDocument if the PDF has a usable text layer (>50 chars),
