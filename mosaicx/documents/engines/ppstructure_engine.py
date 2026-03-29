@@ -219,129 +219,276 @@ def _build_page_text(
     return result.strip()
 
 
-@lru_cache(maxsize=1)
-def _get_ppstructure(lang: str | None = None):
-    """Lazily load and cache the PPStructureV3 instance."""
-    os.environ["PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK"] = "True"
+def _pages_from_raw(raw_pages: list[dict]) -> list[PageResult]:
+    """Convert deserialized subprocess output into PageResult objects."""
+    page_results: list[PageResult] = []
 
-    warnings.filterwarnings(
-        "ignore", category=DeprecationWarning, module="paddleocr"
-    )
-    warnings.filterwarnings(
-        "ignore", message=".*urllib3.*chardet.*charset_normalizer.*"
-    )
-    warnings.filterwarnings("ignore", message=".*No ccache found.*")
+    for i, rp in enumerate(raw_pages):
+        page_num = rp.get("page_num") or (i + 1)
+        rec_texts = rp.get("rec_texts", [])
+        rec_scores = rp.get("rec_scores", [])
+        dt_polys = rp.get("dt_polys", [])
+        blocks = rp.get("blocks", [])
 
-    for name in ("paddle", "paddleocr", "paddlex", "ppocr"):
-        logging.getLogger(name).setLevel(logging.WARNING)
+        page_text = _build_page_text(blocks, rec_texts, dt_polys)
 
-    _out, _err = sys.stdout, sys.stderr
-    sys.stdout = io.StringIO()
-    sys.stderr = io.StringIO()
-    try:
-        from paddleocr import PPStructureV3
-
-        engine = PPStructureV3(
-            use_doc_orientation_classify=False,
-            use_doc_unwarping=False,
-            use_seal_recognition=False,
-            use_formula_recognition=False,
-            use_chart_recognition=False,
-            use_table_recognition=True,
-            use_region_detection=True,
-            lang=lang,
+        text_blocks = _map_ocr_blocks_to_markdown(
+            page_text, rec_texts, dt_polys,
+            page_num=page_num, global_offset=0,
         )
-    finally:
-        sys.stdout, sys.stderr = _out, _err
 
-    return engine
+        confidence = (
+            sum(rec_scores) / len(rec_scores) if rec_scores else 0.0
+        )
+
+        table_htmls = [
+            b["content"] for b in blocks
+            if b.get("label") == "table" and b.get("content")
+        ]
+        layout_html = "\n".join(table_htmls) if table_htmls else None
+
+        page_results.append(
+            PageResult(
+                page_number=page_num,
+                text=page_text,
+                engine="ppstructure",
+                confidence=round(confidence, 4),
+                text_blocks=text_blocks,
+                layout_html=layout_html,
+            )
+        )
+
+    return page_results
+
+
+# ---------------------------------------------------------------------------
+# Subprocess script — runs PPStructureV3 in an isolated process so
+# PaddlePaddle's GIL-holding C++ inference doesn't block the Rich spinner.
+# Communicates via JSON on stdin/stdout.
+# ---------------------------------------------------------------------------
+
+_PPSTRUCTURE_SCRIPT = r"""
+import io, json, logging, os, sys, warnings
+import numpy as np
+
+os.environ["PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK"] = "True"
+warnings.filterwarnings("ignore")
+for _n in ("paddle", "paddleocr", "paddlex", "ppocr"):
+    logging.getLogger(_n).setLevel(logging.WARNING)
+
+data = json.loads(sys.stdin.read())
+file_path = data["file_path"]
+lang = data.get("lang")
+
+# Suppress init noise
+_out, _err = sys.stdout, sys.stderr
+sys.stdout = io.StringIO()
+sys.stderr = io.StringIO()
+try:
+    from paddleocr import PPStructureV3
+    engine = PPStructureV3(
+        use_doc_orientation_classify=False,
+        use_doc_unwarping=False,
+        use_seal_recognition=False,
+        use_formula_recognition=False,
+        use_chart_recognition=False,
+        use_table_recognition=True,
+        use_region_detection=True,
+        lang=lang,
+    )
+finally:
+    sys.stdout, sys.stderr = _out, _err
+
+results = list(engine.predict(file_path))
+
+# Serialize results — convert numpy types to Python native
+pages = []
+for i, r in enumerate(results):
+    page_index = r["page_index"]
+    page_num = (int(page_index) + 1) if page_index is not None else (i + 1)
+
+    ocr_res = r["overall_ocr_res"]
+    rec_texts = list(ocr_res.get("rec_texts", []) if isinstance(ocr_res, dict)
+                     else getattr(ocr_res, "rec_texts", []))
+    rec_scores = [float(s) for s in (
+        ocr_res.get("rec_scores", []) if isinstance(ocr_res, dict)
+        else getattr(ocr_res, "rec_scores", [])
+    )]
+    raw_polys = (ocr_res.get("dt_polys", []) if isinstance(ocr_res, dict)
+                 else getattr(ocr_res, "dt_polys", []))
+    dt_polys = []
+    for poly in raw_polys:
+        if isinstance(poly, np.ndarray):
+            dt_polys.append(poly.tolist())
+        else:
+            dt_polys.append([[float(p[0]), float(p[1])] for p in poly])
+
+    blocks = []
+    for block in r["parsing_res_list"]:
+        label = getattr(block, "label", None)
+        if label is None and isinstance(block, dict):
+            label = block.get("label")
+        content = getattr(block, "content", None)
+        if content is None and isinstance(block, dict):
+            content = block.get("content")
+        bbox = getattr(block, "bbox", None)
+        if bbox is None and isinstance(block, dict):
+            bbox = block.get("bbox")
+        if bbox is not None:
+            bbox = [int(x) for x in bbox]
+        blocks.append({"label": label, "content": content, "bbox": bbox})
+
+    pages.append({
+        "page_num": page_num,
+        "rec_texts": rec_texts,
+        "rec_scores": rec_scores,
+        "dt_polys": dt_polys,
+        "blocks": blocks,
+    })
+
+# Write result to stdout (restored)
+sys.stdout = _out
+sys.stderr = _err
+json.dump(pages, sys.stdout)
+"""
 
 
 class PPStructureEngine:
-    """Layout-aware OCR engine backed by PaddleOCR PPStructureV3."""
+    """Layout-aware OCR engine backed by PaddleOCR PPStructureV3.
+
+    Runs inference in a **subprocess** so PaddlePaddle's GIL-holding C++
+    code doesn't block the Rich CLI spinner.  Falls back to in-process
+    execution if the subprocess fails.
+    """
 
     def __init__(self, lang: str | None = None):
         self._lang = lang
 
     def process_file(self, path: Path) -> list[PageResult]:
         """Process a document file and return one PageResult per page."""
-        engine = _get_ppstructure(self._lang)
+        try:
+            return self._run_subprocess(path)
+        except Exception:
+            logger.warning(
+                "PPStructure subprocess failed, trying in-process",
+                exc_info=True,
+            )
+            return self._run_in_process(path)
 
-        # Do NOT redirect stdout/stderr during predict — Rich's spinner
-        # needs stdout to animate.  PaddlePaddle's logging is already
-        # suppressed via logging.getLogger() in _get_ppstructure().
-        results = list(engine.predict(str(path)))
+    def _run_subprocess(self, path: Path) -> list[PageResult]:
+        """Run PPStructureV3 in a subprocess (spinner-friendly)."""
+        import json
+        import subprocess
 
-        if not results:
+        result = subprocess.run(
+            [sys.executable, "-c", _PPSTRUCTURE_SCRIPT],
+            input=json.dumps({
+                "file_path": str(path),
+                "lang": self._lang,
+            }),
+            capture_output=True,
+            text=True,
+            timeout=300,
+        )
+
+        if result.returncode != 0:
+            raise RuntimeError(
+                f"PPStructure subprocess failed (exit {result.returncode}): "
+                f"{result.stderr.strip()[-500:]}"
+            )
+
+        raw_pages = json.loads(result.stdout)
+        if not raw_pages:
             return [
                 PageResult(
-                    page_number=1,
-                    text="",
-                    engine="ppstructure",
+                    page_number=1, text="", engine="ppstructure",
                     confidence=0.0,
                 )
             ]
 
-        page_results: list[PageResult] = []
-        for i, page_result in enumerate(results):
-            page_index = page_result["page_index"]
-            page_num = (page_index + 1) if page_index is not None else (i + 1)
+        return _pages_from_raw(raw_pages)
 
-            # Extract raw OCR data
-            ocr_res = page_result["overall_ocr_res"]
+    def _run_in_process(self, path: Path) -> list[PageResult]:
+        """Fallback: run PPStructureV3 in the current process."""
+        os.environ["PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK"] = "True"
+        warnings.filterwarnings("ignore")
+        for name in ("paddle", "paddleocr", "paddlex", "ppocr"):
+            logging.getLogger(name).setLevel(logging.WARNING)
+
+        _out, _err = sys.stdout, sys.stderr
+        sys.stdout = io.StringIO()
+        sys.stderr = io.StringIO()
+        try:
+            from paddleocr import PPStructureV3
+
+            engine = PPStructureV3(
+                use_doc_orientation_classify=False,
+                use_doc_unwarping=False,
+                use_seal_recognition=False,
+                use_formula_recognition=False,
+                use_chart_recognition=False,
+                use_table_recognition=True,
+                use_region_detection=True,
+                lang=self._lang,
+            )
+        finally:
+            sys.stdout, sys.stderr = _out, _err
+
+        results = list(engine.predict(str(path)))
+        if not results:
+            return [
+                PageResult(
+                    page_number=1, text="", engine="ppstructure",
+                    confidence=0.0,
+                )
+            ]
+
+        # Convert to raw dicts and reuse shared builder
+        import numpy as np
+
+        raw_pages = []
+        for i, r in enumerate(results):
+            page_index = r["page_index"]
+            page_num = (int(page_index) + 1) if page_index is not None else (i + 1)
+
+            ocr_res = r["overall_ocr_res"]
             if isinstance(ocr_res, dict):
-                rec_texts = ocr_res.get("rec_texts", [])
-                rec_scores = ocr_res.get("rec_scores", [])
-                dt_polys = ocr_res.get("dt_polys", [])
+                rec_texts = list(ocr_res.get("rec_texts", []))
+                rec_scores = [float(s) for s in ocr_res.get("rec_scores", [])]
+                raw_polys = ocr_res.get("dt_polys", [])
             else:
-                rec_texts = getattr(ocr_res, "rec_texts", [])
-                rec_scores = getattr(ocr_res, "rec_scores", [])
-                dt_polys = getattr(ocr_res, "dt_polys", [])
+                rec_texts = list(getattr(ocr_res, "rec_texts", []))
+                rec_scores = [float(s) for s in getattr(ocr_res, "rec_scores", [])]
+                raw_polys = getattr(ocr_res, "dt_polys", [])
 
-            # Reconstruct page text from layout blocks + OCR coordinates.
-            # This preserves headings, tables as Markdown, and line breaks
-            # within text regions (PPStructure's markdown_texts loses them).
-            parsing_res = page_result["parsing_res_list"]
-            page_text = _build_page_text(parsing_res, rec_texts, dt_polys)
+            dt_polys = []
+            for poly in raw_polys:
+                if isinstance(poly, np.ndarray):
+                    dt_polys.append(poly.tolist())
+                else:
+                    dt_polys.append([[float(p[0]), float(p[1])] for p in poly])
 
-            # Build TextBlocks with offsets into the reconstructed text
-            text_blocks = _map_ocr_blocks_to_markdown(
-                page_text,
-                rec_texts,
-                dt_polys,
-                page_num=page_num,
-                global_offset=0,
-            )
-
-            # Compute average confidence
-            confidence = (
-                sum(rec_scores) / len(rec_scores) if rec_scores else 0.0
-            )
-
-            # Collect HTML from table blocks for layout_html field
-            table_htmls: list[str] = []
-            for block in parsing_res:
+            blocks = []
+            for block in r["parsing_res_list"]:
                 label = getattr(block, "label", None)
                 if label is None and isinstance(block, dict):
                     label = block.get("label")
-                if label == "table":
-                    content = getattr(block, "content", None)
-                    if content is None and isinstance(block, dict):
-                        content = block.get("content")
-                    if content:
-                        table_htmls.append(content)
+                content = getattr(block, "content", None)
+                if content is None and isinstance(block, dict):
+                    content = block.get("content")
+                bbox = getattr(block, "bbox", None)
+                if bbox is None and isinstance(block, dict):
+                    bbox = block.get("bbox")
+                if bbox is not None:
+                    bbox = [int(x) for x in bbox]
+                blocks.append({"label": label, "content": content, "bbox": bbox})
 
-            layout_html = "\n".join(table_htmls) if table_htmls else None
+            raw_pages.append({
+                "page_num": page_num,
+                "rec_texts": rec_texts,
+                "rec_scores": rec_scores,
+                "dt_polys": dt_polys,
+                "blocks": blocks,
+            })
 
-            page_results.append(
-                PageResult(
-                    page_number=page_num,
-                    text=page_text,
-                    engine="ppstructure",
-                    confidence=round(confidence, 4),
-                    text_blocks=text_blocks,
-                    layout_html=layout_html,
-                )
-            )
-
-        return page_results
+        return _pages_from_raw(raw_pages)
