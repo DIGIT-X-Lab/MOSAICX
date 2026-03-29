@@ -26,7 +26,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Literal, Union, get_args, get_origin
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, create_model
 
 logger = logging.getLogger(__name__)
 
@@ -1683,6 +1683,62 @@ def _plan_extraction_document_text(
     return planned_text, diagnostics
 
 
+# Module-level store for evidence from Outlines extraction
+_last_outlines_evidence: dict[str, dict[str, str]] = {}
+
+
+def _augment_schema_with_evidence(
+    schema_class: type[BaseModel],
+) -> type[BaseModel]:
+    """Add ``{field}_excerpt`` and ``{field}_reasoning`` to a schema.
+
+    The augmented schema is passed to the LLM so it fills evidence
+    alongside extracted values in a single call.
+    """
+    extra_fields: dict[str, Any] = {}
+    for name in schema_class.model_fields:
+        extra_fields[f"{name}_excerpt"] = (
+            str,
+            Field("", description=f"Verbatim quote from the document for '{name}'"),
+        )
+        extra_fields[f"{name}_reasoning"] = (
+            str,
+            Field("", description=f"Why this value was chosen for '{name}'"),
+        )
+    return create_model(
+        f"{schema_class.__name__}WithEvidence",
+        __base__=schema_class,
+        **extra_fields,
+    )
+
+
+def _split_evidence_from_extracted(
+    data: dict[str, Any],
+    schema_class: type[BaseModel],
+) -> tuple[dict[str, Any], dict[str, dict[str, str]]]:
+    """Split augmented extraction into (clean_extracted, field_evidence).
+
+    Returns the original fields in one dict and the evidence fields
+    (``{field}_excerpt``, ``{field}_reasoning``) in another, keyed by
+    the original field name.
+    """
+    original_fields = set(schema_class.model_fields.keys())
+    clean: dict[str, Any] = {}
+    evidence: dict[str, dict[str, str]] = {}
+
+    for key, value in data.items():
+        if key in original_fields:
+            clean[key] = value
+        elif key.endswith("_excerpt"):
+            field = key[: -len("_excerpt")]
+            evidence.setdefault(field, {})["excerpt"] = value
+        elif key.endswith("_reasoning"):
+            field = key[: -len("_reasoning")]
+            evidence.setdefault(field, {})["reasoning"] = value
+
+    return clean, evidence
+
+
 def _recover_schema_instance_with_outlines(
     *,
     document_text: str,
@@ -1705,14 +1761,18 @@ def _recover_schema_instance_with_outlines(
 
         client = openai.OpenAI(base_url=base_url, api_key=(cfg.api_key or "ollama"))
         model = outlines.from_openai(client, model_name=model_name)
-        generator = outlines.Generator(model, outlines.json_schema(schema_class))
+        augmented_schema = _augment_schema_with_evidence(schema_class)
+        generator = outlines.Generator(model, outlines.json_schema(augmented_schema))
         prompt = (
             "Extract structured medical data from the document.\n"
-            "Return only a JSON object matching the target schema.\n"
+            "Return a JSON object matching the target schema.\n"
+            "For each field, also fill the corresponding _excerpt and _reasoning fields.\n"
             "Rules:\n"
             "- Use null for unknown optional fields.\n"
             "- For optional lists, use [] or null, never the string \"None\".\n"
             "- Keep values grounded in document text.\n"
+            "- _excerpt: verbatim quote from the document.\n"
+            "- _reasoning: brief explanation of why this value was chosen.\n"
             f"Prior extraction error hint: {error_hint[:1200]}\n\n"
             f"Document text:\n{document_text[:30000]}"
         )
@@ -1743,7 +1803,15 @@ def _recover_schema_instance_with_outlines(
         parsed = parse_json_like(raw_str)
         if not isinstance(parsed, dict):
             return None
-        coerced = _coerce_payload_to_schema(parsed, schema_class)
+
+        # Split evidence fields from extracted data
+        clean, evidence = _split_evidence_from_extracted(parsed, schema_class)
+
+        # Store evidence on module-level for DocumentExtractor to pick up
+        _last_outlines_evidence.clear()
+        _last_outlines_evidence.update(evidence)
+
+        coerced = _coerce_payload_to_schema(clean, schema_class)
         return schema_class.model_validate(coerced)
     except Exception as exc:
         logger.warning("Outlines extraction recovery failed: %s", exc)
@@ -3748,7 +3816,12 @@ def _build_dspy_classes():
 
             self._last_metrics = metrics
             self._last_planner = planner_diag
-            return dspy.Prediction(extracted=model_instance, planner=planner_diag)
+            field_evidence = dict(_last_outlines_evidence) if _last_outlines_evidence else None
+            return dspy.Prediction(
+                extracted=model_instance,
+                planner=planner_diag,
+                field_evidence=field_evidence,
+            )
 
         def forward(self, document_text: str) -> dspy.Prediction:
             """Run the extraction pipeline."""
