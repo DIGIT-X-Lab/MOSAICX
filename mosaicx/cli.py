@@ -157,24 +157,24 @@ def _ensure_deno_runtime(*, command: str, allow_prompt: bool = True) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _load_doc_with_config(path: Path) -> "LoadedDocument":
+def _load_doc_with_config(path: Path) -> LoadedDocument:
     """Load a document using OCR settings from config."""
     from .documents.loader import load_document
-    from .documents.models import LoadedDocument  # noqa: F811 — for type only
 
     cfg = get_config()
-    return load_document(
-        path,
-        ocr_engine=cfg.ocr_engine,
-        force_ocr=cfg.force_ocr,
-        ocr_langs=cfg.ocr_langs,
-        chandra_backend=cfg.chandra_backend if cfg.chandra_backend != "auto" else None,
-        quality_threshold=cfg.quality_threshold,
-        page_timeout=cfg.ocr_page_timeout,
-    )
+    with theme.spinner(f"Reading {path.name}... scanning the fine print", console):
+        return load_document(
+            path,
+            ocr_engine=cfg.ocr_engine,
+            force_ocr=cfg.force_ocr,
+            ocr_langs=cfg.ocr_langs,
+            chandra_backend=cfg.chandra_backend if cfg.chandra_backend != "auto" else None,
+            quality_threshold=cfg.quality_threshold,
+            page_timeout=cfg.ocr_page_timeout,
+        )
 
 
-def _dump_ocr_text(doc: "LoadedDocument", output: Path) -> Path:
+def _dump_ocr_text(doc: LoadedDocument, output: Path) -> Path:
     """Save raw OCR text to a .ocr.txt file for debugging.
 
     Includes OCR metadata header so the user can see which engine
