@@ -93,6 +93,10 @@ class MosaicxConfig(BaseSettings):
     # --- Output tier ---
     zenta: bool = False  # Full JSON with _source coordinates for Luwak GUI
 
+    # --- Signals (proprietary) ---
+    signals_api_key: str = ""
+    signals_api_base: str = "https://zyqsznjjxqmuyxeguqif.supabase.co/functions/v1/signals-api"
+
 
 @lru_cache(maxsize=1)
 def get_config() -> MosaicxConfig:

@@ -797,6 +797,12 @@ def extract(
     if doc.quality_warning:
         console.print(theme.warn("Low OCR quality detected \u2014 results may be unreliable"))
 
+    if doc.ocr_engine_used == "paddleocr":
+        console.print(theme.warn(
+            "PPStructure layout engine unavailable \u2014 using basic PaddleOCR "
+            "(no table/layout detection). Run 'mosaicx doctor' to diagnose."
+        ))
+
     if doc.is_empty:
         hint = " Try --force-ocr if the document is a scanned image." if document.suffix.lower() == ".pdf" else ""
         raise click.ClickException(f"Document is empty: {document}.{hint}")
@@ -2467,6 +2473,12 @@ def deidentify(
     if doc.quality_warning:
         console.print(theme.warn("Low OCR quality detected -- results may be unreliable"))
 
+    if doc.ocr_engine_used == "paddleocr":
+        console.print(theme.warn(
+            "PPStructure layout engine unavailable \u2014 using basic PaddleOCR "
+            "(no table/layout detection). Run 'mosaicx doctor' to diagnose."
+        ))
+
     console.print(theme.info(f"De-identifying 1 document -- mode: {mode}"))
 
     _configure_dspy()
@@ -4016,6 +4028,16 @@ def doctor(json_output: bool, auto_fix: bool) -> None:
     except ImportError:
         ocr_missing.append("chandra")
 
+    # PPStructure (layout-aware OCR — required for clean output)
+    ppstructure_ok = False
+    ppstructure_detail = ""
+    try:
+        from paddleocr import PPStructureV3  # noqa: F401
+        ppstructure_ok = True
+        ppstructure_detail = "PPStructureV3 importable"
+    except Exception as exc:
+        ppstructure_detail = str(exc)
+
     # Deno
     deno_status = get_deno_runtime_status()
     if not deno_status.ok and auto_fix:
@@ -4087,6 +4109,13 @@ def doctor(json_output: bool, auto_fix: bool) -> None:
              fix=f"pip install {' '.join(m + '-ocr' for m in ocr_missing)}")
     else:
         _add("ocr", "fail", "No OCR engines", fix="pip install paddleocr paddlepaddle")
+
+    if ppstructure_ok:
+        _add("ppstructure", "ok", ppstructure_detail)
+    else:
+        _add("ppstructure", "fail",
+             f"PPStructureV3 not importable: {ppstructure_detail}",
+             fix="pip install paddlex==3.4.3 paddleocr==3.4.0 paddlepaddle==3.3.1")
 
     if deno_status.ok:
         deno_ver = deno_status.deno_version or ""
@@ -4632,3 +4661,499 @@ def mcp_serve(transport: str, port: int) -> None:
         mcp_server.run(transport="sse", port=port)
     else:
         mcp_server.run(transport="stdio")
+
+
+# ---------------------------------------------------------------------------
+# signals (group, hidden -- proprietary deepc feature)
+# ---------------------------------------------------------------------------
+
+
+def _require_signals_key() -> str:
+    """Return the Signals API key or raise a clear error."""
+    cfg = get_config()
+    if not cfg.signals_api_key:
+        raise click.ClickException(
+            "Signals requires an API key. "
+            "Set MOSAICX_SIGNALS_API_KEY or contact deepc for access."
+        )
+    return cfg.signals_api_key
+
+
+def _verdict_style(verdict: str) -> str:
+    """Map Signals verdict to a Rich color."""
+    return {
+        "critical": "red",
+        "review": "yellow",
+        "acceptable": theme.CORAL,
+        "excellent": "green",
+    }.get(verdict, theme.CORAL)
+
+
+def _score_color(score: int) -> str:
+    """Color for the trust score bar."""
+    if score <= 30:
+        return "red"
+    if score <= 60:
+        return "yellow"
+    if score <= 80:
+        return theme.CORAL
+    return "green"
+
+
+def _render_signals_result(
+    result: dict,
+    ai_name: str,
+    ref_name: str,
+) -> None:
+    """Render a Signals evaluation response with full MOSAICX aesthetic.
+
+    Handles both snake_case and camelCase response keys from the API.
+    """
+    # Helper: try snake_case first, then camelCase
+    def _get(snake: str, camel: str, default: Any = None) -> Any:
+        return result.get(snake, result.get(camel, default))
+
+    # -- Phase separator: MOSAICX (on-prem) → Signals (cloud) ---------------
+    console.print()
+    rule = "\u2550" * len(theme.TAGLINE)
+    console.print(f"  [{theme.GREIGE}]{rule}[/{theme.GREIGE}]")
+    console.print(f"  [{theme.CORAL}]SIGNALS[/{theme.CORAL}] [{theme.MUTED}]Radiology AI Evaluation[/{theme.MUTED}]")
+    console.print(f"  [{theme.GREIGE}]{rule}[/{theme.GREIGE}]")
+
+    trust_score = _get("trust_score", "trustScore", 0)
+
+    # verdict can be a string ("critical") or a dict ({"level": ..., "title": ..., "explanation": ...})
+    raw_verdict = result.get("verdict", "unknown")
+    if isinstance(raw_verdict, dict):
+        verdict = raw_verdict.get("level", "unknown")
+        verdict_title = raw_verdict.get("title", verdict.upper())
+        verdict_explanation = raw_verdict.get("explanation", "")
+    else:
+        verdict = raw_verdict
+        verdict_title = _get("verdict_title", "verdictTitle", verdict.upper())
+        verdict_explanation = _get("verdict_explanation", "verdictExplanation", "")
+
+    # Override explanation from trustScoreExplanation if verdict_explanation is empty
+    if not verdict_explanation:
+        verdict_explanation = _get("trust_score_explanation", "trustScoreExplanation", "")
+
+    # -- 01 · TRUST SCORE --------------------------------------------------
+    theme.section("Trust Score", console, "01")
+    console.print(theme.info(f"AI report: {ai_name}  ·  Reference: {ref_name}"))
+
+    # Score bar
+    sc = _score_color(trust_score)
+    filled = int(trust_score / 100 * 30)
+    bar = f"[{sc}]{'█' * filled}[/{sc}][dim]{'░' * (30 - filled)}[/dim]"
+
+    # Verdict badge
+    vc = _verdict_style(verdict)
+    badge_markup = f"[reverse {vc}] {verdict_title.upper()} [/reverse {vc}]"
+
+    panel_content = (
+        f"\n   {bar}  [bold]{trust_score}[/bold] / 100\n\n"
+        f"   {badge_markup}\n"
+    )
+    if verdict_explanation:
+        panel_content += f"   [{theme.MUTED}]{verdict_explanation}[/{theme.MUTED}]\n"
+
+    console.print(Padding(
+        Panel(
+            panel_content,
+            box=box.ROUNDED,
+            border_style=theme.GREIGE,
+            padding=(0, 2),
+        ),
+        (0, 0, 0, 2),
+    ))
+
+    # -- 02 · SCORE COMPOSITION --------------------------------------------
+    composition = _get("trust_score_composition", "trustScoreComposition", {})
+    if composition:
+        theme.section("Score Composition", console, "02")
+        t = theme.make_clean_table(show_header=False)
+        t.add_column("Component", style=f"bold {theme.CORAL}", no_wrap=True)
+        t.add_column("Weight", justify="right")
+        for key, val in composition.items():
+            # Handle both snake_case and camelCase keys
+            label = re.sub(r"([a-z])([A-Z])", r"\1 \2", key).replace("_", " ").title()
+            t.add_row(label, f"{val:.2f}")
+        console.print(Padding(t, (0, 0, 0, 2)))
+
+    # -- 03 · METRICS -------------------------------------------------------
+    raw_metrics = result.get("metrics", {})
+    if raw_metrics:
+        theme.section("Metrics", console, "03")
+        t = theme.make_clean_table(show_header=False)
+        t.add_column("Metric", style=f"bold {theme.CORAL}", no_wrap=True)
+        t.add_column("Score", justify="right")
+        t.add_column("Relevance", style=theme.MUTED, ratio=1)
+
+        # metrics can be a list of dicts or a dict of dicts
+        metric_items = raw_metrics if isinstance(raw_metrics, list) else raw_metrics.values()
+        for info in metric_items:
+            if not isinstance(info, dict):
+                continue
+            label = info.get("name", info.get("description", ""))
+            if not label:
+                continue
+            label = re.sub(r"([a-z])([A-Z])", r"\1 \2", label).replace("_", " ").title()
+            if len(label) > 50:
+                label = label[:47] + "..."
+            score_val = info.get("score", 0)
+            max_val = info.get("max_score", info.get("maxScore", 1))
+            relevance = info.get("clinical_relevance", info.get("clinicalRelevance", ""))
+            t.add_row(label, f"{score_val:.2f} / {max_val:.2f}", relevance)
+        console.print(Padding(t, (0, 0, 0, 2)))
+
+    # -- 04 · SAFETY SIGNALS ------------------------------------------------
+    safety = _get("safety_signals", "safetySignals", [])
+    if safety:
+        theme.section("Safety Signals", console, "04")
+        for sig in safety:
+            severity = sig.get("severity", "info")
+            sig_type = sig.get("type", sig.get("title", "unknown"))
+            if isinstance(sig_type, str):
+                sig_type = sig_type.replace("_", " ").title()
+            explanation = sig.get("explanation", "")
+
+            if severity == "critical":
+                console.print(Padding(
+                    f"[bold red]![/bold red] [reverse red] {severity} [/reverse red] {sig_type}",
+                    (0, 0, 0, 2),
+                ))
+            else:
+                console.print(Padding(
+                    f"[bold yellow]![/bold yellow] [reverse yellow] {severity} [/reverse yellow] {sig_type}",
+                    (0, 0, 0, 2),
+                ))
+
+            gen_text = sig.get("generated_text", sig.get("generatedText", ""))
+            ref_text = sig.get("reference_text", sig.get("referenceText", ""))
+            if gen_text:
+                console.print(Padding(
+                    f"[{theme.MUTED}]AI:  {_esc(gen_text)}[/{theme.MUTED}]",
+                    (0, 0, 0, 6),
+                ))
+            if ref_text:
+                console.print(Padding(
+                    f"[{theme.MUTED}]Ref: {_esc(ref_text)}[/{theme.MUTED}]",
+                    (0, 0, 0, 6),
+                ))
+            if explanation:
+                console.print(Padding(
+                    f"[{theme.MUTED}]{_esc(explanation)}[/{theme.MUTED}]",
+                    (0, 0, 0, 6),
+                ))
+            console.print()
+
+    # -- 05 · STRUCTURED REVIEW ---------------------------------------------
+    review = _get("structured_review", "structuredReview", {})
+    if review:
+        theme.section("Structured Review", console, "05")
+        t = theme.make_clean_table(show_header=False)
+        t.add_column("Criterion", style=f"bold {theme.CORAL}", no_wrap=True)
+        t.add_column("Score", justify="right")
+
+        # Try both snake_case and camelCase field names
+        score_fields = [
+            (["clinical_correctness_score", "clinicalCorrectnessScore"], "Clinical Correctness"),
+            (["completeness_score", "completenessScore"], "Completeness"),
+            (["recommendation_appropriateness_score", "recommendationAppropriatenessScore"], "Recommendation"),
+        ]
+        for fields, label in score_fields:
+            val = None
+            for f in fields:
+                val = review.get(f)
+                if val is not None:
+                    break
+            if val is not None:
+                t.add_row(label, f"{val} / 5")
+
+        priority = review.get("review_priority", review.get("reviewPriority", ""))
+        if priority:
+            pc = _verdict_style(priority)
+            t.add_row("Priority", f"[{pc}]{priority}[/{pc}]")
+
+        console.print(Padding(t, (0, 0, 0, 2)))
+
+        risk = review.get("risk_assessment", review.get("riskAssessment", ""))
+        if risk:
+            console.print(Padding(
+                f"  [{theme.MUTED}]{_esc(risk)}[/{theme.MUTED}]",
+                (0, 0, 0, 2),
+            ))
+
+        key_issues = review.get("key_issues", review.get("keyIssues", []))
+        if key_issues:
+            console.print()
+            for issue in key_issues[:5]:
+                console.print(Padding(
+                    f"[{theme.CORAL}]>[/{theme.CORAL}] [{theme.MUTED}]{_esc(issue)}[/{theme.MUTED}]",
+                    (0, 0, 0, 4),
+                ))
+
+    # -- 06 · DISCREPANCIES -------------------------------------------------
+    discrepancies = result.get("discrepancies", [])
+    if discrepancies:
+        theme.section("Discrepancies", console, "06")
+        for d in discrepancies[:10]:
+            sev = d.get("severity", "")
+            sc_color = _verdict_style(sev)
+            issue_type = d.get("issue_type", d.get("issueType", ""))
+            gen_stmt = d.get("generated_statement", d.get("generatedStatement", ""))
+            ref_stmt = d.get("reference_statement", d.get("referenceStatement", ""))
+
+            console.print(Padding(
+                f"[{sc_color}]{sev}[/{sc_color}]  [bold {theme.CORAL}]{issue_type}[/bold {theme.CORAL}]",
+                (0, 0, 0, 2),
+            ))
+            if gen_stmt:
+                console.print(Padding(
+                    f"[{theme.MUTED}]AI:  {_esc(gen_stmt)}[/{theme.MUTED}]",
+                    (0, 0, 0, 6),
+                ))
+            if ref_stmt:
+                console.print(Padding(
+                    f"[{theme.MUTED}]Ref: {_esc(ref_stmt)}[/{theme.MUTED}]",
+                    (0, 0, 0, 6),
+                ))
+            console.print()
+
+    # -- Evaluation ID ------------------------------------------------------
+    eval_id = result.get("evaluation_id", "")
+    if eval_id:
+        console.print()
+        console.print(theme.info(f"Evaluation ID: {eval_id}"))
+
+
+@cli.group(hidden=True)
+def signals() -> None:
+    """Evaluate AI reports against references via deepcOS Signals."""
+
+
+@signals.command("health")
+def signals_health() -> None:
+    """Check Signals API connectivity.
+
+    \b
+    Examples:
+      mosaicx signals health
+    """
+    api_key = _require_signals_key()
+    cfg = get_config()
+
+    from .signals import SignalsClient, SignalsError
+
+    client = SignalsClient(api_key=api_key, base_url=cfg.signals_api_base)
+    try:
+        data = client.health()
+    except SignalsError as exc:
+        raise click.ClickException(f"Signals API error: {exc}")
+    except Exception as exc:
+        raise click.ClickException(f"Connection failed: {exc}")
+
+    status = data.get("status", "unknown")
+    service = data.get("service", "Signals API")
+    version = data.get("version", "")
+
+    if status == "ok":
+        console.print(theme.ok(f"{service} is online"))
+    else:
+        console.print(theme.warn(f"{service} status: {status}"))
+    if version:
+        console.print(theme.info(f"Version: {version}"))
+
+
+@signals.command("evaluate")
+@click.option("--ai-report", required=True, type=click.Path(exists=True, path_type=Path), help="AI-generated report (PDF, text, or image).")
+@click.option("--reference", required=True, type=click.Path(exists=True, path_type=Path), help="Reference report (PDF, text, or image).")
+@click.option("--modality", default=None, help="Imaging modality (e.g. CT, CR, MR).")
+@click.option("--body-part", default=None, help="Body part (e.g. chest, brain, abdomen).")
+@click.option("--model-name", default=None, help="Name of the AI model being evaluated.")
+@click.option("--model-version", default=None, help="Version of the AI model being evaluated.")
+@click.option("--output", "-o", type=click.Path(path_type=Path), default=None, help="Save full evaluation JSON to file.")
+@click.option("--skip-deidentify", is_flag=True, default=False, help="Skip on-prem de-identification (if reports are already clean).")
+@click.option("--force-ocr", is_flag=True, default=False, help="Run OCR even on PDFs with a text layer.")
+def signals_evaluate(
+    ai_report: Path,
+    reference: Path,
+    modality: str | None,
+    body_part: str | None,
+    model_name: str | None,
+    model_version: str | None,
+    output: Path | None,
+    skip_deidentify: bool,
+    force_ocr: bool,
+) -> None:
+    """Evaluate an AI report against a reference via Signals.
+
+    \b
+    Both reports are de-identified on-prem before being sent to the
+    Signals API for evaluation. Supports PDF, text, and image inputs.
+
+    \b
+    Examples:
+      mosaicx signals evaluate --ai-report ai.pdf --reference ref.txt
+      mosaicx signals evaluate --ai-report ai.txt --reference ref.txt --modality CT --body-part chest
+      mosaicx signals evaluate --ai-report ai.pdf --reference ref.pdf -o results.json
+    """
+    api_key = _require_signals_key()
+    cfg = get_config()
+
+    # -- Load documents ----------------------------------------------------
+    from .documents.models import DocumentLoadError
+
+    try:
+        ai_doc = _load_doc_with_config(ai_report, force_ocr=force_ocr or None)
+    except (FileNotFoundError, ValueError, DocumentLoadError) as exc:
+        raise click.ClickException(f"Cannot load AI report: {exc}")
+
+    try:
+        ref_doc = _load_doc_with_config(reference, force_ocr=force_ocr or None)
+    except (FileNotFoundError, ValueError, DocumentLoadError) as exc:
+        raise click.ClickException(f"Cannot load reference: {exc}")
+
+    ai_text = ai_doc.text
+    ref_text = ref_doc.text
+
+    if not ai_text.strip():
+        raise click.ClickException(f"AI report is empty: {ai_report}")
+    if not ref_text.strip():
+        raise click.ClickException(f"Reference is empty: {reference}")
+
+    console.print(theme.info(
+        f"AI report: {ai_doc.format} · {ai_doc.char_count:,} chars  |  "
+        f"Reference: {ref_doc.format} · {ref_doc.char_count:,} chars"
+    ))
+
+    # -- De-identify on-prem -----------------------------------------------
+    if not skip_deidentify:
+        _SCRUB_QUIPS = [
+            "nothing to see here",
+            "witness protection program activated",
+            "shredding the evidence",
+            "what PHI? never heard of it",
+            "GDPR sends its regards",
+            "making it HIPAA-friendly",
+        ]
+
+        # Try LLM-based deidentification first, fall back to regex-only
+        try:
+            _check_api_key()
+            _configure_dspy()
+            from .pipelines.deidentifier import Deidentifier
+
+            deid = Deidentifier()
+
+            with theme.spinner(
+                f"De-identifying reports... {random.choice(_SCRUB_QUIPS)}",
+                console,
+                quips=_SCRUB_QUIPS,
+            ):
+                ai_result = deid(document_text=ai_text, mode="remove")
+                ref_result = deid(document_text=ref_text, mode="remove")
+
+            ai_text = ai_result.redacted_text
+            ref_text = ref_result.redacted_text
+            console.print(theme.ok("Reports de-identified on-prem (LLM + regex)"))
+        except Exception as llm_exc:
+            console.print(theme.warn(
+                f"LLM de-identification unavailable ({type(llm_exc).__name__}), "
+                "falling back to regex-only"
+            ))
+            from .pipelines.deidentifier import regex_scrub_phi
+
+            with theme.spinner(
+                f"De-identifying reports (regex)... {random.choice(_SCRUB_QUIPS)}",
+                console,
+                quips=_SCRUB_QUIPS,
+            ):
+                ai_text = regex_scrub_phi(ai_text)
+                ref_text = regex_scrub_phi(ref_text)
+            console.print(theme.ok("Reports de-identified on-prem (regex)"))
+
+        # Display redacted reports with coral-highlighted [REDACTED] markers
+        theme.section("De-identified AI Report", console, "A")
+        _highlighted_ai = ai_text.replace(
+            "[REDACTED]", f"[white on {theme.CORAL}]\\[REDACTED][/white on {theme.CORAL}]"
+        )
+        console.print(Padding(
+            Panel(
+                _highlighted_ai,
+                box=box.ROUNDED,
+                border_style=theme.GREIGE,
+                padding=(1, 2),
+            ),
+            (0, 0, 0, 2),
+        ))
+
+        theme.section("De-identified Reference", console, "B")
+        _highlighted_ref = ref_text.replace(
+            "[REDACTED]", f"[white on {theme.CORAL}]\\[REDACTED][/white on {theme.CORAL}]"
+        )
+        console.print(Padding(
+            Panel(
+                _highlighted_ref,
+                box=box.ROUNDED,
+                border_style=theme.GREIGE,
+                padding=(1, 2),
+            ),
+            (0, 0, 0, 2),
+        ))
+    else:
+        console.print(theme.info("Skipping de-identification (--skip-deidentify)"))
+
+    # -- Call Signals API ---------------------------------------------------
+    from .signals import SignalsClient, SignalsError
+
+    metadata: dict = {}
+    if modality:
+        metadata["modality"] = modality
+    if body_part:
+        metadata["body_part"] = body_part
+    if model_name:
+        metadata["model_name"] = model_name
+    if model_version:
+        metadata["model_version"] = model_version
+
+    client = SignalsClient(api_key=api_key, base_url=cfg.signals_api_base)
+
+    _SIGNALS_QUIPS = [
+        "phoning home",
+        "consulting the oracle",
+        "crunching the numbers",
+        "running the gauntlet",
+        "asking the experts",
+        "computing trust score",
+        "analyzing clinical safety",
+    ]
+    try:
+        with theme.spinner(
+            f"Evaluating via Signals... {random.choice(_SIGNALS_QUIPS)}",
+            console,
+            quips=_SIGNALS_QUIPS,
+        ):
+            result = client.evaluate(
+                generated_report=ai_text,
+                reference_report=ref_text,
+                metadata=metadata or None,
+            )
+    except SignalsError as exc:
+        raise click.ClickException(f"Signals API error: {exc}")
+    except Exception as exc:
+        raise click.ClickException(f"Connection failed: {exc}")
+
+    # -- Render results ----------------------------------------------------
+    _render_signals_result(result, ai_report.name, reference.name)
+
+    # -- Save full JSON if requested ----------------------------------------
+    if output is not None:
+        if not output.suffix:
+            output = output.with_suffix(".json")
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(
+            json.dumps(result, indent=2, default=str, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        console.print(theme.ok(f"Saved to {output}"))

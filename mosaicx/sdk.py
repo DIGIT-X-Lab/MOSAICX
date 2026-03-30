@@ -2456,3 +2456,116 @@ def health() -> dict[str, Any]:
         "available_templates": templates,
         "ocr_engine": cfg.ocr_engine,
     }
+
+
+# ---------------------------------------------------------------------------
+# Signals (proprietary)
+# ---------------------------------------------------------------------------
+
+
+def signals_evaluate(
+    ai_report: str | Path | None = None,
+    reference: str | Path | None = None,
+    *,
+    ai_report_text: str | None = None,
+    reference_text: str | None = None,
+    metadata: dict[str, Any] | None = None,
+    skip_deidentify: bool = False,
+) -> dict[str, Any]:
+    """Evaluate an AI report against a reference via the Signals API.
+
+    Accepts file paths (PDF/txt/image) or raw text strings.  Both
+    reports are de-identified on-prem before being sent to the API
+    unless *skip_deidentify* is ``True``.
+
+    Parameters
+    ----------
+    ai_report:
+        Path to the AI-generated report file.  Mutually exclusive
+        with *ai_report_text*.
+    reference:
+        Path to the reference report file.  Mutually exclusive
+        with *reference_text*.
+    ai_report_text:
+        Raw text of the AI-generated report.  Mutually exclusive
+        with *ai_report*.
+    reference_text:
+        Raw text of the reference report.  Mutually exclusive
+        with *reference*.
+    metadata:
+        Optional dict with ``modality``, ``body_part``,
+        ``model_name``, ``model_version``.
+    skip_deidentify:
+        If ``True``, skip on-prem de-identification.
+
+    Returns
+    -------
+    dict
+        Full Signals evaluation response (trust_score, verdict,
+        metrics, safety_signals, structured_review, etc.).
+
+    Raises
+    ------
+    ValueError
+        If inputs are invalid or Signals API key is not configured.
+    """
+    from .config import get_config
+
+    cfg = get_config()
+    if not cfg.signals_api_key:
+        raise ValueError(
+            "Signals API key not configured. "
+            "Set MOSAICX_SIGNALS_API_KEY or contact deepc for access."
+        )
+
+    # Resolve AI report text
+    if ai_report is not None and ai_report_text is not None:
+        raise ValueError("Provide ai_report or ai_report_text, not both.")
+    if ai_report is None and ai_report_text is None:
+        raise ValueError("Provide ai_report or ai_report_text.")
+
+    if ai_report is not None:
+        from .documents.loader import load_document
+
+        ai_doc = load_document(Path(ai_report))
+        ai_text = ai_doc.text
+    else:
+        ai_text = ai_report_text
+
+    # Resolve reference text
+    if reference is not None and reference_text is not None:
+        raise ValueError("Provide reference or reference_text, not both.")
+    if reference is None and reference_text is None:
+        raise ValueError("Provide reference or reference_text.")
+
+    if reference is not None:
+        from .documents.loader import load_document
+
+        ref_doc = load_document(Path(reference))
+        ref_text = ref_doc.text
+    else:
+        ref_text = reference_text
+
+    # De-identify on-prem
+    if not skip_deidentify:
+        _ensure_configured()
+        from .pipelines.deidentifier import Deidentifier
+
+        deid = Deidentifier()
+        ai_result = deid(document_text=ai_text, mode="remove")
+        ref_result = deid(document_text=ref_text, mode="remove")
+        ai_text = ai_result.redacted_text
+        ref_text = ref_result.redacted_text
+
+    # Call Signals API
+    from .signals import SignalsClient
+
+    client = SignalsClient(
+        api_key=cfg.signals_api_key,
+        base_url=cfg.signals_api_base,
+    )
+    return client.evaluate(
+        generated_report=ai_text,
+        reference_report=ref_text,
+        metadata=metadata,
+    )
