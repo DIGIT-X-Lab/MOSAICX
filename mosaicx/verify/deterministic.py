@@ -54,7 +54,13 @@ def verify_deterministic(
     checked = 0
     grounded = 0
 
+    # Patterns for structural cross-reference fields (list indices, not
+    # document-derived values).  These should not be grounded against source.
+    _REF_SUFFIX = re.compile(r"_refs?\b")
+
     for path, value in scalars:
+        if _REF_SUFFIX.search(path):
+            continue
         if isinstance(value, (int, float)):
             value_str = (
                 str(int(value)) if isinstance(value, float) and value == int(value)

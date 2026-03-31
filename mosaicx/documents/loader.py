@@ -85,8 +85,14 @@ def load_document(
                     threshold=quality_threshold,
                     page_dimensions=page_dims,
                 )
-            # PPStructure failed — fall through to image-based path
-            logger.info("PPStructure unavailable, using basic PaddleOCR")
+            # PPStructure failed — fall through to basic PaddleOCR.
+            # This produces significantly worse output (no layout awareness,
+            # no table recognition, no line grouping).
+            logger.warning(
+                "PPStructure layout engine failed — falling back to basic "
+                "PaddleOCR (output quality will be degraded). "
+                "Run 'mosaicx doctor' to diagnose."
+            )
 
         # Chandra path or PPStructure fallback: convert to images first
         if suffix in PDF_FORMATS:

@@ -62,7 +62,7 @@ class TestMosaicxConfig:
         from mosaicx.config import MosaicxConfig
 
         cfg = MosaicxConfig()
-        assert cfg.ocr_engine == "both"
+        assert cfg.ocr_engine == "paddleocr"
         assert cfg.chandra_backend == "auto"
         assert cfg.quality_threshold == 0.6
         assert cfg.ocr_page_timeout == 60
@@ -72,9 +72,9 @@ class TestMosaicxConfig:
     def test_ocr_engine_env_override(self, monkeypatch):
         from mosaicx.config import MosaicxConfig
 
-        monkeypatch.setenv("MOSAICX_OCR_ENGINE", "surya")
+        monkeypatch.setenv("MOSAICX_OCR_ENGINE", "chandra")
         cfg = MosaicxConfig()
-        assert cfg.ocr_engine == "surya"
+        assert cfg.ocr_engine == "chandra"
 
     def test_get_config_singleton(self):
         """get_config() returns the same instance."""

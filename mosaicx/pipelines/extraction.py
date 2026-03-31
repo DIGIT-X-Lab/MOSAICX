@@ -1739,6 +1739,38 @@ def _split_evidence_from_extracted(
     return clean, evidence
 
 
+def _call_json_object_mode(
+    *,
+    client: object,
+    model_name: str,
+    prompt: str,
+    schema_json: str,
+    max_tokens: int = 2200,
+) -> str | None:
+    """Fallback: direct OpenAI call with json_object mode + schema-in-prompt.
+
+    Used when the endpoint does not support ``response_format.type = "json_schema"``
+    (e.g. older LiteLLM proxy versions).
+    """
+    resp = client.chat.completions.create(  # type: ignore[union-attr]
+        model=model_name,
+        messages=[
+            {
+                "role": "system",
+                "content": (
+                    "Return a JSON object conforming exactly to the following schema. "
+                    "Use null for unknown optional fields.\n\n" + schema_json
+                ),
+            },
+            {"role": "user", "content": prompt},
+        ],
+        response_format={"type": "json_object"},
+        temperature=0.0,
+        max_tokens=max_tokens,
+    )
+    return resp.choices[0].message.content if resp.choices else None
+
+
 def _recover_schema_instance_with_outlines(
     *,
     document_text: str,
@@ -1760,9 +1792,7 @@ def _recover_schema_instance_with_outlines(
             model_name = "mlx-community/gpt-oss-120b-4bit"
 
         client = openai.OpenAI(base_url=base_url, api_key=(cfg.api_key or "ollama"))
-        model = outlines.from_openai(client, model_name=model_name)
         augmented_schema = _augment_schema_with_evidence(schema_class)
-        generator = outlines.Generator(model, outlines.json_schema(augmented_schema))
         prompt = (
             "Extract structured medical data from the document.\n"
             "Return a JSON object matching the target schema.\n"
@@ -1780,9 +1810,32 @@ def _recover_schema_instance_with_outlines(
 
         timeout = cfg.outlines_timeout
         pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+
+        # Try Outlines constrained generation (json_schema mode) first,
+        # then fall back to json_object mode if the endpoint rejects it.
+        raw = None
         try:
+            model = outlines.from_openai(client, model_name=model_name)
+            generator = outlines.Generator(model, outlines.json_schema(augmented_schema))
             future = pool.submit(generator, prompt, temperature=0.0, max_tokens=2200)
             raw = future.result(timeout=timeout)
+        except Exception as outlines_exc:
+            if "json_schema" in str(outlines_exc).lower():
+                logger.info(
+                    "Endpoint rejected json_schema response_format; "
+                    "retrying with json_object mode"
+                )
+                schema_json = json.dumps(
+                    augmented_schema.model_json_schema(), indent=2
+                )
+                raw = _call_json_object_mode(
+                    client=client,
+                    model_name=model_name,
+                    prompt=prompt,
+                    schema_json=schema_json,
+                )
+            else:
+                raise
         finally:
             pool.shutdown(wait=False, cancel_futures=True)
         # Report estimated token usage — Outlines bypasses DSPy's tracker.

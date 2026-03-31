@@ -760,6 +760,70 @@ class TestOutlinesTimeout:
         assert elapsed < 5  # Should not wait the full 10s
 
 
+class TestOutlinesJsonObjectFallback:
+    """Outlines recovery falls back to json_object when endpoint rejects json_schema."""
+
+    def test_falls_back_to_json_object_on_400(self, monkeypatch):
+        """When Outlines raises a 400 about json_schema, fall back to json_object."""
+        from mosaicx.pipelines.extraction import _recover_schema_instance_with_outlines
+
+        class Report(BaseModel):
+            summary: str
+
+        # Outlines generator raises a 400 mentioning json_schema
+        class _FakeGenerator:
+            def __call__(self, prompt, temperature=0.0, max_tokens=2200):
+                raise Exception(
+                    "Error code: 400 - Input should be 'text' or 'json_object', "
+                    "input was 'json_schema'"
+                )
+
+        fake_outlines = SimpleNamespace(
+            from_openai=lambda client, model_name: SimpleNamespace(),
+            Generator=lambda model, schema: _FakeGenerator(),
+            json_schema=lambda cls: "fake_schema",
+        )
+
+        # Direct OpenAI client returns valid JSON via json_object fallback
+        class _FakeChoice:
+            def __init__(self):
+                self.message = SimpleNamespace(content='{"summary": "rescued via json_object"}')
+
+        class _FakeResponse:
+            def __init__(self):
+                self.choices = [_FakeChoice()]
+
+        class _FakeCompletions:
+            def create(self, **kwargs):
+                # Verify json_object mode is used
+                assert kwargs.get("response_format") == {"type": "json_object"}
+                return _FakeResponse()
+
+        class _FakeClient:
+            def __init__(self, **kwargs):
+                self.chat = SimpleNamespace(completions=_FakeCompletions())
+
+        fake_openai = SimpleNamespace(OpenAI=_FakeClient)
+
+        monkeypatch.setitem(__import__("sys").modules, "outlines", fake_outlines)
+        monkeypatch.setitem(__import__("sys").modules, "openai", fake_openai)
+
+        from mosaicx.config import MosaicxConfig
+
+        monkeypatch.setattr(
+            "mosaicx.config.get_config",
+            lambda: MosaicxConfig(outlines_timeout=5),
+        )
+
+        result = _recover_schema_instance_with_outlines(
+            document_text="test document with findings",
+            schema_class=Report,
+        )
+
+        assert result is not None
+        assert result.summary == "rescued via json_object"
+
+
 class TestThinkParameter:
     """DocumentExtractor respects the think parameter."""
 

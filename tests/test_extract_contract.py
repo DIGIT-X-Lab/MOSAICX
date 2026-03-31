@@ -161,8 +161,11 @@ def test_cli_extract_output_includes_extraction_contract(monkeypatch, tmp_path):
         char_count=20,
         ocr_engine_used=None,
         ocr_confidence=None,
+        page_dimensions=[],
+        text_blocks=[],
+        pages=[],
     )
-    monkeypatch.setattr("mosaicx.cli._load_doc_with_config", lambda _path: fake_doc)
+    monkeypatch.setattr("mosaicx.cli._load_doc_with_config", lambda _path, **_kw: fake_doc)
 
     class _FakeExtractor:
         def __init__(self, *args, **kwargs):

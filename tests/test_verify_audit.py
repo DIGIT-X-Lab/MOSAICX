@@ -531,6 +531,80 @@ class TestOutlinesRecovery:
         assert called["recovery"] == 0
 
 
+class TestOutlinesJsonObjectFallback:
+    """Outlines structured report falls back to json_object when endpoint rejects json_schema."""
+
+    def test_falls_back_to_json_object_on_400(self, monkeypatch):
+        """When Outlines raises a 400 about json_schema, fall back to json_object."""
+        from types import SimpleNamespace
+
+        from mosaicx.verify.audit import _run_outlines_structured_report
+
+        # Outlines generator raises 400 mentioning json_schema
+        class _FakeGenerator:
+            def __call__(self, prompt, temperature=0.0, max_tokens=1400):
+                raise Exception(
+                    "Error code: 400 - Input should be 'text' or 'json_object', "
+                    "input was 'json_schema'"
+                )
+
+        fake_outlines = SimpleNamespace(
+            from_openai=lambda client, model_name: SimpleNamespace(),
+            Generator=lambda model, schema: _FakeGenerator(),
+            json_schema=lambda cls: "fake_schema",
+        )
+
+        # json_object fallback returns valid audit JSON
+        audit_json = json.dumps({
+            "field_verdicts": [
+                {
+                    "field_path": "findings[0].value",
+                    "status": "verified",
+                    "source_value": "2.3",
+                    "detail": "Found in source",
+                }
+            ],
+            "summary": "Rescued via json_object mode",
+        })
+
+        class _FakeChoice:
+            def __init__(self):
+                self.message = SimpleNamespace(content=audit_json)
+
+        class _FakeResponse:
+            def __init__(self):
+                self.choices = [_FakeChoice()]
+
+        class _FakeCompletions:
+            def create(self, **kwargs):
+                assert kwargs.get("response_format") == {"type": "json_object"}
+                return _FakeResponse()
+
+        class _FakeClient:
+            def __init__(self, **kwargs):
+                self.chat = SimpleNamespace(completions=_FakeCompletions())
+
+        fake_openai = SimpleNamespace(OpenAI=_FakeClient)
+
+        import sys
+
+        monkeypatch.setitem(sys.modules, "outlines", fake_outlines)
+        monkeypatch.setitem(sys.modules, "openai", fake_openai)
+
+        from mosaicx.config import MosaicxConfig
+
+        monkeypatch.setattr(
+            "mosaicx.config.get_config",
+            lambda: MosaicxConfig(),
+        )
+
+        result = _run_outlines_structured_report(prompt="audit this extraction")
+
+        assert result is not None
+        assert result["summary"] == "Rescued via json_object mode"
+        assert result["field_verdicts"][0]["status"] == "verified"
+
+
 # ---------------------------------------------------------------------------
 # Engine integration: verify thorough uses RLM
 # ---------------------------------------------------------------------------

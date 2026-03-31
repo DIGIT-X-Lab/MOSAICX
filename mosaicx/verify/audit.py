@@ -84,6 +84,34 @@ def _normalize_model_name_for_openai_compatible(model_name: str) -> str:
     return model_name
 
 
+def _call_json_object_mode(
+    *,
+    client: object,
+    model_name: str,
+    prompt: str,
+    schema_json: str,
+    max_tokens: int = 1400,
+) -> str | None:
+    """Fallback: direct OpenAI call with json_object mode + schema-in-prompt."""
+    resp = client.chat.completions.create(  # type: ignore[union-attr]
+        model=model_name,
+        messages=[
+            {
+                "role": "system",
+                "content": (
+                    "Return a JSON object conforming exactly to the following schema. "
+                    "Use null for unknown optional fields.\n\n" + schema_json
+                ),
+            },
+            {"role": "user", "content": prompt},
+        ],
+        response_format={"type": "json_object"},
+        temperature=0.0,
+        max_tokens=max_tokens,
+    )
+    return resp.choices[0].message.content if resp.choices else None
+
+
 def _run_outlines_structured_report(
     *,
     prompt: str,
@@ -103,14 +131,39 @@ def _run_outlines_structured_report(
             model_name = "mlx-community/gpt-oss-120b-4bit"
 
         client = openai.OpenAI(base_url=base_url, api_key=(cfg.api_key or "ollama"))
-        model = outlines.from_openai(client, model_name=model_name)
-        generator = outlines.Generator(model, outlines.json_schema(_OutlinesAuditReport))
-        raw = generator(
-            prompt,
-            temperature=0.0,
-            max_tokens=max_tokens,
-        )
-        parsed = parse_json_like(raw if isinstance(raw, str) else json.dumps(raw, ensure_ascii=False))
+
+        # Try Outlines constrained generation (json_schema mode) first,
+        # then fall back to json_object mode if the endpoint rejects it.
+        raw = None
+        try:
+            model = outlines.from_openai(client, model_name=model_name)
+            generator = outlines.Generator(model, outlines.json_schema(_OutlinesAuditReport))
+            raw = generator(
+                prompt,
+                temperature=0.0,
+                max_tokens=max_tokens,
+            )
+        except Exception as outlines_exc:
+            if "json_schema" in str(outlines_exc).lower():
+                logger.info(
+                    "Endpoint rejected json_schema response_format; "
+                    "retrying with json_object mode"
+                )
+                schema_json = json.dumps(
+                    _OutlinesAuditReport.model_json_schema(), indent=2
+                )
+                raw = _call_json_object_mode(
+                    client=client,
+                    model_name=model_name,
+                    prompt=prompt,
+                    schema_json=schema_json,
+                    max_tokens=max_tokens,
+                )
+            else:
+                raise
+
+        raw_str = raw if isinstance(raw, str) else json.dumps(raw, ensure_ascii=False) if raw else ""
+        parsed = parse_json_like(raw_str)
         if isinstance(parsed, dict):
             return parsed
         logger.warning("Outlines structured report was non-dict (%s)", type(parsed).__name__)
