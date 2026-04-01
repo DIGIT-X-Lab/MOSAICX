@@ -645,7 +645,10 @@ class TestVerifyEngineAuditWiring:
         def mock_select_high_risk_fields(extraction):
             return ["findings[0].measurement.value"]
 
-        monkeypatch.setattr("mosaicx.verify.engine._enhance_with_audit.__module__", engine.__name__)
+        monkeypatch.setattr(
+            "mosaicx.verify.engine._should_use_rlm_audit",
+            lambda *_a, **_kw: (True, "forced_by_test"),
+        )
         monkeypatch.setattr("mosaicx.verify.audit.run_audit", mock_run_audit)
         monkeypatch.setattr("mosaicx.verify.spot_check.run_spot_check", mock_run_spot_check)
         monkeypatch.setattr("mosaicx.verify.spot_check.select_high_risk_fields", mock_select_high_risk_fields)
@@ -685,6 +688,10 @@ class TestVerifyEngineAuditWiring:
             )
 
         monkeypatch.setattr("mosaicx.verify.audit.run_claim_audit", mock_run_claim_audit)
+        monkeypatch.setattr(
+            "mosaicx.verify.engine._should_use_rlm_claim_audit",
+            lambda claim, source_text: (True, "forced_by_test"),
+        )
 
         result = engine.verify(
             claim="2.3 cm nodule",
