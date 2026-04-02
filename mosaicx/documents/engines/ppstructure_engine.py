@@ -39,10 +39,9 @@ def _map_ocr_blocks_to_markdown(
     """Build TextBlocks with start/end offsets into the Markdown text.
 
     Each ``rec_text`` is searched for sequentially in ``markdown_text``.
-    If found, the TextBlock's ``start``/``end`` point to the match position
-    in the Markdown (plus ``global_offset``).  If not found, the block still
-    gets created with a best-effort sequential offset so redaction/provenance
-    degrade gracefully rather than crash.
+    If not found (common for table cells whose order changes in the
+    Markdown pipe format), a global search from the start is tried.
+    The ``claimed`` set prevents duplicate position assignments.
 
     Parameters
     ----------
@@ -54,20 +53,33 @@ def _map_ocr_blocks_to_markdown(
     """
     blocks: list[TextBlock] = []
     search_start = 0
+    claimed: set[int] = set()
 
     for idx, text in enumerate(rec_texts):
         if idx >= len(dt_polys):
             break
+
+        # Pass 1: sequential search (handles most non-table text)
         pos = markdown_text.find(text, search_start)
-        if pos >= 0:
+        if pos >= 0 and pos not in claimed:
             start = pos
             search_start = pos + len(text)
         else:
-            # Fallback: place after the last block's end.  Redaction bbox
-            # is still correct (from dt_polys); only the text offset is
-            # approximate.
-            start = search_start
+            # Pass 2: global search from beginning.  Table cells appear
+            # earlier in the markdown than in the OCR scan order because
+            # _html_table_to_markdown() restructures them into pipe rows.
+            start = search_start  # fallback if global search also fails
+            global_pos = 0
+            while global_pos < len(markdown_text):
+                global_pos = markdown_text.find(text, global_pos)
+                if global_pos < 0:
+                    break
+                if global_pos not in claimed:
+                    start = global_pos
+                    break
+                global_pos += 1
 
+        claimed.add(start)
         bbox = _polygon_to_bbox(dt_polys[idx])
         blocks.append(
             TextBlock(
@@ -284,6 +296,11 @@ def _pages_from_raw(
             page_text, rec_texts, dt_polys_final,
             page_num=page_num, global_offset=0,
         )
+        # Sort by start offset: global search fallback in
+        # _map_ocr_blocks_to_markdown can produce out-of-order blocks
+        # when table cells appear earlier in the markdown than in OCR
+        # scan order.  locate_in_document() uses binary search.
+        text_blocks.sort(key=lambda b: b.start)
 
         confidence = (
             sum(rec_scores) / len(rec_scores) if rec_scores else 0.0
