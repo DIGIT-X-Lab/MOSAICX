@@ -29,7 +29,7 @@ def _date_alternatives(value: str) -> list[str]:
 
     alternatives: list[str] = []
     # Try parsing ISO format (YYYY-MM-DD)
-    for fmt_in in ("%Y-%m-%d", "%Y/%m/%d", "%d.%m.%Y", "%m/%d/%Y"):
+    for fmt_in in ("%Y-%m-%d", "%Y/%m/%d", "%d.%m.%Y", "%d-%m-%Y", "%m/%d/%Y"):
         try:
             dt = datetime.datetime.strptime(value.strip(), fmt_in)
             # Generate common output formats
@@ -39,9 +39,11 @@ def _date_alternatives(value: str) -> list[str]:
                 dt.strftime("%b %d, %Y"),        # Mar 15, 1985
                 dt.strftime("%d %B %Y"),         # 15 March 1985
                 dt.strftime("%d.%m.%Y"),         # 15.03.1985
+                dt.strftime("%d-%m-%Y"),         # 15-03-1985
                 dt.strftime("%m/%d/%Y"),         # 03/15/1985
                 dt.strftime("%d/%m/%Y"),         # 15/03/1985
                 dt.strftime("%Y-%m-%d"),         # 1985-03-15
+                dt.strftime("%d %b %Y"),         # 15 Mar 1985
             ])
             break
         except ValueError:
@@ -153,6 +155,7 @@ def build_source_block(
     doc: LoadedDocument,
     fields: dict[str, Any] | None = None,
     redaction_map: list[dict[str, Any]] | None = None,
+    field_evidence: dict[str, dict[str, str]] | None = None,
 ) -> dict[str, Any]:
     """Build the unified ``_source`` block for JSON output.
 
@@ -170,6 +173,10 @@ def build_source_block(
         For deidentification: list of redaction entry dicts with
         ``original``, ``replacement``, ``phi_type``, and optionally
         ``spans``.
+    field_evidence:
+        Optional dict of ``{field_key: {"excerpt": ..., "reasoning": ...}}``
+        from deep think mode.  When provided, the LLM's verbatim excerpt
+        is used for grounding (better match than the reformatted value).
 
     Returns
     -------
@@ -229,12 +236,27 @@ def build_source_block(
         else:
             flat = dict(fields)
 
+        ev = field_evidence or {}
+
         for field_key, value in flat.items():
             if field_key.startswith("_"):
                 continue
 
             val_str = str(value) if value is not None else ""
-            excerpt, start, end = _find_tight_excerpt(doc.text, val_str)
+
+            # Try grounding with LLM's verbatim excerpt first (more
+            # reliable than the reformatted extracted value), then fall
+            # back to the extracted value itself.
+            llm_excerpt = ""
+            field_ev = ev.get(field_key, {}) if isinstance(ev, dict) else {}
+            if isinstance(field_ev, dict):
+                llm_excerpt = field_ev.get("excerpt", "") or ""
+
+            excerpt, start, end = None, None, None
+            if llm_excerpt:
+                excerpt, start, end = _find_tight_excerpt(doc.text, llm_excerpt)
+            if excerpt is None and val_str:
+                excerpt, start, end = _find_tight_excerpt(doc.text, val_str)
 
             spans: list[dict[str, Any]] = []
             if start is not None and end is not None and doc.text_blocks:
@@ -247,6 +269,12 @@ def build_source_block(
                 entry["excerpt"] = excerpt
             entry["grounded"] = excerpt is not None
             entry["spans"] = spans
+            # Merge reasoning and LLM excerpt from deep think evidence
+            if isinstance(field_ev, dict):
+                if field_ev.get("reasoning"):
+                    entry["reasoning"] = field_ev["reasoning"]
+                if llm_excerpt:
+                    entry["llm_excerpt"] = llm_excerpt
             source_fields[field_key] = entry
 
     elif redaction_map is not None:

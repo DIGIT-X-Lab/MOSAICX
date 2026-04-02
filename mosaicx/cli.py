@@ -481,6 +481,8 @@ def _extract_batch(
                 if hasattr(result, "extracted"):
                     val = result.extracted
                     output["extracted"] = val.model_dump(mode="json") if hasattr(val, "model_dump") else val
+                if hasattr(result, "field_evidence") and result.field_evidence:
+                    output["field_evidence"] = result.field_evidence
                 return output
         else:
             raise click.ClickException(
@@ -514,6 +516,8 @@ def _extract_batch(
             if hasattr(result, "extracted"):
                 val = result.extracted
                 output["extracted"] = val.model_dump(mode="json") if hasattr(val, "model_dump") else val
+            if hasattr(result, "field_evidence") and result.field_evidence:
+                output["field_evidence"] = result.field_evidence
             return output
 
     resume_id = "resume" if resume else None
@@ -533,7 +537,10 @@ def _extract_batch(
         if doc is not None:
             from .source_mapping import build_source_block
             extracted_fields = output.get("extracted", output)
-            output["_source"] = build_source_block(doc, fields=extracted_fields)
+            output["_source"] = build_source_block(
+                doc, fields=extracted_fields,
+                field_evidence=output.get("field_evidence"),
+            )
         return output
 
     # Count documents for progress bar
