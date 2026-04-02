@@ -383,6 +383,7 @@ def _extract_batch(
     workers: int,
     resume: bool,
     think: str = "auto",
+    force_ocr: bool = False,
 ) -> None:
     """Batch-process a directory of documents (called from the extract command)."""
     # Preflight: check API key before expensive document loading
@@ -522,7 +523,7 @@ def _extract_batch(
     _last_loaded_doc: dict[str, Any] = {}
 
     def _load_and_cache(p: Path) -> str:
-        doc = _load_doc_with_config(p)
+        doc = _load_doc_with_config(p, force_ocr=force_ocr or None)
         _last_loaded_doc["doc"] = doc
         return doc.text
 
@@ -758,6 +759,7 @@ def extract(
             workers=workers,
             resume=resume,
             think=think,
+            force_ocr=force_ocr,
         )
         return
 
