@@ -523,17 +523,19 @@ def _extract_batch(
     resume_id = "resume" if resume else None
     checkpoint_dir = output_dir_path / ".checkpoints" if resume else None
 
-    # Wrap process_fn to attach _source mapping per document
-    _last_loaded_doc: dict[str, Any] = {}
+    # Wrap process_fn to attach _source mapping per document.
+    # Map text content → doc object so _process_with_source can find
+    # the correct doc even when BatchProcessor pre-loads all docs.
+    _doc_by_text: dict[int, Any] = {}
 
     def _load_and_cache(p: Path) -> str:
         doc = _load_doc_with_config(p, force_ocr=force_ocr or None)
-        _last_loaded_doc["doc"] = doc
+        _doc_by_text[id(doc.text)] = doc
         return doc.text
 
     def _process_with_source(text: str) -> dict:
         output = process_fn(text)
-        doc = _last_loaded_doc.get("doc")
+        doc = _doc_by_text.pop(id(text), None)
         if doc is not None:
             from .source_mapping import build_source_block
             extracted_fields = output.get("extracted", output)
