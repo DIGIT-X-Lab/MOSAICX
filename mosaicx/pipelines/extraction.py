@@ -3798,11 +3798,14 @@ def _build_dspy_classes():
 
             else:
                 # ── FAST / STANDARD PATH ──
+                # Augment schema with evidence fields so the LLM returns
+                # verbatim excerpts for provenance grounding at all levels.
+                augmented = _augment_schema_with_evidence(schema)
                 with track_step(metrics, "Extract", tracker):
                     try:
                         model_instance, chain_diag = _extract_schema_with_structured_chain(
                             document_text=planned_text,
-                            schema_class=schema,
+                            schema_class=augmented,
                             typed_extract=lambda *, document_text: self.extract_custom(
                                 document_text=document_text
                             ),
@@ -3817,7 +3820,7 @@ def _build_dspy_classes():
                             planner_diag["full_text_rescue_used"] = True
                             model_instance, chain_diag = _extract_schema_with_structured_chain(
                                 document_text=document_text,
-                                schema_class=schema,
+                                schema_class=augmented,
                                 typed_extract=lambda *, document_text: self.extract_custom(
                                     document_text=document_text
                                 ),
@@ -3829,6 +3832,21 @@ def _build_dspy_classes():
                             )
                         else:
                             raise
+                # Split evidence from augmented extraction
+                if hasattr(model_instance, "model_dump"):
+                    _raw = model_instance.model_dump(mode="json")
+                elif isinstance(model_instance, dict):
+                    _raw = model_instance
+                else:
+                    _raw = {}
+                _clean, _ev = _split_evidence_from_extracted(_raw, schema)
+                if _ev:
+                    _last_outlines_evidence.update(_ev)
+                # Rebuild model_instance from clean data (without evidence fields)
+                try:
+                    model_instance = schema.model_validate(_clean)
+                except Exception:
+                    pass  # keep the augmented instance if validation fails
 
                 # Compute: runs at ALL levels
                 with track_step(metrics, "Compute derived fields", tracker):

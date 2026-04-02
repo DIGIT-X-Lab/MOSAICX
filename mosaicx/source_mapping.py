@@ -92,6 +92,16 @@ def _find_tight_excerpt(
                 needle_norm = alt_norm
                 break
 
+    # Fuzzy fallback: use SequenceMatcher for near-matches
+    if idx < 0 and len(needle_norm) >= 4:
+        from .pipelines.provenance import _fuzzy_find
+        fuzzy_result = _fuzzy_find(text_norm, needle_norm, [])
+        if fuzzy_result:
+            idx = fuzzy_result[0]
+            # Use the matched text as the needle for original-text lookup
+            needle_norm = text_norm[fuzzy_result[0]:fuzzy_result[1]]
+            needle = needle_norm
+
     if idx < 0:
         return None, None, None
 
