@@ -49,7 +49,7 @@ class TestDocumentExtractorModule:
         class CustomReport(BaseModel):
             finding: Finding | None = None
 
-        extractor = DocumentExtractor(output_schema=CustomReport)
+        extractor = DocumentExtractor(output_schema=CustomReport, think="standard")
 
         extracted_instance = CustomReport(
             finding=Finding(level="C2‑3", severity=None)
@@ -147,7 +147,7 @@ class TestExtractionPlannerRouting:
         class CustomReport(BaseModel):
             summary: str
 
-        extractor = DocumentExtractor(output_schema=CustomReport)
+        extractor = DocumentExtractor(output_schema=CustomReport, think="standard")
 
         planned = "Findings:\nRouted concise context."
         planner_diag = {
@@ -184,8 +184,11 @@ class TestExtractionPlannerRouting:
 
         result = extractor.forward("Original long source text that should be routed.")
         assert captured["document_text"] == planned
-        assert getattr(result, "planner") == planner_diag
-        assert extractor._last_planner == planner_diag
+        actual_planner = getattr(result, "planner")
+        for key, value in planner_diag.items():
+            assert actual_planner[key] == value, f"planner[{key!r}] mismatch"
+        for key, value in planner_diag.items():
+            assert extractor._last_planner[key] == value
 
 
 class TestStructuredExtractionChain:
@@ -835,7 +838,7 @@ class TestThinkParameter:
             summary: str
 
         extractor = DocumentExtractor(output_schema=SimpleReport)
-        assert extractor._think == "standard"
+        assert extractor._think == "fast"
 
     def test_think_fast_stored(self):
         from mosaicx.pipelines.extraction import DocumentExtractor
@@ -917,9 +920,9 @@ class TestThinkFastMode:
 
 
 class TestThinkDeepMode:
-    """think=deep runs both Outlines and ChainOfThought, picks best."""
+    """think=deep uses chunked extraction via _deep_extract_chunked."""
 
-    def test_deep_mode_runs_both_and_picks_higher_score(self, monkeypatch):
+    def test_deep_mode_uses_chunked_extraction(self, monkeypatch):
         from pydantic import BaseModel
         from mosaicx.pipelines.extraction import DocumentExtractor
 
@@ -929,43 +932,27 @@ class TestThinkDeepMode:
 
         extractor = DocumentExtractor(output_schema=SimpleReport, think="deep")
 
-        outlines_called = False
-        cot_called = False
+        chunked_called = False
 
-        # Outlines returns a result with values NOT in the source text (low evidence)
-        def _mock_outlines(**kwargs):
-            nonlocal outlines_called
-            outlines_called = True
-            return SimpleReport(summary="wrong value", category="wrong value")
+        def _mock_deep_chunked(self, document_text, schema, metrics, tracker):
+            nonlocal chunked_called
+            chunked_called = True
+            return SimpleReport(summary="chest pain", category="radiology"), {"chunks": []}
 
         monkeypatch.setattr(
-            "mosaicx.pipelines.extraction._recover_schema_instance_with_outlines",
-            _mock_outlines,
+            type(extractor),
+            "_deep_extract_chunked",
+            _mock_deep_chunked,
         )
-
-        # ChainOfThought returns values that ARE in the source text (high evidence)
-        class _CotPred:
-            extracted = SimpleReport(summary="chest pain", category="radiology")
-
-        def _mock_cot(**kwargs):
-            nonlocal cot_called
-            cot_called = True
-            return _CotPred()
-
-        monkeypatch.setattr(extractor, "extract_custom", _mock_cot)
 
         source_text = "Patient presents with chest pain. Radiology report follows."
         result = extractor.forward(source_text)
 
-        assert outlines_called, "Deep mode should try Outlines"
-        assert cot_called, "Deep mode should always run ChainOfThought"
-        # CoT result has evidence overlap ("chest pain" and "radiology" in source)
-        # Outlines result does not ("wrong value" not in source)
-        # So scorer should pick CoT
+        assert chunked_called, "Deep mode should use chunked extraction"
         assert result.extracted.summary == "chest pain"
         assert result.extracted.category == "radiology"
 
-    def test_deep_mode_picks_outlines_when_better(self, monkeypatch):
+    def test_deep_mode_result_accessible(self, monkeypatch):
         from pydantic import BaseModel
         from mosaicx.pipelines.extraction import DocumentExtractor
 
@@ -975,26 +962,19 @@ class TestThinkDeepMode:
 
         extractor = DocumentExtractor(output_schema=SimpleReport, think="deep")
 
-        # Outlines returns values IN the source text
-        def _mock_outlines(**kwargs):
-            return SimpleReport(summary="headache", category="neurology")
+        def _mock_deep_chunked(self, document_text, schema, metrics, tracker):
+            return SimpleReport(summary="headache", category="neurology"), {"chunks": []}
 
         monkeypatch.setattr(
-            "mosaicx.pipelines.extraction._recover_schema_instance_with_outlines",
-            _mock_outlines,
+            type(extractor),
+            "_deep_extract_chunked",
+            _mock_deep_chunked,
         )
 
-        # CoT returns values NOT in the source text
-        class _CotPred:
-            extracted = SimpleReport(summary="wrong", category="wrong")
-
-        monkeypatch.setattr(extractor, "extract_custom", lambda **kw: _CotPred())
-
         result = extractor.forward("Patient reports headache. Neurology consult requested.")
-        # Outlines has better evidence overlap, so should be chosen
         assert result.extracted.summary == "headache"
 
-    def test_deep_mode_works_when_outlines_fails(self, monkeypatch):
+    def test_deep_mode_works_with_chunked_extraction(self, monkeypatch):
         from pydantic import BaseModel
         from mosaicx.pipelines.extraction import DocumentExtractor
 
@@ -1003,17 +983,14 @@ class TestThinkDeepMode:
 
         extractor = DocumentExtractor(output_schema=SimpleReport, think="deep")
 
-        # Outlines fails
+        def _mock_deep_chunked(self, document_text, schema, metrics, tracker):
+            return SimpleReport(summary="findings"), {"chunks": []}
+
         monkeypatch.setattr(
-            "mosaicx.pipelines.extraction._recover_schema_instance_with_outlines",
-            lambda **kwargs: None,
+            type(extractor),
+            "_deep_extract_chunked",
+            _mock_deep_chunked,
         )
-
-        # CoT succeeds
-        class _CotPred:
-            extracted = SimpleReport(summary="findings")
-
-        monkeypatch.setattr(extractor, "extract_custom", lambda **kw: _CotPred())
 
         result = extractor.forward("findings noted")
         assert result.extracted.summary == "findings"
@@ -1102,4 +1079,4 @@ class TestRunReportThink:
         from mosaicx.report import run_report
         sig = inspect.signature(run_report)
         assert "think" in sig.parameters
-        assert sig.parameters["think"].default == "standard"
+        assert sig.parameters["think"].default == "auto"

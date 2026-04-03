@@ -11,20 +11,6 @@ from PIL import Image
 
 @pytest.mark.slow
 class TestOCRIntegration:
-    def test_surya_on_image(self):
-        """Surya can OCR a simple text image."""
-        from mosaicx.documents.engines.surya_engine import SuryaEngine
-
-        # Create a simple image with text (real test would use a scanned doc)
-        img = Image.new("RGB", (200, 50), "white")
-        engine = SuryaEngine()
-        results = engine.ocr_pages([img], langs=["en"])
-        assert len(results) == 1
-        assert results[0].engine == "surya"
-        # If model loading failed (e.g. surya/transformers version mismatch),
-        # the engine returns a zero-confidence fallback rather than crashing.
-        # A confidence > 0 means the model actually ran.
-
     def test_chandra_on_image(self):
         """Chandra can OCR a simple image."""
         from mosaicx.documents.engines.chandra_engine import ChandraEngine

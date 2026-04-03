@@ -11,6 +11,8 @@ def _cfg(tmp_path, *, api_key: str) -> SimpleNamespace:
         lm="openai/mlx-community/gpt-oss-120b-4bit",
         api_base="http://127.0.0.1:8000/v1",
         lm_temperature=0.0,
+        max_tokens=None,
+        num_ctx=None,
         home_dir=tmp_path,
     )
 
@@ -59,4 +61,4 @@ class TestMcpExtractThink:
         from mosaicx.mcp_server import extract_document
         sig = inspect.signature(extract_document)
         assert "think" in sig.parameters
-        assert sig.parameters["think"].default == "standard"
+        assert sig.parameters["think"].default == "auto"

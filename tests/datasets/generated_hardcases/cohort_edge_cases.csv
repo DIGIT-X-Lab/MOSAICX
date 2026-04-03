@@ -1,0 +1,6 @@
+Subject,Sex,Ethnicity,BMI,ScanDate,Notes
+KV101,F,Japanese,22.4,2025-08-01,baseline
+KV102,M,Japanese,25.1,2025-08-01,baseline
+KV103,F,German,29.3,2025-09-10,follow-up
+KV104,M,German,31.0,2025-09-10,follow-up
+KV105,Other,Unknown,,2025-09-10,missing BMI

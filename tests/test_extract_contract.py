@@ -152,6 +152,9 @@ def test_cli_extract_output_includes_extraction_contract(monkeypatch, tmp_path):
 
     monkeypatch.setattr("mosaicx.cli._check_api_key", lambda: None)
     monkeypatch.setattr("mosaicx.cli._configure_dspy", lambda: None)
+    monkeypatch.setenv("MOSAICX_ZENTA", "1")  # full output tier
+    from mosaicx.config import get_config
+    get_config.cache_clear()  # reset cached singleton so env var is picked up
 
     fake_doc = SimpleNamespace(
         text="Vitals: BP 128/82.",
