@@ -7,8 +7,10 @@ import pytest
 from pydantic import BaseModel
 
 from mosaicx.pipelines.extraction import (
+    _coerce_enum_values,
     _coerce_payload_to_schema,
     _recover_schema_instance_from_raw,
+    _split_evidence_from_extracted,
 )
 
 
@@ -61,6 +63,14 @@ class OptionalBinaryModel(BaseModel):
 
 class SpinalLevelModel(BaseModel):
     level: str | None = None
+
+
+class NestedSeverityModel(BaseModel):
+    severity: OptionalSeverityEnum | None = None
+
+
+class NestedSeverityReport(BaseModel):
+    finding: NestedSeverityModel | None = None
 
 
 def test_coerce_payload_wraps_scalar_into_nested_model():
@@ -180,6 +190,66 @@ def test_coerce_payload_keeps_none_when_optional_enum_has_no_absence_value():
     parsed = OptionalBinaryModel.model_validate(coerced)
 
     assert parsed.flag is None
+
+
+def test_coerce_payload_unwraps_value_wrapper_for_enum_field():
+    payload = {
+        "severity": {
+            "value": "mild",
+            "excerpt": "mild narrowing seen at C4-C5",
+            "reasoning": "explicitly documented as mild",
+        },
+    }
+    coerced = _coerce_payload_to_schema(payload, OptionalSeverityModel)
+    parsed = OptionalSeverityModel.model_validate(coerced)
+
+    assert parsed.severity == OptionalSeverityEnum.Mild
+
+
+def test_coerce_payload_unwraps_nested_value_wrapper_for_enum_field():
+    payload = {
+        "finding": {
+            "severity": {
+                "value": "severe",
+                "excerpt": "severe stenosis at C5-C6",
+                "reasoning": "stated in impression",
+            },
+        },
+    }
+    coerced = _coerce_payload_to_schema(payload, NestedSeverityReport)
+    parsed = NestedSeverityReport.model_validate(coerced)
+
+    assert parsed.finding is not None
+    assert parsed.finding.severity == OptionalSeverityEnum.Severe
+
+
+def test_split_evidence_from_extracted_unwraps_inline_value_wrapper():
+    raw = {
+        "severity": {
+            "value": "Mild",
+            "excerpt": "mild narrowing at C4-C5",
+            "reasoning": "explicitly stated",
+        },
+    }
+    clean, evidence = _split_evidence_from_extracted(raw, OptionalSeverityModel)
+
+    assert clean["severity"] == "Mild"
+    assert evidence["severity"]["excerpt"] == "mild narrowing at C4-C5"
+    assert evidence["severity"]["reasoning"] == "explicitly stated"
+
+
+def test_coerce_enum_values_unwraps_dict_wrappers_before_matching():
+    payload = {
+        "severity": {
+            "value": "mild",
+            "excerpt": "mild narrowing at C4-C5",
+            "reasoning": "stated in findings",
+        },
+    }
+    updated, coerced = _coerce_enum_values(payload, OptionalSeverityModel)
+
+    assert updated["severity"] == "Mild"
+    assert coerced
 
 
 def test_coerce_payload_normalizes_spinal_level_range_notation():

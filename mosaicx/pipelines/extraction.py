@@ -320,6 +320,35 @@ def _coerce_value_for_annotation(value: Any, annotation: Any) -> Any:
         }
 
     if isinstance(annotation, type):
+        if issubclass(annotation, Enum):
+            raw = value.get("value") if isinstance(value, dict) and "value" in value else value
+            if isinstance(raw, Enum):
+                raw = raw.value
+            if isinstance(raw, str):
+                probe = raw.strip().lower()
+                for member in annotation:
+                    member_value = str(member.value).strip()
+                    if member_value.lower() == probe:
+                        return member.value
+                for member in annotation:
+                    member_probe = str(member.value).strip().lower()
+                    if member_probe in probe or probe in member_probe:
+                        return member.value
+                raw_tokens = set(probe.split())
+                best_member: Any = None
+                best_overlap = 0
+                for member in annotation:
+                    member_tokens = set(str(member.value).strip().lower().split())
+                    overlap = len(raw_tokens & member_tokens)
+                    if overlap > best_overlap:
+                        best_overlap = overlap
+                        best_member = member.value
+                if best_overlap > 0:
+                    return best_member
+            for member in annotation:
+                if raw == member or raw == member.value:
+                    return member.value
+            return raw
         if annotation is bool:
             if isinstance(value, str):
                 probe = value.strip().lower()
@@ -936,12 +965,23 @@ def _coerce_enum_values(
 
             # Check if this field has enum values
             enum_vals = _get_enum_values(annotation)
-            if enum_vals is not None and isinstance(value, str):
-                if value not in enum_vals:
-                    matched = _fuzzy_match(value, enum_vals)
-                    if matched is not None:
-                        d[field_name] = matched
+            if enum_vals is not None:
+                raw_value = value.get("value") if isinstance(value, dict) and "value" in value else value
+                if isinstance(raw_value, _enum.Enum):
+                    raw_value = str(raw_value.value)
+
+                if isinstance(raw_value, str):
+                    if raw_value in enum_vals:
+                        matched = raw_value
+                    else:
+                        matched = _fuzzy_match(raw_value, enum_vals) or raw_value
+                    d[field_name] = matched
+                    if value != matched:
                         coerced.append(f"{path}: {value!r} -> {matched!r}")
+                else:
+                    d[field_name] = raw_value
+                    if value is not raw_value:
+                        coerced.append(f"{path}: {value!r} -> {raw_value!r}")
                 continue
 
             # Recurse into nested objects
@@ -1728,7 +1768,22 @@ def _split_evidence_from_extracted(
 
     for key, value in data.items():
         if key in original_fields:
-            clean[key] = value
+            if isinstance(value, dict) and "value" in value:
+                clean[key] = value.get("value")
+                if "excerpt" in value:
+                    excerpt = value.get("excerpt")
+                    if excerpt is not None:
+                        evidence.setdefault(key, {})["excerpt"] = (
+                            excerpt if isinstance(excerpt, str) else str(excerpt)
+                        )
+                if "reasoning" in value:
+                    reasoning = value.get("reasoning")
+                    if reasoning is not None:
+                        evidence.setdefault(key, {})["reasoning"] = (
+                            reasoning if isinstance(reasoning, str) else str(reasoning)
+                        )
+            else:
+                clean[key] = value
         elif key.endswith("_excerpt"):
             field = key[: -len("_excerpt")]
             evidence.setdefault(field, {})["excerpt"] = value
