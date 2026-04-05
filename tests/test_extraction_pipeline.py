@@ -201,9 +201,44 @@ class TestStructuredExtractionChain:
         assert called["typed"] == 0
         assert diag["attempts"][0]["step"] == "outlines_primary"
         assert diag["attempts"][0]["ok"] is True
+        assert diag["attempts"][0]["complete"] is True
 
-    def test_chain_order_json_adapter_then_two_step(self, monkeypatch):
+    def test_chain_accepts_incomplete_outlines_for_standard_mode(self, monkeypatch):
         from mosaicx.pipelines.extraction import _extract_schema_with_structured_chain
+
+        class Report(BaseModel):
+            summary: str | None
+
+        monkeypatch.setattr(
+            "mosaicx.pipelines.extraction._recover_schema_instance_with_outlines",
+            lambda **kwargs: Report(summary=None),
+        )
+        called = {"typed": 0}
+
+        def _typed_extract(*, document_text: str):  # noqa: ARG001
+            called["typed"] += 1
+            return SimpleNamespace(extracted={"summary": "typed"})
+
+        model, diag = _extract_schema_with_structured_chain(
+            document_text="sample",
+            schema_class=Report,
+            typed_extract=_typed_extract,
+            json_extract=None,
+        )
+
+        assert model.summary is None
+        assert called["typed"] == 0
+        assert diag["selected_path"] == "outlines_primary"
+        steps = [a["step"] for a in diag["attempts"]]
+        assert steps == ["outlines_primary"]
+        assert diag["attempts"][0]["ok"] is True
+        assert diag["attempts"][0]["reason"] == "accepted_incomplete"
+        assert diag["attempts"][0]["valid"] is True
+        assert diag["attempts"][0]["complete"] is False
+
+    def test_chain_uses_optional_json_text_fallback(self, monkeypatch):
+        from mosaicx.pipelines.extraction import _extract_schema_with_structured_chain
+        from mosaicx.config import MosaicxConfig
 
         class Report(BaseModel):
             summary: str
@@ -212,108 +247,60 @@ class TestStructuredExtractionChain:
             "mosaicx.pipelines.extraction._recover_schema_instance_with_outlines",
             lambda **kwargs: None,
         )
-
-        active_adapter = {"name": ""}
-
-        class JSONAdapter:
-            pass
-
-        class TwoStepAdapter:
-            pass
-
-        class _Context:
-            def __init__(self, adapter):
-                self.adapter = adapter
-
-            def __enter__(self):
-                active_adapter["name"] = type(self.adapter).__name__
-                return None
-
-            def __exit__(self, exc_type, exc, tb):  # noqa: ARG002
-                active_adapter["name"] = ""
-                return False
-
-        fake_dspy = SimpleNamespace(
-            settings=SimpleNamespace(lm=object()),
-            JSONAdapter=JSONAdapter,
-            TwoStepAdapter=TwoStepAdapter,
-            context=lambda adapter=None: _Context(adapter),
-        )
         monkeypatch.setattr(
-            "mosaicx.runtime_env.import_dspy",
-            lambda: fake_dspy,
+            "mosaicx.config.get_config",
+            lambda: MosaicxConfig(structured_json_fallback=True),
         )
-
-        def _typed_extract(*, document_text: str):  # noqa: ARG001
-            if active_adapter["name"] == "JSONAdapter":
-                raise ValueError("json adapter failed")
-            if active_adapter["name"] == "TwoStepAdapter":
-                return SimpleNamespace(extracted={"summary": "two-step"})
-            raise AssertionError("unexpected adapter path")
-
-        model, diag = _extract_schema_with_structured_chain(
-            document_text="sample",
-            schema_class=Report,
-            typed_extract=_typed_extract,
-            json_extract=lambda **kwargs: SimpleNamespace(extracted_json='{"summary":"fallback"}'),
-        )
-
-        assert model.summary == "two-step"
-        assert diag["selected_path"] == "dspy_two_step_adapter"
-        steps = [a["step"] for a in diag["attempts"]]
-        assert steps[:4] == [
-            "outlines_primary",
-            "dspy_typed_direct",
-            "dspy_json_adapter",
-            "dspy_two_step_adapter",
-        ]
-        assert diag["attempts"][1]["ok"] is False
-        assert diag["attempts"][2]["ok"] is False
-        assert diag["attempts"][3]["ok"] is True
-
-    def test_chain_uses_existing_rescue_on_malformed_json(self, monkeypatch):
-        from mosaicx.pipelines.extraction import _extract_schema_with_structured_chain
-
-        class Report(BaseModel):
-            summary: str
-
-        outlines_calls = {"count": 0}
-
-        def _fake_outlines(**kwargs):  # noqa: ARG001
-            outlines_calls["count"] += 1
-            if outlines_calls["count"] == 1:
-                return None
-            return Report(summary="rescued")
-
-        monkeypatch.setattr(
-            "mosaicx.pipelines.extraction._recover_schema_instance_with_outlines",
-            _fake_outlines,
-        )
-        class _Ctx:
-            def __enter__(self):
-                return None
-
-            def __exit__(self, exc_type, exc, tb):  # noqa: ARG002
-                return False
-
-        fake_dspy = SimpleNamespace(
-            settings=SimpleNamespace(lm=object()),
-            context=lambda adapter=None: _Ctx(),
-            JSONAdapter=None,
-            TwoStepAdapter=None,
-        )
-        monkeypatch.setattr("mosaicx.runtime_env.import_dspy", lambda: fake_dspy)
 
         model, diag = _extract_schema_with_structured_chain(
             document_text="sample",
             schema_class=Report,
             typed_extract=lambda **kwargs: (_ for _ in ()).throw(ValueError("typed failed")),
-            json_extract=lambda **kwargs: SimpleNamespace(extracted_json="not json at all"),
+            json_extract=lambda **kwargs: SimpleNamespace(extracted_json='{"summary":"fallback"}'),
         )
 
-        assert model.summary == "rescued"
-        assert diag["selected_path"] == "existing_outlines_rescue"
-        assert any(a["step"] == "existing_json_fallback" and a["ok"] is False for a in diag["attempts"])
+        assert model.summary == "fallback"
+        assert diag["selected_path"] == "json_text_fallback"
+        assert [a["step"] for a in diag["attempts"]] == [
+            "outlines_primary",
+            "dspy_typed_direct",
+            "json_text_fallback",
+        ]
+        assert diag["attempts"][2]["ok"] is True
+
+    def test_chain_accepts_supported_absent_required_field(self, monkeypatch):
+        from mosaicx.pipelines.extraction import (
+            _augment_schema_with_evidence,
+            _extract_schema_with_structured_chain,
+        )
+
+        class Report(BaseModel):
+            summary: str | None
+
+        AugmentedReport = _augment_schema_with_evidence(Report)
+        monkeypatch.setattr(
+            "mosaicx.pipelines.extraction._recover_schema_instance_with_outlines",
+            lambda **kwargs: AugmentedReport(
+                summary="",
+                summary_excerpt="",
+                summary_reasoning="Summary not provided in the document.",
+            ),
+        )
+
+        called = {"typed": 0}
+        model, diag = _extract_schema_with_structured_chain(
+            document_text="sample",
+            schema_class=AugmentedReport,
+            typed_extract=lambda **kwargs: called.__setitem__("typed", called["typed"] + 1),
+            json_extract=None,
+        )
+
+        assert model.summary == ""
+        assert called["typed"] == 0
+        assert diag["selected_path"] == "outlines_primary"
+        assert diag["attempts"][0]["ok"] is True
+        assert diag["attempts"][0]["reason"] == "accepted_with_supported_absence"
+        assert diag["attempts"][0]["supported_absent_required"] == ["summary"]
 
 
 class TestBestOfNSelectiveRouting:
@@ -411,6 +398,101 @@ class TestBestOfNSelectiveRouting:
 
 
 class TestAdjudicationAndRepair:
+    def test_extract_labeled_blocks_parses_markdown_label_value_pairs(self):
+        from mosaicx.pipelines.extraction import _extract_labeled_blocks
+
+        blocks = _extract_labeled_blocks(
+            "Requested Date\n"
+            "**28-03-2026 12:27:17**\n\n"
+            "Reported Date\n"
+            "**28-03-2026 13:34:17**\n"
+        )
+
+        assert blocks[0]["label"] == "Requested Date"
+        assert blocks[0]["text"] == "28-03-2026 12:27:17"
+        assert blocks[1]["label"] == "Reported Date"
+        assert blocks[1]["text"] == "28-03-2026 13:34:17"
+
+    def test_identify_suspicious_fields_marks_exam_date_as_ambiguous(self):
+        from mosaicx.pipelines.extraction import _identify_suspicious_fields
+
+        class Report(BaseModel):
+            exam_date: str | None = None
+            date_of_birth: str | None = None
+
+        model = Report(exam_date="2026-03-28", date_of_birth=None)
+        suspicious = _identify_suspicious_fields(
+            model_instance=model,
+            schema_class=Report,
+            source_text=(
+                "Requested Date\n"
+                "**28-03-2026 12:27:17**\n\n"
+                "Collected Date\n"
+                "**28-03-2026 12:49:23**\n\n"
+                "Reported Date\n"
+                "**28-03-2026 13:34:17**\n"
+            ),
+            field_evidence={
+                "exam_date": {
+                    "excerpt": "28-03-2026",
+                    "reasoning": "Collected Date field shows the date of examination.",
+                },
+                "date_of_birth": {
+                    "excerpt": "",
+                    "reasoning": "Date of birth not provided in the document.",
+                },
+            },
+        )
+
+        exam_date_issue = next(item for item in suspicious if item["field"] == "exam_date")
+        assert exam_date_issue["issue"] == "ambiguous_label"
+        assert exam_date_issue["current_label"] == "Collected Date"
+        assert exam_date_issue["preferred_label"] == "Reported Date"
+        assert all(item["field"] != "date_of_birth" for item in suspicious)
+
+    def test_targeted_field_repair_prefers_reported_date_label(self):
+        from mosaicx.pipelines.extraction import _targeted_field_repair
+
+        class Report(BaseModel):
+            exam_date: str | None = None
+
+        model = Report(exam_date="2026-03-28")
+        field_evidence = {
+            "exam_date": {
+                "excerpt": "28-03-2026",
+                "reasoning": "Collected Date field shows the date of examination.",
+            }
+        }
+        repaired, diag = _targeted_field_repair(
+            model_instance=model,
+            schema_class=Report,
+            suspicious_fields=[
+                {
+                    "field": "exam_date",
+                    "current_value": "2026-03-28",
+                    "issue": "ambiguous_label",
+                    "current_label": "Collected Date",
+                    "preferred_label": "Reported Date",
+                }
+            ],
+            source_text=(
+                "Requested Date\n"
+                "**28-03-2026 12:27:17**\n\n"
+                "Collected Date\n"
+                "**28-03-2026 12:49:23**\n\n"
+                "Reported Date\n"
+                "**28-03-2026 13:34:17**\n"
+            ),
+            field_evidence=field_evidence,
+        )
+
+        assert repaired.exam_date == "2026-03-28"
+        assert diag["repaired_count"] == 1
+        assert diag["fields"][0]["method"] == "label_block"
+        assert diag["fields"][0]["label"] == "Reported Date"
+        assert field_evidence["exam_date"]["excerpt"] == "28-03-2026 13:34:17"
+        assert "Reported Date" in field_evidence["exam_date"]["reasoning"]
+
     def test_conflicting_candidates_are_adjudicated_with_mcc(self, monkeypatch):
         from mosaicx.pipelines.extraction import _adjudicate_conflicting_candidates
 
@@ -614,6 +696,30 @@ class TestAdjudicationAndRepair:
 
         # Should have passed the use_refine gate and hit dspy import failure
         assert diag["reason"] == "dspy_import_failed:RuntimeError"
+
+    def test_repair_skips_fields_marked_absent_in_source(self):
+        from mosaicx.pipelines.extraction import _repair_failed_critical_fields_with_refine
+
+        class Report(BaseModel):
+            date_of_birth: str
+
+        base = Report(date_of_birth="")
+        repaired, diag = _repair_failed_critical_fields_with_refine(
+            model_instance=base,
+            schema_class=Report,
+            source_text="Patient demographics available, DOB not listed.",
+            field_evidence={
+                "date_of_birth": {
+                    "excerpt": "",
+                    "reasoning": "Date of birth not provided in the document.",
+                }
+            },
+        )
+
+        assert repaired is base
+        assert diag["triggered"] is False
+        assert diag["reason"] == "supported_absence_only"
+        assert diag["supported_absent_fields"] == ["date_of_birth"]
 
 
 class TestPlannerShortDocBypass:

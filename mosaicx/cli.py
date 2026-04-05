@@ -654,10 +654,10 @@ def _extract_batch(
 @click.option("--list-modes", is_flag=True, default=False, help="Print available modes and exit.")
 @click.option(
     "--think",
-    type=click.Choice(["auto", "fast", "deep"], case_sensitive=False),
+    type=click.Choice(["auto", "fast", "standard", "deep"], case_sensitive=False),
     default="auto",
     show_default=True,
-    help="Reasoning depth: auto (router picks based on template complexity), fast (minimal reasoning), deep (chunked extraction + verify + fix).",
+    help="Reasoning depth: auto (router picks based on template complexity), fast (minimal reasoning), standard (primary structured extraction + fallback), deep (chunked extraction + verify + fix).",
 )
 @click.option("--dump-ocr", is_flag=True, default=False, help="Save raw OCR text to .ocr.txt for debugging.")
 @click.option("--force-ocr", is_flag=True, default=False, help="Run OCR even on PDFs with a text layer (enables layout-aware table detection).")

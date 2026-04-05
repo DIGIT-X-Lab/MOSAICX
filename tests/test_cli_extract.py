@@ -202,3 +202,13 @@ class TestExtractThinkFlag:
             "extract", "--document", "nonexistent.pdf", "--think", "invalid"
         ])
         assert result.exit_code != 0
+
+    def test_extract_accepts_standard_think_choice(self):
+        from mosaicx.cli import cli
+        from click.testing import CliRunner
+
+        runner = CliRunner()
+        result = runner.invoke(cli, [
+            "extract", "--document", "nonexistent.pdf", "--think", "standard"
+        ])
+        assert "Invalid value for '--think'" not in result.output

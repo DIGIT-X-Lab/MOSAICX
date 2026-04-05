@@ -43,6 +43,7 @@ class MosaicxConfig(BaseSettings):
     refine_max_fields: int = 3
     outlines_timeout: int = 120
     planner_min_chars: int = 4000
+    structured_json_fallback: bool = False
 
     # --- Processing ---
     default_template: str = "auto"

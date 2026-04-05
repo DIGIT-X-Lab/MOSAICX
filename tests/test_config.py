@@ -30,6 +30,7 @@ class TestMosaicxConfig:
         assert cfg.default_export_formats == ["parquet", "jsonl"]
         assert cfg.force_ocr is False
         assert cfg.ocr_langs == ["en", "de"]
+        assert cfg.structured_json_fallback is False
 
     def test_env_override(self, monkeypatch):
         """Environment variables with MOSAICX_ prefix override defaults."""

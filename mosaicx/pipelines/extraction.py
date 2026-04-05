@@ -181,6 +181,21 @@ _ABSENCE_ENUM_TOKENS = {
     "missing",
     "unknown",
 }
+_ABSENCE_REASON_PHRASES = (
+    "not provided",
+    "not present",
+    "not mentioned",
+    "not available",
+    "not stated",
+    "not found",
+    "not included",
+    "not in the document",
+    "missing from the document",
+    "missing in the document",
+    "absent from the document",
+    "absent in the document",
+    "unable to determine",
+)
 
 
 def _normalize_spinal_level_text(value: str) -> str:
@@ -702,6 +717,27 @@ def _try_parse_date_value(value: Any) -> str | None:
     iso_match = re.search(r"\b(\d{4}-\d{2}-\d{2})\b", text)
     if iso_match:
         return iso_match.group(1)
+
+    embedded_patterns = (
+        ("%d-%m-%Y", r"\b\d{2}-\d{2}-\d{4}\b"),
+        ("%d/%m/%Y", r"\b\d{2}/\d{2}/\d{4}\b"),
+        ("%m-%d-%Y", r"\b\d{2}-\d{2}-\d{4}\b"),
+        ("%m/%d/%Y", r"\b\d{2}/\d{2}/\d{4}\b"),
+        ("%d-%m-%y", r"\b\d{2}-\d{2}-\d{2}\b"),
+        ("%d/%m/%y", r"\b\d{2}/\d{2}/\d{2}\b"),
+        ("%m-%d-%y", r"\b\d{2}-\d{2}-\d{2}\b"),
+        ("%m/%d/%y", r"\b\d{2}/\d{2}/\d{2}\b"),
+        ("%b %d %Y", r"\b[A-Za-z]{3}\s+\d{1,2}\s+\d{4}\b"),
+        ("%B %d %Y", r"\b[A-Za-z]{4,}\s+\d{1,2}\s+\d{4}\b"),
+    )
+    for fmt, pattern in embedded_patterns:
+        for match in re.finditer(pattern, text):
+            candidate = match.group(0)
+            try:
+                parsed = datetime.strptime(candidate, fmt)
+                return parsed.date().isoformat()
+            except Exception:
+                continue
 
     cleaned = text.replace(",", " ")
     cleaned = re.sub(r"\s+", " ", cleaned).strip()
@@ -1239,6 +1275,37 @@ _SECTION_HEADER_INLINE_PATTERN = re.compile(
 _LABELLED_LINE_PATTERN = re.compile(
     r"^\s*([A-Za-z][A-Za-z0-9()/%&,\-'\s]{1,96}?)\s*:\s*(.*)$"
 )
+_FIELD_LABEL_ALIASES: dict[str, list[str]] = {
+    "exam_date": [
+        "reported date",
+        "study date",
+        "examination date",
+        "exam date",
+        "date of exam",
+    ],
+    "date_of_birth": [
+        "date of birth",
+        "birth date",
+        "dob",
+        "d.o.b",
+    ],
+    "patient_name": [
+        "patient name",
+        "patient",
+        "name",
+    ],
+    "referring_physician": [
+        "referring physician",
+        "referring doctor",
+        "referred by",
+        "ref physician",
+    ],
+    "accession_number": [
+        "accession",
+        "accession no",
+        "acc no",
+    ],
+}
 
 _MATCH_STOPWORDS = {
     "a",
@@ -1336,15 +1403,45 @@ def _tokenize_for_match(text: str) -> set[str]:
     return tokens
 
 
+def _normalize_match_text(text: str) -> str:
+    return " ".join(sorted(_tokenize_for_match(text)))
+
+
+def _field_label_aliases(field_name: str) -> list[str]:
+    probe = str(field_name or "").strip().lower()
+    return list(_FIELD_LABEL_ALIASES.get(probe, []))
+
+
 def _field_to_label_match_score(field_name: str, label: str) -> float:
+    label_probe = _normalize_match_text(label)
+    if not label_probe:
+        return 0.0
+
+    alias_score = 0.0
+    for alias in _field_label_aliases(field_name):
+        alias_probe = _normalize_match_text(alias)
+        if not alias_probe:
+            continue
+        if alias_probe == label_probe:
+            alias_score = max(alias_score, 0.98)
+            continue
+        if alias_probe in label_probe or label_probe in alias_probe:
+            alias_score = max(alias_score, 0.95)
+            continue
+        alias_tokens = set(alias_probe.split())
+        label_tokens = set(label_probe.split())
+        overlap = len(alias_tokens & label_tokens)
+        if overlap > 0:
+            alias_score = max(alias_score, 0.90 * (overlap / float(len(alias_tokens))))
+
     field_tokens = _tokenize_for_match(field_name)
     label_tokens = _tokenize_for_match(label)
     if not field_tokens or not label_tokens:
-        return 0.0
+        return alias_score
 
     overlap = len(field_tokens & label_tokens)
     if overlap <= 0:
-        return 0.0
+        return alias_score
 
     containment = overlap / float(len(field_tokens))
     union = len(field_tokens | label_tokens)
@@ -1359,7 +1456,51 @@ def _field_to_label_match_score(field_name: str, label: str) -> float:
         score = 1.0
     elif normalized_field in normalized_label or normalized_label in normalized_field:
         score = max(score, 0.92)
-    return max(0.0, min(1.0, score))
+    return max(0.0, min(1.0, max(score, alias_score)))
+
+
+def _is_image_markdown_line(text: str) -> bool:
+    return str(text or "").strip().startswith("![")
+
+
+def _strip_inline_markdown(text: str) -> str:
+    cleaned = re.sub(r"!\[[^\]]*\]\([^)]*\)", "", str(text or ""))
+    cleaned = re.sub(r"^\s*[*_`~#>\-]+\s*", "", cleaned)
+    cleaned = re.sub(r"\s*[*_`~]+\s*$", "", cleaned)
+    return cleaned.strip()
+
+
+def _looks_like_standalone_label_line(text: str) -> bool:
+    stripped = str(text or "").strip()
+    if not stripped:
+        return False
+    if stripped.startswith(("#", "![", "[", "```", ">")):
+        return False
+    if ":" in stripped:
+        return False
+    if len(stripped) > 96:
+        return False
+    if not re.match(r"^[A-Za-z][A-Za-z0-9()/%&,\-'\s]{1,96}$", stripped):
+        return False
+    token_count = len(stripped.split())
+    if token_count <= 0 or token_count > 6:
+        return False
+    if re.search(r"\b\d{1,2}[-/]\d{1,2}[-/]\d{2,4}\b", stripped):
+        return False
+    return True
+
+
+def _looks_like_block_value_line(text: str) -> bool:
+    stripped = str(text or "").strip()
+    if not stripped:
+        return False
+    if stripped.startswith(("#", "```", ">")):
+        return False
+    if _LABELLED_LINE_PATTERN.match(stripped):
+        return False
+    if _looks_like_standalone_label_line(stripped):
+        return False
+    return True
 
 
 def _extract_labeled_blocks(document_text: str, *, max_blocks: int = 256) -> list[dict[str, str]]:
@@ -1368,45 +1509,82 @@ def _extract_labeled_blocks(document_text: str, *, max_blocks: int = 256) -> lis
         return []
 
     blocks: list[dict[str, str]] = []
-    current_label: str | None = None
-    current_lines: list[str] = []
-
-    def _flush() -> None:
-        nonlocal current_label, current_lines
-        if not current_label:
-            current_lines = []
-            return
-        merged = " ".join(chunk.strip() for chunk in current_lines if chunk.strip()).strip()
-        if merged and not _is_nullish_string(merged):
-            blocks.append({"label": current_label, "text": merged})
-        current_label = None
-        current_lines = []
-
-    for raw_line in text.splitlines():
-        line = str(raw_line or "")
-        stripped = line.strip()
+    lines = [str(line or "") for line in text.splitlines()]
+    idx = 0
+    while idx < len(lines) and len(blocks) < max_blocks:
+        stripped = lines[idx].strip()
+        if not stripped:
+            idx += 1
+            continue
 
         match = _LABELLED_LINE_PATTERN.match(stripped)
         if match:
-            _flush()
-            label = str(match.group(1) or "").strip()
-            if not label:
-                continue
-            current_label = label
-            initial_value = str(match.group(2) or "").strip()
-            if initial_value:
-                current_lines.append(initial_value)
-            if len(blocks) >= max_blocks:
+            label = _strip_inline_markdown(match.group(1) or "")
+            value_lines: list[str] = []
+            initial_value = _strip_inline_markdown(match.group(2) or "")
+            if initial_value and not _is_nullish_string(initial_value):
+                value_lines.append(initial_value)
+            cursor = idx + 1
+            while cursor < len(lines):
+                probe = lines[cursor].strip()
+                if not probe:
+                    if value_lines:
+                        break
+                    cursor += 1
+                    continue
+                if _is_image_markdown_line(probe):
+                    cursor += 1
+                    continue
+                if _LABELLED_LINE_PATTERN.match(probe) or _looks_like_standalone_label_line(probe):
+                    break
+                if probe.startswith("#"):
+                    break
+                cleaned = _strip_inline_markdown(probe)
+                if cleaned and not _is_nullish_string(cleaned):
+                    value_lines.append(cleaned)
+                cursor += 1
+            merged = " ".join(chunk.strip() for chunk in value_lines if chunk.strip()).strip()
+            if label and merged and not _is_nullish_string(merged):
+                blocks.append({"label": label, "text": merged})
+            idx = cursor
+            continue
+
+        if _looks_like_standalone_label_line(stripped):
+            label = _strip_inline_markdown(stripped)
+            cursor = idx + 1
+            while cursor < len(lines):
+                probe = lines[cursor].strip()
+                if not probe or _is_image_markdown_line(probe):
+                    cursor += 1
+                    continue
                 break
-            continue
+            if cursor < len(lines):
+                first_value = lines[cursor].strip()
+                if _looks_like_block_value_line(first_value):
+                    value_lines = [_strip_inline_markdown(first_value)]
+                    cursor += 1
+                    while cursor < len(lines):
+                        probe = lines[cursor].strip()
+                        if not probe:
+                            break
+                        if _is_image_markdown_line(probe):
+                            cursor += 1
+                            continue
+                        if _LABELLED_LINE_PATTERN.match(probe) or _looks_like_standalone_label_line(probe):
+                            break
+                        if probe.startswith("#"):
+                            break
+                        cleaned = _strip_inline_markdown(probe)
+                        if cleaned and not _is_nullish_string(cleaned):
+                            value_lines.append(cleaned)
+                        cursor += 1
+                    merged = " ".join(chunk.strip() for chunk in value_lines if chunk.strip()).strip()
+                    if label and merged and not _is_nullish_string(merged):
+                        blocks.append({"label": label, "text": merged})
+                    idx = cursor
+                    continue
 
-        if current_label is None:
-            continue
-
-        if stripped:
-            current_lines.append(stripped)
-
-    _flush()
+        idx += 1
     return blocks[:max_blocks]
 
 
@@ -1455,10 +1633,17 @@ def _deterministic_backfill_for_field(
     if not cleaned:
         return None, diag
 
+    normalized = cleaned
+    if _looks_like_date_field(field_name):
+        parsed = _try_parse_date_value(cleaned)
+        if parsed:
+            normalized = parsed
+
     diag["method"] = method
     diag["score"] = float(score)
     diag["label"] = label
-    return cleaned, diag
+    diag["source_value"] = cleaned
+    return normalized, diag
 
 
 def _section_complexity_hint(text: str) -> str:
@@ -1992,6 +2177,527 @@ def _planner_routes_uncertain(planner_diag: dict[str, Any] | None) -> bool:
     return False
 
 
+def _field_has_supported_absence(
+    *,
+    value: Any,
+    excerpt: Any,
+    reasoning: Any,
+) -> bool:
+    """Return True when a missing value is explicitly described as absent in source."""
+    if not _is_missing_value(value):
+        return False
+
+    excerpt_text = str(excerpt or "").strip().lower()
+    if excerpt_text and excerpt_text not in _ABSENCE_ENUM_TOKENS and not _is_nullish_string(excerpt):
+        return False
+
+    reasoning_text = str(reasoning or "").strip().lower()
+    if not reasoning_text:
+        return False
+
+    if any(phrase in reasoning_text for phrase in _ABSENCE_REASON_PHRASES):
+        return True
+    return any(token in reasoning_text for token in _ABSENCE_ENUM_TOKENS)
+
+
+def _field_evidence_bundle(
+    *,
+    model_instance: BaseModel,
+    field_name: str,
+    field_evidence: dict[str, dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    payload = model_instance.model_dump(mode="json")
+    evidence: dict[str, Any] = {}
+    if field_evidence:
+        evidence.update(field_evidence.get(field_name) or {})
+
+    excerpt = payload.get(f"{field_name}_excerpt")
+    reasoning = payload.get(f"{field_name}_reasoning")
+    if excerpt not in (None, ""):
+        evidence["excerpt"] = excerpt
+    if reasoning not in (None, ""):
+        evidence["reasoning"] = reasoning
+    return evidence
+
+
+def _field_value_matches_block(
+    *,
+    field_name: str,
+    value: Any,
+    block_text: str,
+) -> bool:
+    if _is_missing_value(value) or _is_nullish_string(block_text):
+        return False
+
+    block_value = str(block_text or "").strip()
+    if not block_value:
+        return False
+
+    value_verdict = _validate_field_semantics(field_name, value)
+    if not bool(value_verdict.get("valid", True)):
+        candidate_value = str(value).strip()
+    else:
+        candidate_value = str(value_verdict.get("normalized_value", value) or "").strip()
+    if not candidate_value:
+        return False
+
+    block_verdict = _validate_field_semantics(field_name, block_value)
+    if bool(block_verdict.get("valid", False)):
+        normalized_block = str(block_verdict.get("normalized_value", block_value) or "").strip()
+        if normalized_block and normalized_block == candidate_value:
+            return True
+
+    block_lower = block_value.lower()
+    candidate_lower = candidate_value.lower()
+    if len(candidate_lower) >= 3 and candidate_lower in block_lower:
+        return True
+    return False
+
+
+def _candidate_label_blocks_for_field(
+    *,
+    source_text: str,
+    field_name: str,
+    value: Any,
+) -> list[dict[str, Any]]:
+    candidates: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    for block in _extract_labeled_blocks(source_text):
+        label = str(block.get("label") or "").strip()
+        text = str(block.get("text") or "").strip()
+        if not label or not text:
+            continue
+        score = _field_to_label_match_score(field_name, label)
+        if score < 0.35:
+            continue
+        if not _field_value_matches_block(field_name=field_name, value=value, block_text=text):
+            continue
+        key = (label.lower(), text.lower())
+        if key in seen:
+            continue
+        seen.add(key)
+        candidates.append(
+            {
+                "label": label,
+                "text": text,
+                "score": float(score),
+            }
+        )
+    candidates.sort(key=lambda item: float(item.get("score") or 0.0), reverse=True)
+    return candidates
+
+
+def _match_label_from_text(
+    *,
+    text: str,
+    candidates: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    probe = str(text or "").strip().lower()
+    if not probe:
+        return None
+    for cand in candidates:
+        label = str(cand.get("label") or "").strip().lower()
+        if label and label in probe:
+            return cand
+    return None
+
+
+def _reasoning_mentions_absence(reasoning: Any) -> bool:
+    reasoning_text = str(reasoning or "").strip().lower()
+    if not reasoning_text:
+        return False
+    if any(phrase in reasoning_text for phrase in _ABSENCE_REASON_PHRASES):
+        return True
+    return any(token in reasoning_text for token in _ABSENCE_ENUM_TOKENS)
+
+
+def _identify_suspicious_fields(
+    *,
+    model_instance: BaseModel,
+    schema_class: type[BaseModel],
+    source_text: str,
+    field_evidence: dict[str, dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    payload = model_instance.model_dump(mode="json")
+    suspicious: list[dict[str, Any]] = []
+    evidence_enabled = bool(field_evidence)
+
+    for field_name, field_info in schema_class.model_fields.items():
+        if field_name.startswith("_"):
+            continue
+        value = payload.get(field_name)
+        evidence = _field_evidence_bundle(
+            model_instance=model_instance,
+            field_name=field_name,
+            field_evidence=field_evidence,
+        )
+        excerpt = evidence.get("excerpt")
+        reasoning = evidence.get("reasoning")
+        if _is_missing_value(value):
+            if _field_has_supported_absence(value=value, excerpt=excerpt, reasoning=reasoning):
+                continue
+            if field_info.is_required():
+                suspicious.append(
+                    {
+                        "field": field_name,
+                        "current_value": value,
+                        "issue": "missing",
+                        "excerpt": excerpt,
+                        "reasoning": reasoning,
+                    }
+                )
+            continue
+
+        if evidence_enabled and _is_missing_value(excerpt) and _is_missing_value(reasoning):
+            suspicious.append(
+                {
+                    "field": field_name,
+                    "current_value": value,
+                    "issue": "no_evidence",
+                    "excerpt": excerpt,
+                    "reasoning": reasoning,
+                }
+            )
+            continue
+
+        candidates = _candidate_label_blocks_for_field(
+            source_text=source_text,
+            field_name=field_name,
+            value=value,
+        )
+        if len(candidates) < 2:
+            continue
+
+        referenced = _match_label_from_text(text=str(reasoning or ""), candidates=candidates)
+        if referenced is None:
+            referenced = _match_label_from_text(text=str(excerpt or ""), candidates=candidates)
+
+        preferred = candidates[0]
+        referenced_score = float(referenced.get("score") or 0.0) if referenced else 0.0
+        preferred_score = float(preferred.get("score") or 0.0)
+
+        if referenced is None and preferred_score >= 0.9:
+            suspicious.append(
+                {
+                    "field": field_name,
+                    "current_value": value,
+                    "issue": "ambiguous_label",
+                    "excerpt": excerpt,
+                    "reasoning": reasoning,
+                    "candidate_labels": [cand["label"] for cand in candidates[:4]],
+                    "preferred_label": preferred.get("label"),
+                }
+            )
+            continue
+
+        if referenced and str(referenced.get("label")) != str(preferred.get("label")) and preferred_score >= referenced_score + 0.15:
+            suspicious.append(
+                {
+                    "field": field_name,
+                    "current_value": value,
+                    "issue": "ambiguous_label",
+                    "excerpt": excerpt,
+                    "reasoning": reasoning,
+                    "current_label": referenced.get("label"),
+                    "preferred_label": preferred.get("label"),
+                    "candidate_labels": [cand["label"] for cand in candidates[:4]],
+                }
+            )
+
+    return suspicious
+
+
+def _targeted_field_repair(
+    *,
+    model_instance: BaseModel,
+    schema_class: type[BaseModel],
+    suspicious_fields: list[dict[str, Any]],
+    source_text: str,
+    field_evidence: dict[str, dict[str, Any]] | None = None,
+) -> tuple[BaseModel, dict[str, Any]]:
+    diag: dict[str, Any] = {
+        "triggered": bool(suspicious_fields),
+        "suspicious_count": len(suspicious_fields),
+        "repaired_count": 0,
+        "still_failing_count": 0,
+        "fields": [],
+        "stages": {
+            "deterministic": {"attempted": 0, "repaired": 0},
+            "targeted_llm": {"attempted": 0, "repaired": 0},
+        },
+        "reason": None,
+    }
+    if not suspicious_fields:
+        diag["reason"] = "no_suspicious_fields"
+        return model_instance, diag
+
+    updated = model_instance
+    updated_payload = model_instance.model_dump(mode="json")
+    remaining: list[dict[str, Any]] = []
+
+    for issue in suspicious_fields:
+        field_name = str(issue.get("field") or "")
+        if not field_name:
+            continue
+        before = updated_payload.get(field_name)
+        diag["stages"]["deterministic"]["attempted"] += 1
+        backfilled_value, backfill_diag = _deterministic_backfill_for_field(
+            source_text=source_text,
+            field_name=field_name,
+        )
+        if backfilled_value is None:
+            remaining.append(issue)
+            diag["fields"].append(
+                {
+                    "field": field_name,
+                    "issue": issue.get("issue"),
+                    "repaired": False,
+                    "method": None,
+                    "label": None,
+                }
+            )
+            continue
+
+        try:
+            trial_payload = dict(updated_payload)
+            trial_payload[field_name] = backfilled_value
+            coerced = _coerce_payload_to_schema(trial_payload, schema_class)
+            repaired_model = schema_class.model_validate(coerced)
+            repaired_payload = repaired_model.model_dump(mode="json")
+            after = repaired_payload.get(field_name)
+            updated = repaired_model
+            updated_payload = repaired_payload
+            diag["stages"]["deterministic"]["repaired"] += 1
+            if field_evidence is not None:
+                label = str(backfill_diag.get("label") or "").strip()
+                raw_excerpt = str(backfill_diag.get("source_value") or backfilled_value or "").strip()
+                reason_bits = [f"Matched label '{label}'"] if label else ["Matched labeled block"]
+                if issue.get("issue") == "ambiguous_label" and issue.get("current_label"):
+                    reason_bits.append(
+                        f"over '{issue.get('current_label')}' for better field alignment"
+                    )
+                field_evidence[field_name] = {
+                    "excerpt": raw_excerpt,
+                    "reasoning": " ".join(reason_bits).strip() + ".",
+                    "label": label,
+                }
+            diag["fields"].append(
+                {
+                    "field": field_name,
+                    "issue": issue.get("issue"),
+                    "repaired": True,
+                    "before": before,
+                    "after": after,
+                    "method": str(backfill_diag.get("method") or "deterministic_backfill"),
+                    "label": backfill_diag.get("label"),
+                }
+            )
+        except Exception as exc:
+            remaining.append(issue)
+            diag["fields"].append(
+                {
+                    "field": field_name,
+                    "issue": issue.get("issue"),
+                    "repaired": False,
+                    "method": "deterministic_backfill",
+                    "error": f"{type(exc).__name__}: {exc}",
+                    "label": backfill_diag.get("label"),
+                }
+            )
+
+    if not remaining:
+        diag["repaired_count"] = int(diag["stages"]["deterministic"]["repaired"])
+        diag["reason"] = "deterministic_field_repair_applied"
+        return updated, diag
+
+    diag["repaired_count"] = int(diag["stages"]["deterministic"]["repaired"])
+    try:
+        from mosaicx.runtime_env import import_dspy
+
+        dspy = import_dspy()
+    except Exception as exc:
+        diag["still_failing_count"] = len(remaining)
+        diag["reason"] = f"dspy_import_failed:{type(exc).__name__}"
+        return updated, diag
+
+    if getattr(dspy.settings, "lm", None) is None:
+        diag["still_failing_count"] = len(remaining)
+        diag["reason"] = "lm_not_configured"
+        return updated, diag
+
+    class _TargetedRepairSig(dspy.Signature):
+        suspicious_fields_json: str = dspy.InputField(desc="JSON list of fields to repair")
+        source_context: str = dspy.InputField(desc="Relevant labeled source context for the fields")
+        repaired_json: str = dspy.OutputField(desc="JSON object with only repaired field values")
+
+    repair_module = dspy.Predict(_TargetedRepairSig)
+    repair_requests: list[dict[str, Any]] = []
+    for issue in remaining:
+        field_name = str(issue.get("field") or "")
+        if not field_name:
+            continue
+        field_info = schema_class.model_fields.get(field_name)
+        related_blocks = _candidate_label_blocks_for_field(
+            source_text=source_text,
+            field_name=field_name,
+            value=issue.get("current_value"),
+        )
+        if not related_blocks:
+            for block in _extract_labeled_blocks(source_text):
+                label = str(block.get("label") or "")
+                if _field_to_label_match_score(field_name, label) >= 0.35:
+                    related_blocks.append(
+                        {
+                            "label": label,
+                            "text": str(block.get("text") or ""),
+                            "score": _field_to_label_match_score(field_name, label),
+                        }
+                    )
+        repair_requests.append(
+            {
+                "field": field_name,
+                "type": str(getattr(field_info, "annotation", "unknown")),
+                "current_value": issue.get("current_value"),
+                "issue": issue.get("issue"),
+                "candidate_labels": issue.get("candidate_labels"),
+                "preferred_label": issue.get("preferred_label"),
+                "current_label": issue.get("current_label"),
+                "blocks": related_blocks[:6],
+            }
+        )
+
+    if not repair_requests:
+        diag["still_failing_count"] = len(remaining)
+        diag["reason"] = "no_targeted_requests"
+        return updated, diag
+
+    diag["stages"]["targeted_llm"]["attempted"] = len(repair_requests)
+    context_lines: list[str] = []
+    for request in repair_requests:
+        context_lines.append(f"Field: {request['field']}")
+        for block in request.get("blocks", []):
+            context_lines.append(f"{block.get('label')}: {block.get('text')}")
+        context_lines.append("")
+    from mosaicx.verify.parse_utils import parse_json_like
+
+    try:
+        pred = repair_module(
+            suspicious_fields_json=json.dumps(repair_requests, ensure_ascii=False),
+            source_context="\n".join(context_lines).strip()[:8000],
+        )
+        repaired_raw = str(getattr(pred, "repaired_json", "") or "").strip()
+        repaired_payload = parse_json_like(repaired_raw) if repaired_raw else {}
+        if not isinstance(repaired_payload, dict):
+            repaired_payload = {}
+    except Exception as exc:
+        diag["still_failing_count"] = len(remaining)
+        diag["reason"] = f"targeted_llm_failed:{type(exc).__name__}"
+        return updated, diag
+
+    repaired_fields_by_name = {str(entry.get("field") or ""): entry for entry in diag["fields"]}
+    for issue in remaining:
+        field_name = str(issue.get("field") or "")
+        if field_name not in repaired_payload:
+            continue
+        before = updated_payload.get(field_name)
+        try:
+            trial_payload = dict(updated_payload)
+            trial_payload[field_name] = repaired_payload.get(field_name)
+            coerced = _coerce_payload_to_schema(trial_payload, schema_class)
+            repaired_model = schema_class.model_validate(coerced)
+            updated = repaired_model
+            updated_payload = repaired_model.model_dump(mode="json")
+            diag["stages"]["targeted_llm"]["repaired"] += 1
+            entry = repaired_fields_by_name.get(field_name)
+            if entry is not None:
+                entry.update(
+                    {
+                        "repaired": True,
+                        "before": before,
+                        "after": updated_payload.get(field_name),
+                        "method": "targeted_llm",
+                    }
+                )
+            else:
+                diag["fields"].append(
+                    {
+                        "field": field_name,
+                        "issue": issue.get("issue"),
+                        "repaired": True,
+                        "before": before,
+                        "after": updated_payload.get(field_name),
+                        "method": "targeted_llm",
+                        "label": None,
+                    }
+                )
+        except Exception as exc:
+            entry = repaired_fields_by_name.get(field_name)
+            if entry is not None:
+                entry["error"] = f"{type(exc).__name__}: {exc}"
+
+    diag["repaired_count"] = int(diag["stages"]["deterministic"]["repaired"]) + int(
+        diag["stages"]["targeted_llm"]["repaired"]
+    )
+    diag["still_failing_count"] = sum(1 for entry in diag["fields"] if not entry.get("repaired"))
+    if diag["repaired_count"] > 0:
+        diag["reason"] = "field_repair_applied"
+    else:
+        diag["reason"] = "no_field_repaired"
+    return updated, diag
+
+
+def _required_fields_status(
+    *,
+    model_instance: BaseModel,
+    schema_class: type[BaseModel],
+    field_evidence: dict[str, dict[str, str]] | None = None,
+) -> dict[str, Any]:
+    """Assess required fields, distinguishing unsupported misses from source-absent ones."""
+    payload = model_instance.model_dump(mode="json")
+    missing_required: list[str] = []
+    supported_absent_required: list[str] = []
+
+    for name, field_info in schema_class.model_fields.items():
+        if not field_info.is_required():
+            continue
+        value = payload.get(name)
+        if not _is_missing_value(value):
+            continue
+
+        excerpt = payload.get(f"{name}_excerpt")
+        reasoning = payload.get(f"{name}_reasoning")
+        if field_evidence:
+            evidence = field_evidence.get(name) or {}
+            if _is_missing_value(excerpt):
+                excerpt = evidence.get("excerpt")
+            if _is_missing_value(reasoning):
+                reasoning = evidence.get("reasoning")
+
+        if _field_has_supported_absence(value=value, excerpt=excerpt, reasoning=reasoning):
+            supported_absent_required.append(name)
+        else:
+            missing_required.append(name)
+
+    return {
+        "complete": not missing_required,
+        "missing_required": missing_required,
+        "supported_absent_required": supported_absent_required,
+    }
+
+
+def _required_fields_present(
+    *,
+    model_instance: BaseModel,
+    schema_class: type[BaseModel],
+) -> tuple[bool, list[str]]:
+    """Return whether all required top-level fields are populated after validation."""
+    status = _required_fields_status(
+        model_instance=model_instance,
+        schema_class=schema_class,
+    )
+    return bool(status["complete"]), list(status["missing_required"])
+
+
 def _try_bestofn_for_uncertain_sections(
     *,
     document_text: str,
@@ -2154,6 +2860,7 @@ def _repair_failed_critical_fields_with_refine(
     schema_class: type[BaseModel],
     source_text: str,
     think: str = "standard",
+    field_evidence: dict[str, dict[str, str]] | None = None,
 ) -> tuple[BaseModel, dict[str, Any]]:
     """Repair only failed critical fields using DSPy Refine when available."""
     payload = model_instance.model_dump(mode="json")
@@ -2166,8 +2873,18 @@ def _repair_failed_critical_fields_with_refine(
     failed_fields: list[str] = []
     missing_fields: list[str] = []
     ungrounded_fields: list[str] = []
+    supported_absent_status = _required_fields_status(
+        model_instance=model_instance,
+        schema_class=schema_class,
+        field_evidence=field_evidence,
+    )
+    supported_absent_fields = set(
+        str(name) for name in supported_absent_status.get("supported_absent_required", [])
+    )
     for field_name in critical_fields:
         value = payload.get(field_name)
+        if field_name in supported_absent_fields and _is_missing_value(value):
+            continue
         grounded, _snippet = _extract_grounding_snippet(source_text=source_text, value=value)
         if _is_missing_value(value):
             failed_fields.append(field_name)
@@ -2182,13 +2899,14 @@ def _repair_failed_critical_fields_with_refine(
         "failed_fields": list(failed_fields),
         "missing_fields": list(missing_fields),
         "ungrounded_fields": list(ungrounded_fields),
+        "supported_absent_fields": sorted(supported_absent_fields),
         "remaining_failed_fields": list(failed_fields),
         "repaired_fields": [],
         "skipped_fields": [],
         "reason": None,
     }
     if not failed_fields:
-        diag["reason"] = "no_failed_fields"
+        diag["reason"] = "supported_absence_only" if supported_absent_fields else "no_failed_fields"
         return model_instance, diag
 
     updated = model_instance
@@ -2409,45 +3127,48 @@ def _extract_schema_with_structured_chain(
         "candidates": [],
     }
 
-    def _record(step: str, ok: bool, error: Exception | None = None) -> None:
-        row: dict[str, Any] = {"step": step, "ok": bool(ok)}
+    def _record(
+        step: str,
+        ok: bool,
+        error: Exception | None = None,
+        *,
+        reason: str | None = None,
+        valid: bool | None = None,
+        complete: bool | None = None,
+        supported_absent_required: list[str] | None = None,
+    ) -> None:
+        row: dict[str, Any] = {"step": step, "path": step, "ok": bool(ok)}
+        if reason:
+            row["reason"] = reason
+        if valid is not None:
+            row["valid"] = bool(valid)
+        if complete is not None:
+            row["complete"] = bool(complete)
+        if supported_absent_required:
+            row["supported_absent_required"] = list(supported_absent_required)
         if error is not None:
             row["error"] = f"{type(error).__name__}: {error}"
         attempts.append(row)
 
-    selected_path = ""
     last_exc: Exception | None = None
-
-    dspy = None
-    has_lm = False
-    try:
-        from mosaicx.runtime_env import import_dspy
-
-        dspy = import_dspy()
-        has_lm = getattr(dspy.settings, "lm", None) is not None
-    except Exception as exc:
-        _record("dspy_import", False, exc)
-        dspy = None
-        has_lm = False
 
     # ── Fast mode: Outlines only, fallback to json_extract (Predict) ──
     if think == "fast":
-        if has_lm:
-            outlines_result = _recover_schema_instance_with_outlines(
-                document_text=document_text,
-                schema_class=schema_class,
-                error_hint="fast_mode",
-            )
-            if outlines_result is not None:
-                _record("outlines_fast", True)
-                return outlines_result, {
-                    "selected_path": "outlines_fast",
-                    "fallback_used": False,
-                    "attempts": attempts,
-                    "bestofn": bestofn_info,
-                    "adjudication": adjudication_info,
-                }
-            _record("outlines_fast", False, ValueError("outlines_fast_unavailable"))
+        outlines_result = _recover_schema_instance_with_outlines(
+            document_text=document_text,
+            schema_class=schema_class,
+            error_hint="fast_mode",
+        )
+        if outlines_result is not None:
+            _record("outlines_fast", True, valid=True, complete=True)
+            return outlines_result, {
+                "selected_path": "outlines_fast",
+                "fallback_used": False,
+                "attempts": attempts,
+                "bestofn": bestofn_info,
+                "adjudication": adjudication_info,
+            }
+        _record("outlines_fast", False, reason="unavailable")
 
         # Predict fallback (no reasoning)
         if json_extract is not None:
@@ -2455,7 +3176,7 @@ def _extract_schema_with_structured_chain(
                 fallback_pred = json_extract(document_text=document_text)
                 raw = getattr(fallback_pred, "extracted_json", "")
                 model_instance = _recover_schema_instance_from_raw(raw, schema_class)
-                _record("predict_fast", True)
+                _record("predict_fast", True, valid=True, complete=True)
                 return model_instance, {
                     "selected_path": "predict_fast",
                     "fallback_used": True,
@@ -2464,7 +3185,7 @@ def _extract_schema_with_structured_chain(
                     "adjudication": adjudication_info,
                 }
             except Exception as exc:
-                _record("predict_fast", False, exc)
+                _record("predict_fast", False, exc, reason="fallback_failed")
 
         raise ValueError("Fast mode: both Outlines and Predict failed")
 
@@ -2486,11 +3207,11 @@ def _extract_schema_with_structured_chain(
                     source_text=document_text,
                 )
                 candidates.append(("outlines_deep", outlines_result, score, components))
-                _record("outlines_deep", True)
+                _record("outlines_deep", True, valid=True, complete=True)
             else:
-                _record("outlines_deep", False, ValueError("outlines_deep_unavailable"))
+                _record("outlines_deep", False, reason="unavailable")
         except Exception as exc:
-            _record("outlines_deep", False, exc)
+            _record("outlines_deep", False, exc, reason="exception")
 
         # Candidate 2: ChainOfThought (always runs in deep mode)
         try:
@@ -2506,9 +3227,9 @@ def _extract_schema_with_structured_chain(
                 source_text=document_text,
             )
             candidates.append(("cot_deep", cot_instance, score, components))
-            _record("cot_deep", True)
+            _record("cot_deep", True, valid=True, complete=True)
         except Exception as exc:
-            _record("cot_deep", False, exc)
+            _record("cot_deep", False, exc, reason="exception")
 
         if not candidates:
             raise ValueError("Deep mode: both Outlines and ChainOfThought failed")
@@ -2532,124 +3253,44 @@ def _extract_schema_with_structured_chain(
             },
         }
 
-    if has_lm:
-        outlines_primary = _recover_schema_instance_with_outlines(
-            document_text=document_text,
-            schema_class=schema_class,
-            error_hint="primary_outlines",
-        )
-        if outlines_primary is not None:
-            score, components = _score_extraction_candidate(
-                extracted=outlines_primary,
-                schema_class=schema_class,
-                source_text=document_text,
-            )
-            completeness = components.get("critical_completeness", 0.0)
-            if completeness >= 1.0:
-                # All required fields present — accept Outlines fast path
-                bestofn_info["reason"] = "skipped_outlines_primary_succeeded"
-                _record("outlines_primary", True)
-                selected_path = "outlines_primary"
-                return outlines_primary, {
-                    "selected_path": selected_path,
-                    "fallback_used": False,
-                    "attempts": attempts,
-                    "bestofn": bestofn_info,
-                    "adjudication": adjudication_info,
-                }
-            # Outlines succeeded but missed required fields — fall through to DSPy
-            _record("outlines_primary", False, ValueError(
-                f"outlines_incomplete:completeness={completeness:.2f}"
-            ))
-        else:
-            _record("outlines_primary", False, ValueError("outlines_primary_unavailable"))
-    else:
-        _record("outlines_primary", False, ValueError("lm_not_configured"))
-
-    bestofn_model, bestofn_info = _try_bestofn_for_uncertain_sections(
+    outlines_primary = _recover_schema_instance_with_outlines(
         document_text=document_text,
         schema_class=schema_class,
-        typed_extract=typed_extract,
-        planner_diag=planner_diag,
+        error_hint="primary_outlines",
     )
-    if bestofn_model is not None:
-        _record("bestofn_uncertain", True)
-        selected_path = "bestofn_uncertain"
-        return bestofn_model, {
-            "selected_path": selected_path,
-            "fallback_used": True,
+    if outlines_primary is not None:
+        outlines_status = _required_fields_status(
+            model_instance=outlines_primary,
+            schema_class=schema_class,
+            field_evidence=dict(_last_outlines_evidence) if _last_outlines_evidence else None,
+        )
+        outlines_complete = bool(outlines_status.get("complete"))
+        supported_absent_required = list(
+            outlines_status.get("supported_absent_required", [])
+        )
+        _record(
+            "outlines_primary",
+            True,
+            reason=(
+                "accepted_with_supported_absence"
+                if supported_absent_required and outlines_complete
+                else "accepted"
+                if outlines_complete
+                else "accepted_incomplete"
+            ),
+            valid=True,
+            complete=outlines_complete,
+            supported_absent_required=supported_absent_required,
+        )
+        return outlines_primary, {
+            "selected_path": "outlines_primary",
+            "fallback_used": False,
             "attempts": attempts,
             "bestofn": bestofn_info,
+            "adjudication": adjudication_info,
         }
-    if bestofn_info.get("triggered"):
-        _record("bestofn_uncertain", False, ValueError(str(bestofn_info.get("reason") or "failed")))
-
-    if _planner_routes_uncertain(planner_diag):
-        candidate_pool: list[dict[str, Any]] = []
-
-        def _add_candidate(path: str, model: BaseModel) -> None:
-            score, components = _score_extraction_candidate(
-                extracted=model,
-                schema_class=schema_class,
-                source_text=document_text,
-            )
-            candidate_pool.append(
-                {
-                    "path": path,
-                    "model": model,
-                    "score": score,
-                    "components": components,
-                }
-            )
-
-        try:
-            pred = typed_extract(document_text=document_text)
-            model = _coerce_extracted_to_model_instance(
-                extracted=getattr(pred, "extracted", pred),
-                schema_class=schema_class,
-            )
-            _record("uncertain_candidate_typed", True)
-            _add_candidate("dspy_typed_direct", model)
-        except Exception as exc:
-            _record("uncertain_candidate_typed", False, exc)
-
-        if dspy is not None and has_lm:
-            for step_name, adapter_name in (
-                ("uncertain_candidate_json", "JSONAdapter"),
-                ("uncertain_candidate_two_step", "TwoStepAdapter"),
-            ):
-                adapter_cls = getattr(dspy, adapter_name, None)
-                if adapter_cls is None:
-                    _record(step_name, False, ValueError(f"{adapter_name}_missing"))
-                    continue
-                try:
-                    with dspy.context(adapter=adapter_cls()):
-                        pred = typed_extract(document_text=document_text)
-                    model = _coerce_extracted_to_model_instance(
-                        extracted=getattr(pred, "extracted", pred),
-                        schema_class=schema_class,
-                    )
-                    _record(step_name, True)
-                    route_name = "dspy_json_adapter" if "json" in step_name else "dspy_two_step_adapter"
-                    _add_candidate(route_name, model)
-                except Exception as exc:
-                    _record(step_name, False, exc)
-
-        if candidate_pool:
-            chosen_candidate, adjudication_info = _adjudicate_conflicting_candidates(
-                candidates=candidate_pool,
-                source_text=document_text,
-            )
-            if chosen_candidate is not None:
-                _record("mcc_adjudication", True)
-                selected_path = f"adjudicated:{chosen_candidate.get('path')}"
-                return chosen_candidate["model"], {
-                    "selected_path": selected_path,
-                    "fallback_used": True,
-                    "attempts": attempts,
-                    "bestofn": bestofn_info,
-                    "adjudication": adjudication_info,
-                }
+    else:
+        _record("outlines_primary", False, reason="unavailable")
 
     try:
         pred = typed_extract(document_text=document_text)
@@ -2658,10 +3299,30 @@ def _extract_schema_with_structured_chain(
             extracted=extracted,
             schema_class=schema_class,
         )
-        _record("dspy_typed_direct", True)
-        selected_path = "dspy_typed_direct"
+        typed_status = _required_fields_status(
+            model_instance=model_instance,
+            schema_class=schema_class,
+        )
+        typed_complete = bool(typed_status.get("complete"))
+        supported_absent_required = list(
+            typed_status.get("supported_absent_required", [])
+        )
+        _record(
+            "dspy_typed_direct",
+            True,
+            reason=(
+                "accepted_with_supported_absence"
+                if supported_absent_required and typed_complete
+                else "accepted"
+                if typed_complete
+                else "accepted_incomplete"
+            ),
+            valid=True,
+            complete=typed_complete,
+            supported_absent_required=supported_absent_required,
+        )
         return model_instance, {
-            "selected_path": selected_path,
+            "selected_path": "dspy_typed_direct",
             "fallback_used": True,
             "attempts": attempts,
             "bestofn": bestofn_info,
@@ -2669,56 +3330,42 @@ def _extract_schema_with_structured_chain(
         }
     except Exception as exc:
         last_exc = exc
-        _record("dspy_typed_direct", False, exc)
+        _record("dspy_typed_direct", False, exc, reason="fallback_failed")
 
-    for step_name, adapter_name in (
-        ("dspy_json_adapter", "JSONAdapter"),
-        ("dspy_two_step_adapter", "TwoStepAdapter"),
-    ):
-        if dspy is None:
-            _record(step_name, False, ValueError("dspy_unavailable"))
-            continue
-        if not has_lm:
-            _record(step_name, False, ValueError("lm_not_configured"))
-            continue
-
-        adapter_cls = getattr(dspy, adapter_name, None)
-        if adapter_cls is None:
-            _record(step_name, False, ValueError(f"{adapter_name}_missing"))
-            continue
+    json_fallback_enabled = False
+    if json_extract is not None:
+        from mosaicx.config import get_config
 
         try:
-            with dspy.context(adapter=adapter_cls()):
-                pred = typed_extract(document_text=document_text)
-            extracted = getattr(pred, "extracted", pred)
-            model_instance = _coerce_extracted_to_model_instance(
-                extracted=extracted,
-                schema_class=schema_class,
-            )
-            _record(step_name, True)
-            selected_path = step_name
-            return model_instance, {
-                "selected_path": selected_path,
-                "fallback_used": True,
-                "attempts": attempts,
-                "bestofn": bestofn_info,
-                "adjudication": adjudication_info,
-            }
-        except Exception as exc:
-            last_exc = exc
-            _record(step_name, False, exc)
+            json_fallback_enabled = bool(get_config().structured_json_fallback)
+        except Exception:
+            json_fallback_enabled = False
 
-    if json_extract is not None:
+    if json_extract is not None and json_fallback_enabled:
         try:
             fallback_pred = json_extract(document_text=document_text)
             model_instance = _recover_schema_instance_from_raw(
                 getattr(fallback_pred, "extracted_json", ""),
                 schema_class,
             )
-            _record("existing_json_fallback", True)
-            selected_path = "existing_json_fallback"
+            fallback_status = _required_fields_status(
+                model_instance=model_instance,
+                schema_class=schema_class,
+            )
+            fallback_complete = bool(fallback_status.get("complete"))
+            supported_absent_required = list(
+                fallback_status.get("supported_absent_required", [])
+            )
+            _record(
+                "json_text_fallback",
+                True,
+                reason="accepted_with_supported_absence" if supported_absent_required else "accepted",
+                valid=True,
+                complete=fallback_complete,
+                supported_absent_required=supported_absent_required,
+            )
             return model_instance, {
-                "selected_path": selected_path,
+                "selected_path": "json_text_fallback",
                 "fallback_used": True,
                 "attempts": attempts,
                 "bestofn": bestofn_info,
@@ -2726,31 +3373,7 @@ def _extract_schema_with_structured_chain(
             }
         except Exception as exc:
             last_exc = exc
-            _record("existing_json_fallback", False, exc)
-
-    if has_lm:
-        outlines_rescue = _recover_schema_instance_with_outlines(
-            document_text=document_text,
-            schema_class=schema_class,
-            error_hint="; ".join(
-                str(a.get("error", ""))
-                for a in attempts
-                if not a.get("ok")
-            )[:1500],
-        )
-        if outlines_rescue is not None:
-            _record("existing_outlines_rescue", True)
-            selected_path = "existing_outlines_rescue"
-            return outlines_rescue, {
-                "selected_path": selected_path,
-                "fallback_used": True,
-                "attempts": attempts,
-                "bestofn": bestofn_info,
-                "adjudication": adjudication_info,
-            }
-        _record("existing_outlines_rescue", False, ValueError("outlines_rescue_unavailable"))
-    else:
-        _record("existing_outlines_rescue", False, ValueError("lm_not_configured"))
+            _record("json_text_fallback", False, exc, reason="fallback_failed")
     if last_exc is not None:
         raise last_exc
     raise ValueError("Structured extraction chain failed without recoverable path.")
@@ -3684,6 +4307,7 @@ def _build_dspy_classes():
             from mosaicx.metrics import track_step
 
             think = self._think
+            _last_outlines_evidence.clear()
 
             # ── OPTIMIZE MODE: single clean CoT call for DSPy trace collection ──
             if self._optimize_mode:
@@ -3807,6 +4431,7 @@ def _build_dspy_classes():
                 else:
                     _raw = {}
                 _clean, _ev = _split_evidence_from_extracted(_raw, schema)
+                _last_outlines_evidence.clear()
                 if _ev:
                     _last_outlines_evidence.update(_ev)
                 # Rebuild model_instance from clean data (without evidence fields)
@@ -3831,13 +4456,34 @@ def _build_dspy_classes():
                                 [i.get("field") for i in consistency_issues],
                             )
 
-            # Repair + semantic validation (all levels)
-            model_instance, repair_diag = _repair_failed_critical_fields_with_refine(
-                model_instance=model_instance,
-                schema_class=schema,
-                source_text=document_text,
-                think=think,
-            )
+            # Repair + semantic validation
+            if think == "standard":
+                suspicious_fields = _identify_suspicious_fields(
+                    model_instance=model_instance,
+                    schema_class=schema,
+                    source_text=document_text,
+                    field_evidence=_last_outlines_evidence if _last_outlines_evidence else None,
+                )
+                model_instance, repair_diag = _targeted_field_repair(
+                    model_instance=model_instance,
+                    schema_class=schema,
+                    suspicious_fields=suspicious_fields,
+                    source_text=document_text,
+                    field_evidence=_last_outlines_evidence if _last_outlines_evidence else None,
+                )
+                if int(repair_diag.get("repaired_count") or 0) > 0:
+                    with track_step(metrics, "Recompute after field repair", tracker):
+                        model_instance = _compute_derived_fields(
+                            model_instance, schema, document_text,
+                        )
+            else:
+                model_instance, repair_diag = _repair_failed_critical_fields_with_refine(
+                    model_instance=model_instance,
+                    schema_class=schema,
+                    source_text=document_text,
+                    think=think,
+                    field_evidence=dict(_last_outlines_evidence) if _last_outlines_evidence else None,
+                )
             model_instance, semantic_validation_diag = _apply_deterministic_semantic_validation(
                 model_instance=model_instance,
                 schema_class=schema,
@@ -3851,6 +4497,8 @@ def _build_dspy_classes():
             planner_diag["bestofn"] = chain_diag.get("bestofn", {})
             planner_diag["adjudication"] = chain_diag.get("adjudication", {})
             planner_diag["repair"] = repair_diag
+            if think == "standard":
+                planner_diag["field_repair"] = repair_diag
             planner_diag["deterministic_validation"] = semantic_validation_diag
             planner_diag["think_level"] = think
             planner_diag["user_think"] = self._user_think
