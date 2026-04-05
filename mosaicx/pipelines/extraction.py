@@ -2617,6 +2617,110 @@ def _reasoning_mentions_absence(reasoning: Any) -> bool:
     return any(token in reasoning_text for token in _ABSENCE_ENUM_TOKENS)
 
 
+_REPAIR_ISSUE_PRIORITY = {
+    "verification_flag": 5,
+    "missing": 4,
+    "ambiguous_label": 3,
+    "contradictory": 3,
+    "no_evidence": 2,
+}
+
+
+def _verification_issues_to_suspicious_fields(
+    *,
+    model_instance: BaseModel,
+    flagged_issues: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    payload = model_instance.model_dump(mode="json")
+    merged: dict[str, dict[str, Any]] = {}
+
+    for issue in flagged_issues:
+        if not isinstance(issue, dict):
+            continue
+        field_path = str(issue.get("field") or "").strip()
+        if not field_path:
+            continue
+        top_field = field_path.split(".")[0].split("[")[0].strip()
+        if not top_field:
+            continue
+
+        entry = merged.setdefault(
+            top_field,
+            {
+                "field": top_field,
+                "current_value": payload.get(top_field),
+                "issue": "verification_flag",
+                "verification_paths": [],
+                "verification_messages": [],
+                "verification_evidence": [],
+            },
+        )
+
+        if field_path not in entry["verification_paths"]:
+            entry["verification_paths"].append(field_path)
+        message = str(issue.get("issue") or "").strip()
+        if message:
+            entry["verification_messages"].append(message)
+        evidence = str(issue.get("evidence") or "").strip()
+        if evidence:
+            entry["verification_evidence"].append(evidence)
+        if issue.get("suggested_value") not in (None, ""):
+            entry["suggested_value"] = issue.get("suggested_value")
+
+    for entry in merged.values():
+        messages = [msg for msg in entry.pop("verification_messages", []) if msg]
+        evidence = [item for item in entry.pop("verification_evidence", []) if item]
+        if messages:
+            entry["reasoning"] = " | ".join(messages[:3])
+        if evidence:
+            entry["excerpt"] = "\n".join(evidence[:3])
+    return list(merged.values())
+
+
+def _merge_repair_issue_lists(*issue_lists: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    merged: dict[str, dict[str, Any]] = {}
+    order: list[str] = []
+
+    for issues in issue_lists:
+        for issue in issues:
+            if not isinstance(issue, dict):
+                continue
+            field_name = str(issue.get("field") or "").strip()
+            if not field_name:
+                continue
+            if field_name not in merged:
+                merged[field_name] = dict(issue)
+                order.append(field_name)
+                continue
+
+            existing = merged[field_name]
+            existing_priority = int(_REPAIR_ISSUE_PRIORITY.get(str(existing.get("issue") or ""), 0))
+            current_priority = int(_REPAIR_ISSUE_PRIORITY.get(str(issue.get("issue") or ""), 0))
+            if current_priority >= existing_priority:
+                combined = dict(existing)
+                combined.update(issue)
+                merged[field_name] = combined
+            else:
+                combined = dict(issue)
+                combined.update(existing)
+                merged[field_name] = combined
+
+            for key in ("candidate_labels", "verification_paths"):
+                existing_values = merged[field_name].get(key)
+                if isinstance(existing_values, list):
+                    deduped: list[Any] = []
+                    seen: set[str] = set()
+                    for value in existing_values:
+                        token = str(value)
+                        if token in seen:
+                            continue
+                        seen.add(token)
+                        deduped.append(value)
+                    merged[field_name][key] = deduped
+
+    return [merged[field_name] for field_name in order]
+
+
 def _identify_suspicious_fields(
     *,
     model_instance: BaseModel,
@@ -2720,6 +2824,7 @@ def _targeted_field_repair(
     suspicious_fields: list[dict[str, Any]],
     source_text: str,
     field_evidence: dict[str, dict[str, Any]] | None = None,
+    think: str = "standard",
 ) -> tuple[BaseModel, dict[str, Any]]:
     diag: dict[str, Any] = {
         "triggered": bool(suspicious_fields),
@@ -2821,6 +2926,11 @@ def _targeted_field_repair(
         diag["reason"] = "deterministic_field_repair_applied"
         return updated, diag
 
+    if think == "fast":
+        diag["still_failing_count"] = len(remaining)
+        diag["reason"] = "llm_repair_disabled"
+        return updated, diag
+
     diag["repaired_count"] = int(diag["stages"]["deterministic"]["repaired"])
     try:
         from mosaicx.runtime_env import import_dspy
@@ -2873,6 +2983,10 @@ def _targeted_field_repair(
                 "candidate_labels": issue.get("candidate_labels"),
                 "preferred_label": issue.get("preferred_label"),
                 "current_label": issue.get("current_label"),
+                "verification_paths": issue.get("verification_paths"),
+                "verification_excerpt": issue.get("excerpt"),
+                "verification_reasoning": issue.get("reasoning"),
+                "suggested_value": issue.get("suggested_value"),
                 "blocks": related_blocks[:6],
             }
         )
@@ -2886,6 +3000,10 @@ def _targeted_field_repair(
     context_lines: list[str] = []
     for request in repair_requests:
         context_lines.append(f"Field: {request['field']}")
+        if request.get("verification_reasoning"):
+            context_lines.append(f"Issue: {request['verification_reasoning']}")
+        if request.get("verification_excerpt"):
+            context_lines.append(f"Evidence: {request['verification_excerpt']}")
         for block in request.get("blocks", []):
             context_lines.append(f"{block.get('label')}: {block.get('text')}")
         context_lines.append("")
@@ -4613,7 +4731,6 @@ def _build_dspy_classes():
 
             chain_diag: dict[str, Any] = {}
             verify_diag: dict[str, Any] = {}
-            fix_diag: dict[str, Any] = {}
 
             planned_text = document_text
             with track_step(metrics, "Plan extraction", tracker):
@@ -4650,17 +4767,6 @@ def _build_dspy_classes():
                     model_instance, document_text, schema, metrics, tracker,
                 )
                 verify_diag = {"flagged_count": len(flagged), "issues": flagged}
-
-                # Pass 3: Fix
-                if flagged:
-                    model_instance, fix_diag = self._fix_flagged_fields_pass(
-                        model_instance, flagged, document_text, schema, metrics, tracker,
-                    )
-                    # Recompute derived fields after fixes
-                    with track_step(metrics, "Recompute after fix", tracker):
-                        model_instance = _compute_derived_fields(
-                            model_instance, schema, document_text,
-                        )
 
             else:
                 # ── FAST / STANDARD PATH ──
@@ -4722,33 +4828,35 @@ def _build_dspy_classes():
                     )
 
             # Repair + semantic validation
-            if think == "standard":
-                suspicious_fields = _identify_suspicious_fields(
-                    model_instance=model_instance,
-                    schema_class=schema,
-                    source_text=document_text,
-                    field_evidence=_last_outlines_evidence if _last_outlines_evidence else None,
+            suspicious_fields = _identify_suspicious_fields(
+                model_instance=model_instance,
+                schema_class=schema,
+                source_text=document_text,
+                field_evidence=_last_outlines_evidence if _last_outlines_evidence else None,
+            )
+            if think == "deep" and verify_diag.get("issues"):
+                suspicious_fields = _merge_repair_issue_lists(
+                    suspicious_fields,
+                    _verification_issues_to_suspicious_fields(
+                        model_instance=model_instance,
+                        flagged_issues=list(verify_diag.get("issues") or []),
+                    ),
                 )
-                model_instance, repair_diag = _targeted_field_repair(
-                    model_instance=model_instance,
-                    schema_class=schema,
-                    suspicious_fields=suspicious_fields,
-                    source_text=document_text,
-                    field_evidence=_last_outlines_evidence if _last_outlines_evidence else None,
-                )
-                if int(repair_diag.get("repaired_count") or 0) > 0:
-                    with track_step(metrics, "Recompute after field repair", tracker):
-                        model_instance = _compute_derived_fields(
-                            model_instance, schema, document_text,
-                        )
-            else:
-                model_instance, repair_diag = _repair_failed_critical_fields_with_refine(
-                    model_instance=model_instance,
-                    schema_class=schema,
-                    source_text=document_text,
-                    think=think,
-                    field_evidence=dict(_last_outlines_evidence) if _last_outlines_evidence else None,
-                )
+            model_instance, repair_diag = _targeted_field_repair(
+                model_instance=model_instance,
+                schema_class=schema,
+                suspicious_fields=suspicious_fields,
+                source_text=document_text,
+                field_evidence=_last_outlines_evidence if _last_outlines_evidence else None,
+                think=think,
+            )
+            if think == "deep" and verify_diag.get("issues") and isinstance(repair_diag, dict):
+                repair_diag["verification_flagged_count"] = int(verify_diag.get("flagged_count") or 0)
+            if int(repair_diag.get("repaired_count") or 0) > 0:
+                with track_step(metrics, "Recompute after field repair", tracker):
+                    model_instance = _compute_derived_fields(
+                        model_instance, schema, document_text,
+                    )
             semantic_canonicalization_diag: dict[str, Any] = {}
             if _last_outlines_evidence:
                 model_instance, semantic_canonicalization_diag = _apply_semantic_canonicalization(
@@ -4780,8 +4888,6 @@ def _build_dspy_classes():
             planner_diag["user_think"] = self._user_think
             if verify_diag:
                 planner_diag["verification"] = verify_diag
-            if fix_diag:
-                planner_diag["fix"] = fix_diag
 
             self._last_metrics = metrics
             self._last_planner = planner_diag

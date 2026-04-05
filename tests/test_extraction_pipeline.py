@@ -494,6 +494,58 @@ class TestAdjudicationAndRepair:
         assert field_evidence["exam_date"]["excerpt"] == "28-03-2026 13:34:17"
         assert "Reported Date" in field_evidence["exam_date"]["reasoning"]
 
+    def test_targeted_field_repair_skips_llm_stage_in_fast_mode(self):
+        from mosaicx.pipelines.extraction import _targeted_field_repair
+
+        class Report(BaseModel):
+            finding: str | None = None
+
+        model = Report(finding=None)
+        repaired, diag = _targeted_field_repair(
+            model_instance=model,
+            schema_class=Report,
+            suspicious_fields=[
+                {
+                    "field": "finding",
+                    "current_value": None,
+                    "issue": "missing",
+                }
+            ],
+            source_text="No labeled finding block here.",
+            think="fast",
+        )
+
+        assert repaired.finding is None
+        assert diag["reason"] == "llm_repair_disabled"
+        assert diag["still_failing_count"] == 1
+
+    def test_verification_issues_convert_to_top_level_repair_candidates(self):
+        from mosaicx.pipelines.extraction import _verification_issues_to_suspicious_fields
+
+        class Impression(BaseModel):
+            summary: str | None = None
+
+        class Report(BaseModel):
+            impression: Impression | None = None
+
+        model = Report(impression=Impression(summary="mild bulge"))
+        suspicious = _verification_issues_to_suspicious_fields(
+            model_instance=model,
+            flagged_issues=[
+                {
+                    "field": "impression.summary",
+                    "issue": "Summary should mention severe stenosis instead of mild bulge.",
+                    "evidence": "Impression: severe stenosis at C3-C4",
+                    "suggested_value": {"summary": "severe stenosis at C3-C4"},
+                }
+            ],
+        )
+
+        assert suspicious[0]["field"] == "impression"
+        assert suspicious[0]["issue"] == "verification_flag"
+        assert suspicious[0]["verification_paths"] == ["impression.summary"]
+        assert "severe stenosis" in suspicious[0]["excerpt"]
+
     def test_select_semantic_canonicalization_candidates_uses_mismatched_excerpt(self):
         from mosaicx.pipelines.extraction import _select_semantic_canonicalization_candidates
 
