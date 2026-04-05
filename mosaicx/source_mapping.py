@@ -465,6 +465,8 @@ def strip_for_open_source(output_data: dict[str, Any]) -> dict[str, Any]:
     result = {}
     if "extracted" in output_data:
         result["extracted"] = output_data["extracted"]
+    if isinstance(output_data.get("_run"), dict):
+        result["_run"] = output_data["_run"]
 
     if fields:
         evidence: dict[str, dict[str, str]] = {}

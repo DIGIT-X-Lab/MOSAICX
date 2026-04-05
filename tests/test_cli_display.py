@@ -57,6 +57,10 @@ def test_render_extracted_data_hides_internal_diagnostic_keys():
             "version": "1.0",
             "field_results": [],
         },
+        "_run": {
+            "run_status": "success",
+            "selected_path": "outlines_primary",
+        },
     }
     console = Console(record=True, force_terminal=True, width=120)
     render_extracted_data(data, console)
@@ -71,6 +75,7 @@ def test_render_extracted_data_hides_internal_diagnostic_keys():
     assert "react_used" not in out
     assert "_planner" not in out
     assert "extraction_contract" not in out.lower()
+    assert "outlines_primary" not in out
 
 
 def test_render_extracted_data_still_shows_inferred_schema():

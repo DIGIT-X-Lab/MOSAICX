@@ -930,6 +930,37 @@ def _annotation_allows_none(annotation: Any) -> bool:
     return False
 
 
+def _collect_count_consistency_issues(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    issues: list[dict[str, Any]] = []
+    for field_name, value in payload.items():
+        if not field_name.startswith("anzahl_") or not isinstance(value, (int, float)):
+            continue
+        expected_name = field_name.replace("anzahl_", "")
+        for other_name, other_value in payload.items():
+            if not isinstance(other_value, list):
+                continue
+            if other_name not in expected_name:
+                continue
+            actual = len(other_value)
+            if int(value) == actual:
+                continue
+            issues.append(
+                {
+                    "field": field_name,
+                    "kind": "count_consistency",
+                    "reason": (
+                        f"count_mismatch:{field_name}={int(value)} "
+                        f"but {other_name} has {actual} entries"
+                    ),
+                    "critical": False,
+                    "original_value": value,
+                    "normalized_value": value,
+                    "severity": "warning",
+                }
+            )
+    return issues
+
+
 def _coerce_enum_values(
     payload: dict[str, Any],
     schema_class: type[BaseModel],
@@ -1101,6 +1132,8 @@ def _apply_deterministic_semantic_validation(
             }
         )
 
+    issues.extend(_collect_count_consistency_issues(updated))
+
     try:
         coerced = _coerce_payload_to_schema(updated, schema_class)
         normalized_model = schema_class.model_validate(coerced)
@@ -1257,6 +1290,100 @@ def apply_extraction_contract(
         "summary": counts,
         "validation_issues": validation_issues,
     }
+    apply_run_contract(output_data)
+    return output_data
+
+
+def apply_run_contract(output_data: dict[str, Any]) -> dict[str, Any]:
+    """Attach a stable GUI-friendly run envelope to *output_data* in ``_run``."""
+    if not isinstance(output_data, dict):
+        return output_data
+
+    planner = output_data.get("_planner")
+    contract = output_data.get("_extraction_contract")
+    planner_dict = planner if isinstance(planner, dict) else {}
+    contract_dict = contract if isinstance(contract, dict) else {}
+
+    attempts_source = planner_dict.get("structured_chain") or planner_dict.get("attempts") or []
+    attempts: list[dict[str, Any]] = []
+    if isinstance(attempts_source, list):
+        for item in attempts_source:
+            if not isinstance(item, dict):
+                continue
+            row: dict[str, Any] = {
+                "path": str(item.get("path") or item.get("step") or "unknown"),
+            }
+            if "ok" in item:
+                row["ok"] = bool(item.get("ok"))
+            if item.get("reason") is not None:
+                row["reason"] = str(item.get("reason"))
+            if "valid" in item:
+                row["valid"] = bool(item.get("valid"))
+            if "complete" in item:
+                row["complete"] = bool(item.get("complete"))
+            attempts.append(row)
+
+    contract_rows = contract_dict.get("field_results")
+    field_results: list[dict[str, Any]] = []
+    if isinstance(contract_rows, list):
+        for row in contract_rows:
+            if not isinstance(row, dict):
+                continue
+            field_results.append(
+                {
+                    "field": row.get("field"),
+                    "value": row.get("value"),
+                    "status": row.get("status"),
+                    "grounded": row.get("grounded"),
+                    "evidence": row.get("evidence"),
+                }
+            )
+
+    review_fields = [
+        str(row.get("field"))
+        for row in field_results
+        if str(row.get("status") or "") != "supported"
+    ]
+
+    run_status = "success"
+    if attempts and not any(bool(row.get("ok")) for row in attempts):
+        run_status = "failed"
+
+    field_repair = planner_dict.get("field_repair") or planner_dict.get("repair")
+    repair_summary: dict[str, Any] | None = None
+    if isinstance(field_repair, dict):
+        repair_summary = {
+            "triggered": bool(field_repair.get("triggered")),
+            "repaired_count": int(field_repair.get("repaired_count") or 0),
+            "still_failing_count": int(field_repair.get("still_failing_count") or 0),
+        }
+
+    semantic_summary: dict[str, Any] | None = None
+    semantic_diag = planner_dict.get("semantic_canonicalization")
+    if isinstance(semantic_diag, dict):
+        semantic_summary = {
+            "triggered": bool(semantic_diag.get("triggered")),
+            "candidate_count": int(semantic_diag.get("candidate_count") or 0),
+            "classified_count": int(semantic_diag.get("classified_count") or 0),
+        }
+
+    output_data["_run"] = {
+        "version": "1.0",
+        "run_status": run_status,
+        "selected_path": planner_dict.get("selected_structured_path") or planner_dict.get("selected_path"),
+        "fallback_used": bool(
+            planner_dict.get("structured_fallback_used", planner_dict.get("fallback_used", False))
+        ),
+        "attempts": attempts,
+        "summary": dict(contract_dict.get("summary") or {}),
+        "review_needed": bool(review_fields),
+        "review_fields": review_fields,
+        "field_results": field_results,
+    }
+    if repair_summary is not None:
+        output_data["_run"]["field_repair"] = repair_summary
+    if semantic_summary is not None:
+        output_data["_run"]["semantic_canonicalization"] = semantic_summary
     return output_data
 
 
@@ -4102,62 +4229,6 @@ def _apply_nested_fix(payload: dict[str, Any], field_path: str, value: Any) -> N
         current[last] = value
 
 
-def _run_consistency_checks(
-    extracted: BaseModel,
-    schema_class: type[BaseModel],
-) -> list[dict[str, Any]]:
-    """Run deterministic consistency checks on the extracted data.
-
-    Checks:
-    - List counts match anzahl_* fields
-    - Enum values are valid
-    - Required fields are non-null
-    """
-    payload = extracted.model_dump(mode="json")
-    issues: list[dict[str, Any]] = []
-
-    for field_name, field_info in schema_class.model_fields.items():
-        value = payload.get(field_name)
-
-        # Check required fields are non-null
-        if field_info.is_required() and _is_missing_value(value):
-            issues.append({
-                "field": field_name,
-                "issue": "required_field_missing",
-                "severity": "error",
-            })
-
-        # Check anzahl_* consistency with lists
-        if field_name.startswith("anzahl_") and isinstance(value, (int, float)):
-            # Find a matching list field
-            for other_name, other_value in payload.items():
-                if isinstance(other_value, list) and other_name in field_name.replace("anzahl_", ""):
-                    if int(value) != len(other_value):
-                        issues.append({
-                            "field": field_name,
-                            "issue": f"count_mismatch: {field_name}={int(value)} but {other_name} has {len(other_value)} entries",
-                            "severity": "warning",
-                        })
-
-        # Check enum values
-        ann = field_info.annotation
-        origin = get_origin(ann)
-        if origin in (Union, types.UnionType):
-            inner = [a for a in get_args(ann) if a is not type(None)]
-            ann = inner[0] if inner else ann
-            origin = get_origin(ann)
-        if origin is Literal and value is not None:
-            allowed = get_args(ann)
-            if value not in allowed:
-                issues.append({
-                    "field": field_name,
-                    "issue": f"invalid_enum_value: {value!r} not in {allowed}",
-                    "severity": "warning",
-                })
-
-    return issues
-
-
 # ---------------------------------------------------------------------------
 # DSPy Signatures & Module (lazy)
 # ---------------------------------------------------------------------------
@@ -4649,16 +4720,6 @@ def _build_dspy_classes():
                     model_instance = _compute_derived_fields(
                         model_instance, schema, document_text,
                     )
-
-                # Standard mode: also run consistency checks
-                if think == "standard":
-                    with track_step(metrics, "Consistency checks", tracker):
-                        consistency_issues = _run_consistency_checks(model_instance, schema)
-                        if consistency_issues:
-                            logger.info(
-                                "Consistency issues: %s",
-                                [i.get("field") for i in consistency_issues],
-                            )
 
             # Repair + semantic validation
             if think == "standard":

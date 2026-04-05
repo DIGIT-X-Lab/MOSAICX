@@ -10,6 +10,20 @@ def test_apply_extraction_contract_basic_semantics():
     from mosaicx.pipelines.extraction import apply_extraction_contract
 
     payload = {
+        "_planner": {
+            "selected_structured_path": "outlines_primary",
+            "structured_fallback_used": False,
+            "structured_chain": [
+                {
+                    "step": "outlines_primary",
+                    "path": "outlines_primary",
+                    "ok": True,
+                    "reason": "accepted",
+                    "valid": True,
+                    "complete": True,
+                }
+            ],
+        },
         "extracted": {
             "bp": "128/82",
             "missing_field": None,
@@ -39,6 +53,13 @@ def test_apply_extraction_contract_basic_semantics():
     assert contract["required_field_count"] == 3
     assert contract["present_required_count"] == 2
     assert contract["missing_required"] == ["missing_field"]
+    run = result["_run"]
+    assert run["run_status"] == "success"
+    assert run["selected_path"] == "outlines_primary"
+    assert run["fallback_used"] is False
+    assert run["review_needed"] is True
+    assert run["review_fields"] == ["missing_field"]
+    assert run["attempts"][0]["path"] == "outlines_primary"
 
 
 def test_apply_extraction_contract_normalizes_date_and_flags_invalid_range():
@@ -143,6 +164,35 @@ def test_apply_extraction_contract_prefers_canonical_source_block():
     assert row["status"] == "supported"
     assert row["grounded"] is True
     assert row["evidence"] == "Mrs SAKUNTHALA 62Y/F"
+
+
+def test_strip_for_open_source_keeps_run_contract():
+    from mosaicx.source_mapping import strip_for_open_source
+
+    payload = {
+        "extracted": {"sex": "Female"},
+        "_run": {
+            "run_status": "success",
+            "selected_path": "outlines_primary",
+            "fallback_used": False,
+            "summary": {"supported": 1, "needs_review": 0, "insufficient_evidence": 0},
+            "review_needed": False,
+            "review_fields": [],
+            "field_results": [{"field": "sex", "status": "supported"}],
+        },
+        "_source": {
+            "fields": {
+                "sex": {
+                    "excerpt": "F",
+                    "reasoning": "The source token F denotes female sex.",
+                }
+            }
+        },
+    }
+
+    stripped = strip_for_open_source(payload)
+    assert stripped["_run"]["run_status"] == "success"
+    assert stripped["_run"]["selected_path"] == "outlines_primary"
 
 
 def test_sdk_extract_attaches_extraction_contract(monkeypatch):
