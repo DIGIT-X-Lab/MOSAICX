@@ -33,7 +33,7 @@ dependencies = [
     "outlines==1.2.12",
     "paddleocr==3.4.0",
     "paddlepaddle==3.3.1",
-    "paddlex==3.4.3",
+    "paddlex[ocr]==3.4.3",
     "chandra-ocr==0.2.0",
     "transformers==5.4.0",
     "python-cfonts==1.5.2",

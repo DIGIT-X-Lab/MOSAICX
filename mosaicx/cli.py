@@ -4126,7 +4126,7 @@ def doctor(json_output: bool, auto_fix: bool) -> None:
     else:
         _add("ppstructure", "fail",
              f"PPStructureV3 not importable: {ppstructure_detail}",
-             fix="pip install paddlex==3.4.3 paddleocr==3.4.0 paddlepaddle==3.3.1")
+             fix="pip install 'paddlex[ocr]==3.4.3' paddleocr==3.4.0 paddlepaddle==3.3.1")
 
     if deno_status.ok:
         deno_ver = deno_status.deno_version or ""
