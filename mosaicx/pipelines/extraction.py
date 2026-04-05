@@ -2220,6 +2220,185 @@ def _field_evidence_bundle(
     return evidence
 
 
+def _normalize_semantic_probe(value: Any) -> str:
+    text = str(value or "").strip().lower()
+    return " ".join(text.split())
+
+
+def _is_semantic_scalar_candidate(value: Any) -> bool:
+    if isinstance(value, (dict, list, tuple, set, bool)):
+        return False
+    text = str(value or "").strip()
+    if not text:
+        return False
+    if len(text) > 120:
+        return False
+    if len(text.split()) > 12:
+        return False
+    return True
+
+
+def _select_semantic_canonicalization_candidates(
+    *,
+    model_instance: BaseModel,
+    schema_class: type[BaseModel],
+    field_evidence: dict[str, dict[str, Any]] | None,
+) -> list[dict[str, Any]]:
+    if not field_evidence:
+        return []
+
+    payload = model_instance.model_dump(mode="json")
+    candidates: list[dict[str, Any]] = []
+    for field_name, field_info in schema_class.model_fields.items():
+        value = payload.get(field_name)
+        evidence = field_evidence.get(field_name)
+        if not isinstance(evidence, dict):
+            continue
+        excerpt = str(evidence.get("excerpt") or "").strip()
+        if not excerpt:
+            continue
+        if isinstance(evidence.get("canonicalization"), dict):
+            continue
+        if not _is_semantic_scalar_candidate(value) or not _is_semantic_scalar_candidate(excerpt):
+            continue
+
+        value_norm = _normalize_semantic_probe(value)
+        excerpt_norm = _normalize_semantic_probe(excerpt)
+        if not value_norm or not excerpt_norm:
+            continue
+        if value_norm == excerpt_norm:
+            continue
+        if value_norm in excerpt_norm:
+            continue
+
+        candidates.append(
+            {
+                "field": field_name,
+                "current_value": value,
+                "source_value": excerpt,
+                "reasoning": str(evidence.get("reasoning") or "").strip(),
+                "field_type": str(getattr(field_info, "annotation", "unknown")),
+                "field_description": str(getattr(field_info, "description", "") or ""),
+            }
+        )
+    return candidates
+
+
+def _apply_semantic_canonicalization(
+    *,
+    model_instance: BaseModel,
+    schema_class: type[BaseModel],
+    field_evidence: dict[str, dict[str, Any]] | None,
+    semantic_canonicalize: Any | None,
+) -> tuple[BaseModel, dict[str, Any]]:
+    diag: dict[str, Any] = {
+        "triggered": False,
+        "candidate_count": 0,
+        "classified_count": 0,
+        "updated_fields": [],
+        "fields": [],
+        "reason": None,
+    }
+    if not field_evidence:
+        diag["reason"] = "no_field_evidence"
+        return model_instance, diag
+    if semantic_canonicalize is None:
+        diag["reason"] = "semantic_canonicalizer_unavailable"
+        return model_instance, diag
+
+    candidates = _select_semantic_canonicalization_candidates(
+        model_instance=model_instance,
+        schema_class=schema_class,
+        field_evidence=field_evidence,
+    )
+    diag["triggered"] = bool(candidates)
+    diag["candidate_count"] = len(candidates)
+    if not candidates:
+        diag["reason"] = "no_candidates"
+        return model_instance, diag
+
+    try:
+        pred = semantic_canonicalize(
+            candidates_json=json.dumps(candidates[:8], ensure_ascii=False),
+        )
+        raw = str(getattr(pred, "canonicalized_json", "") or "").strip()
+        from mosaicx.verify.parse_utils import parse_json_like
+
+        parsed = parse_json_like(raw) if raw else {}
+    except Exception as exc:
+        diag["reason"] = f"semantic_classifier_failed:{type(exc).__name__}"
+        return model_instance, diag
+
+    if not isinstance(parsed, dict):
+        diag["reason"] = "semantic_classifier_invalid_json"
+        return model_instance, diag
+
+    updated_model = model_instance
+    updated_payload = model_instance.model_dump(mode="json")
+
+    for candidate in candidates:
+        field_name = str(candidate.get("field") or "")
+        if not field_name:
+            continue
+        result = parsed.get(field_name)
+        if not isinstance(result, dict):
+            continue
+
+        canonical_value = result.get("canonical_value")
+        if _is_missing_value(canonical_value):
+            continue
+
+        confidence = result.get("confidence")
+        try:
+            confidence_value = float(confidence)
+        except Exception:
+            confidence_value = 0.0
+        if confidence_value < 0.6:
+            continue
+
+        rationale = str(result.get("reasoning") or "").strip()
+        source_value = str(candidate.get("source_value") or "").strip()
+        current_value = updated_payload.get(field_name)
+        try:
+            trial_payload = dict(updated_payload)
+            trial_payload[field_name] = canonical_value
+            coerced = _coerce_payload_to_schema(trial_payload, schema_class)
+            updated_model = schema_class.model_validate(coerced)
+            updated_payload = updated_model.model_dump(mode="json")
+        except Exception:
+            continue
+
+        evidence = field_evidence.get(field_name) or {}
+        evidence["source_value"] = source_value
+        evidence["canonicalization"] = {
+            "applied": True,
+            "method": "semantic_classifier",
+            "classifier": "generic_field_canonicalizer_v1",
+            "confidence": confidence_value,
+            "from": source_value,
+            "to": updated_payload.get(field_name),
+        }
+        if rationale:
+            evidence["canonicalization"]["reasoning"] = rationale
+        field_evidence[field_name] = evidence
+
+        diag["classified_count"] += 1
+        if _normalize_semantic_probe(current_value) != _normalize_semantic_probe(updated_payload.get(field_name)):
+            diag["updated_fields"].append(field_name)
+        diag["fields"].append(
+            {
+                "field": field_name,
+                "source_value": source_value,
+                "before": current_value,
+                "after": updated_payload.get(field_name),
+                "confidence": confidence_value,
+            }
+        )
+
+    diag["reason"] = "semantic_canonicalization_applied" if diag["classified_count"] else "no_semantic_updates"
+    return updated_model, diag
+
+
 def _field_value_matches_block(
     *,
     field_name: str,
@@ -2480,6 +2659,11 @@ def _targeted_field_repair(
                     "excerpt": raw_excerpt,
                     "reasoning": " ".join(reason_bits).strip() + ".",
                     "label": label,
+                    "evidence_selection": {
+                        "method": "deterministic_field_repair",
+                        "label": label,
+                        "issue": issue.get("issue"),
+                    },
                 }
             diag["fields"].append(
                 {
@@ -4089,7 +4273,26 @@ def _build_dspy_classes():
                     desc="Strict JSON object as text",
                     type_=str,
                 )
+                canonicalize_sig = dspy.Signature(
+                    "candidates_json -> canonicalized_json",
+                    instructions=(
+                        "You receive a JSON list of field canonicalization candidates. "
+                        "Each item has: field, current_value, source_value, field_type, field_description, reasoning. "
+                        "Interpret the raw source_value semantically and return ONLY a JSON object keyed by field name. "
+                        "For each field return {\"canonical_value\": ..., \"confidence\": 0-1, \"reasoning\": ...}. "
+                        "Use the source_value as ground truth; only return a canonical_value when the source_value clearly supports it."
+                    ),
+                ).with_updated_fields(
+                    "candidates_json",
+                    desc="JSON list of fields needing semantic canonicalization",
+                    type_=str,
+                ).with_updated_fields(
+                    "canonicalized_json",
+                    desc="JSON object keyed by field name with canonical_value, confidence, reasoning",
+                    type_=str,
+                )
                 self.extract_json_fallback = dspy.Predict(fallback_sig)
+                self.semantic_canonicalize = dspy.Predict(canonicalize_sig)
                 # Deep mode: verification + fix modules
                 self.verify_extraction = dspy.ChainOfThought(VerifyExtractionSig)
                 self.fix_field = dspy.ChainOfThought(FixFieldSig)
@@ -4097,6 +4300,7 @@ def _build_dspy_classes():
                 # Auto mode: infer schema then extract
                 self.infer_schema = dspy.ChainOfThought(InferSchemaFromDocument)
                 # extract_custom is created dynamically in forward()
+                self.semantic_canonicalize = None
                 self.verify_extraction = dspy.ChainOfThought(VerifyExtractionSig)
                 self.fix_field = dspy.ChainOfThought(FixFieldSig)
 
@@ -4484,6 +4688,15 @@ def _build_dspy_classes():
                     think=think,
                     field_evidence=dict(_last_outlines_evidence) if _last_outlines_evidence else None,
                 )
+            semantic_canonicalization_diag: dict[str, Any] = {}
+            if _last_outlines_evidence:
+                model_instance, semantic_canonicalization_diag = _apply_semantic_canonicalization(
+                    model_instance=model_instance,
+                    schema_class=schema,
+                    field_evidence=_last_outlines_evidence,
+                    semantic_canonicalize=getattr(self, "semantic_canonicalize", None),
+                )
+
             model_instance, semantic_validation_diag = _apply_deterministic_semantic_validation(
                 model_instance=model_instance,
                 schema_class=schema,
@@ -4499,6 +4712,8 @@ def _build_dspy_classes():
             planner_diag["repair"] = repair_diag
             if think == "standard":
                 planner_diag["field_repair"] = repair_diag
+            if semantic_canonicalization_diag:
+                planner_diag["semantic_canonicalization"] = semantic_canonicalization_diag
             planner_diag["deterministic_validation"] = semantic_validation_diag
             planner_diag["think_level"] = think
             planner_diag["user_think"] = self._user_think

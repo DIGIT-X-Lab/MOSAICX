@@ -33,6 +33,7 @@ def _derive_source_value_metadata(
     *,
     value: Any,
     llm_excerpt: str,
+    field_evidence: dict[str, Any] | None = None,
 ) -> tuple[Any | None, dict[str, Any] | None]:
     """Derive raw source value and canonicalization metadata.
 
@@ -53,6 +54,14 @@ def _derive_source_value_metadata(
     raw_excerpt = str(llm_excerpt or "").strip()
     if not raw_excerpt:
         return value, None
+
+    if isinstance(field_evidence, dict):
+        explicit_source_value = field_evidence.get("source_value")
+        explicit_canonicalization = field_evidence.get("canonicalization")
+        if explicit_source_value not in (None, ""):
+            raw_excerpt = str(explicit_source_value).strip() or raw_excerpt
+        if isinstance(explicit_canonicalization, dict):
+            return raw_excerpt, dict(explicit_canonicalization)
 
     value_norm = _normalize_textish(value_text)
     excerpt_norm = _normalize_textish(raw_excerpt)
@@ -210,7 +219,7 @@ def build_source_block(
     doc: LoadedDocument,
     fields: dict[str, Any] | None = None,
     redaction_map: list[dict[str, Any]] | None = None,
-    field_evidence: dict[str, dict[str, str]] | None = None,
+    field_evidence: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Build the unified ``_source`` block for JSON output.
 
@@ -232,7 +241,8 @@ def build_source_block(
         Optional dict of ``{field_key: {"excerpt": ..., "reasoning": ...}}``
         from the structured extractor. When provided, the LLM's verbatim
         excerpt is used for grounding before falling back to the normalized
-        extracted value.
+        extracted value. Additional metadata such as ``evidence_selection``
+        is preserved on the resulting field entry.
 
     Returns
     -------
@@ -324,6 +334,7 @@ def build_source_block(
             source_value, canonicalization = _derive_source_value_metadata(
                 value=value,
                 llm_excerpt=llm_excerpt,
+                field_evidence=field_ev if isinstance(field_ev, dict) else None,
             )
             if source_value is not None:
                 entry["source_value"] = source_value
@@ -337,6 +348,8 @@ def build_source_block(
                     entry["reasoning"] = field_ev["reasoning"]
                 if llm_excerpt:
                     entry["llm_excerpt"] = llm_excerpt
+                if isinstance(field_ev.get("evidence_selection"), dict):
+                    entry["evidence_selection"] = dict(field_ev["evidence_selection"])
             if canonicalization is not None:
                 entry["canonicalization"] = canonicalization
             source_fields[field_key] = entry

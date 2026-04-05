@@ -226,6 +226,14 @@ class TestBuildSourceBlock:
                 "sex": {
                     "excerpt": "F",
                     "reasoning": "The source token F denotes female sex.",
+                    "canonicalization": {
+                        "applied": True,
+                        "method": "semantic_classifier",
+                        "classifier": "generic_field_canonicalizer_v1",
+                        "confidence": 0.99,
+                        "from": "F",
+                        "to": "Female",
+                    },
                 }
             },
         )
@@ -234,10 +242,33 @@ class TestBuildSourceBlock:
         assert field["grounded"] is True
         assert field["source_value"] == "F"
         assert field["canonicalization"]["applied"] is True
-        assert field["canonicalization"]["method"] == "llm_extraction"
+        assert field["canonicalization"]["method"] == "semantic_classifier"
+        assert field["canonicalization"]["classifier"] == "generic_field_canonicalizer_v1"
         assert field["canonicalization"]["from"] == "F"
         assert field["canonicalization"]["to"] == "Female"
         assert "62Y/F" in field["excerpt"]
+
+    def test_field_evidence_carries_evidence_selection(self):
+        doc = self._make_doc(text="Reported Date: 28-03-2026 13:34:17")
+        result = build_source_block(
+            doc,
+            fields={"exam_date": "2026-03-28"},
+            field_evidence={
+                "exam_date": {
+                    "excerpt": "28-03-2026 13:34:17",
+                    "reasoning": "Matched label 'Reported Date' for exam date.",
+                    "evidence_selection": {
+                        "method": "deterministic_field_repair",
+                        "label": "Reported Date",
+                    },
+                }
+            },
+        )
+
+        field = result["fields"]["exam_date"]
+        assert field["source_value"] == "28-03-2026 13:34:17"
+        assert field["evidence_selection"]["method"] == "deterministic_field_repair"
+        assert field["evidence_selection"]["label"] == "Reported Date"
 
 
 SAMPLE_PDF = Path(__file__).parent / "datasets" / "extract" / "sample_patient_vitals.pdf"

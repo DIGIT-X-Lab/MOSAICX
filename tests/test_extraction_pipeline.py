@@ -1,5 +1,6 @@
 # tests/test_extraction_pipeline.py
 """Tests for the extraction pipeline."""
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -492,6 +493,85 @@ class TestAdjudicationAndRepair:
         assert diag["fields"][0]["label"] == "Reported Date"
         assert field_evidence["exam_date"]["excerpt"] == "28-03-2026 13:34:17"
         assert "Reported Date" in field_evidence["exam_date"]["reasoning"]
+
+    def test_select_semantic_canonicalization_candidates_uses_mismatched_excerpt(self):
+        from mosaicx.pipelines.extraction import _select_semantic_canonicalization_candidates
+
+        class Report(BaseModel):
+            sex: str | None = None
+            note: str | None = None
+
+        model = Report(sex="Female", note="free text")
+        candidates = _select_semantic_canonicalization_candidates(
+            model_instance=model,
+            schema_class=Report,
+            field_evidence={
+                "sex": {
+                    "excerpt": "F",
+                    "reasoning": "The source token F denotes female sex.",
+                },
+                "note": {
+                    "excerpt": "free text",
+                    "reasoning": "Matches exactly.",
+                },
+            },
+        )
+
+        assert [candidate["field"] for candidate in candidates] == ["sex"]
+        assert candidates[0]["source_value"] == "F"
+
+    def test_apply_semantic_canonicalization_batches_candidate_fields(self):
+        from mosaicx.pipelines.extraction import _apply_semantic_canonicalization
+
+        class Report(BaseModel):
+            sex: str | None = None
+            location: str | None = None
+
+        class _FakeSemanticCanonicalize:
+            def __call__(self, *, candidates_json: str):
+                payload = json.loads(candidates_json)
+                assert {item["field"] for item in payload} == {"sex", "location"}
+                return SimpleNamespace(
+                    canonicalized_json=json.dumps(
+                        {
+                            "sex": {
+                                "canonical_value": "Female",
+                                "confidence": 0.99,
+                                "reasoning": "F is the abbreviation for female.",
+                            },
+                            "location": {
+                                "canonical_value": "Right upper lobe",
+                                "confidence": 0.95,
+                                "reasoning": "RUL expands to Right upper lobe.",
+                            },
+                        }
+                    )
+                )
+
+        field_evidence = {
+            "sex": {
+                "excerpt": "F",
+                "reasoning": "The source token F denotes female sex.",
+            },
+            "location": {
+                "excerpt": "RUL",
+                "reasoning": "Abbreviated location in the report.",
+            },
+        }
+        model = Report(sex="Female", location="Right upper lobe")
+        updated, diag = _apply_semantic_canonicalization(
+            model_instance=model,
+            schema_class=Report,
+            field_evidence=field_evidence,
+            semantic_canonicalize=_FakeSemanticCanonicalize(),
+        )
+
+        assert updated.sex == "Female"
+        assert updated.location == "Right upper lobe"
+        assert diag["classified_count"] == 2
+        assert field_evidence["sex"]["canonicalization"]["method"] == "semantic_classifier"
+        assert field_evidence["location"]["canonicalization"]["from"] == "RUL"
+        assert field_evidence["location"]["canonicalization"]["to"] == "Right upper lobe"
 
     def test_conflicting_candidates_are_adjudicated_with_mcc(self, monkeypatch):
         from mosaicx.pipelines.extraction import _adjudicate_conflicting_candidates

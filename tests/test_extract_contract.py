@@ -127,7 +127,7 @@ def test_apply_extraction_contract_prefers_canonical_source_block():
                     "source_value": "F",
                     "canonicalization": {
                         "applied": True,
-                        "method": "llm_extraction",
+                        "method": "semantic_classifier",
                         "from": "F",
                         "to": "Female",
                     },
@@ -202,6 +202,14 @@ def test_sdk_extract_passes_field_evidence_into_source(monkeypatch):
                     "sex": {
                         "excerpt": "F",
                         "reasoning": "The source token F denotes female sex.",
+                        "canonicalization": {
+                            "applied": True,
+                            "method": "semantic_classifier",
+                            "classifier": "generic_field_canonicalizer_v1",
+                            "confidence": 0.99,
+                            "from": "F",
+                            "to": "Female",
+                        },
                     }
                 },
             )
@@ -213,7 +221,7 @@ def test_sdk_extract_passes_field_evidence_into_source(monkeypatch):
 
     assert sex_field["grounded"] is True
     assert sex_field["source_value"] == "F"
-    assert sex_field["canonicalization"]["method"] == "llm_extraction"
+    assert sex_field["canonicalization"]["method"] == "semantic_classifier"
     assert sex_field["canonicalization"]["to"] == "Female"
 
 
@@ -316,6 +324,14 @@ def test_cli_extract_uses_field_evidence_for_source_mapping(monkeypatch, tmp_pat
                     "sex": {
                         "excerpt": "F",
                         "reasoning": "The source token F denotes female sex.",
+                        "canonicalization": {
+                            "applied": True,
+                            "method": "semantic_classifier",
+                            "classifier": "generic_field_canonicalizer_v1",
+                            "confidence": 0.99,
+                            "from": "F",
+                            "to": "Female",
+                        },
                     }
                 },
             )
@@ -334,7 +350,7 @@ def test_cli_extract_uses_field_evidence_for_source_mapping(monkeypatch, tmp_pat
     sex_field = payload["_source"]["fields"]["sex"]
 
     assert sex_field["source_value"] == "F"
-    assert sex_field["canonicalization"]["method"] == "llm_extraction"
+    assert sex_field["canonicalization"]["method"] == "semantic_classifier"
     assert sex_field["canonicalization"]["to"] == "Female"
 
 
