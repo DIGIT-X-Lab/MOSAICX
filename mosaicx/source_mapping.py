@@ -23,6 +23,51 @@ from typing import Any
 from .documents.models import LoadedDocument
 
 
+def _normalize_textish(value: Any) -> str:
+    """Normalize a scalar-ish value for loose equality checks."""
+    text = str(value or "").strip()
+    return " ".join(text.split()).lower()
+
+
+def _derive_source_value_metadata(
+    *,
+    value: Any,
+    llm_excerpt: str,
+) -> tuple[Any | None, dict[str, Any] | None]:
+    """Derive raw source value and canonicalization metadata.
+
+    v1 intentionally keeps this simple:
+    - if no LLM excerpt exists, we do not infer a distinct source value
+    - if the normalized extracted value already appears in the LLM excerpt,
+      we treat the source value as identical to the extracted value
+    - otherwise the LLM excerpt becomes the raw source value and we record
+      that the final value came from LLM-side canonicalization
+    """
+    if value is None:
+        return None, None
+
+    value_text = str(value).strip()
+    if not value_text:
+        return None, None
+
+    raw_excerpt = str(llm_excerpt or "").strip()
+    if not raw_excerpt:
+        return value, None
+
+    value_norm = _normalize_textish(value_text)
+    excerpt_norm = _normalize_textish(raw_excerpt)
+
+    if value_norm and value_norm in excerpt_norm:
+        return value, None
+
+    return raw_excerpt, {
+        "applied": True,
+        "method": "llm_extraction",
+        "from": raw_excerpt,
+        "to": value,
+    }
+
+
 def _date_alternatives(value: str) -> list[str]:
     """Generate alternative date formats for an ISO or common date string."""
     import datetime
@@ -185,8 +230,9 @@ def build_source_block(
         ``spans``.
     field_evidence:
         Optional dict of ``{field_key: {"excerpt": ..., "reasoning": ...}}``
-        from deep think mode.  When provided, the LLM's verbatim excerpt
-        is used for grounding (better match than the reformatted value).
+        from the structured extractor. When provided, the LLM's verbatim
+        excerpt is used for grounding before falling back to the normalized
+        extracted value.
 
     Returns
     -------
@@ -275,6 +321,12 @@ def build_source_block(
                     spans = raw_spans
 
             entry: dict[str, Any] = {"value": value}
+            source_value, canonicalization = _derive_source_value_metadata(
+                value=value,
+                llm_excerpt=llm_excerpt,
+            )
+            if source_value is not None:
+                entry["source_value"] = source_value
             if excerpt:
                 entry["excerpt"] = excerpt
             entry["grounded"] = excerpt is not None
@@ -285,6 +337,8 @@ def build_source_block(
                     entry["reasoning"] = field_ev["reasoning"]
                 if llm_excerpt:
                     entry["llm_excerpt"] = llm_excerpt
+            if canonicalization is not None:
+                entry["canonicalization"] = canonicalization
             source_fields[field_key] = entry
 
     elif redaction_map is not None:

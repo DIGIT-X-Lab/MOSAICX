@@ -112,6 +112,39 @@ def test_apply_extraction_contract_fuzzy_snippet_recovers_minor_word_drift():
     assert isinstance(row["evidence"], str) and "right coronary artery" in row["evidence"].lower()
 
 
+def test_apply_extraction_contract_prefers_canonical_source_block():
+    from mosaicx.pipelines.extraction import apply_extraction_contract
+
+    payload = {
+        "extracted": {
+            "sex": "Female",
+        },
+        "_source": {
+            "fields": {
+                "sex": {
+                    "grounded": True,
+                    "excerpt": "Mrs SAKUNTHALA 62Y/F",
+                    "source_value": "F",
+                    "canonicalization": {
+                        "applied": True,
+                        "method": "llm_extraction",
+                        "from": "F",
+                        "to": "Female",
+                    },
+                }
+            }
+        },
+    }
+
+    result = apply_extraction_contract(payload, source_text="")
+    row = result["_extraction_contract"]["field_results"][0]
+
+    assert row["field"] == "sex"
+    assert row["status"] == "supported"
+    assert row["grounded"] is True
+    assert row["evidence"] == "Mrs SAKUNTHALA 62Y/F"
+
+
 def test_sdk_extract_attaches_extraction_contract(monkeypatch):
     import mosaicx.sdk as sdk
 
@@ -145,6 +178,43 @@ def test_sdk_extract_attaches_extraction_contract(monkeypatch):
     assert any(r["field"] == "bp" and r["status"] == "supported" for r in contract["field_results"])
     assert isinstance(result.get("_planner"), dict)
     assert result["_planner"].get("planner") in {"react", "deterministic_fallback"}
+
+
+def test_sdk_extract_passes_field_evidence_into_source(monkeypatch):
+    import mosaicx.sdk as sdk
+
+    monkeypatch.setattr(sdk, "_ensure_configured", lambda: None)
+
+    class _FakeExtractor:
+        def __init__(self, *args, **kwargs):
+            self._last_metrics = None
+            self._last_planner = {
+                "planner": "full_text_default",
+                "react_used": False,
+                "routes": [{"section": "Document", "strategy": "heavy_extract"}],
+            }
+
+        def __call__(self, document_text: str):
+            return SimpleNamespace(
+                extracted={"sex": "Female"},
+                planner=self._last_planner,
+                field_evidence={
+                    "sex": {
+                        "excerpt": "F",
+                        "reasoning": "The source token F denotes female sex.",
+                    }
+                },
+            )
+
+    monkeypatch.setattr("mosaicx.pipelines.extraction.DocumentExtractor", _FakeExtractor)
+
+    result = sdk.extract(text="Mrs SAKUNTHALA 62Y/F")
+    sex_field = result["_source"]["fields"]["sex"]
+
+    assert sex_field["grounded"] is True
+    assert sex_field["source_value"] == "F"
+    assert sex_field["canonicalization"]["method"] == "llm_extraction"
+    assert sex_field["canonicalization"]["to"] == "Female"
 
 
 def test_cli_extract_output_includes_extraction_contract(monkeypatch, tmp_path):
@@ -204,6 +274,68 @@ def test_cli_extract_output_includes_extraction_contract(monkeypatch, tmp_path):
     assert payload["_extraction_contract"]["summary"]["supported"] >= 1
     assert isinstance(payload.get("_planner"), dict)
     assert payload["_planner"].get("planner") in {"react", "deterministic_fallback"}
+
+
+def test_cli_extract_uses_field_evidence_for_source_mapping(monkeypatch, tmp_path):
+    from mosaicx.cli import cli
+
+    monkeypatch.setattr("mosaicx.cli._check_api_key", lambda: None)
+    monkeypatch.setattr("mosaicx.cli._configure_dspy", lambda: None)
+    monkeypatch.setenv("MOSAICX_ZENTA", "1")
+    from mosaicx.config import get_config
+    get_config.cache_clear()
+
+    fake_doc = SimpleNamespace(
+        text="Mrs SAKUNTHALA 62Y/F",
+        quality_warning=False,
+        is_empty=False,
+        format="txt",
+        char_count=21,
+        ocr_engine_used=None,
+        ocr_confidence=None,
+        page_dimensions=[],
+        text_blocks=[],
+        pages=[],
+    )
+    monkeypatch.setattr("mosaicx.cli._load_doc_with_config", lambda _path, **_kw: fake_doc)
+
+    class _FakeExtractor:
+        def __init__(self, *args, **kwargs):
+            self._last_metrics = None
+            self._last_planner = {
+                "planner": "full_text_default",
+                "react_used": False,
+                "routes": [{"section": "Document", "strategy": "heavy_extract"}],
+            }
+
+        def __call__(self, document_text: str):
+            return SimpleNamespace(
+                extracted={"sex": "Female"},
+                planner=self._last_planner,
+                field_evidence={
+                    "sex": {
+                        "excerpt": "F",
+                        "reasoning": "The source token F denotes female sex.",
+                    }
+                },
+            )
+
+    monkeypatch.setattr("mosaicx.pipelines.extraction.DocumentExtractor", _FakeExtractor)
+
+    doc_path = tmp_path / "report.txt"
+    doc_path.write_text("dummy", encoding="utf-8")
+    out_path = tmp_path / "result.json"
+
+    runner = CliRunner()
+    res = runner.invoke(cli, ["extract", "--document", str(doc_path), "-o", str(out_path)])
+    assert res.exit_code == 0, res.output
+
+    payload = json.loads(out_path.read_text(encoding="utf-8"))
+    sex_field = payload["_source"]["fields"]["sex"]
+
+    assert sex_field["source_value"] == "F"
+    assert sex_field["canonicalization"]["method"] == "llm_extraction"
+    assert sex_field["canonicalization"]["to"] == "Female"
 
 
 def test_mcp_extract_document_includes_extraction_contract(monkeypatch):

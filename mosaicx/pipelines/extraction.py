@@ -1113,6 +1113,13 @@ def apply_extraction_contract(
     if not isinstance(target, dict):
         return output_data
 
+    source_fields: dict[str, Any] = {}
+    source_block = output_data.get("_source")
+    if isinstance(source_block, dict):
+        probe = source_block.get("fields")
+        if isinstance(probe, dict):
+            source_fields = probe
+
     inferred = [
         key for key in target.keys()
         if isinstance(key, str) and not key.startswith("_")
@@ -1166,10 +1173,19 @@ def apply_extraction_contract(
             if field not in missing_required:
                 missing_required.append(field)
         else:
-            grounded, evidence = _extract_grounding_snippet(
-                source_text=source_text,
-                value=value,
-            )
+            source_info = source_fields.get(field)
+            if isinstance(source_info, dict):
+                grounded = bool(source_info.get("grounded"))
+                evidence = (
+                    source_info.get("excerpt")
+                    or source_info.get("llm_excerpt")
+                    or source_info.get("source_value")
+                )
+            else:
+                grounded, evidence = _extract_grounding_snippet(
+                    source_text=source_text,
+                    value=value,
+                )
             if grounded is True:
                 status = "supported"
                 confidence = 0.9
@@ -1493,126 +1509,6 @@ def _normalize_route_strategy(value: Any, *, default: str) -> str:
     return default
 
 
-def _plan_section_routes_with_react(
-    *,
-    schema_name: str,
-    sections: list[dict[str, str]],
-) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    """Plan section-level extraction routes using DSPy ReAct when available."""
-    fallback_routes = [
-        {
-            "section": sec["title"],
-            "name": sec["name"],
-            "complexity": _section_complexity_hint(sec.get("text", "")),
-            "strategy": _default_strategy_for_hint(_section_complexity_hint(sec.get("text", ""))),
-            "reason": "deterministic fallback",
-        }
-        for sec in sections
-    ]
-
-    try:
-        from mosaicx.runtime_env import import_dspy
-
-        dspy = import_dspy()
-    except Exception as exc:
-        return fallback_routes, {
-            "planner": "deterministic_fallback",
-            "react_used": False,
-            "fallback_reason": f"dspy_import_failed: {type(exc).__name__}",
-        }
-
-    if getattr(dspy.settings, "lm", None) is None:
-        return fallback_routes, {
-            "planner": "deterministic_fallback",
-            "react_used": False,
-            "fallback_reason": "lm_not_configured",
-        }
-
-    section_map = {sec["name"]: sec for sec in sections}
-    section_descriptors = [
-        {
-            "name": sec["name"],
-            "title": sec["title"],
-            "chars": len(sec.get("text", "")),
-            "complexity": _section_complexity_hint(sec.get("text", "")),
-        }
-        for sec in sections
-    ]
-
-    def list_sections() -> list[dict[str, Any]]:
-        """List section descriptors with complexity hints."""
-        return section_descriptors
-
-    def read_section(name: str) -> str:
-        """Read a section preview by section name."""
-        sec = section_map.get(str(name or "").strip())
-        if sec is None:
-            return ""
-        body = str(sec.get("text", ""))
-        return body[:1800]
-
-    class _RouteSig(dspy.Signature):
-        schema_name: str = dspy.InputField(desc="Target schema class name")
-        section_name: str = dspy.InputField(desc="Section identifier")
-        section_preview: str = dspy.InputField(desc="Preview of section text")
-        complexity_hint: str = dspy.InputField(desc="easy|moderate|hard")
-        strategy: str = dspy.OutputField(
-            desc="deterministic|constrained_extract|heavy_extract|repair"
-        )
-        reason: str = dspy.OutputField(desc="Short route justification")
-
-    tools = [
-        dspy.Tool(list_sections, name="list_sections", desc="List available extraction sections."),
-        dspy.Tool(read_section, name="read_section", desc="Read section preview by name."),
-    ]
-
-    try:
-        react = dspy.ReAct(_RouteSig, tools=tools, max_iters=4)
-    except Exception as exc:
-        return fallback_routes, {
-            "planner": "deterministic_fallback",
-            "react_used": False,
-            "fallback_reason": f"react_init_failed: {type(exc).__name__}",
-        }
-
-    routes: list[dict[str, Any]] = []
-    for sec in sections:
-        section_text = str(sec.get("text", ""))
-        hint = _section_complexity_hint(section_text)
-        default_strategy = _default_strategy_for_hint(hint)
-        try:
-            pred = react(
-                schema_name=schema_name,
-                section_name=sec["name"],
-                section_preview=section_text[:1200],
-                complexity_hint=hint,
-            )
-            strategy = _normalize_route_strategy(
-                getattr(pred, "strategy", ""),
-                default=default_strategy,
-            )
-            reason = str(getattr(pred, "reason", "") or "").strip() or "react_planner"
-        except Exception as exc:
-            strategy = default_strategy
-            reason = f"react_error:{type(exc).__name__}"
-
-        routes.append(
-            {
-                "section": sec["title"],
-                "name": sec["name"],
-                "complexity": hint,
-                "strategy": strategy,
-                "reason": reason,
-            }
-        )
-
-    return routes, {
-        "planner": "react",
-        "react_used": True,
-        "fallback_reason": None,
-    }
-
-
 def _compose_routed_document_text(
     *,
     original_text: str,
@@ -1673,7 +1569,12 @@ def _plan_extraction_document_text(
     document_text: str,
     schema_name: str,
 ) -> tuple[str, dict[str, Any]]:
-    """Plan extraction context using section routes, preferring DSPy ReAct."""
+    """Plan extraction context using deterministic full-text section routing.
+
+    ReAct-based planning is intentionally disabled in the extraction hot path.
+    For long documents we keep the full text for every section instead of
+    truncating routed context before structured extraction.
+    """
     sections = _split_document_sections(document_text)
 
     from mosaicx.config import get_config
@@ -1698,10 +1599,21 @@ def _plan_extraction_document_text(
             "fallback_reason": None,
         }
     else:
-        routes, planner_meta = _plan_section_routes_with_react(
-            schema_name=schema_name,
-            sections=sections,
-        )
+        routes = [
+            {
+                "section": sec["title"],
+                "name": sec["name"],
+                "complexity": _section_complexity_hint(sec.get("text", "")),
+                "strategy": "heavy_extract",
+                "reason": "full_text_default",
+            }
+            for sec in sections
+        ]
+        planner_meta = {
+            "planner": "full_text_default",
+            "react_used": False,
+            "fallback_reason": "react_removed",
+        }
     planned_text, plan_stats = _compose_routed_document_text(
         original_text=document_text,
         sections=sections,

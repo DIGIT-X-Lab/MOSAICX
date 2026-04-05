@@ -1087,6 +1087,7 @@ def _extract_single_text(
         pipeline: str,
         template_name: str | None,
         metrics: Any = None,
+        field_evidence: dict[str, dict[str, str]] | None = None,
     ) -> dict[str, Any]:
         verification_summary: dict[str, Any] | None = None
 
@@ -1106,7 +1107,11 @@ def _extract_single_text(
         from .source_mapping import build_source_block
 
         extracted_fields = output.get("extracted", output)
-        output["_source"] = build_source_block(doc_for_source, fields=extracted_fields)
+        output["_source"] = build_source_block(
+            doc_for_source,
+            fields=extracted_fields,
+            field_evidence=field_evidence,
+        )
 
         if verify:
             from .verify.engine import verify as _verify
@@ -1204,6 +1209,11 @@ def _extract_single_text(
                 pipeline="extraction",
                 template_name=tpl_name,
                 metrics=getattr(extractor, "_last_metrics", None),
+                field_evidence=(
+                    getattr(result, "field_evidence", None)
+                    if isinstance(getattr(result, "field_evidence", None), dict)
+                    else None
+                ),
             )
         else:
             raise ValueError(
@@ -1272,6 +1282,11 @@ def _extract_single_text(
         pipeline="extraction",
         template_name=None,
         metrics=getattr(extractor, "_last_metrics", None),
+        field_evidence=(
+            getattr(result, "field_evidence", None)
+            if isinstance(getattr(result, "field_evidence", None), dict)
+            else None
+        ),
     )
 
 

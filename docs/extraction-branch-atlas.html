@@ -1,0 +1,1313 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MOSAICX Extraction Branch Atlas</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f3ecdf;
+      --paper: rgba(255, 251, 245, 0.92);
+      --panel: rgba(255, 254, 251, 0.96);
+      --border: rgba(93, 73, 49, 0.18);
+      --text: #211a13;
+      --muted: #6d5e50;
+      --accent: #925c2c;
+      --teal: #236b63;
+      --gold: #8a6f2a;
+      --rose: #8b4250;
+      --green: #2f6b3c;
+      --shadow: 0 22px 56px rgba(33, 26, 19, 0.11);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      color: var(--text);
+      background:
+        radial-gradient(circle at top left, rgba(151, 109, 56, 0.16), transparent 24%),
+        radial-gradient(circle at top right, rgba(35, 107, 99, 0.10), transparent 18%),
+        linear-gradient(180deg, #f9f4ea 0%, var(--bg) 100%);
+      font-family: Georgia, "Times New Roman", serif;
+    }
+
+    .page {
+      max-width: 1680px;
+      margin: 0 auto;
+      padding: 36px 28px 42px;
+    }
+
+    .hero {
+      display: grid;
+      grid-template-columns: 1.6fr 0.9fr;
+      gap: 20px;
+      align-items: start;
+      margin-bottom: 24px;
+    }
+
+    .hero-card,
+    .summary-card,
+    .matrix-wrap,
+    .panel {
+      background: var(--paper);
+      border: 1px solid var(--border);
+      border-radius: 26px;
+      box-shadow: var(--shadow);
+    }
+
+    .hero-card {
+      padding: 28px 30px;
+    }
+
+    .eyebrow {
+      display: inline-flex;
+      gap: 8px;
+      align-items: center;
+      padding: 6px 10px;
+      border-radius: 999px;
+      background: rgba(146, 92, 44, 0.10);
+      color: var(--accent);
+      font: 700 12px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+
+    h1 {
+      margin: 16px 0 12px;
+      font-size: clamp(34px, 4vw, 58px);
+      line-height: 0.96;
+      letter-spacing: -0.04em;
+    }
+
+    .hero p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 18px;
+      line-height: 1.55;
+    }
+
+    .hero p + p {
+      margin-top: 10px;
+    }
+
+    .summary-card {
+      padding: 22px 22px 20px;
+    }
+
+    .summary-card h2 {
+      margin: 0 0 12px;
+      font-size: 18px;
+      letter-spacing: 0.02em;
+      text-transform: uppercase;
+    }
+
+    .summary-card .output-title {
+      margin-top: 18px;
+    }
+
+    .summary-card ul {
+      margin: 0;
+      padding-left: 18px;
+      color: var(--muted);
+      font-size: 15px;
+      line-height: 1.5;
+    }
+
+    .toolbar {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-bottom: 20px;
+    }
+
+    .tool {
+      border: 1px solid var(--border);
+      background: rgba(255, 255, 255, 0.7);
+      color: var(--text);
+      padding: 10px 14px;
+      border-radius: 999px;
+      font: 700 13px/1.1 ui-monospace, SFMono-Regular, Menlo, monospace;
+      letter-spacing: 0.02em;
+      cursor: pointer;
+      transition: transform 140ms ease, border-color 140ms ease, background 140ms ease;
+    }
+
+    .tool:hover {
+      transform: translateY(-1px);
+      border-color: rgba(93, 73, 49, 0.35);
+      background: rgba(255, 255, 255, 0.92);
+    }
+
+    .tool.is-active {
+      background: #271d16;
+      color: #f8f1e6;
+      border-color: #271d16;
+    }
+
+    .layout {
+      display: grid;
+      grid-template-columns: minmax(0, 1.5fr) 400px;
+      gap: 20px;
+      align-items: start;
+    }
+
+    .matrix-wrap {
+      padding: 18px;
+      overflow-x: auto;
+      overflow-y: hidden;
+      scrollbar-gutter: stable both-edges;
+    }
+
+    .matrix-title {
+      margin: 0 0 14px;
+      font-size: 20px;
+      letter-spacing: 0.01em;
+    }
+
+    .matrix-note {
+      margin: 0 0 16px;
+      color: var(--muted);
+      font-size: 15px;
+      line-height: 1.5;
+    }
+
+    .matrix {
+      display: grid;
+      grid-template-columns: 260px repeat(7, minmax(160px, 1fr));
+      gap: 12px;
+      align-items: stretch;
+      min-width: 1480px;
+      width: max-content;
+      padding-bottom: 6px;
+    }
+
+    .head {
+      padding: 14px 12px;
+      border-radius: 18px;
+      background: rgba(146, 92, 44, 0.08);
+      border: 1px solid rgba(146, 92, 44, 0.12);
+      font: 700 12px/1.25 ui-monospace, SFMono-Regular, Menlo, monospace;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--accent);
+    }
+
+    .route-label {
+      padding: 16px 14px;
+      border-radius: 20px;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      min-height: 152px;
+      transition: opacity 180ms ease, transform 180ms ease;
+    }
+
+    .route-label strong {
+      display: block;
+      font-size: 17px;
+      line-height: 1.15;
+      margin-bottom: 8px;
+    }
+
+    .route-label span {
+      display: block;
+      color: var(--muted);
+      font-size: 14px;
+      line-height: 1.45;
+    }
+
+    .route-label .run-tag {
+      display: inline-flex;
+      margin-top: 12px;
+      padding: 5px 8px;
+      border-radius: 999px;
+      font: 700 11px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      background: rgba(35, 107, 99, 0.09);
+      color: var(--teal);
+    }
+
+    .cell {
+      min-height: 152px;
+      padding: 10px;
+      border-radius: 20px;
+      background: rgba(255, 255, 255, 0.50);
+      border: 1px solid rgba(93, 73, 49, 0.10);
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      transition: opacity 180ms ease, transform 180ms ease, border-color 180ms ease;
+    }
+
+    .node {
+      width: 100%;
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      background: var(--panel);
+      padding: 12px 12px 10px;
+      text-align: left;
+      cursor: pointer;
+      transition: transform 140ms ease, border-color 140ms ease, box-shadow 140ms ease;
+      box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.65);
+    }
+
+    .node:hover {
+      transform: translateY(-1px);
+      border-color: rgba(93, 73, 49, 0.34);
+      box-shadow: 0 12px 24px rgba(33, 26, 19, 0.08);
+    }
+
+    .node h3 {
+      margin: 0 0 6px;
+      font-size: 15px;
+      line-height: 1.2;
+    }
+
+    .node p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 12.5px;
+      line-height: 1.35;
+    }
+
+    .tags {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin-top: 9px;
+    }
+
+    .tag {
+      display: inline-flex;
+      align-items: center;
+      padding: 5px 8px;
+      border-radius: 999px;
+      font: 700 10px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      background: rgba(33, 26, 19, 0.06);
+      color: var(--muted);
+    }
+
+    .tag.hot { background: rgba(35, 107, 99, 0.10); color: var(--teal); }
+    .tag.fallback { background: rgba(138, 111, 42, 0.12); color: var(--gold); }
+    .tag.suspect { background: rgba(139, 66, 80, 0.11); color: var(--rose); }
+    .tag.hidden { background: rgba(62, 52, 120, 0.11); color: #4f4595; }
+
+    .keep {
+      border-left: 4px solid rgba(47, 107, 60, 0.85);
+    }
+
+    .suspect {
+      border-left: 4px solid rgba(139, 66, 80, 0.82);
+    }
+
+    .research {
+      border-left: 4px solid rgba(138, 111, 42, 0.80);
+    }
+
+    .active-node {
+      outline: 3px solid rgba(146, 92, 44, 0.22);
+      outline-offset: 1px;
+      transform: translateY(-2px);
+    }
+
+    .route-dimmed,
+    .cell.route-dimmed,
+    .route-label.route-dimmed {
+      opacity: 0.26;
+      transform: scale(0.995);
+    }
+
+    .route-highlight,
+    .route-label.route-highlight,
+    .cell.route-highlight {
+      opacity: 1;
+      border-color: rgba(146, 92, 44, 0.26);
+      box-shadow: 0 18px 44px rgba(33, 26, 19, 0.09);
+    }
+
+    .candidate-on .node:not(.candidate) {
+      opacity: 0.38;
+    }
+
+    .candidate-on .node.candidate {
+      opacity: 1;
+      border-color: rgba(139, 66, 80, 0.36);
+      box-shadow: 0 18px 36px rgba(139, 66, 80, 0.08);
+    }
+
+    .panel {
+      position: sticky;
+      top: 24px;
+      padding: 22px 22px 20px;
+    }
+
+    .panel h2 {
+      margin: 0 0 12px;
+      font-size: 18px;
+      letter-spacing: 0.02em;
+      text-transform: uppercase;
+    }
+
+    .detail-name {
+      margin: 0 0 10px;
+      font-size: 28px;
+      line-height: 1;
+      letter-spacing: -0.03em;
+    }
+
+    .detail-copy {
+      color: var(--muted);
+      font-size: 15px;
+      line-height: 1.6;
+      margin: 0 0 16px;
+    }
+
+    .detail-block {
+      padding: 14px 14px 12px;
+      margin-bottom: 12px;
+      border-radius: 18px;
+      background: rgba(255, 255, 255, 0.62);
+      border: 1px solid rgba(93, 73, 49, 0.10);
+    }
+
+    .detail-block h3 {
+      margin: 0 0 8px;
+      font-size: 13px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--accent);
+    }
+
+    .detail-block p,
+    .detail-block ul {
+      margin: 0;
+      color: var(--muted);
+      font-size: 14px;
+      line-height: 1.55;
+    }
+
+    .detail-block ul {
+      padding-left: 18px;
+    }
+
+    .shortlist {
+      margin-top: 18px;
+      display: grid;
+      gap: 10px;
+    }
+
+    .short-card {
+      padding: 13px 14px;
+      border-radius: 18px;
+      border: 1px solid rgba(139, 66, 80, 0.14);
+      background: rgba(139, 66, 80, 0.05);
+    }
+
+    .short-card strong {
+      display: block;
+      margin-bottom: 6px;
+      font-size: 15px;
+    }
+
+    .short-card span {
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.45;
+    }
+
+    @media (max-width: 1360px) {
+      .layout {
+        grid-template-columns: 1fr;
+      }
+
+      .panel {
+        position: static;
+      }
+    }
+
+    @media (max-width: 1180px) {
+      .hero {
+        grid-template-columns: 1fr;
+      }
+
+      .matrix {
+        min-width: 1480px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <section class="hero">
+      <article class="hero-card">
+        <div class="eyebrow">MOSAICX Extraction Branch Atlas</div>
+        <h1>Where the extraction path splits, expands, and gets risky.</h1>
+        <p>This page maps the current extraction architecture as it actually behaves in the code after the planner simplification. The emphasis is practical: which branches are real hot-path decisions, which fallback ladders remain, and which pieces still look expensive or fragile enough to cut.</p>
+        <p>Two runs are wired in from the investigation: the full PDF with <code>--force-ocr</code> through PPStructure, and the Chandra-produced Markdown passed back into <code>mosaicx extract</code>.</p>
+      </article>
+      <aside class="summary-card">
+        <h2>Observed Facts</h2>
+        <ul>
+          <li>Full PDF + PPStructure: 4170 chars, <code>full_text_default</code>, route <code>heavy_extract</code>, <code>outlines_fast</code> succeeded first try.</li>
+          <li>Chandra Markdown: 2550 chars, <code>short_doc_bypass</code>, route <code>heavy_extract</code>, <code>outlines_fast</code> succeeded first try.</li>
+          <li>OCR quality changed field quality materially before any structured fallback was even needed.</li>
+          <li>ReAct long-doc planning is removed from the extraction hot path.</li>
+          <li>Default saved output still hides <code>_planner</code> and <code>_source</code> unless ZENTA is enabled.</li>
+        </ul>
+        <h2 class="output-title">Current Extracted Output</h2>
+        <ul>
+          <li><code>patient_name</code>: <code>Mrs SAKUNTHALA</code></li>
+          <li><code>age</code>: <code>62</code></li>
+          <li><code>sex</code>: <code>Female</code></li>
+          <li><code>sample_type</code>: <code>SERUM</code></li>
+          <li><code>consultant_name</code>: <code>Dr. R RAJAKALI</code></li>
+          <li><code>treating_department</code>: <code>EMERGENCYMEDICINE</code></li>
+          <li><code>date_of_birth</code>: <code>null</code></li>
+          <li><code>exam_date</code>: <code>2026-03-28</code></li>
+        </ul>
+      </aside>
+    </section>
+
+    <div class="toolbar">
+      <button class="tool is-active" data-filter="all">Show All Routes</button>
+      <button class="tool" data-filter="pp-run">Highlight PPStructure PDF Run</button>
+      <button class="tool" data-filter="chandra-run">Highlight Chandra Markdown Run</button>
+      <button class="tool" data-filter="candidates">Highlight Cut Candidates</button>
+    </div>
+
+    <div class="layout">
+      <section class="matrix-wrap">
+        <h2 class="matrix-title">Branch Matrix</h2>
+        <p class="matrix-note">Columns are decision layers. Rows are concrete paths or latent branches. Click any box to inspect why it exists, what risk it introduces, and what likely happens if you remove it.</p>
+
+        <div class="matrix" id="matrix">
+          <div class="head">Route</div>
+          <div class="head">Source</div>
+          <div class="head">Loader / OCR</div>
+          <div class="head">Planner Gate</div>
+          <div class="head">Planner Route</div>
+          <div class="head">Structured Chain</div>
+          <div class="head">Repair / Validate</div>
+          <div class="head">Output</div>
+
+          <div class="route-label route-pp-run">
+            <strong>Observed A</strong>
+            <span>Full PDF, <code>--force-ocr</code>, PPStructure, traced with <code>MOSAICX_ZENTA=1</code>.</span>
+            <span class="run-tag">Observed</span>
+          </div>
+          <div class="cell route-pp-run">
+            <button class="node keep" data-node="pdf_input">
+              <h3>PDF / image input</h3>
+              <p>Original 4-page lab report.</p>
+              <div class="tags"><span class="tag hot">hot path</span></div>
+            </button>
+          </div>
+          <div class="cell route-pp-run">
+            <button class="node keep" data-node="force_ocr">
+              <h3>Force OCR</h3>
+              <p>Skips native PDF text and mandates OCR.</p>
+              <div class="tags"><span class="tag hot">hot path</span></div>
+            </button>
+            <button class="node keep" data-node="ppstructure">
+              <h3>PPStructure</h3>
+              <p>Used successfully on all pages.</p>
+              <div class="tags"><span class="tag hot">observed</span></div>
+            </button>
+          </div>
+          <div class="cell route-pp-run">
+            <button class="node keep" data-node="full_text_default">
+              <h3>full_text_default</h3>
+              <p>Long document stayed on the deterministic full-text route.</p>
+              <div class="tags"><span class="tag hot">current runtime</span></div>
+            </button>
+          </div>
+          <div class="cell route-pp-run">
+            <button class="node keep" data-node="heavy_extract">
+              <h3>heavy_extract</h3>
+              <p>Full text preserved for the only section instead of truncating it.</p>
+              <div class="tags"><span class="tag hot">observed</span></div>
+            </button>
+          </div>
+          <div class="cell route-pp-run">
+            <button class="node keep" data-node="outlines_fast">
+              <h3>outlines_fast</h3>
+              <p>First structured attempt, succeeded.</p>
+              <div class="tags"><span class="tag hot">observed</span></div>
+            </button>
+          </div>
+          <div class="cell route-pp-run">
+            <button class="node research candidate" data-node="repair_without_refine">
+              <h3>Repair stage, no Refine</h3>
+              <p>Triggered for missing DOB but stopped because fast mode disables Refine.</p>
+              <div class="tags"><span class="tag fallback">bookkeeping</span><span class="tag suspect">cut candidate</span></div>
+            </button>
+            <button class="node keep" data-node="deterministic_validation">
+              <h3>Deterministic validation</h3>
+              <p>Correctly left DOB missing.</p>
+              <div class="tags"><span class="tag hot">keep</span></div>
+            </button>
+          </div>
+          <div class="cell route-pp-run">
+            <button class="node research candidate" data-node="default_minified_output">
+              <h3>Default output stripping</h3>
+              <p>By default hides <code>_planner</code> and <code>_source</code>.</p>
+              <div class="tags"><span class="tag hidden">hidden</span><span class="tag suspect">cut candidate</span></div>
+            </button>
+            <button class="node keep" data-node="zenta_output">
+              <h3>ZENTA full trace</h3>
+              <p>Preserves planner and source internals.</p>
+              <div class="tags"><span class="tag hot">observed</span></div>
+            </button>
+          </div>
+
+          <div class="route-label route-chandra-run">
+            <strong>Observed B</strong>
+            <span>Chandra Markdown passed back into <code>mosaicx extract</code>. Cleaner text, but only one PDF page due to Chandra page-range bug.</span>
+            <span class="run-tag">Observed</span>
+          </div>
+          <div class="cell route-chandra-run">
+            <button class="node keep" data-node="text_input">
+              <h3>Text / Markdown input</h3>
+              <p>Pre-OCRed markdown from Chandra.</p>
+              <div class="tags"><span class="tag hot">hot path</span></div>
+            </button>
+          </div>
+          <div class="cell route-chandra-run">
+            <button class="node keep" data-node="direct_text_loader">
+              <h3>Direct text load</h3>
+              <p>No OCR stage at all inside MOSAICX.</p>
+              <div class="tags"><span class="tag hot">observed</span></div>
+            </button>
+          </div>
+          <div class="cell route-chandra-run">
+            <button class="node keep" data-node="short_doc_bypass">
+              <h3>short_doc_bypass</h3>
+              <p>Short document used deterministic local routing with no planner LLM.</p>
+              <div class="tags"><span class="tag hot">observed</span></div>
+            </button>
+          </div>
+          <div class="cell route-chandra-run">
+            <button class="node keep" data-node="heavy_extract">
+              <h3>heavy_extract</h3>
+              <p>Full text preserved instead of truncating the section.</p>
+              <div class="tags"><span class="tag hot">observed</span></div>
+            </button>
+          </div>
+          <div class="cell route-chandra-run">
+            <button class="node keep" data-node="outlines_fast">
+              <h3>outlines_fast</h3>
+              <p>Again succeeded first try.</p>
+              <div class="tags"><span class="tag hot">observed</span></div>
+            </button>
+          </div>
+          <div class="cell route-chandra-run">
+            <button class="node research candidate" data-node="repair_without_refine">
+              <h3>Repair stage, no Refine</h3>
+              <p>Still triggered and still stopped early.</p>
+              <div class="tags"><span class="tag fallback">same issue</span></div>
+            </button>
+            <button class="node keep" data-node="deterministic_validation">
+              <h3>Deterministic validation</h3>
+              <p>DOB stayed correctly missing.</p>
+              <div class="tags"><span class="tag hot">keep</span></div>
+            </button>
+          </div>
+          <div class="cell route-chandra-run">
+            <button class="node keep" data-node="zenta_output">
+              <h3>ZENTA full trace</h3>
+              <p>Useful for debugging provenance quality.</p>
+              <div class="tags"><span class="tag hot">observed</span></div>
+            </button>
+          </div>
+
+          <div class="route-label route-all">
+            <strong>Native text path</strong>
+            <span>PDF has a usable embedded text layer and <code>--force-ocr</code> is off.</span>
+          </div>
+          <div class="cell route-all">
+            <button class="node keep" data-node="pdf_input">
+              <h3>PDF / image input</h3>
+              <p>Same document source class.</p>
+              <div class="tags"><span class="tag hot">hot path</span></div>
+            </button>
+          </div>
+          <div class="cell route-all">
+            <button class="node keep" data-node="native_pdf_text">
+              <h3>Native PDF text</h3>
+              <p>Fastest path if the embedded text layer is good enough.</p>
+              <div class="tags"><span class="tag hot">keep</span></div>
+            </button>
+          </div>
+          <div class="cell route-all">
+            <button class="node keep" data-node="short_doc_bypass">
+              <h3>short_doc_bypass</h3>
+              <p>Typical if extracted text is compact.</p>
+              <div class="tags"><span class="tag hot">likely</span></div>
+            </button>
+          </div>
+          <div class="cell route-all">
+            <button class="node keep" data-node="heavy_extract">
+              <h3>heavy_extract</h3>
+              <p>Full section text, least surprising behavior.</p>
+              <div class="tags"><span class="tag hot">safer</span></div>
+            </button>
+          </div>
+          <div class="cell route-all">
+            <button class="node keep" data-node="outlines_fast">
+              <h3>outlines_fast</h3>
+              <p>Chosen for simple flat schemas in auto think mode.</p>
+              <div class="tags"><span class="tag hot">default</span></div>
+            </button>
+          </div>
+          <div class="cell route-all">
+            <button class="node keep" data-node="deterministic_validation">
+              <h3>Deterministic validation</h3>
+              <p>Important guardrail, should stay.</p>
+              <div class="tags"><span class="tag hot">keep</span></div>
+            </button>
+          </div>
+          <div class="cell route-all">
+            <button class="node keep" data-node="default_minified_output">
+              <h3>Default save output</h3>
+              <p>Current user-facing result.</p>
+              <div class="tags"><span class="tag hidden">current default</span></div>
+            </button>
+          </div>
+
+          <div class="route-label route-all">
+            <strong>PPStructure failure path</strong>
+            <span>Only taken if layout-aware OCR crashes; output quality drops sharply.</span>
+          </div>
+          <div class="cell route-all">
+            <button class="node keep" data-node="pdf_input">
+              <h3>PDF / image input</h3>
+              <p>Same input shape.</p>
+              <div class="tags"><span class="tag hot">source</span></div>
+            </button>
+          </div>
+          <div class="cell route-all">
+            <button class="node keep" data-node="force_ocr">
+              <h3>Force OCR</h3>
+              <p>Still required here.</p>
+              <div class="tags"><span class="tag hot">gate</span></div>
+            </button>
+            <button class="node research" data-node="basic_paddle_fallback">
+              <h3>Basic Paddle fallback</h3>
+              <p>No layout awareness, no table reconstruction.</p>
+              <div class="tags"><span class="tag fallback">fallback</span></div>
+            </button>
+          </div>
+          <div class="cell route-all">
+            <button class="node keep" data-node="full_text_default">
+              <h3>full_text_default</h3>
+              <p>Current long-doc default even when OCR quality degrades.</p>
+              <div class="tags"><span class="tag hot">current runtime</span></div>
+            </button>
+          </div>
+          <div class="cell route-all">
+            <button class="node keep" data-node="heavy_extract">
+              <h3>heavy_extract</h3>
+              <p>Current safer route: keep the degraded OCR text intact and let validation judge it.</p>
+              <div class="tags"><span class="tag hot">safer</span></div>
+            </button>
+          </div>
+          <div class="cell route-all">
+            <button class="node keep" data-node="outlines_fast">
+              <h3>outlines_fast</h3>
+              <p>Still likely first attempt.</p>
+              <div class="tags"><span class="tag hot">primary</span></div>
+            </button>
+            <button class="node research" data-node="predict_fast">
+              <h3>predict_fast</h3>
+              <p>Fast fallback if Outlines fails.</p>
+              <div class="tags"><span class="tag fallback">fallback</span></div>
+            </button>
+          </div>
+          <div class="cell route-all">
+            <button class="node research candidate" data-node="repair_without_refine">
+              <h3>Repair stage, no Refine</h3>
+              <p>Logs the wound but does not stitch it.</p>
+              <div class="tags"><span class="tag fallback">bookkeeping</span></div>
+            </button>
+          </div>
+          <div class="cell route-all">
+            <button class="node keep" data-node="default_minified_output">
+              <h3>Default save output</h3>
+              <p>Looks normal even if OCR path degraded.</p>
+              <div class="tags"><span class="tag hidden">masking</span></div>
+            </button>
+          </div>
+
+          <div class="route-label route-all">
+            <strong>Fast fallback lane</strong>
+            <span>What happens only if fast Outlines fails.</span>
+          </div>
+          <div class="cell route-all">
+            <button class="node keep" data-node="any_source">
+              <h3>Any source</h3>
+              <p>PDF, image, text, or markdown.</p>
+              <div class="tags"><span class="tag hot">any</span></div>
+            </button>
+          </div>
+          <div class="cell route-all">
+            <button class="node keep" data-node="any_loader">
+              <h3>Any loader</h3>
+              <p>Whichever text entrypoint won.</p>
+              <div class="tags"><span class="tag hot">any</span></div>
+            </button>
+          </div>
+          <div class="cell route-all">
+            <button class="node keep" data-node="planner_gate">
+              <h3>Planner gate</h3>
+              <p>Either <code>short_doc_bypass</code> or <code>full_text_default</code>.</p>
+              <div class="tags"><span class="tag hot">shared</span></div>
+            </button>
+          </div>
+          <div class="cell route-all">
+            <button class="node keep" data-node="planner_route">
+              <h3>Route decision</h3>
+              <p>Short docs can still use deterministic / constrained / heavy; long docs now default to full-text heavy.</p>
+              <div class="tags"><span class="tag hot">shared</span></div>
+            </button>
+          </div>
+          <div class="cell route-all">
+            <button class="node keep" data-node="outlines_fast">
+              <h3>outlines_fast</h3>
+              <p>Primary fast path.</p>
+              <div class="tags"><span class="tag hot">primary</span></div>
+            </button>
+            <button class="node research" data-node="predict_fast">
+              <h3>predict_fast</h3>
+              <p>Only engaged if Outlines fast fails.</p>
+              <div class="tags"><span class="tag fallback">fallback</span></div>
+            </button>
+          </div>
+          <div class="cell route-all">
+            <button class="node keep" data-node="deterministic_validation">
+              <h3>Deterministic validation</h3>
+              <p>Runs after either fast path.</p>
+              <div class="tags"><span class="tag hot">shared</span></div>
+            </button>
+          </div>
+          <div class="cell route-all">
+            <button class="node keep" data-node="default_minified_output">
+              <h3>Default save output</h3>
+              <p>Same surface regardless of fallback.</p>
+              <div class="tags"><span class="tag hidden">same endpoint</span></div>
+            </button>
+          </div>
+
+          <div class="route-label route-all">
+            <strong>Standard lane</strong>
+            <span>The widest branch ladder in the system, mostly latent in these runs.</span>
+          </div>
+          <div class="cell route-all">
+            <button class="node keep" data-node="any_source">
+              <h3>Any source</h3>
+              <p>Input quality still dominates.</p>
+              <div class="tags"><span class="tag hot">any</span></div>
+            </button>
+          </div>
+          <div class="cell route-all">
+            <button class="node keep" data-node="any_loader">
+              <h3>Any loader</h3>
+              <p>OCR or native text already chosen upstream.</p>
+              <div class="tags"><span class="tag hot">shared</span></div>
+            </button>
+          </div>
+          <div class="cell route-all">
+            <button class="node keep" data-node="planner_gate">
+              <h3>Planner gate</h3>
+              <p>Still upstream of standard think mode.</p>
+              <div class="tags"><span class="tag hot">shared</span></div>
+            </button>
+          </div>
+          <div class="cell route-all">
+            <button class="node keep" data-node="planner_route">
+              <h3>Route decision</h3>
+              <p>Still affects what standard sees.</p>
+              <div class="tags"><span class="tag hot">shared</span></div>
+            </button>
+          </div>
+          <div class="cell route-all">
+            <button class="node research" data-node="outlines_primary">
+              <h3>outlines_primary</h3>
+              <p>Standard lane opener.</p>
+              <div class="tags"><span class="tag hot">primary</span></div>
+            </button>
+            <button class="node suspect candidate" data-node="bestofn_adjudication">
+              <h3>BestOfN / adjudication</h3>
+              <p>Overlapping quality-control logic that increases complexity fast.</p>
+              <div class="tags"><span class="tag suspect">cut candidate</span></div>
+            </button>
+            <button class="node research" data-node="typed_dspy">
+              <h3>Typed DSPy</h3>
+              <p>Alternative structured path.</p>
+              <div class="tags"><span class="tag fallback">fallback</span></div>
+            </button>
+            <button class="node suspect candidate" data-node="adapter_hop">
+              <h3>Adapter / JSON rescue</h3>
+              <p>Useful as emergency tooling, but hard to reason about as default architecture.</p>
+              <div class="tags"><span class="tag suspect">cut candidate</span></div>
+            </button>
+          </div>
+          <div class="cell route-all">
+            <button class="node research" data-node="repair_with_refine">
+              <h3>Repair with Refine</h3>
+              <p>Only if refine is enabled and the think mode permits it.</p>
+              <div class="tags"><span class="tag fallback">optional</span></div>
+            </button>
+            <button class="node keep" data-node="deterministic_validation">
+              <h3>Deterministic validation</h3>
+              <p>Still the most concrete gate.</p>
+              <div class="tags"><span class="tag hot">keep</span></div>
+            </button>
+          </div>
+          <div class="cell route-all">
+            <button class="node keep" data-node="default_minified_output">
+              <h3>Default save output</h3>
+              <p>Same final shell, much more complex internals.</p>
+              <div class="tags"><span class="tag hidden">same shell</span></div>
+            </button>
+          </div>
+
+          <div class="route-label route-all">
+            <strong>Deep lane</strong>
+            <span>Research-heavy path for chunking, verify, and targeted fix loops.</span>
+          </div>
+          <div class="cell route-all">
+            <button class="node keep" data-node="any_source">
+              <h3>Any source</h3>
+              <p>Cleaner input still helps more than deeper orchestration.</p>
+              <div class="tags"><span class="tag hot">any</span></div>
+            </button>
+          </div>
+          <div class="cell route-all">
+            <button class="node keep" data-node="any_loader">
+              <h3>Any loader</h3>
+              <p>Same upstream dependency.</p>
+              <div class="tags"><span class="tag hot">shared</span></div>
+            </button>
+          </div>
+          <div class="cell route-all">
+            <button class="node keep" data-node="planner_gate">
+              <h3>Planner gate</h3>
+              <p>Still present unless redesigned.</p>
+              <div class="tags"><span class="tag hot">shared</span></div>
+            </button>
+          </div>
+          <div class="cell route-all">
+            <button class="node keep" data-node="planner_route">
+              <h3>Route decision</h3>
+              <p>Feeds the deep pipeline too.</p>
+              <div class="tags"><span class="tag hot">shared</span></div>
+            </button>
+          </div>
+          <div class="cell route-all">
+            <button class="node research" data-node="deep_chunked">
+              <h3>Chunked + verify + targeted fix</h3>
+              <p>Powerful, but not a clean default SDK story.</p>
+              <div class="tags"><span class="tag fallback">deep</span></div>
+            </button>
+          </div>
+          <div class="cell route-all">
+            <button class="node research" data-node="repair_with_refine">
+              <h3>Repair with Refine</h3>
+              <p>Can matter here, but cost and complexity increase.</p>
+              <div class="tags"><span class="tag fallback">optional</span></div>
+            </button>
+            <button class="node keep" data-node="deterministic_validation">
+              <h3>Deterministic validation</h3>
+              <p>Still needed no matter how deep the lane gets.</p>
+              <div class="tags"><span class="tag hot">keep</span></div>
+            </button>
+          </div>
+          <div class="cell route-all">
+            <button class="node keep" data-node="default_minified_output">
+              <h3>Default save output</h3>
+              <p>User sees roughly the same shell.</p>
+              <div class="tags"><span class="tag hidden">same shell</span></div>
+            </button>
+          </div>
+        </div>
+      </section>
+
+      <aside class="panel">
+        <h2>Selected Component</h2>
+        <h3 class="detail-name" id="detail-name">full_text_default</h3>
+        <p class="detail-copy" id="detail-summary">Current long-document planner behavior: keep full section text and avoid a planner LLM in the extraction hot path.</p>
+
+        <div class="detail-block">
+          <h3>Why it exists</h3>
+          <p id="detail-why">Preserve correctness on longer documents by removing the risky planner compression step.</p>
+        </div>
+
+        <div class="detail-block">
+          <h3>What it changed in our runs</h3>
+          <p id="detail-observed">In the current PPStructure PDF run, the only section stayed on <code>heavy_extract</code> with the full OCR text preserved. The Chandra Markdown run still used <code>short_doc_bypass</code> because the document was shorter.</p>
+        </div>
+
+        <div class="detail-block">
+          <h3>Risk if kept</h3>
+          <p id="detail-risk">Higher token usage on long documents, and the standard-mode fallback ladder can now trigger more often because long-doc routes are openly marked as <code>heavy_extract</code>.</p>
+        </div>
+
+        <div class="detail-block">
+          <h3>Risk if cut</h3>
+          <p id="detail-cut">Cutting this would mean reintroducing either hidden truncation or another planner heuristic. That would be a regression in predictability.</p>
+        </div>
+
+        <div class="detail-block">
+          <h3>Current take</h3>
+          <p id="detail-take">Keep. The bigger remaining cleanup targets are the standard-mode ladder, hidden diagnostics stripping, and repair bookkeeping when Refine is disabled.</p>
+        </div>
+
+        <div class="shortlist">
+          <div class="short-card">
+            <strong>Already removed: ReAct planner in the hot path</strong>
+            <span>Long documents now default to <code>full_text_default</code> and <code>heavy_extract</code> instead of planner-driven truncation.</span>
+          </div>
+          <div class="short-card">
+            <strong>Second pressure cut: standard-mode overlap</strong>
+            <span>BestOfN, adjudication, typed DSPy, adapters, and JSON rescue are too many overlapping fallback concepts for a clean SDK story.</span>
+          </div>
+          <div class="short-card">
+            <strong>Operational cut: hidden diagnostics stripping</strong>
+            <span>Developers should not need a special env flag to inspect planner and provenance behavior.</span>
+          </div>
+          <div class="short-card">
+            <strong>Cleanup cut: repair stage when Refine is disabled</strong>
+            <span>Right now it can record a repair need without doing a repair attempt. That is useful for logging, but muddy in the mainline path.</span>
+          </div>
+        </div>
+      </aside>
+    </div>
+  </div>
+
+  <script>
+    const details = {
+      pdf_input: {
+        name: "PDF / image input",
+        summary: "The original scanned document entrypoint.",
+        why: "This is the core document class the SDK exists to handle.",
+        observed: "Used in the PPStructure investigation run against the 4-page lab PDF.",
+        risk: "No direct risk here. All problems downstream inherit from the fidelity of OCR and routing.",
+        cut: "Not cuttable. The real question is how much branching happens immediately after this point.",
+        take: "Keep. Simplify downstream, not the source concept."
+      },
+      text_input: {
+        name: "Text / Markdown input",
+        summary: "Direct text entrypoint that bypasses OCR inside MOSAICX.",
+        why: "Useful when an upstream OCR or parser already produced text or Markdown.",
+        observed: "Used when the Chandra Markdown file was fed back into MOSAICX.",
+        risk: "If upstream text only represents one page or a partial document, extraction can be clean but incomplete.",
+        cut: "Do not cut. This is important for SDK composability.",
+        take: "Keep. It is one of the cleanest entrypoints for developers."
+      },
+      direct_text_loader: {
+        name: "Direct text load",
+        summary: "Reads .txt/.md directly without OCR.",
+        why: "Avoids unnecessary OCR and lets better upstream parsers win.",
+        observed: "The Chandra Markdown run skipped the entire OCR subsystem because of this path.",
+        risk: "Partial or malformed upstream text can look deceptively clean.",
+        cut: "Cutting this would force all text through OCR-shaped infrastructure for no benefit.",
+        take: "Keep."
+      },
+      force_ocr: {
+        name: "Force OCR",
+        summary: "Explicitly bypasses native PDF text extraction and demands OCR.",
+        why: "Scanned documents and broken embedded text layers need it.",
+        observed: "The original PDF investigation used this flag.",
+        risk: "Can turn a perfectly usable native-text PDF into a slower, noisier OCR problem.",
+        cut: "Do not cut the capability. Keep it explicit and user-controlled.",
+        take: "Keep as a user flag, not an automatic default."
+      },
+      native_pdf_text: {
+        name: "Native PDF text",
+        summary: "Fast path for PDFs with a usable embedded text layer.",
+        why: "Cheaper and usually cleaner than OCR when it works.",
+        observed: "Not used in the forced-OCR run, but present in the loader.",
+        risk: "Some PDFs have text layers that are technically present but low quality or incomplete.",
+        cut: "Cutting this would be an own-goal for developer UX and speed.",
+        take: "Keep. Pair it with quality checks, not with unnecessary orchestration."
+      },
+      ppstructure: {
+        name: "PPStructure",
+        summary: "Primary layout-aware OCR path in the current runtime.",
+        why: "Produces text plus useful layout and table signals.",
+        observed: "Worked on all four pages of the PDF at about 95% confidence.",
+        risk: "Still introduces merged tokens, collapsed timestamps, and some table noise.",
+        cut: "Do not cut until a stronger default OCR path exists for full documents.",
+        take: "Keep, but benchmark it against stronger OCR before treating it as final."
+      },
+      basic_paddle_fallback: {
+        name: "Basic Paddle fallback",
+        summary: "Fallback if PPStructure crashes.",
+        why: "Better degraded OCR than hard failure.",
+        observed: "Did not trigger in our PDF run.",
+        risk: "Output quality degrades sharply because layout and tables are largely lost.",
+        cut: "Possible to keep only as a hard emergency fallback, not as a silently normal path.",
+        take: "Keep as emergency-only fallback."
+      },
+      react_planner: {
+        name: "ReAct planner",
+        summary: "Historical long-document planner path removed from the extraction hot path.",
+        why: "It previously tried to reduce token load and latency by routing sections with an LLM.",
+        observed: "Observed in the earlier PPStructure run where it compressed the only section before extraction. It is no longer part of the current runtime path.",
+        risk: "If reintroduced, it restores silent omission risk because plausible outputs can hide truncation.",
+        cut: "Already cut from the hot path.",
+        take: "Leave removed unless a benchmarked opt-in mode proves it is worth reviving."
+      },
+      full_text_default: {
+        name: "full_text_default",
+        summary: "Current long-document planner behavior with no planner LLM.",
+        why: "Long docs now stay on a deterministic full-text route so the extractor sees the whole section.",
+        observed: "Observed in the post-change PPStructure PDF run with planner=`full_text_default`, route=`heavy_extract`, and no structured fallback.",
+        risk: "Higher token use on long docs and potentially more standard-mode BestOfN triggering.",
+        cut: "Cutting this would likely reintroduce hidden compression or another brittle heuristic.",
+        take: "Keep as the default long-document behavior."
+      },
+      short_doc_bypass: {
+        name: "short_doc_bypass",
+        summary: "Planner bypass used for shorter documents.",
+        why: "Avoids unnecessary long-doc handling and uses local heuristics instead of a planner LLM.",
+        observed: "Activated on the Chandra Markdown run.",
+        risk: "Low to moderate. It still permits heuristic routing, including <code>constrained_extract</code> for moderate sections.",
+        cut: "No need to cut. The more realistic question is whether short docs should also become fully full-text-first.",
+        take: "Keep, or make it the default behavior."
+      },
+      constrained_extract: {
+        name: "constrained_extract",
+        summary: "Planner route that trims a section before extraction.",
+        why: "Reduce tokens while still giving the extractor some context.",
+        observed: "It no longer appears in the current long-document path, but it still exists as a short-doc heuristic route for moderate sections.",
+        risk: "High when it quietly shortens the only material context for a field.",
+        cut: "Still a valid simplification target if you want extraction to be consistently full-text-first.",
+        take: "Reduced risk after the hot-path cut, but still worth reviewing."
+      },
+      heavy_extract: {
+        name: "heavy_extract",
+        summary: "Planner route that keeps the full section text.",
+        why: "Safer extraction context for harder or smaller documents.",
+        observed: "Used in both the post-change PPStructure PDF run and the Chandra Markdown run.",
+        risk: "More tokens and latency.",
+        cut: "Cutting this would force more risky compression behavior elsewhere.",
+        take: "Keep. This is the least surprising route."
+      },
+      planner_gate: {
+        name: "Planner gate",
+        summary: "Shared gate between <code>short_doc_bypass</code> and <code>full_text_default</code>.",
+        why: "Central switch for whether the document uses short-doc heuristics or long-doc full-text routing.",
+        observed: "The PPStructure PDF run took the long-doc side; the Chandra Markdown run took the short-doc side.",
+        risk: "The gate itself is not the problem; the remaining heuristic routes under short-doc bypass are the real question.",
+        cut: "If simplified further, this should likely collapse toward full-text-first behavior even for more short documents.",
+        take: "Keep conceptually, simplify behavior."
+      },
+      planner_route: {
+        name: "Planner route",
+        summary: "Shared concept covering deterministic, constrained, and heavy extraction strategies.",
+        why: "Expose the remaining routing decision after the planner gate.",
+        observed: "Currently observed as <code>heavy_extract</code> in both runs. <code>constrained_extract</code> remains latent rather than hot-path.",
+        risk: "The route family is only risky if truncating routes remain available without strong safeguards.",
+        cut: "Likely keep route selection only if every remaining route is behaviorally safe and benchmarked.",
+        take: "Much healthier after the ReAct cut, but still not fully simplified."
+      },
+      outlines_fast: {
+        name: "outlines_fast",
+        summary: "Primary fast structured extraction path.",
+        why: "Cheap, schema-constrained, good for flat templates.",
+        observed: "Succeeded first attempt in both observed runs.",
+        risk: "Still inherits any OCR or context-quality mistakes upstream.",
+        cut: "Not a cut candidate. This looks like the correct primary path for simple schemas.",
+        take: "Keep as the main default structured extractor."
+      },
+      predict_fast: {
+        name: "predict_fast",
+        summary: "Fallback if fast Outlines fails.",
+        why: "Cheap fallback without jumping into the wider standard ladder.",
+        observed: "Did not trigger in either observed run.",
+        risk: "Extra complexity, but contained relative to the standard chain.",
+        cut: "Could be kept if it materially improves success rates. Needs benchmark proof.",
+        take: "Low-priority decision. Not the first thing to cut."
+      },
+      outlines_primary: {
+        name: "outlines_primary",
+        summary: "Standard-lane structured opener.",
+        why: "First attempt before the standard fallback ladder fans out.",
+        observed: "Not triggered in our two fast-mode runs.",
+        risk: "Low alone. The issue is what surrounds it.",
+        cut: "Keep if standard mode survives; simplify the ladder around it.",
+        take: "Not the problem by itself."
+      },
+      bestofn_adjudication: {
+        name: "BestOfN / adjudication",
+        summary: "Overlapping standard-mode quality-control branches.",
+        why: "Try multiple candidates and choose or arbitrate among them.",
+        observed: "Not triggered in our runs.",
+        risk: "Complexity explosion, hard-to-explain latency, overlapping responsibilities with other fallbacks.",
+        cut: "Cutting or isolating this would make the architecture much easier to reason about.",
+        take: "Strong cut candidate unless benchmarks prove outsized value."
+      },
+      typed_dspy: {
+        name: "Typed DSPy",
+        summary: "Alternative structured path in the standard lane.",
+        why: "Offer a different extraction mechanism when the primary path struggles.",
+        observed: "Not triggered in our runs.",
+        risk: "Another branch to debug and benchmark.",
+        cut: "Maybe keep as one explicit alternate path if standard mode remains.",
+        take: "Needs hard evidence to justify staying in the hot architecture."
+      },
+      adapter_hop: {
+        name: "Adapter / JSON rescue",
+        summary: "JSONAdapter, TwoStepAdapter, JSON fallback, outlines rescue style logic.",
+        why: "Last-ditch recovery when cleaner typed paths fail.",
+        observed: "Not triggered in our runs.",
+        risk: "This is exactly the kind of hidden ladder that makes the system feel overbuilt.",
+        cut: "Ideal place to compress multiple overlapping rescue ideas into one explicit fallback.",
+        take: "Strong simplification candidate."
+      },
+      deep_chunked: {
+        name: "Chunked + verify + targeted fix",
+        summary: "Deep mode research lane for heavier extraction work.",
+        why: "Handle harder documents by splitting and re-checking.",
+        observed: "Not used in our runs.",
+        risk: "Latency and architectural spread.",
+        cut: "Do not delete if it has research value, but keep it out of the default SDK story.",
+        take: "Keep as research or opt-in deep mode, not as normal architecture."
+      },
+      repair_without_refine: {
+        name: "Repair stage when Refine is disabled",
+        summary: "Stage records missing or ungrounded fields but stops before any LLM repair pass in fast mode.",
+        why: "Shared repair bookkeeping survives even when fast mode forbids Refine.",
+        observed: "Triggered in both observed runs.",
+        risk: "It suggests action while mostly logging the problem.",
+        cut: "Either make it a pure diagnostic stage with a clearer name, or skip it in fast mode.",
+        take: "Good cleanup candidate."
+      },
+      repair_with_refine: {
+        name: "Repair with Refine",
+        summary: "Optional targeted LLM repair stage when enabled.",
+        why: "Attempt to patch still-missing critical fields.",
+        observed: "Not used in fast mode runs.",
+        risk: "Extra cost and another generation step to ground properly.",
+        cut: "Could stay as an explicit opt-in recovery step.",
+        take: "Keep only as explicit, narrow fallback."
+      },
+      deterministic_validation: {
+        name: "Deterministic validation",
+        summary: "Non-LLM semantic and presence checks after extraction.",
+        why: "Concrete guardrail against missing or invalid values.",
+        observed: "Applied in both runs and correctly preserved missing DOB.",
+        risk: "Low. Main issue is provenance consistency, not the validator's existence.",
+        cut: "Should not be cut.",
+        take: "Keep. This is one of the most defensible parts of the pipeline."
+      },
+      default_minified_output: {
+        name: "Default output stripping",
+        summary: "Removes planner and source internals from saved JSON unless ZENTA is enabled.",
+        why: "Produce a cleaner, simpler default payload.",
+        observed: "This hid the trace in the first PDF run until ZENTA was enabled.",
+        risk: "Developers lose the exact diagnostics they need to understand behavior and trust the system.",
+        cut: "Either cut this default or invert it so debugging detail is normal for SDK users.",
+        take: "Strong cut candidate for a developer-first product."
+      },
+      zenta_output: {
+        name: "ZENTA full trace",
+        summary: "Preserves planner, provenance, and extraction contract internals.",
+        why: "Lets you actually inspect what happened.",
+        observed: "Essential to understanding both observed runs.",
+        risk: "Larger payloads.",
+        cut: "Should not be cut. If anything, it should be closer to the default developer experience.",
+        take: "Keep and normalize."
+      },
+      any_source: {
+        name: "Any source",
+        summary: "Placeholder showing that the downstream chain is shared across source types.",
+        why: "Make it obvious that late-stage complexity does not erase early OCR quality effects.",
+        observed: "Conceptually shared across all lanes.",
+        risk: "None.",
+        cut: "Not a real component.",
+        take: "Reference marker only."
+      },
+      any_loader: {
+        name: "Any loader",
+        summary: "Placeholder showing that downstream logic inherits whichever loader already won.",
+        why: "Keep the map readable.",
+        observed: "Conceptually shared across all lanes.",
+        risk: "None.",
+        cut: "Not a real component.",
+        take: "Reference marker only."
+      }
+    };
+
+    const nodes = document.querySelectorAll(".node");
+    const tools = document.querySelectorAll(".tool");
+    const matrix = document.getElementById("matrix");
+    const routeBits = document.querySelectorAll(".route-label, .cell");
+
+    const setDetail = (key) => {
+      const data = details[key];
+      if (!data) return;
+
+      document.getElementById("detail-name").textContent = data.name;
+      document.getElementById("detail-summary").textContent = data.summary;
+      document.getElementById("detail-why").textContent = data.why;
+      document.getElementById("detail-observed").textContent = data.observed;
+      document.getElementById("detail-risk").textContent = data.risk;
+      document.getElementById("detail-cut").textContent = data.cut;
+      document.getElementById("detail-take").textContent = data.take;
+
+      nodes.forEach((node) => node.classList.remove("active-node"));
+      document.querySelectorAll(`[data-node="${key}"]`).forEach((node) => node.classList.add("active-node"));
+    };
+
+    nodes.forEach((node) => {
+      if (node.classList.contains("candidate")) {
+        node.classList.add("candidate");
+      }
+
+      node.addEventListener("click", () => setDetail(node.dataset.node));
+    });
+
+    const clearRouteClasses = () => {
+      routeBits.forEach((item) => {
+        item.classList.remove("route-dimmed", "route-highlight");
+      });
+      matrix.classList.remove("candidate-on");
+    };
+
+    const activateTool = (clicked) => {
+      tools.forEach((tool) => tool.classList.toggle("is-active", tool === clicked));
+    };
+
+    tools.forEach((tool) => {
+      tool.addEventListener("click", () => {
+        activateTool(tool);
+        clearRouteClasses();
+
+        const filter = tool.dataset.filter;
+        if (filter === "all") return;
+
+        if (filter === "candidates") {
+          matrix.classList.add("candidate-on");
+          return;
+        }
+
+        routeBits.forEach((item) => item.classList.add("route-dimmed"));
+        document.querySelectorAll(`.route-${filter}`).forEach((item) => {
+          item.classList.remove("route-dimmed");
+          item.classList.add("route-highlight");
+        });
+      });
+    });
+
+    setDetail("full_text_default");
+  </script>
+</body>
+</html>

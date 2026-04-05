@@ -81,39 +81,6 @@ class TestConvenienceFunctions:
 
 
 class TestExtractionPlannerRouting:
-    def test_plan_routes_fallback_assigns_easy_and_hard_sections(self, monkeypatch):
-        from mosaicx.pipelines.extraction import (
-            _plan_section_routes_with_react,
-            _split_document_sections,
-        )
-
-        # Force deterministic fallback path so route selection is stable in tests.
-        monkeypatch.setattr(
-            "mosaicx.runtime_env.import_dspy",
-            lambda: (_ for _ in ()).throw(RuntimeError("no dspy")),
-        )
-
-        doc = (
-            "Clinical Information:\n"
-            "Neck pain.\n\n"
-            "Findings:\n"
-            "C3-4 bulge with 12 mm lesion and 16 mm follow-up measurement. "
-            "Multilevel narrowing. " * 8
-        )
-        sections = _split_document_sections(doc)
-        routes, meta = _plan_section_routes_with_react(
-            schema_name="MRICervicalSpineV3",
-            sections=sections,
-        )
-
-        assert meta["planner"] == "deterministic_fallback"
-        by_section = {r["section"].lower(): r for r in routes}
-        assert by_section["clinical information"]["strategy"] in {
-            "deterministic",
-            "constrained_extract",
-        }
-        assert by_section["findings"]["strategy"] in {"heavy_extract", "repair"}
-
     def test_plan_extraction_document_text_returns_diagnostics(self, monkeypatch):
         from mosaicx.pipelines.extraction import _plan_extraction_document_text
 
@@ -683,8 +650,8 @@ class TestPlannerShortDocBypass:
         assert all(r["reason"] == "short_doc_bypass" for r in diag["routes"])
         assert planned_text.strip()
 
-    def test_long_doc_uses_react_planner(self, monkeypatch):
-        """Documents over planner_min_chars should use the ReAct path."""
+    def test_long_doc_uses_full_text_default(self, monkeypatch):
+        """Documents over planner_min_chars should preserve full text deterministically."""
         from mosaicx.pipelines.extraction import _plan_extraction_document_text
 
         from mosaicx.config import MosaicxConfig
@@ -692,12 +659,6 @@ class TestPlannerShortDocBypass:
         monkeypatch.setattr(
             "mosaicx.config.get_config",
             lambda: MosaicxConfig(planner_min_chars=100),
-        )
-
-        # Force deterministic fallback so we don't need actual DSPy
-        monkeypatch.setattr(
-            "mosaicx.runtime_env.import_dspy",
-            lambda: (_ for _ in ()).throw(RuntimeError("no dspy")),
         )
 
         # Long document (over 100 chars threshold)
@@ -709,9 +670,12 @@ class TestPlannerShortDocBypass:
             schema_name="SpineV1",
         )
 
-        # Should have attempted ReAct (fallen back to deterministic due to no dspy)
-        assert diag["planner"] == "deterministic_fallback"
+        assert diag["planner"] == "full_text_default"
         assert diag["react_used"] is False
+        assert diag["fallback_reason"] == "react_removed"
+        assert all(r["strategy"] == "heavy_extract" for r in diag["routes"])
+        assert all(r["reason"] == "full_text_default" for r in diag["routes"])
+        assert diag["planned_chars"] >= diag["original_chars"]
 
 
 class TestOutlinesTimeout:

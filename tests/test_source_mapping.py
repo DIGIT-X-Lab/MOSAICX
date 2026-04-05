@@ -217,6 +217,28 @@ class TestBuildSourceBlock:
         assert result["fields"]["missing"]["grounded"] is False
         assert result["fields"]["missing"]["spans"] == []
 
+    def test_field_evidence_adds_source_value_and_canonicalization(self):
+        doc = self._make_doc(text="Mrs SAKUNTHALA 62Y/F")
+        result = build_source_block(
+            doc,
+            fields={"sex": "Female"},
+            field_evidence={
+                "sex": {
+                    "excerpt": "F",
+                    "reasoning": "The source token F denotes female sex.",
+                }
+            },
+        )
+
+        field = result["fields"]["sex"]
+        assert field["grounded"] is True
+        assert field["source_value"] == "F"
+        assert field["canonicalization"]["applied"] is True
+        assert field["canonicalization"]["method"] == "llm_extraction"
+        assert field["canonicalization"]["from"] == "F"
+        assert field["canonicalization"]["to"] == "Female"
+        assert "62Y/F" in field["excerpt"]
+
 
 SAMPLE_PDF = Path(__file__).parent / "datasets" / "extract" / "sample_patient_vitals.pdf"
 

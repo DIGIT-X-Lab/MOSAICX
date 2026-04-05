@@ -1,0 +1,1472 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MOSAICX Extraction Pipeline Explorer</title>
+<style>
+  :root {
+    --coral: #E87461;
+    --greige: #B5A89A;
+    --bg: #0f1117;
+    --surface: #181b23;
+    --surface2: #1e222d;
+    --border: #2a2f3d;
+    --text: #e1e4ea;
+    --muted: #6b7280;
+    --active-glow: rgba(232, 116, 97, 0.12);
+    --llm: #f59e0b;
+    --llm-bg: rgba(245, 158, 11, 0.08);
+    --decision: #3b82f6;
+    --decision-bg: rgba(59, 130, 246, 0.08);
+    --process: #10b981;
+    --process-bg: rgba(16, 185, 129, 0.08);
+    --fallback: #8b5cf6;
+    --fallback-bg: rgba(139, 92, 246, 0.08);
+    --vestigial: #ef4444;
+    --vestigial-bg: rgba(239, 68, 68, 0.06);
+    --inactive: 0.18;
+    --radius: 8px;
+    --font: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+    --mono: 'SF Mono', 'Cascadia Code', 'JetBrains Mono', Consolas, monospace;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    font-family: var(--font);
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.5;
+    overflow-x: hidden;
+  }
+
+  /* ── Layout ── */
+  .app {
+    display: grid;
+    grid-template-columns: 280px 1fr;
+    min-height: 100vh;
+  }
+
+  /* ── Sidebar ── */
+  .sidebar {
+    background: var(--surface);
+    border-right: 1px solid var(--border);
+    padding: 24px 20px;
+    position: sticky;
+    top: 0;
+    height: 100vh;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+  }
+
+  .sidebar h1 {
+    font-size: 15px;
+    font-weight: 700;
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+    color: var(--coral);
+  }
+  .sidebar h1 span { color: var(--muted); font-weight: 400; }
+
+  .sidebar h2 {
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    color: var(--muted);
+    margin-bottom: 8px;
+  }
+
+  .toggle-group { display: flex; flex-direction: column; gap: 6px; }
+
+  .toggle {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 6px 10px;
+    border-radius: 6px;
+    cursor: pointer;
+    transition: background 0.15s;
+    user-select: none;
+  }
+  .toggle:hover { background: var(--surface2); }
+  .toggle-label { font-size: 13px; color: var(--text); }
+  .toggle-sub { font-size: 11px; color: var(--muted); margin-top: 1px; }
+
+  /* iOS-style switch */
+  .switch {
+    width: 38px;
+    height: 22px;
+    background: var(--border);
+    border-radius: 12px;
+    position: relative;
+    flex-shrink: 0;
+    transition: background 0.2s;
+    cursor: pointer;
+  }
+  .switch::after {
+    content: '';
+    position: absolute;
+    width: 16px; height: 16px;
+    border-radius: 50%;
+    background: #fff;
+    top: 3px; left: 3px;
+    transition: transform 0.2s;
+  }
+  .switch.on { background: var(--coral); }
+  .switch.on::after { transform: translateX(16px); }
+
+  /* Radio group (think level) */
+  .radio-group {
+    display: flex;
+    gap: 4px;
+    background: var(--bg);
+    padding: 3px;
+    border-radius: 8px;
+  }
+  .radio-btn {
+    flex: 1;
+    text-align: center;
+    padding: 5px 8px;
+    font-size: 12px;
+    font-weight: 500;
+    border-radius: 6px;
+    cursor: pointer;
+    color: var(--muted);
+    transition: all 0.15s;
+  }
+  .radio-btn.active {
+    background: var(--coral);
+    color: #fff;
+  }
+  .radio-btn:hover:not(.active) { color: var(--text); }
+
+  /* Stats panel */
+  .stats {
+    background: var(--bg);
+    border-radius: 8px;
+    padding: 12px;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+  }
+  .stat {
+    text-align: center;
+  }
+  .stat-value {
+    font-size: 22px;
+    font-weight: 700;
+    font-family: var(--mono);
+    color: var(--coral);
+    line-height: 1.2;
+  }
+  .stat-value.llm-color { color: var(--llm); }
+  .stat-label {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: var(--muted);
+  }
+
+  /* Legend */
+  .legend { display: flex; flex-direction: column; gap: 5px; }
+  .legend-item {
+    display: flex; align-items: center; gap: 8px;
+    font-size: 12px; color: var(--muted);
+  }
+  .legend-dot {
+    width: 10px; height: 10px; border-radius: 3px; flex-shrink: 0;
+  }
+
+  /* Presets */
+  .presets { display: flex; flex-direction: column; gap: 4px; }
+  .preset-btn {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 6px 10px;
+    font-size: 12px;
+    color: var(--text);
+    cursor: pointer;
+    text-align: left;
+    transition: all 0.15s;
+    font-family: var(--font);
+  }
+  .preset-btn:hover {
+    border-color: var(--coral);
+    background: var(--active-glow);
+  }
+
+  /* ── Main Flow ── */
+  .main {
+    padding: 32px 40px;
+    max-width: 900px;
+  }
+
+  .phase {
+    margin-bottom: 32px;
+  }
+
+  .phase-header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 16px;
+    padding-bottom: 8px;
+    border-bottom: 1px solid var(--border);
+  }
+  .phase-num {
+    width: 28px; height: 28px;
+    background: var(--coral);
+    color: #fff;
+    border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 13px; font-weight: 700;
+    flex-shrink: 0;
+  }
+  .phase-title {
+    font-size: 16px;
+    font-weight: 600;
+  }
+  .phase-subtitle {
+    font-size: 12px;
+    color: var(--muted);
+    margin-left: auto;
+    font-family: var(--mono);
+  }
+
+  /* Connector line */
+  .connector {
+    width: 2px;
+    height: 12px;
+    background: var(--border);
+    margin-left: 24px;
+  }
+  .connector.active-line { background: var(--coral); }
+
+  /* ── Nodes ── */
+  .node {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 12px 16px;
+    margin-bottom: 2px;
+    position: relative;
+    transition: all 0.3s ease;
+    cursor: pointer;
+    border-left: 3px solid transparent;
+  }
+
+  .node.inactive {
+    opacity: var(--inactive);
+    transform: scale(0.98);
+    pointer-events: auto;
+  }
+
+  .node.active {
+    border-left-color: var(--process);
+    background: var(--process-bg);
+  }
+  .node.active.type-llm {
+    border-left-color: var(--llm);
+    background: var(--llm-bg);
+  }
+  .node.active.type-decision {
+    border-left-color: var(--decision);
+    background: var(--decision-bg);
+  }
+  .node.active.type-fallback {
+    border-left-color: var(--fallback);
+    background: var(--fallback-bg);
+  }
+
+  .node.vestigial-highlight {
+    border-color: var(--vestigial);
+    background: var(--vestigial-bg);
+    box-shadow: 0 0 12px rgba(239, 68, 68, 0.15);
+  }
+  .node.vestigial-highlight .vestigial-badge { display: inline-flex; }
+
+  .node-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+
+  .node-type {
+    font-size: 9px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+    padding: 2px 6px;
+    border-radius: 3px;
+    flex-shrink: 0;
+  }
+  .type-llm .node-type { background: rgba(245,158,11,0.2); color: var(--llm); }
+  .type-decision .node-type { background: rgba(59,130,246,0.2); color: var(--decision); }
+  .type-process .node-type { background: rgba(16,185,129,0.2); color: var(--process); }
+  .type-fallback .node-type { background: rgba(139,92,246,0.2); color: var(--fallback); }
+
+  .node-title {
+    font-size: 13px;
+    font-weight: 600;
+    flex: 1;
+  }
+
+  .node-badge {
+    font-size: 10px;
+    padding: 1px 6px;
+    border-radius: 10px;
+    font-weight: 600;
+    flex-shrink: 0;
+  }
+  .badge-dspy {
+    background: rgba(245,158,11,0.15);
+    color: var(--llm);
+  }
+
+  .vestigial-badge {
+    display: none;
+    align-items: center;
+    gap: 4px;
+    font-size: 10px;
+    padding: 2px 8px;
+    border-radius: 10px;
+    background: rgba(239,68,68,0.15);
+    color: var(--vestigial);
+    font-weight: 600;
+  }
+
+  .node-body {
+    font-size: 12px;
+    color: var(--muted);
+    margin-top: 6px;
+    line-height: 1.6;
+  }
+
+  .node-detail {
+    display: none;
+    margin-top: 8px;
+    padding-top: 8px;
+    border-top: 1px solid var(--border);
+    font-size: 12px;
+    color: var(--muted);
+    line-height: 1.7;
+  }
+  .node-detail.open { display: block; }
+
+  .node-detail code {
+    font-family: var(--mono);
+    font-size: 11px;
+    background: var(--bg);
+    padding: 1px 5px;
+    border-radius: 3px;
+    color: var(--coral);
+  }
+
+  .file-ref {
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--greige);
+    opacity: 0.8;
+  }
+
+  /* Branch container */
+  .branch-group {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 2px;
+  }
+  .branch-group > .branch {
+    flex: 1;
+    min-width: 0;
+  }
+  .branch-label {
+    font-size: 10px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    padding: 4px 10px;
+    border-radius: 4px 4px 0 0;
+    background: var(--surface2);
+    color: var(--muted);
+  }
+  .branch-label.yes { color: var(--process); }
+  .branch-label.no { color: var(--vestigial); }
+  .branch {
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    overflow: hidden;
+  }
+  .branch.inactive { opacity: var(--inactive); }
+  .branch .node {
+    border-radius: 0;
+    border-left: none;
+    border-right: none;
+    border-top: none;
+    margin-bottom: 0;
+  }
+  .branch .node:last-child { border-bottom: none; }
+  .branch .node.active { border-left: 3px solid; }
+
+  /* Vestigial toggle */
+  .vestigial-toggle {
+    margin-top: auto;
+    padding-top: 12px;
+    border-top: 1px solid var(--border);
+  }
+  .vestigial-toggle label {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 12px;
+    color: var(--vestigial);
+    cursor: pointer;
+    font-weight: 500;
+  }
+
+  /* Responsive */
+  @media (max-width: 768px) {
+    .app { grid-template-columns: 1fr; }
+    .sidebar {
+      position: relative;
+      height: auto;
+      border-right: none;
+      border-bottom: 1px solid var(--border);
+    }
+    .main { padding: 20px; }
+    .branch-group { flex-direction: column; }
+  }
+
+  /* Expand indicator */
+  .expand-icon {
+    color: var(--muted);
+    font-size: 11px;
+    transition: transform 0.2s;
+    flex-shrink: 0;
+  }
+  .node.expanded .expand-icon { transform: rotate(90deg); }
+</style>
+</head>
+<body>
+
+<div class="app">
+  <!-- ── Sidebar ── -->
+  <aside class="sidebar">
+    <div>
+      <h1>MOSAICX <span>Pipeline Explorer</span></h1>
+    </div>
+
+    <div>
+      <h2>Configuration</h2>
+      <div class="toggle-group">
+        <div class="toggle" onclick="toggle('has_template')">
+          <div>
+            <div class="toggle-label">--template</div>
+            <div class="toggle-sub">YAML or built-in template</div>
+          </div>
+          <div class="switch" id="sw-has_template"></div>
+        </div>
+        <div class="toggle" onclick="toggle('template_has_mode')">
+          <div>
+            <div class="toggle-label">Template has mode</div>
+            <div class="toggle-sub">YAML declares mode: radiology</div>
+          </div>
+          <div class="switch" id="sw-template_has_mode"></div>
+        </div>
+        <div class="toggle" onclick="toggle('has_mode')">
+          <div>
+            <div class="toggle-label">--mode</div>
+            <div class="toggle-sub">Explicit mode flag</div>
+          </div>
+          <div class="switch" id="sw-has_mode"></div>
+        </div>
+      </div>
+    </div>
+
+    <div>
+      <h2>Think Level</h2>
+      <div class="radio-group">
+        <div class="radio-btn" data-think="fast" onclick="setThink('fast')">Fast</div>
+        <div class="radio-btn active" data-think="standard" onclick="setThink('standard')">Standard</div>
+        <div class="radio-btn" data-think="deep" onclick="setThink('deep')">Deep</div>
+      </div>
+    </div>
+
+    <div>
+      <h2>Flags</h2>
+      <div class="toggle-group">
+        <div class="toggle" onclick="toggle('doc_long')">
+          <div>
+            <div class="toggle-label">Doc > 4K chars</div>
+            <div class="toggle-sub">Switches to long-doc full-text routing</div>
+          </div>
+          <div class="switch" id="sw-doc_long"></div>
+        </div>
+        <div class="toggle" onclick="toggle('use_refine')">
+          <div>
+            <div class="toggle-label">use_refine</div>
+            <div class="toggle-sub">MOSAICX_USE_REFINE=true</div>
+          </div>
+          <div class="switch" id="sw-use_refine"></div>
+        </div>
+        <div class="toggle" onclick="toggle('verify')">
+          <div>
+            <div class="toggle-label">--verify</div>
+            <div class="toggle-sub">Post-extraction verification</div>
+          </div>
+          <div class="switch" id="sw-verify"></div>
+        </div>
+        <div class="toggle" onclick="toggle('score')">
+          <div>
+            <div class="toggle-label">--score</div>
+            <div class="toggle-sub">Completeness scoring</div>
+          </div>
+          <div class="switch" id="sw-score"></div>
+        </div>
+      </div>
+    </div>
+
+    <div>
+      <h2>Presets</h2>
+      <div class="presets">
+        <button class="preset-btn" onclick="applyPreset('typical')">Typical: template + standard</button>
+        <button class="preset-btn" onclick="applyPreset('radiology')">Radiology mode pipeline</button>
+        <button class="preset-btn" onclick="applyPreset('auto')">Auto mode (no template)</button>
+        <button class="preset-btn" onclick="applyPreset('deep')">Deep extraction + verify</button>
+        <button class="preset-btn" onclick="applyPreset('minimal')">Minimal: fast + short doc</button>
+      </div>
+    </div>
+
+    <div>
+      <h2>Stats</h2>
+      <div class="stats">
+        <div class="stat">
+          <div class="stat-value llm-color" id="stat-llm">0</div>
+          <div class="stat-label">LLM Calls</div>
+        </div>
+        <div class="stat">
+          <div class="stat-value" id="stat-active">0</div>
+          <div class="stat-label">Active Nodes</div>
+        </div>
+        <div class="stat">
+          <div class="stat-value" id="stat-total">0</div>
+          <div class="stat-label">Total Nodes</div>
+        </div>
+        <div class="stat">
+          <div class="stat-value" id="stat-vestigial" style="color:var(--vestigial)">0</div>
+          <div class="stat-label">Vestigial</div>
+        </div>
+      </div>
+    </div>
+
+    <div>
+      <h2>Legend</h2>
+      <div class="legend">
+        <div class="legend-item"><div class="legend-dot" style="background:var(--llm)"></div> LLM call (dspy.Predict / CoT)</div>
+        <div class="legend-item"><div class="legend-dot" style="background:var(--decision)"></div> Decision / branch point</div>
+        <div class="legend-item"><div class="legend-dot" style="background:var(--process)"></div> Deterministic processing</div>
+        <div class="legend-item"><div class="legend-dot" style="background:var(--fallback)"></div> Fallback / rescue path</div>
+        <div class="legend-item"><div class="legend-dot" style="background:var(--vestigial)"></div> Potentially vestigial</div>
+      </div>
+    </div>
+
+    <div class="vestigial-toggle">
+      <label>
+        <input type="checkbox" id="cb-vestigial" onchange="toggleVestigial()">
+        Highlight vestigial code
+      </label>
+    </div>
+  </aside>
+
+  <!-- ── Main Flow ── -->
+  <main class="main">
+
+    <!-- PHASE 1: ROUTING -->
+    <div class="phase">
+      <div class="phase-header">
+        <div class="phase-num">1</div>
+        <div class="phase-title">Routing</div>
+        <div class="phase-subtitle">cli.py:834-957</div>
+      </div>
+
+      <div class="node active type-process" data-id="entry" data-when="always">
+        <div class="node-header">
+          <span class="node-type">Entry</span>
+          <span class="node-title">extract() called</span>
+          <span class="expand-icon">&#9654;</span>
+        </div>
+        <div class="node-body">CLI entry point. Document loaded, OCR complete. Now: which pipeline?</div>
+        <div class="node-detail">
+          <code>cli.py:665</code> &mdash; Click command with --template, --mode, --think, --verify, --score flags.<br>
+          Mutual exclusivity enforced: --template and --mode cannot coexist.<br>
+          Document loading already happened via <code>_load_doc_with_config()</code>.
+        </div>
+      </div>
+      <div class="connector"></div>
+
+      <div class="node type-decision" data-id="decision-template" data-when="always">
+        <div class="node-header">
+          <span class="node-type">Decision</span>
+          <span class="node-title">--template provided?</span>
+          <span class="expand-icon">&#9654;</span>
+        </div>
+        <div class="node-body">
+          First routing decision. Template presence determines the primary extraction path.
+        </div>
+        <div class="node-detail">
+          <code>cli.py:834</code> &mdash; <code>if template is not None:</code><br>
+          Template and mode flags are mutually exclusive (line 753).
+        </div>
+      </div>
+      <div class="connector"></div>
+
+      <!-- Path A: Template with mode -->
+      <div class="node type-process" data-id="resolve-template" data-when="has_template">
+        <div class="node-header">
+          <span class="node-type">Process</span>
+          <span class="node-title">resolve_template()</span>
+          <span class="expand-icon">&#9654;</span>
+        </div>
+        <div class="node-body">
+          Resolve template name to Pydantic model. Tries: file path -> user dir -> built-in -> legacy JSON.
+        </div>
+        <div class="node-detail">
+          <code>report.py:59</code> &mdash; Resolution order:<br>
+          1. File path (.yaml/.yml exists on disk)<br>
+          2. User templates: <code>~/.mosaicx/templates/&lt;name&gt;.yaml</code><br>
+          3. Built-in: <code>schemas/radreport/templates/&lt;name&gt;.yaml</code><br>
+          4. Legacy saved schema: <code>~/.mosaicx/schemas/&lt;name&gt;.json</code><br>
+          Returns <code>(model_class, template_name)</code>.
+        </div>
+      </div>
+      <div class="connector"></div>
+
+      <div class="node type-decision" data-id="detect-mode" data-when="has_template">
+        <div class="node-header">
+          <span class="node-type">Decision</span>
+          <span class="node-title">detect_mode() -- template has "mode" field?</span>
+          <span class="expand-icon">&#9654;</span>
+        </div>
+        <div class="node-body">
+          Check if the YAML template declares a pipeline mode (e.g., <code>mode: radiology</code>).
+        </div>
+        <div class="node-detail">
+          <code>report.py</code> &mdash; <code>detect_mode(tpl_name)</code> reads the "mode" key from YAML.<br>
+          <code>cli.py:849</code> &mdash; <code>if effective_mode is not None and template_model is None:</code><br>
+          This enables co-registration: a built-in template name like "chest_ct" routes to radiology mode.
+        </div>
+      </div>
+      <div class="connector"></div>
+
+      <div class="branch-group">
+        <div class="branch" data-id="branch-tpl-mode" data-when="has_template && template_has_mode">
+          <div class="branch-label yes">YES: template has mode</div>
+          <div class="node type-process" data-id="goto-mode-from-tpl" data-when="has_template && template_has_mode">
+            <div class="node-header">
+              <span class="node-type">Route</span>
+              <span class="node-title">-> Mode Pipeline (radiology/pathology)</span>
+            </div>
+            <div class="node-body">Template with mode field bypasses DocumentExtractor, uses 5-step pipeline.</div>
+          </div>
+        </div>
+        <div class="branch" data-id="branch-tpl-schema" data-when="has_template && !template_has_mode">
+          <div class="branch-label no">NO: template is a schema</div>
+          <div class="node type-process" data-id="goto-schema" data-when="has_template && !template_has_mode">
+            <div class="node-header">
+              <span class="node-type">Route</span>
+              <span class="node-title">-> DocumentExtractor (schema mode)</span>
+            </div>
+            <div class="node-body">Template compiled to Pydantic model. Uses think-level-aware extraction.</div>
+          </div>
+        </div>
+      </div>
+      <div class="connector"></div>
+
+      <!-- Path C: Explicit mode -->
+      <div class="node type-decision" data-id="decision-mode" data-when="!has_template">
+        <div class="node-header">
+          <span class="node-type">Decision</span>
+          <span class="node-title">--mode flag provided?</span>
+          <span class="expand-icon">&#9654;</span>
+        </div>
+        <div class="node-body">Second routing check when no template given.</div>
+        <div class="node-detail">
+          <code>cli.py:901</code> &mdash; <code>elif mode is not None:</code>
+        </div>
+      </div>
+      <div class="connector"></div>
+
+      <div class="branch-group">
+        <div class="branch" data-id="branch-mode-yes" data-when="!has_template && has_mode">
+          <div class="branch-label yes">YES: --mode radiology</div>
+          <div class="node type-process" data-id="goto-mode-explicit" data-when="!has_template && has_mode">
+            <div class="node-header">
+              <span class="node-type">Route</span>
+              <span class="node-title">-> Mode Pipeline (explicit)</span>
+            </div>
+            <div class="node-body">Uses get_mode() to fetch the registered DSPy Module class.</div>
+          </div>
+        </div>
+        <div class="branch" data-id="branch-auto" data-when="!has_template && !has_mode">
+          <div class="branch-label no">NO: auto mode</div>
+          <div class="node type-process" data-id="goto-auto" data-when="!has_template && !has_mode">
+            <div class="node-header">
+              <span class="node-type">Route</span>
+              <span class="node-title">-> DocumentExtractor (auto mode)</span>
+            </div>
+            <div class="node-body">No schema, no mode. LLM infers schema first, then extracts.</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- PHASE 2: MODE PIPELINE -->
+    <div class="phase">
+      <div class="phase-header">
+        <div class="phase-num">2</div>
+        <div class="phase-title">Mode Pipeline</div>
+        <div class="phase-subtitle">radiology.py / pathology.py</div>
+      </div>
+
+      <div class="node type-decision" data-id="mode-pipeline-gate" data-when="uses_mode">
+        <div class="node-header">
+          <span class="node-type">Gate</span>
+          <span class="node-title">Runs when: --mode OR template has mode field</span>
+        </div>
+        <div class="node-body">5-step sequential DSPy chain. Each step is a separate LLM call.</div>
+      </div>
+      <div class="connector"></div>
+
+      <div class="node type-llm" data-id="mode-step1" data-when="uses_mode" data-llm="1">
+        <div class="node-header">
+          <span class="node-type">LLM</span>
+          <span class="node-title">Step 1: ClassifyExamType</span>
+          <span class="node-badge badge-dspy">dspy.Predict</span>
+          <span class="expand-icon">&#9654;</span>
+        </div>
+        <div class="node-body">Classify the exam type from report text (e.g., "CT chest with contrast").</div>
+        <div class="node-detail">
+          <code>radiology.py:~150</code> &mdash; Single LLM call. Output: exam_type string.
+        </div>
+      </div>
+      <div class="connector"></div>
+
+      <div class="node type-llm" data-id="mode-step2" data-when="uses_mode" data-llm="1">
+        <div class="node-header">
+          <span class="node-type">LLM</span>
+          <span class="node-title">Step 2: ParseReportSections</span>
+          <span class="node-badge badge-dspy">dspy.Predict</span>
+          <span class="expand-icon">&#9654;</span>
+        </div>
+        <div class="node-body">Split report into ReportSections Pydantic model (indication, findings, impression, etc.).</div>
+        <div class="node-detail">
+          <code>radiology.py:~165</code> &mdash; Output type: <code>ReportSections</code> (Pydantic).<br>
+          Fields: indication, comparison, technique, findings, impression.
+        </div>
+      </div>
+      <div class="connector"></div>
+
+      <div class="node type-llm" data-id="mode-step3" data-when="uses_mode" data-llm="1">
+        <div class="node-header">
+          <span class="node-type">LLM</span>
+          <span class="node-title">Step 3: ExtractTechnique</span>
+          <span class="node-badge badge-dspy">dspy.Predict</span>
+          <span class="expand-icon">&#9654;</span>
+        </div>
+        <div class="node-body">Extract modality, body_region, contrast, protocol from technique section.</div>
+      </div>
+      <div class="connector"></div>
+
+      <div class="node type-llm" data-id="mode-step4" data-when="uses_mode" data-llm="1" data-vestigial="use_refine wraps this in dspy.Refine (multi-attempt + reward). Default: off. If never enabled, all Refine code for findings is dead.">
+        <div class="node-header">
+          <span class="node-type">LLM</span>
+          <span class="node-title">Step 4: ExtractRadFindings</span>
+          <span class="node-badge badge-dspy">dspy.ChainOfThought</span>
+          <span class="vestigial-badge">VESTIGIAL?</span>
+          <span class="expand-icon">&#9654;</span>
+        </div>
+        <div class="node-body">Extract List[RadReportFinding]. Uses ChainOfThought (or Refine if use_refine=true).</div>
+        <div class="node-detail">
+          <code>radiology.py:~200</code><br>
+          <strong>Vestigial concern:</strong> <code>cfg.use_refine</code> defaults to False. The dspy.Refine wrapper
+          (multi-attempt with reward function + threshold) is dead code unless explicitly enabled via
+          <code>MOSAICX_USE_REFINE=true</code>. The Refine path adds N=3 extraction attempts + reward scoring.
+        </div>
+      </div>
+      <div class="connector"></div>
+
+      <div class="node type-llm" data-id="mode-step5" data-when="uses_mode" data-llm="1" data-vestigial="Same Refine wrapper concern as Step 4. If use_refine is never enabled, this alternate code path is dead.">
+        <div class="node-header">
+          <span class="node-type">LLM</span>
+          <span class="node-title">Step 5: ExtractImpression</span>
+          <span class="node-badge badge-dspy">dspy.ChainOfThought</span>
+          <span class="vestigial-badge">VESTIGIAL?</span>
+          <span class="expand-icon">&#9654;</span>
+        </div>
+        <div class="node-body">Extract List[ImpressionItem], grounded by findings JSON from step 4.</div>
+        <div class="node-detail">
+          <code>radiology.py:~230</code><br>
+          Impression extraction is grounded: the findings from step 4 are serialized to JSON and
+          passed as context, so the LLM can reference extracted findings when structuring impressions.
+        </div>
+      </div>
+      <div class="connector"></div>
+
+      <div class="node type-process" data-id="mode-output" data-when="uses_mode">
+        <div class="node-header">
+          <span class="node-type">Process</span>
+          <span class="node-title">_prediction_to_dict() -> output_data</span>
+        </div>
+        <div class="node-body">Serialize dspy.Prediction to plain dict. Pydantic models .model_dump()'d.</div>
+      </div>
+    </div>
+
+    <!-- PHASE 3: AUTO MODE (prefix) -->
+    <div class="phase">
+      <div class="phase-header">
+        <div class="phase-num">3</div>
+        <div class="phase-title">Auto Mode (Schema Inference)</div>
+        <div class="phase-subtitle">extraction.py:3959-4041</div>
+      </div>
+
+      <div class="node type-decision" data-id="auto-gate" data-when="uses_auto">
+        <div class="node-header">
+          <span class="node-type">Gate</span>
+          <span class="node-title">Runs when: no --template AND no --mode</span>
+        </div>
+        <div class="node-body">LLM infers a schema from document content, then falls through to Schema Mode.</div>
+      </div>
+      <div class="connector"></div>
+
+      <div class="node type-llm" data-id="auto-infer" data-when="uses_auto" data-llm="1" data-vestigial="If you always provide a --template, this entire Auto Mode phase is dead code. The InferSchemaFromDocument signature and compile_schema path never execute.">
+        <div class="node-header">
+          <span class="node-type">LLM</span>
+          <span class="node-title">InferSchemaFromDocument</span>
+          <span class="node-badge badge-dspy">dspy.ChainOfThought</span>
+          <span class="vestigial-badge">VESTIGIAL?</span>
+          <span class="expand-icon">&#9654;</span>
+        </div>
+        <div class="node-body">LLM analyzes document and produces a SchemaSpec (field names, types, descriptions).</div>
+        <div class="node-detail">
+          <code>extraction.py:3453</code> &mdash; Input: truncated document text. Output: <code>SchemaSpec</code> Pydantic model.<br>
+          The SchemaSpec describes what fields to extract, their types (str/int/float/bool/enum/list/object).
+        </div>
+      </div>
+      <div class="connector"></div>
+
+      <div class="node type-process" data-id="auto-compile" data-when="uses_auto">
+        <div class="node-header">
+          <span class="node-type">Process</span>
+          <span class="node-title">compile_schema(spec) -> Pydantic model</span>
+          <span class="expand-icon">&#9654;</span>
+        </div>
+        <div class="node-body">Compile the inferred SchemaSpec into a dynamic Pydantic model via create_model().</div>
+        <div class="node-detail">
+          <code>schema_gen.py</code> &mdash; Each field from SchemaSpec becomes a Pydantic field.<br>
+          Enum types create actual Python Enums. Nested objects become sub-models.
+        </div>
+      </div>
+      <div class="connector"></div>
+
+      <div class="node type-process" data-id="auto-rethink" data-when="uses_auto">
+        <div class="node-header">
+          <span class="node-type">Process</span>
+          <span class="node-title">Re-resolve think level with actual schema</span>
+        </div>
+        <div class="node-body">Now that we have a schema, re-run _resolve_think_level() to pick fast/standard/deep.</div>
+      </div>
+      <div class="connector"></div>
+
+      <div class="node type-process" data-id="auto-sigs" data-when="uses_auto">
+        <div class="node-header">
+          <span class="node-type">Process</span>
+          <span class="node-title">Build dynamic extraction signatures</span>
+        </div>
+        <div class="node-body">Create extract_custom (CoT) and extract_json_fallback (Predict) with inferred schema type.</div>
+      </div>
+      <div class="connector"></div>
+
+      <div class="node type-process" data-id="auto-to-schema" data-when="uses_auto">
+        <div class="node-header">
+          <span class="node-type">Route</span>
+          <span class="node-title">Falls through to Schema Mode Pipeline below</span>
+        </div>
+        <div class="node-body">Auto mode merges into the same _run_schema_mode_pipeline() as template extraction.</div>
+      </div>
+    </div>
+
+    <!-- PHASE 4: SCHEMA MODE PIPELINE -->
+    <div class="phase">
+      <div class="phase-header">
+        <div class="phase-num">4</div>
+        <div class="phase-title">Schema Mode Pipeline</div>
+        <div class="phase-subtitle">extraction.py:3763-3957</div>
+      </div>
+
+      <div class="node type-decision" data-id="schema-gate" data-when="uses_doc_extractor">
+        <div class="node-header">
+          <span class="node-type">Gate</span>
+          <span class="node-title">Runs when: template (no mode) OR auto mode</span>
+        </div>
+        <div class="node-body">The core extraction engine. Routes by think level: fast, standard, deep.</div>
+      </div>
+      <div class="connector"></div>
+
+      <!-- Planner -->
+      <div class="node type-process" data-id="planner" data-when="uses_doc_extractor && doc_long">
+        <div class="node-header">
+          <span class="node-type">Process</span>
+          <span class="node-title">Long doc default: full_text_default</span>
+          <span class="expand-icon">&#9654;</span>
+        </div>
+        <div class="node-body">Doc &gt; 4K chars: split into sections, assign <code>heavy_extract</code>, and compose full-text input with no planner LLM call.</div>
+        <div class="node-detail">
+          <code>extraction.py:1562</code><br>
+          1. <code>_split_document_sections()</code> &mdash; regex-based section splitting<br>
+          2. assign <code>heavy_extract</code> to every section with reason <code>full_text_default</code><br>
+          3. <code>_compose_routed_document_text()</code> &mdash; assemble routed text without planner compression<br>
+          ReAct route planning was removed from the extraction hot path.
+        </div>
+      </div>
+      <div class="connector"></div>
+
+      <div class="node type-process" data-id="planner-short" data-when="uses_doc_extractor && !doc_long">
+        <div class="node-header">
+          <span class="node-type">Process</span>
+          <span class="node-title">Short doc bypass (deterministic routing)</span>
+        </div>
+        <div class="node-body">Doc &lt; 4K chars: deterministic local routing, no LLM call. Depending on section complexity, routes can still be <code>deterministic</code>, <code>constrained_extract</code>, or <code>heavy_extract</code>.</div>
+      </div>
+      <div class="connector"></div>
+
+      <div class="node type-process" data-id="think-resolve" data-when="uses_doc_extractor">
+        <div class="node-header">
+          <span class="node-type">Process</span>
+          <span class="node-title">Resolve think level</span>
+          <span class="expand-icon">&#9654;</span>
+        </div>
+        <div class="node-body">auto -> analyze schema complexity -> pick fast/standard/deep. User "fast" has a floor.</div>
+        <div class="node-detail">
+          <code>extraction.py:2997</code> &mdash; <code>_resolve_think_level()</code><br>
+          Auto routing: fields &le;8 + no list[object] = fast. Fields &le;20 + depth &le;2 = standard. Else deep.<br>
+          User "fast" is floored by template complexity (won't go below what schema needs).<br>
+          User "deep" always honored.
+        </div>
+      </div>
+      <div class="connector"></div>
+
+      <div class="node type-process" data-id="augment-schema" data-when="uses_doc_extractor && !is_deep">
+        <div class="node-header">
+          <span class="node-type">Process</span>
+          <span class="node-title">Augment schema with evidence fields</span>
+          <span class="expand-icon">&#9654;</span>
+        </div>
+        <div class="node-body">Add _excerpt and _reasoning fields per schema field so LLM returns provenance inline.</div>
+        <div class="node-detail">
+          <code>extraction.py:1730</code> &mdash; <code>_augment_schema_with_evidence()</code><br>
+          Creates a new Pydantic model inheriting from the original with extra fields:<br>
+          <code>{field}_excerpt</code> = verbatim document quote<br>
+          <code>{field}_reasoning</code> = why this value was chosen<br>
+          Evidence is split out after extraction via <code>_split_evidence_from_extracted()</code>.
+        </div>
+      </div>
+      <div class="connector"></div>
+
+      <!-- THINK-LEVEL BRANCHES -->
+      <div class="branch-group">
+        <!-- FAST -->
+        <div class="branch" data-when="uses_doc_extractor && is_fast">
+          <div class="branch-label" style="color:var(--llm)">FAST PATH</div>
+          <div class="node type-llm" data-id="fast-outlines" data-when="uses_doc_extractor && is_fast" data-llm="1">
+            <div class="node-header">
+              <span class="node-type">LLM</span>
+              <span class="node-title">Outlines structured extraction</span>
+              <span class="node-badge badge-dspy">Outlines</span>
+            </div>
+            <div class="node-body">Grammar-constrained generation. Guaranteed valid JSON schema.</div>
+          </div>
+          <div class="node type-fallback" data-id="fast-predict" data-when="uses_doc_extractor && is_fast" data-llm="1" data-vestigial="Fallback for Outlines parse errors. If your LLM reliably produces structured output, this dspy.Predict fallback never fires.">
+            <div class="node-header">
+              <span class="node-type">Fallback</span>
+              <span class="node-title">JSON text fallback (dspy.Predict)</span>
+              <span class="vestigial-badge">VESTIGIAL?</span>
+            </div>
+            <div class="node-body">If Outlines fails: raw JSON extraction + manual parse.</div>
+          </div>
+        </div>
+
+        <!-- STANDARD -->
+        <div class="branch" data-when="uses_doc_extractor && is_standard">
+          <div class="branch-label" style="color:var(--process)">STANDARD PATH</div>
+          <div class="node type-llm" data-id="std-outlines" data-when="uses_doc_extractor && is_standard" data-llm="1">
+            <div class="node-header">
+              <span class="node-type">LLM</span>
+              <span class="node-title">Outlines primary extraction</span>
+              <span class="node-badge badge-dspy">Outlines</span>
+            </div>
+            <div class="node-body">Try grammar-constrained extraction first. Accept if all required fields present.</div>
+          </div>
+          <div class="node type-fallback" data-id="std-bestofn" data-when="uses_doc_extractor && is_standard" data-llm="3" data-vestigial="Best-of-N runs 3 extraction attempts when routed sections include `heavy_extract` or `repair`. With long docs now defaulting to `heavy_extract`, this can activate more often in standard mode than the old planner wording suggests.">
+            <div class="node-header">
+              <span class="node-type">Fallback</span>
+              <span class="node-title">Best-of-N for uncertain sections</span>
+              <span class="node-badge badge-dspy">3x LLM</span>
+              <span class="vestigial-badge">VESTIGIAL?</span>
+            </div>
+            <div class="node-body">If routed sections include <code>heavy_extract</code> or <code>repair</code>: run 3 extractions, pick best by score.</div>
+          </div>
+          <div class="node type-fallback" data-id="std-adjudicate" data-when="uses_doc_extractor && is_standard" data-llm="3" data-vestigial="Multi-candidate adjudication: tries typed CoT, JSONAdapter, TwoStepAdapter and picks best. Triple LLM call that only fires when best-of-N also fails. Deep fallback chain.">
+            <div class="node-header">
+              <span class="node-type">Fallback</span>
+              <span class="node-title">Multi-candidate adjudication</span>
+              <span class="node-badge badge-dspy">3x LLM</span>
+              <span class="vestigial-badge">VESTIGIAL?</span>
+            </div>
+            <div class="node-body">If still uncertain: run typed + JSONAdapter + TwoStepAdapter, score, adjudicate.</div>
+          </div>
+          <div class="node type-llm" data-id="std-cot" data-when="uses_doc_extractor && is_standard" data-llm="1">
+            <div class="node-header">
+              <span class="node-type">LLM</span>
+              <span class="node-title">Direct CoT extraction (final fallback)</span>
+              <span class="node-badge badge-dspy">dspy.ChainOfThought</span>
+            </div>
+            <div class="node-body">Standard typed extraction call. Last resort if Outlines + BestOfN + adjudication all fail or skip.</div>
+          </div>
+          <div class="node type-fallback" data-id="std-json-fb" data-when="uses_doc_extractor && is_standard" data-llm="1" data-vestigial="JSON text fallback after CoT parse error. Third level of fallback. Only fires when primary CoT returns unparseable output.">
+            <div class="node-header">
+              <span class="node-type">Fallback</span>
+              <span class="node-title">JSON text fallback (dspy.Predict)</span>
+              <span class="vestigial-badge">VESTIGIAL?</span>
+            </div>
+            <div class="node-body">If CoT parse fails: retry as raw JSON text.</div>
+          </div>
+          <div class="node type-fallback" data-id="std-rescue" data-when="uses_doc_extractor && is_standard" data-vestigial="Deterministic rescue: segment doc, route each section, merge. Fires when ALL LLM extraction attempts fail. Triple-fallback that's almost never reached.">
+            <div class="node-header">
+              <span class="node-type">Fallback</span>
+              <span class="node-title">Deterministic rescue (segment + route)</span>
+              <span class="vestigial-badge">VESTIGIAL?</span>
+            </div>
+            <div class="node-body">Last resort: deterministic section segmentation + constrained extract per section.</div>
+          </div>
+        </div>
+
+        <!-- DEEP -->
+        <div class="branch" data-when="uses_doc_extractor && is_deep">
+          <div class="branch-label" style="color:var(--decision)">DEEP PATH</div>
+          <div class="node type-process" data-id="deep-chunk" data-when="uses_doc_extractor && is_deep">
+            <div class="node-header">
+              <span class="node-type">Process</span>
+              <span class="node-title">_chunk_schema() -- split at list[object]</span>
+            </div>
+            <div class="node-body">Scalar fields -> _Chunk_scalars. Each list[BaseModel] field -> own chunk.</div>
+          </div>
+          <div class="node type-llm" data-id="deep-extract" data-when="uses_doc_extractor && is_deep" data-llm="3">
+            <div class="node-header">
+              <span class="node-type">LLM</span>
+              <span class="node-title">Per-chunk CoT extraction (N chunks)</span>
+              <span class="node-badge badge-dspy">N x dspy.CoT</span>
+            </div>
+            <div class="node-body">Each chunk extracted separately with its own augmented sub-schema. Typically 2-5 chunks.</div>
+          </div>
+          <div class="node type-process" data-id="deep-assemble" data-when="uses_doc_extractor && is_deep">
+            <div class="node-header">
+              <span class="node-type">Process</span>
+              <span class="node-title">Assemble chunks -> full model</span>
+            </div>
+            <div class="node-body">Merge chunk results into complete schema model. Validate.</div>
+          </div>
+          <div class="node type-process" data-id="deep-compute1" data-when="uses_doc_extractor && is_deep">
+            <div class="node-header">
+              <span class="node-type">Process</span>
+              <span class="node-title">Compute derived fields (1st pass)</span>
+            </div>
+            <div class="node-body">Run @computed_field functions, calculation rules.</div>
+          </div>
+          <div class="node type-llm" data-id="deep-verify" data-when="uses_doc_extractor && is_deep" data-llm="1" data-vestigial="Verification pass only runs in deep mode. If you never use --think=deep, the VerifyExtractionSig and this entire verify+fix loop is dead code.">
+            <div class="node-header">
+              <span class="node-type">LLM</span>
+              <span class="node-title">Verify extraction pass</span>
+              <span class="node-badge badge-dspy">dspy.ChainOfThought</span>
+              <span class="vestigial-badge">VESTIGIAL?</span>
+            </div>
+            <div class="node-body">Review all extracted fields against source. Returns list of flagged issues.</div>
+          </div>
+          <div class="node type-llm" data-id="deep-fix" data-when="uses_doc_extractor && is_deep" data-llm="10" data-vestigial="Per-field fix: up to 10 separate LLM calls (one per flagged issue). Only fires when verify finds problems. Combined with the verify call, deep mode can cost 10+ extra LLM calls.">
+            <div class="node-header">
+              <span class="node-type">LLM</span>
+              <span class="node-title">Fix flagged fields (up to 10x LLM)</span>
+              <span class="node-badge badge-dspy">M x dspy.CoT</span>
+              <span class="vestigial-badge">VESTIGIAL?</span>
+            </div>
+            <div class="node-body">For each flagged issue: targeted re-extraction of that single field.</div>
+          </div>
+          <div class="node type-process" data-id="deep-compute2" data-when="uses_doc_extractor && is_deep" data-vestigial="Derived fields computed twice in deep mode: once after initial extraction, once after fix. The first computation may be wasted if fixes change values.">
+            <div class="node-header">
+              <span class="node-type">Process</span>
+              <span class="node-title">Recompute derived fields (2nd pass)</span>
+              <span class="vestigial-badge">VESTIGIAL?</span>
+            </div>
+            <div class="node-body">Re-run computed fields after fixes. Potentially redundant with 1st pass.</div>
+          </div>
+        </div>
+      </div>
+      <div class="connector"></div>
+
+      <!-- Post-extraction (all think levels) -->
+      <div class="node type-process" data-id="compute-derived" data-when="uses_doc_extractor && !is_deep">
+        <div class="node-header">
+          <span class="node-type">Process</span>
+          <span class="node-title">Compute derived fields</span>
+        </div>
+        <div class="node-body">Run @computed_field functions. Runs at ALL think levels (fast/standard).</div>
+      </div>
+      <div class="connector"></div>
+
+      <div class="node type-process" data-id="consistency" data-when="uses_doc_extractor && is_standard" data-vestigial="Consistency checks only run in standard mode. Purely deterministic (no LLM). Checks: required fields non-null, anzahl_* count matches, enum values valid. Could be merged into semantic validation.">
+        <div class="node-header">
+          <span class="node-type">Process</span>
+          <span class="node-title">Consistency checks (standard only)</span>
+          <span class="vestigial-badge">VESTIGIAL?</span>
+          <span class="expand-icon">&#9654;</span>
+        </div>
+        <div class="node-body">Deterministic: check required fields, count mismatches, enum validity. Standard mode only.</div>
+        <div class="node-detail">
+          <code>extraction.py:3386</code> &mdash; <code>_run_consistency_checks()</code><br>
+          Checks: required_field_missing, count_mismatch (anzahl_*), invalid_enum_value.<br>
+          Results are logged but not used to modify the extraction. Consider merging into semantic validation.
+        </div>
+      </div>
+      <div class="connector"></div>
+
+      <div class="node type-process" data-id="repair" data-when="uses_doc_extractor" data-vestigial="Repair runs at ALL think levels but the dspy.Refine path requires use_refine=true (default: false). Without use_refine, only deterministic backfill runs. With it, N=3 LLM attempts per failed field.">
+        <div class="node-header">
+          <span class="node-type">Process + LLM?</span>
+          <span class="node-title">Repair failed critical fields</span>
+          <span class="vestigial-badge">VESTIGIAL?</span>
+          <span class="expand-icon">&#9654;</span>
+        </div>
+        <div class="node-body">Check required fields for missing/ungrounded values. Deterministic backfill first, then optional Refine.</div>
+        <div class="node-detail">
+          <code>extraction.py:2239</code> &mdash; <code>_repair_failed_critical_fields_with_refine()</code><br>
+          1. Identify failed fields (missing or ungrounded in source text)<br>
+          2. Try <code>_deterministic_backfill_for_field()</code> &mdash; regex/label matching, no LLM<br>
+          3. If <code>use_refine=True</code> AND still failed: <code>dspy.Refine(N=3)</code> with reward function<br>
+          This is a SEPARATE repair from deep mode's verify+fix loop. Two repair mechanisms that overlap.
+        </div>
+      </div>
+      <div class="connector"></div>
+
+      <div class="node type-process" data-id="semantic-val" data-when="uses_doc_extractor">
+        <div class="node-header">
+          <span class="node-type">Process</span>
+          <span class="node-title">Deterministic semantic validation</span>
+          <span class="expand-icon">&#9654;</span>
+        </div>
+        <div class="node-body">Coerce enums, Literals, numbers. Normalize spinal levels (C2-3 -> C2-C3). Absence enums.</div>
+        <div class="node-detail">
+          <code>extraction.py:~1089</code> &mdash; <code>_apply_deterministic_semantic_validation()</code><br>
+          No LLM. Pure type coercion and normalization. Runs at ALL think levels.<br>
+          Handles: Literal coercion, Enum coercion, spinal level normalization, absence enum values,
+          nullish string cleanup.
+        </div>
+      </div>
+    </div>
+
+    <!-- PHASE 5: POST-PROCESSING -->
+    <div class="phase">
+      <div class="phase-header">
+        <div class="phase-num">5</div>
+        <div class="phase-title">Post-Processing</div>
+        <div class="phase-subtitle">cli.py:959-1001</div>
+      </div>
+
+      <div class="node type-process" data-id="source-map" data-when="always">
+        <div class="node-header">
+          <span class="node-type">Process</span>
+          <span class="node-title">Attach _source mapping</span>
+          <span class="expand-icon">&#9654;</span>
+        </div>
+        <div class="node-body">Text search + coordinate lookup for each extracted field value in the document.</div>
+        <div class="node-detail">
+          <code>cli.py:960</code> &mdash; <code>build_source_block(doc, fields=extracted_fields)</code><br>
+          No LLM. Deterministic text search using OCR TextBlocks with bounding box coordinates.
+        </div>
+      </div>
+      <div class="connector"></div>
+
+      <div class="node type-process" data-id="evidence-merge" data-when="uses_doc_extractor" data-vestigial="This code block appears TWICE (cli.py:966-974 and 976-984). Identical logic, both merge field_evidence into _source. One copy is redundant.">
+        <div class="node-header">
+          <span class="node-type">Process</span>
+          <span class="node-title">Merge field_evidence into _source</span>
+          <span class="vestigial-badge">VESTIGIAL?</span>
+          <span class="expand-icon">&#9654;</span>
+        </div>
+        <div class="node-body">LLM-provided reasoning + excerpt merged into _source fields.</div>
+        <div class="node-detail">
+          <code>cli.py:966-984</code><br>
+          <strong>Bug:</strong> This block is duplicated. Lines 966-974 and 976-984 are identical.
+          The second copy overwrites the first (harmlessly, since it's the same logic).
+          One copy should be removed.
+        </div>
+      </div>
+      <div class="connector"></div>
+
+      <div class="node type-llm" data-id="verify-pass" data-when="verify" data-llm="1">
+        <div class="node-header">
+          <span class="node-type">LLM</span>
+          <span class="node-title">Verification pass (--verify)</span>
+          <span class="node-badge badge-dspy">sdk.verify()</span>
+          <span class="expand-icon">&#9654;</span>
+        </div>
+        <div class="node-body">Optional post-extraction verification. Validates extracted output against source text.</div>
+        <div class="node-detail">
+          <code>cli.py:986</code> &mdash; <code>sdk_verify(extraction, source_text, level)</code><br>
+          Verify levels: quick, standard, thorough. Returns validation result dict.
+        </div>
+      </div>
+      <div class="connector"></div>
+
+      <div class="node type-process" data-id="contract" data-when="always">
+        <div class="node-header">
+          <span class="node-type">Process</span>
+          <span class="node-title">apply_extraction_contract()</span>
+          <span class="expand-icon">&#9654;</span>
+        </div>
+        <div class="node-body">Grounding check: fuzzy-match each field value in source text. Assign confidence + status.</div>
+        <div class="node-detail">
+          <code>extraction.py:1089</code><br>
+          For each field: text search in document -> grounded (0.9) / needs_review (0.5) / insufficient (0.0).<br>
+          Adds <code>_extraction_contract</code> to output with field-level evidence, confidence, status.
+        </div>
+      </div>
+      <div class="connector"></div>
+
+      <div class="node type-process" data-id="completeness" data-when="score && !uses_auto">
+        <div class="node-header">
+          <span class="node-type">Process</span>
+          <span class="node-title">Completeness scoring (--score)</span>
+          <span class="expand-icon">&#9654;</span>
+        </div>
+        <div class="node-body">Score extraction coverage against template fields. Requires --template or --mode.</div>
+        <div class="node-detail">
+          <code>evaluation/completeness.py</code><br>
+          Computes field-by-field coverage: how many template fields were successfully extracted.
+          Not available in auto mode (no reference template to score against).
+        </div>
+      </div>
+    </div>
+
+    <!-- PHASE 6: OUTPUT -->
+    <div class="phase">
+      <div class="phase-header">
+        <div class="phase-num">6</div>
+        <div class="phase-title">Output</div>
+        <div class="phase-subtitle">cli.py:1002+</div>
+      </div>
+
+      <div class="node type-process" data-id="output" data-when="always">
+        <div class="node-header">
+          <span class="node-type">Output</span>
+          <span class="node-title">Final JSON result</span>
+          <span class="expand-icon">&#9654;</span>
+        </div>
+        <div class="node-body">Assembled output with extracted data, source mapping, contract, diagnostics, envelope.</div>
+        <div class="node-detail">
+          Output structure:<br>
+          <code>extracted</code> &mdash; template fields filled by LLM<br>
+          <code>_source</code> &mdash; text search results + coordinates<br>
+          <code>_extraction_contract</code> &mdash; grounding + confidence per field<br>
+          <code>_verification</code> &mdash; if --verify<br>
+          <code>_planner</code> &mdash; think_level, repair, validation diagnostics<br>
+          <code>inferred_schema</code> &mdash; if auto mode<br>
+          <code>_mosaicx</code> &mdash; envelope (pipeline, template, duration, tokens)
+        </div>
+      </div>
+    </div>
+
+  </main>
+</div>
+
+<script>
+// ── State ──
+const state = {
+  has_template: false,
+  template_has_mode: false,
+  has_mode: false,
+  think: 'standard',
+  doc_long: false,
+  use_refine: false,
+  verify: false,
+  score: false,
+  show_vestigial: false,
+};
+
+// ── Derived state ──
+function usesMode() {
+  return (state.has_template && state.template_has_mode) ||
+         (!state.has_template && state.has_mode);
+}
+function usesDocExtractor() {
+  return !usesMode();
+}
+function usesAuto() {
+  return !state.has_template && !state.has_mode;
+}
+function isFast() { return usesDocExtractor() && state.think === 'fast'; }
+function isStandard() { return usesDocExtractor() && state.think === 'standard'; }
+function isDeep() { return usesDocExtractor() && state.think === 'deep'; }
+
+// ── Condition evaluator ──
+function evalCondition(when) {
+  if (!when || when === 'always') return true;
+  const ctx = {
+    has_template: state.has_template,
+    template_has_mode: state.template_has_mode,
+    has_mode: state.has_mode,
+    doc_long: state.doc_long,
+    use_refine: state.use_refine,
+    verify: state.verify,
+    score: state.score,
+    uses_mode: usesMode(),
+    uses_doc_extractor: usesDocExtractor(),
+    uses_auto: usesAuto(),
+    is_fast: isFast(),
+    is_standard: isStandard(),
+    is_deep: isDeep(),
+  };
+  try {
+    const fn = new Function(...Object.keys(ctx), `return !!(${when});`);
+    return fn(...Object.values(ctx));
+  } catch {
+    return false;
+  }
+}
+
+// ── Toggle handlers ──
+function toggle(key) {
+  // Enforce mutual exclusivity
+  if (key === 'has_template' && !state.has_template) {
+    state.has_mode = false;
+  }
+  if (key === 'has_mode' && !state.has_mode) {
+    state.has_template = false;
+    state.template_has_mode = false;
+  }
+  if (key === 'template_has_mode' && !state.template_has_mode && !state.has_template) {
+    state.has_template = true;
+  }
+
+  state[key] = !state[key];
+
+  // If template turned off, also turn off template_has_mode
+  if (key === 'has_template' && !state.has_template) {
+    state.template_has_mode = false;
+  }
+
+  render();
+}
+
+function setThink(level) {
+  state.think = level;
+  render();
+}
+
+function toggleVestigial() {
+  state.show_vestigial = document.getElementById('cb-vestigial').checked;
+  render();
+}
+
+// ── Presets ──
+function applyPreset(name) {
+  const presets = {
+    typical: { has_template: true, template_has_mode: false, has_mode: false, think: 'standard', doc_long: false, use_refine: false, verify: false, score: false },
+    radiology: { has_template: false, template_has_mode: false, has_mode: true, think: 'standard', doc_long: false, use_refine: false, verify: false, score: false },
+    auto: { has_template: false, template_has_mode: false, has_mode: false, think: 'standard', doc_long: false, use_refine: false, verify: false, score: false },
+    deep: { has_template: true, template_has_mode: false, has_mode: false, think: 'deep', doc_long: true, use_refine: false, verify: true, score: true },
+    minimal: { has_template: true, template_has_mode: false, has_mode: false, think: 'fast', doc_long: false, use_refine: false, verify: false, score: false },
+  };
+  Object.assign(state, presets[name]);
+  render();
+}
+
+// ── Node click to expand ──
+document.addEventListener('click', (e) => {
+  const node = e.target.closest('.node');
+  if (!node) return;
+  const detail = node.querySelector('.node-detail');
+  if (detail) {
+    detail.classList.toggle('open');
+    node.classList.toggle('expanded');
+  }
+});
+
+// ── Render ──
+function render() {
+  // Update switches
+  for (const key of ['has_template', 'template_has_mode', 'has_mode', 'doc_long', 'use_refine', 'verify', 'score']) {
+    const sw = document.getElementById(`sw-${key}`);
+    if (sw) sw.classList.toggle('on', state[key]);
+  }
+
+  // Update think radio
+  document.querySelectorAll('.radio-btn').forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.think === state.think);
+  });
+
+  // Update all nodes and branches
+  let activeCount = 0;
+  let llmCount = 0;
+  let vestigialCount = 0;
+  const allNodes = document.querySelectorAll('.node[data-when], .branch[data-when]');
+  const totalNodes = document.querySelectorAll('.node[data-when]').length;
+
+  allNodes.forEach(el => {
+    const when = el.dataset.when;
+    const isActive = evalCondition(when);
+    el.classList.toggle('active', isActive);
+    el.classList.toggle('inactive', !isActive);
+
+    if (el.classList.contains('node')) {
+      if (isActive) {
+        activeCount++;
+        const llmCalls = parseInt(el.dataset.llm || '0');
+        llmCount += llmCalls;
+      }
+
+      // Vestigial highlighting
+      const hasVestigial = el.dataset.vestigial;
+      if (state.show_vestigial && hasVestigial) {
+        el.classList.add('vestigial-highlight');
+        vestigialCount++;
+      } else {
+        el.classList.remove('vestigial-highlight');
+      }
+    }
+  });
+
+  // Update connectors
+  document.querySelectorAll('.connector').forEach(conn => {
+    const prev = conn.previousElementSibling;
+    const next = conn.nextElementSibling;
+    const prevActive = prev && (prev.classList.contains('active') || !prev.dataset.when);
+    const nextActive = next && (next.classList.contains('active') || !next.dataset.when);
+    conn.classList.toggle('active-line', prevActive && nextActive);
+  });
+
+  // Update stats
+  document.getElementById('stat-llm').textContent = llmCount;
+  document.getElementById('stat-active').textContent = activeCount;
+  document.getElementById('stat-total').textContent = totalNodes;
+  document.getElementById('stat-vestigial').textContent = vestigialCount;
+}
+
+// Initial render
+render();
+</script>
+</body>
+</html>

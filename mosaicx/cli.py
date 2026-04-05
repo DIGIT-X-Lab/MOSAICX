@@ -960,28 +960,12 @@ def extract(
     from .source_mapping import build_source_block
 
     extracted_fields = output_data.get("extracted", output_data)
-    output_data["_source"] = build_source_block(doc, fields=extracted_fields)
-
-    # Merge LLM-provided reasoning + excerpt into _source fields
     field_evidence = getattr(result, "field_evidence", None)
-    if isinstance(field_evidence, dict):
-        for key, ev in field_evidence.items():
-            if key in output_data["_source"]["fields"] and isinstance(ev, dict):
-                if ev.get("reasoning"):
-                    output_data["_source"]["fields"][key]["reasoning"] = ev["reasoning"]
-                if ev.get("excerpt"):
-                    output_data["_source"]["fields"][key]["llm_excerpt"] = ev["excerpt"]
-
-    # Merge LLM-provided reasoning + excerpt into _source fields
-    field_evidence = getattr(result, "field_evidence", None)
-    if isinstance(field_evidence, dict):
-        for key, ev in field_evidence.items():
-            if key in output_data["_source"]["fields"] and isinstance(ev, dict):
-                if "reasoning" in ev:
-                    output_data["_source"]["fields"][key]["reasoning"] = ev["reasoning"]
-                if "excerpt" in ev:
-                    # LLM excerpt overrides text-search excerpt if present
-                    output_data["_source"]["fields"][key]["llm_excerpt"] = ev["excerpt"]
+    output_data["_source"] = build_source_block(
+        doc,
+        fields=extracted_fields,
+        field_evidence=field_evidence if isinstance(field_evidence, dict) else None,
+    )
 
     if do_verify:
         from .sdk import verify as sdk_verify

@@ -201,6 +201,7 @@ def extract_document(
             payload: dict[str, Any],
             *,
             metrics: Any = None,
+            field_evidence: dict[str, dict[str, str]] | None = None,
         ) -> str:
             if metrics is not None:
                 payload["_metrics"] = _metrics_to_dict(metrics)
@@ -217,7 +218,9 @@ def extract_document(
                 format="text",
             )
             payload["_source"] = build_source_block(
-                doc_for_source, fields=extracted_fields
+                doc_for_source,
+                fields=extracted_fields,
+                field_evidence=field_evidence,
             )
             apply_extraction_contract(payload, source_text=document_text)
             return _json_result(payload)
@@ -280,6 +283,11 @@ def extract_document(
                 return _finalize_extract_result(
                     output,
                     metrics=getattr(extractor, "_last_metrics", None),
+                    field_evidence=(
+                        getattr(prediction, "field_evidence", None)
+                        if isinstance(getattr(prediction, "field_evidence", None), dict)
+                        else None
+                    ),
                 )
             else:
                 return _json_result({
@@ -337,6 +345,11 @@ def extract_document(
         return _finalize_extract_result(
             output,
             metrics=getattr(extractor, "_last_metrics", None),
+            field_evidence=(
+                getattr(prediction, "field_evidence", None)
+                if isinstance(getattr(prediction, "field_evidence", None), dict)
+                else None
+            ),
         )
 
     except Exception as exc:
