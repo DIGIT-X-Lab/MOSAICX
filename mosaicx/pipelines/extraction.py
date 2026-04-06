@@ -25,6 +25,7 @@ from datetime import datetime
 from enum import Enum
 from pathlib import Path
 from typing import Any, Literal, Union, get_args, get_origin
+from urllib.parse import urlparse
 
 from pydantic import BaseModel, Field, create_model
 
@@ -195,6 +196,53 @@ _ABSENCE_REASON_PHRASES = (
     "absent from the document",
     "absent in the document",
     "unable to determine",
+)
+_UNSUPPORTED_REASON_PHRASES = (
+    "not mentioned",
+    "not provided",
+    "not stated",
+    "not reported",
+    "not described",
+    "not documented",
+    "is not mentioned",
+    "is not provided",
+    "is not stated",
+    "is not reported",
+)
+_INFERRED_REASON_PHRASES = (
+    "interpreted as",
+    "inferred as",
+    "assumed to be",
+    "estimated as",
+    "likely",
+    "probably",
+)
+_POLARITY_NEGATIVE_CUES = (
+    "absent",
+    "negative",
+    "not present",
+    "no regional lymph node metastasis",
+    "negative for",
+    "free of",
+    "uninvolved",
+    "not identified",
+    "not seen",
+)
+_POLARITY_POSITIVE_CUES = (
+    "present",
+    "positive",
+    "involved",
+    "metastatic",
+    "identified",
+    "detected",
+)
+_POLARITY_UNKNOWN_CUES = (
+    "indeterminate",
+    "equivocal",
+    "uncertain",
+    "cannot be assessed",
+    "cannot determine",
+    "unknown",
 )
 
 
@@ -407,6 +455,148 @@ def _coerce_payload_to_schema(payload: Any, schema_class: type[BaseModel]) -> di
     return out
 
 
+def _optionalize_annotation(annotation: Any) -> Any:
+    """Return an annotation that permits ``None`` for partial/intermediate extraction."""
+    if annotation in (Any, object) or annotation is None:
+        return annotation
+    if _annotation_allows_none(annotation):
+        return annotation
+    origin = get_origin(annotation)
+    if origin in (Union, types.UnionType):
+        args = tuple(get_args(annotation))
+        return Union[args + (type(None),)]
+    try:
+        return annotation | None
+    except Exception:
+        return Union[annotation, type(None)]
+
+
+def _build_partial_schema(
+    schema_class: type[BaseModel],
+    *,
+    name_suffix: str = "Partial",
+) -> type[BaseModel]:
+    """Create a schema-compatible model where every field is optional."""
+    field_defs: dict[str, Any] = {}
+    for field_name, field_info in schema_class.model_fields.items():
+        field_defs[field_name] = (
+            _optionalize_annotation(field_info.annotation),
+            Field(default=None, description=field_info.description),
+        )
+    return create_model(f"{schema_class.__name__}{name_suffix}", **field_defs)
+
+
+def _validate_payload_lenient(
+    *,
+    payload: Any,
+    schema_class: type[BaseModel],
+) -> tuple[BaseModel, list[str]]:
+    """Validate payload against *schema_class*, dropping invalid top-level fields as needed."""
+    if isinstance(payload, schema_class):
+        payload = payload.model_dump(mode="json")
+    if not isinstance(payload, dict):
+        raise ValueError(
+            f"Expected dict payload for {schema_class.__name__}, got {type(payload).__name__}"
+        )
+
+    working = _coerce_payload_to_schema(payload, schema_class)
+    dropped_fields: list[str] = []
+
+    while True:
+        try:
+            return schema_class.model_validate(working), dropped_fields
+        except Exception as exc:
+            errors_fn = getattr(exc, "errors", None)
+            if not callable(errors_fn):
+                raise
+            removable: list[str] = []
+            for err in errors_fn():
+                loc = err.get("loc") or ()
+                top_level = loc[0] if loc else None
+                if isinstance(top_level, str) and top_level in working and top_level not in removable:
+                    removable.append(top_level)
+            if not removable:
+                raise
+            for field_name in removable:
+                working.pop(field_name, None)
+                if field_name not in dropped_fields:
+                    dropped_fields.append(field_name)
+
+
+def _recover_partial_schema_instance_from_raw(
+    raw_output: str,
+    schema_class: type[BaseModel],
+) -> tuple[BaseModel, list[str]]:
+    """Parse JSON-like output into a lenient partial schema instance."""
+    from mosaicx.verify.parse_utils import parse_json_like
+
+    parsed = parse_json_like(raw_output or "")
+    if not isinstance(parsed, dict):
+        preview = " ".join(str(raw_output or "").split())
+        if len(preview) > 220:
+            preview = preview[:217] + "..."
+        raise ValueError(
+            f"Model output is not valid JSON object for {schema_class.__name__}: {preview or '<empty>'}"
+        )
+    return _validate_payload_lenient(payload=parsed, schema_class=schema_class)
+
+
+def _coerce_extracted_to_partial_model_instance(
+    *,
+    extracted: Any,
+    schema_class: type[BaseModel],
+) -> tuple[BaseModel, list[str]]:
+    """Coerce an arbitrary extraction payload into a lenient partial schema instance."""
+    if isinstance(extracted, schema_class):
+        return extracted, []
+    if hasattr(extracted, "model_dump"):
+        extracted = extracted.model_dump(mode="json")  # type: ignore[attr-defined]
+    return _validate_payload_lenient(payload=extracted, schema_class=schema_class)
+
+
+def _merge_partial_payloads(
+    base_payload: dict[str, Any],
+    incoming_payload: dict[str, Any],
+) -> dict[str, Any]:
+    """Merge partial extraction payloads without letting missing values wipe existing data."""
+    merged = dict(base_payload)
+    for field_name, value in incoming_payload.items():
+        if _is_missing_value(value):
+            continue
+        merged[field_name] = value
+    return merged
+
+
+def _build_subset_schema(
+    schema_class: type[BaseModel],
+    field_names: list[str],
+    *,
+    name_suffix: str = "Subset",
+    optional: bool = True,
+) -> type[BaseModel]:
+    """Build a schema containing only the selected top-level fields."""
+    field_defs: dict[str, Any] = {}
+    for field_name in field_names:
+        field_info = schema_class.model_fields.get(field_name)
+        if field_info is None:
+            continue
+        annotation = (
+            _optionalize_annotation(field_info.annotation)
+            if optional
+            else field_info.annotation
+        )
+        default = None if optional else ...
+        field_defs[field_name] = (
+            annotation,
+            Field(default=default, description=field_info.description),
+        )
+    if not field_defs:
+        raise ValueError(
+            f"Cannot build subset schema for {schema_class.__name__}: no valid fields"
+        )
+    return create_model(f"{schema_class.__name__}{name_suffix}", **field_defs)
+
+
 def _recover_schema_instance_from_raw(
     raw_output: str, schema_class: type[BaseModel]
 ) -> BaseModel:
@@ -432,6 +622,69 @@ def _normalize_local_api_base(base_url: str) -> str:
         .replace("://localhost", "://127.0.0.1")
         .replace("://[::1]", "://127.0.0.1")
     )
+
+
+def _is_local_api_base(base_url: str) -> bool:
+    parsed = urlparse(_normalize_local_api_base(base_url))
+    host = str(parsed.hostname or "").strip().lower()
+    return host in {"127.0.0.1", "localhost", "0.0.0.0", "::1"}
+
+
+def _resolve_deep_execution_policy() -> dict[str, Any]:
+    """Resolve backend-aware deep execution policy.
+
+    Profiles:
+      - serial: strictly conservative, one reconcile group, no parallel fanout
+      - limited: one reconcile group, serial execution
+      - parallel: multiple reconcile groups, eligible for thread fanout
+      - auto: local backends -> serial, remote non-vLLM -> limited, remote vLLM -> parallel
+    """
+    from mosaicx.config import get_config
+
+    cfg = get_config()
+    requested = str(getattr(cfg, "deep_execution_profile", "auto") or "auto").strip().lower()
+    if requested not in {"auto", "serial", "limited", "parallel"}:
+        requested = "auto"
+
+    api_base = str(getattr(cfg, "api_base", "") or "")
+    model_name = str(getattr(cfg, "lm", "") or "")
+    base_norm = _normalize_local_api_base(api_base).lower()
+    is_local = _is_local_api_base(api_base)
+
+    backend_probe = f"{base_norm} {model_name}".lower()
+    backend_family = "unknown"
+    if "vllm" in backend_probe:
+        backend_family = "vllm"
+    elif "mlx" in backend_probe:
+        backend_family = "mlx"
+    elif "ollama" in backend_probe:
+        backend_family = "ollama"
+
+    if requested == "auto":
+        if is_local:
+            effective = "serial"
+        elif backend_family == "vllm":
+            effective = "parallel"
+        else:
+            effective = "limited"
+    else:
+        effective = requested
+
+    configured_parallel_groups = max(1, int(getattr(cfg, "deep_parallel_groups", 2) or 2))
+    if effective == "parallel":
+        parallel_groups = max(2, configured_parallel_groups)
+    else:
+        parallel_groups = 1
+
+    return {
+        "requested_profile": requested,
+        "effective_profile": effective,
+        "api_base": base_norm,
+        "backend_family": backend_family,
+        "is_local": is_local,
+        "parallel_groups": parallel_groups,
+        "allow_parallel_groups": effective == "parallel" and parallel_groups > 1,
+    }
 
 
 def _normalize_model_name_for_openai_compatible(model_name: str) -> str:
@@ -959,6 +1212,124 @@ def _validate_field_semantics(field_name: str, value: Any) -> dict[str, Any]:
     }
 
 
+def _field_semantic_family(field_name: str) -> str | None:
+    tokens = _field_name_tokens(field_name)
+    if {"clinical", "history"} & tokens or "indication" in tokens:
+        return "clinical_context"
+    if "gross" in tokens:
+        return "gross_description"
+    if {"dimension", "dimensions"} & tokens:
+        return "dimensions"
+    if {"invasion", "extension"} & tokens:
+        return "polarity"
+    if {"status", "keratinization", "necrosis"} & tokens:
+        return "polarity"
+    return None
+
+
+def _polarity_label(value: Any) -> str | None:
+    probe = " ".join(str(value or "").strip().lower().split())
+    if not probe:
+        return None
+    if probe in {"present", "positive", "involved", "yes", "true"}:
+        return "positive"
+    if probe in {"absent", "negative", "none", "no", "false", "uninvolved"}:
+        return "negative"
+    if probe in {"indeterminate", "equivocal", "uncertain", "unknown", "close"}:
+        return "unknown"
+    return None
+
+
+def _text_polarity(text: Any) -> str | None:
+    probe = " ".join(str(text or "").strip().lower().split())
+    if not probe:
+        return None
+    positive = any(token in probe for token in _POLARITY_POSITIVE_CUES)
+    negative = any(token in probe for token in _POLARITY_NEGATIVE_CUES)
+    unknown = any(token in probe for token in _POLARITY_UNKNOWN_CUES)
+    labels = {name for name, enabled in {
+        "positive": positive,
+        "negative": negative,
+        "unknown": unknown,
+    }.items() if enabled}
+    if len(labels) == 1:
+        return next(iter(labels))
+    return None
+
+
+def _validate_field_evidence_support(
+    *,
+    field_name: str,
+    value: Any,
+    evidence: dict[str, Any] | None,
+) -> dict[str, Any]:
+    verdict = {
+        "valid": True,
+        "reason": None,
+        "severity": "warning",
+    }
+    if not isinstance(evidence, dict) or _is_missing_value(value):
+        return verdict
+
+    excerpt = str(
+        evidence.get("excerpt")
+        or evidence.get("source_value")
+        or evidence.get("llm_excerpt")
+        or ""
+    ).strip()
+    reasoning = str(evidence.get("reasoning") or "").strip()
+    excerpt_lower = " ".join(excerpt.lower().split())
+    reasoning_lower = " ".join(reasoning.lower().split())
+    family = _field_semantic_family(field_name)
+
+    if any(phrase in reasoning_lower for phrase in _UNSUPPORTED_REASON_PHRASES):
+        verdict["valid"] = False
+        verdict["reason"] = "unsupported_by_reasoning"
+        return verdict
+
+    if family == "polarity":
+        value_polarity = _polarity_label(value)
+        # Keep source-language heuristics minimal. For multilingual reports, the
+        # stable signal is the model-normalized reasoning, not raw excerpt tokens.
+        reasoning_polarity = _text_polarity(reasoning)
+        if value_polarity and excerpt_lower == str(value).strip().lower() and not reasoning_lower:
+            verdict["valid"] = False
+            verdict["reason"] = "weak_polarity_evidence"
+            return verdict
+        if (
+            value_polarity
+            and reasoning_polarity
+            and reasoning_polarity != "unknown"
+            and value_polarity != reasoning_polarity
+        ):
+            verdict["valid"] = False
+            verdict["reason"] = "reasoning_polarity_conflict"
+            return verdict
+        if excerpt_lower == str(value).strip().lower() and any(
+            phrase in reasoning_lower for phrase in _UNSUPPORTED_REASON_PHRASES
+        ):
+            verdict["valid"] = False
+            verdict["reason"] = "weak_polarity_evidence"
+            return verdict
+
+    if family == "dimensions":
+        value_probe = str(value or "").strip().lower()
+        if value_probe and " x " not in value_probe and "×" not in value_probe and any(
+            phrase in reasoning_lower for phrase in ("only dimension", "single dimension", * _INFERRED_REASON_PHRASES)
+        ):
+            verdict["valid"] = False
+            verdict["reason"] = "weak_dimensions_inference"
+            return verdict
+
+    if family == "gross_description":
+        if any(phrase in reasoning_lower for phrase in _UNSUPPORTED_REASON_PHRASES):
+            verdict["valid"] = False
+            verdict["reason"] = "gross_description_missing"
+            return verdict
+
+    return verdict
+
+
 def _annotation_allows_none(annotation: Any) -> bool:
     origin = get_origin(annotation)
     if origin in (Union, types.UnionType):
@@ -1124,6 +1495,7 @@ def _apply_deterministic_semantic_validation(
     *,
     model_instance: BaseModel,
     schema_class: type[BaseModel],
+    field_evidence: dict[str, dict[str, Any]] | None = None,
 ) -> tuple[BaseModel, dict[str, Any]]:
     """Normalize model payload with deterministic semantic validators."""
     # First coerce enum values to closest valid option
@@ -1146,6 +1518,23 @@ def _apply_deterministic_semantic_validation(
         verdict = _validate_field_semantics(field_name, current)
         normalized = verdict.get("normalized_value", current)
         valid = bool(verdict.get("valid", True))
+
+        if valid and field_evidence:
+            support_verdict = _validate_field_evidence_support(
+                field_name=field_name,
+                value=normalized,
+                evidence=field_evidence.get(field_name),
+            )
+            if not bool(support_verdict.get("valid", True)):
+                verdict = {
+                    "valid": False,
+                    "kind": "evidence",
+                    "critical": bool(verdict.get("critical", False)),
+                    "reason": support_verdict.get("reason") or "unsupported_by_evidence",
+                    "normalized_value": normalized,
+                }
+                valid = False
+
         if valid:
             if normalized != current:
                 changed_fields.append(field_name)
@@ -1196,6 +1585,7 @@ def apply_extraction_contract(
     *,
     source_text: str,
     critical_fields: list[str] | None = None,
+    field_evidence: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Attach canonical extraction contract to *output_data* in ``_extraction_contract``.
 
@@ -1246,6 +1636,15 @@ def apply_extraction_contract(
         value = validation.get("normalized_value", original_value)
         target[field] = value
 
+        evidence_validation: dict[str, Any] | None = None
+        evidence_info = field_evidence.get(field) if isinstance(field_evidence, dict) else source_fields.get(field)
+        if validation.get("valid", True) and isinstance(evidence_info, dict):
+            evidence_validation = _validate_field_evidence_support(
+                field_name=field,
+                value=value,
+                evidence=evidence_info,
+            )
+
         if not validation.get("valid", True):
             reason = str(validation.get("reason") or "invalid_value")
             is_critical = bool(validation.get("critical"))
@@ -1268,6 +1667,27 @@ def apply_extraction_contract(
                     "original_value": original_value,
                     "normalized_value": value,
                     "severity": "error" if is_critical else "warning",
+                }
+            )
+        elif evidence_validation and not evidence_validation.get("valid", True):
+            reason = str(evidence_validation.get("reason") or "unsupported_by_evidence")
+            status = "needs_review"
+            grounded = False
+            confidence = 0.2
+            evidence = (
+                evidence_info.get("excerpt")
+                or evidence_info.get("llm_excerpt")
+                or evidence_info.get("source_value")
+            ) if isinstance(evidence_info, dict) else None
+            validation_issues.append(
+                {
+                    "field": field,
+                    "kind": "evidence",
+                    "reason": reason,
+                    "critical": False,
+                    "original_value": original_value,
+                    "normalized_value": value,
+                    "severity": str(evidence_validation.get("severity") or "warning"),
                 }
             )
         elif _is_missing_value(value):
@@ -1312,6 +1732,8 @@ def apply_extraction_contract(
                     "kind": validation.get("kind"),
                     "reason": validation.get("reason"),
                     "critical": bool(validation.get("critical", False)),
+                    "evidence_valid": bool(evidence_validation.get("valid", True)) if evidence_validation else True,
+                    "evidence_reason": evidence_validation.get("reason") if evidence_validation else None,
                 },
             }
         )
@@ -2388,6 +2810,28 @@ def _normalize_semantic_probe(value: Any) -> str:
     return " ".join(text.split())
 
 
+def _extract_allowed_values(annotation: Any) -> list[str]:
+    origin = get_origin(annotation)
+    if origin in (Union, types.UnionType):
+        values: list[str] = []
+        for arg in get_args(annotation):
+            if arg is type(None):
+                continue
+            values.extend(_extract_allowed_values(arg))
+        return list(dict.fromkeys(values))
+    if origin is Literal:
+        return [str(item) for item in get_args(annotation)]
+    if isinstance(annotation, type):
+        try:
+            import enum as _enum
+
+            if issubclass(annotation, _enum.Enum):
+                return [str(member.value) for member in annotation]
+        except Exception:
+            return []
+    return []
+
+
 def _is_semantic_scalar_candidate(value: Any) -> bool:
     if isinstance(value, (dict, list, tuple, set, bool)):
         return False
@@ -2416,6 +2860,8 @@ def _select_semantic_canonicalization_candidates(
         value = payload.get(field_name)
         evidence = field_evidence.get(field_name)
         if not isinstance(evidence, dict):
+            continue
+        if _field_semantic_family(field_name) == "polarity":
             continue
         excerpt = str(evidence.get("excerpt") or "").strip()
         if not excerpt:
@@ -2571,6 +3017,341 @@ def _apply_semantic_canonicalization(
 
     diag["reason"] = "semantic_canonicalization_applied" if diag["classified_count"] else "no_semantic_updates"
     return updated_model, diag
+
+
+def _evidence_context_window(
+    *,
+    source_text: str,
+    evidence: dict[str, Any] | None,
+    radius: int = 120,
+) -> str:
+    if not isinstance(evidence, dict):
+        return ""
+    source = str(source_text or "")
+    normalized_source = " ".join(source.split())
+    for probe in (
+        evidence.get("excerpt"),
+        evidence.get("llm_excerpt"),
+        evidence.get("source_value"),
+    ):
+        candidate = " ".join(str(probe or "").split()).strip()
+        if not candidate:
+            continue
+        idx = normalized_source.find(candidate)
+        if idx >= 0:
+            lo = max(0, idx - radius)
+            hi = min(len(normalized_source), idx + len(candidate) + radius)
+            snippet = normalized_source[lo:hi].strip()
+            if snippet:
+                return snippet
+    spans = evidence.get("spans")
+    if isinstance(spans, list) and spans:
+        windows: list[str] = []
+        for span in spans[:2]:
+            if not isinstance(span, dict):
+                continue
+            try:
+                start = int(span.get("start"))
+                end = int(span.get("end"))
+            except Exception:
+                continue
+            if start < 0 or end < start:
+                continue
+            lo = max(0, start - radius)
+            hi = min(len(source), end + radius)
+            snippet = source[lo:hi].strip()
+            if snippet:
+                windows.append(snippet)
+        if windows:
+            return "\n...\n".join(windows)
+    return str(
+        evidence.get("excerpt")
+        or evidence.get("llm_excerpt")
+        or evidence.get("source_value")
+        or ""
+    ).strip()
+
+
+def _extract_local_evidence_phrase(
+    *,
+    context: str,
+    anchor: str,
+) -> str:
+    normalized_context = " ".join(str(context or "").split()).strip()
+    normalized_anchor = " ".join(str(anchor or "").split()).strip()
+    if not normalized_context:
+        return ""
+    if not normalized_anchor:
+        return normalized_context
+    idx = normalized_context.find(normalized_anchor)
+    if idx < 0:
+        return normalized_context
+
+    left = idx
+    right = idx + len(normalized_anchor)
+    while left > 0 and normalized_context[left - 1] not in ".;:\n":
+        left -= 1
+    start = left
+    if left > 0:
+        prev = left - 1
+        while prev > 0 and normalized_context[prev - 1] not in ".;:\n":
+            prev -= 1
+        qualifier = normalized_context[prev:left].strip(" .;\n")
+        qualifier_tokens = [tok for tok in qualifier.split() if tok]
+        if qualifier and len(qualifier_tokens) <= 4 and len(qualifier) <= 32:
+            start = prev
+    while right < len(normalized_context) and normalized_context[right] not in ".;:\n":
+        right += 1
+    phrase = normalized_context[start:right].strip(" .;\n")
+    return phrase or normalized_context
+
+
+def _select_field_family_reconciliation_candidates(
+    *,
+    model_instance: BaseModel,
+    schema_class: type[BaseModel],
+    source_text: str,
+    field_evidence: dict[str, dict[str, Any]] | None,
+    families: set[str] | None = None,
+) -> list[dict[str, Any]]:
+    if not field_evidence:
+        return []
+
+    active_families = families or {"polarity"}
+    payload = model_instance.model_dump(mode="json")
+    candidates: list[dict[str, Any]] = []
+    for field_name, field_info in schema_class.model_fields.items():
+        family = _field_semantic_family(field_name)
+        if family not in active_families:
+            continue
+        value = payload.get(field_name)
+        if _is_missing_value(value):
+            continue
+        evidence = field_evidence.get(field_name)
+        if not isinstance(evidence, dict):
+            continue
+        context = _evidence_context_window(source_text=source_text, evidence=evidence)
+        reasoning = str(evidence.get("reasoning") or "").strip()
+        source_value = str(
+            evidence.get("source_value")
+            or evidence.get("excerpt")
+            or evidence.get("llm_excerpt")
+            or ""
+        ).strip()
+        local_phrase = _extract_local_evidence_phrase(
+            context=context,
+            anchor=source_value or str(value or ""),
+        )
+        if not context and not source_value and not reasoning:
+            continue
+
+        candidates.append(
+            {
+                "field": field_name,
+                "family": family,
+                "current_value": value,
+                "source_value": source_value,
+                "evidence_context": context,
+                "local_evidence": local_phrase,
+                "reasoning": reasoning,
+                "allowed_values": _extract_allowed_values(getattr(field_info, "annotation", None)),
+                "field_description": str(getattr(field_info, "description", "") or ""),
+            }
+        )
+    return candidates
+
+
+def _apply_field_family_reconciliation(
+    *,
+    model_instance: BaseModel,
+    schema_class: type[BaseModel],
+    source_text: str,
+    field_evidence: dict[str, dict[str, Any]] | None,
+    reconcile_field_family: Any | None,
+    families: set[str] | None = None,
+) -> tuple[BaseModel, dict[str, Any]]:
+    diag: dict[str, Any] = {
+        "triggered": False,
+        "candidate_count": 0,
+        "classified_count": 0,
+        "updated_fields": [],
+        "fields": [],
+        "fallback_used": False,
+        "primary_error": None,
+        "fallback_error": None,
+        "families": sorted(families or {"polarity"}),
+        "reason": None,
+    }
+    if not field_evidence:
+        diag["reason"] = "no_field_evidence"
+        return model_instance, diag
+    if reconcile_field_family is None:
+        diag["reason"] = "field_family_reconciler_unavailable"
+        return model_instance, diag
+
+    candidates = _select_field_family_reconciliation_candidates(
+        model_instance=model_instance,
+        schema_class=schema_class,
+        source_text=source_text,
+        field_evidence=field_evidence,
+        families=families,
+    )
+    diag["triggered"] = bool(candidates)
+    diag["candidate_count"] = len(candidates)
+    if not candidates:
+        diag["reason"] = "no_candidates"
+        return model_instance, diag
+
+    try:
+        pred = reconcile_field_family(
+            candidates_json=json.dumps(candidates[:12], ensure_ascii=False),
+        )
+        raw = str(getattr(pred, "reconciled_json", "") or "").strip()
+        from mosaicx.verify.parse_utils import parse_json_like
+
+        parsed = parse_json_like(raw) if raw else {}
+    except Exception as exc:
+        diag["primary_error"] = type(exc).__name__
+        try:
+            parsed = _call_field_family_reconciliation_json_fallback(
+                candidates=candidates[:12],
+            )
+            diag["fallback_used"] = True
+        except Exception as fallback_exc:
+            diag["fallback_error"] = type(fallback_exc).__name__
+            diag["reason"] = f"field_family_reconcile_failed:{type(exc).__name__}"
+            return model_instance, diag
+
+    if not isinstance(parsed, dict):
+        diag["reason"] = "field_family_reconcile_invalid_json"
+        return model_instance, diag
+
+    updated_model = model_instance
+    updated_payload = model_instance.model_dump(mode="json")
+
+    for candidate in candidates:
+        field_name = str(candidate.get("field") or "")
+        if not field_name:
+            continue
+        result = parsed.get(field_name)
+        if not isinstance(result, dict):
+            continue
+        confidence = result.get("confidence")
+        try:
+            confidence_value = float(confidence)
+        except Exception:
+            confidence_value = 0.0
+        if confidence_value < 0.65:
+            continue
+
+        canonical_value = result.get("canonical_value")
+        if _is_missing_value(canonical_value):
+            continue
+
+        before = updated_payload.get(field_name)
+        try:
+            trial_payload = dict(updated_payload)
+            trial_payload[field_name] = canonical_value
+            coerced = _coerce_payload_to_schema(trial_payload, schema_class)
+            updated_model = schema_class.model_validate(coerced)
+            updated_payload = updated_model.model_dump(mode="json")
+        except Exception:
+            continue
+
+        evidence = field_evidence.get(field_name) or {}
+        evidence["family_reconciliation"] = {
+            "applied": True,
+            "family": candidate.get("family"),
+            "confidence": confidence_value,
+            "from": before,
+            "to": updated_payload.get(field_name),
+            "evidence_context": candidate.get("evidence_context"),
+        }
+        rationale = str(result.get("reasoning") or "").strip()
+        if rationale:
+            evidence["family_reconciliation"]["reasoning"] = rationale
+            evidence["reasoning"] = rationale
+        field_evidence[field_name] = evidence
+
+        diag["classified_count"] += 1
+        if _normalize_semantic_probe(before) != _normalize_semantic_probe(updated_payload.get(field_name)):
+            diag["updated_fields"].append(field_name)
+        diag["fields"].append(
+            {
+                "field": field_name,
+                "family": candidate.get("family"),
+                "before": before,
+                "after": updated_payload.get(field_name),
+                "confidence": confidence_value,
+            }
+        )
+
+    diag["reason"] = "field_family_reconcile_applied" if diag["classified_count"] else "no_family_updates"
+    return updated_model, diag
+
+
+def _call_field_family_reconciliation_json_fallback(
+    *,
+    candidates: list[dict[str, Any]],
+) -> dict[str, Any]:
+    import openai
+
+    from mosaicx.config import get_config
+    from mosaicx.verify.parse_utils import parse_json_like
+
+    cfg = get_config()
+    base_url = _normalize_local_api_base(str(cfg.api_base or "http://127.0.0.1:8000/v1"))
+    client = openai.OpenAI(base_url=base_url, api_key=(cfg.api_key or "ollama"))
+    model_name = _resolve_openai_compatible_model_name(
+        client=client,
+        configured_model_name=str(cfg.lm or ""),
+    )
+    schema_json = json.dumps(
+        {
+            "type": "object",
+            "description": "Field-family reconciliation result keyed by field name.",
+            "properties": {
+                str(candidate.get("field") or ""): {
+                    "type": "object",
+                    "properties": {
+                        "canonical_value": {
+                            "description": "Evidence-supported canonical value or null.",
+                        },
+                        "confidence": {"type": "number"},
+                        "reasoning": {"type": "string"},
+                    },
+                    "required": ["canonical_value", "confidence", "reasoning"],
+                    "additionalProperties": False,
+                }
+                for candidate in candidates
+                if str(candidate.get("field") or "").strip()
+            },
+            "additionalProperties": False,
+        },
+        indent=2,
+    )
+    prompt = (
+        "Reconcile the following extracted medical fields using local_evidence as primary ground truth.\n"
+        "The evidence text may be multilingual.\n"
+        "Return ONLY a JSON object keyed by field name.\n"
+        "For polarity/status-like fields, pay attention to whether the local evidence indicates presence, absence, or uncertainty.\n"
+        "When a qualifier immediately precedes or follows the finding mention, that qualifier determines the label.\n"
+        "Use evidence_context as secondary support.\n"
+        "Use source_value and reasoning only as tertiary hints and ignore them when they conflict with local_evidence.\n"
+        "If the evidence does not clearly support a canonical value, return canonical_value as null and confidence as 0.\n\n"
+        f"Candidates:\n{json.dumps(candidates, ensure_ascii=False, indent=2)}"
+    )
+    raw = _call_json_object_mode(
+        client=client,
+        model_name=model_name,
+        prompt=prompt,
+        schema_json=schema_json,
+        max_tokens=1200,
+    )
+    parsed = parse_json_like(raw) if raw else {}
+    if not isinstance(parsed, dict):
+        raise ValueError("field_family_reconciliation_json_fallback_invalid_json")
+    return parsed
 
 
 def _call_semantic_canonicalization_json_fallback(
@@ -2951,6 +3732,7 @@ def _targeted_field_repair(
 
     updated = model_instance
     updated_payload = model_instance.model_dump(mode="json")
+    validation_schema = _build_partial_schema(schema_class, name_suffix="RepairPartial") if think == "deep" else schema_class
     remaining: list[dict[str, Any]] = []
 
     for issue in suspicious_fields:
@@ -2979,10 +3761,23 @@ def _targeted_field_repair(
         try:
             trial_payload = dict(updated_payload)
             trial_payload[field_name] = backfilled_value
-            coerced = _coerce_payload_to_schema(trial_payload, schema_class)
-            repaired_model = schema_class.model_validate(coerced)
+            coerced = _coerce_payload_to_schema(trial_payload, validation_schema)
+            repaired_model = validation_schema.model_validate(coerced)
             repaired_payload = repaired_model.model_dump(mode="json")
             after = repaired_payload.get(field_name)
+            if not _is_missing_value(before) and _is_missing_value(after):
+                remaining.append(issue)
+                diag["fields"].append(
+                    {
+                        "field": field_name,
+                        "issue": issue.get("issue"),
+                        "repaired": False,
+                        "method": str(backfill_diag.get("method") or "deterministic_backfill"),
+                        "label": backfill_diag.get("label"),
+                        "reason": "non_destructive_skip",
+                    }
+                )
+                continue
             updated = repaired_model
             updated_payload = repaired_payload
             diag["stages"]["deterministic"]["repaired"] += 1
@@ -3139,10 +3934,17 @@ def _targeted_field_repair(
         try:
             trial_payload = dict(updated_payload)
             trial_payload[field_name] = repaired_payload.get(field_name)
-            coerced = _coerce_payload_to_schema(trial_payload, schema_class)
-            repaired_model = schema_class.model_validate(coerced)
+            coerced = _coerce_payload_to_schema(trial_payload, validation_schema)
+            repaired_model = validation_schema.model_validate(coerced)
+            repaired_dump = repaired_model.model_dump(mode="json")
+            after = repaired_dump.get(field_name)
+            if not _is_missing_value(before) and _is_missing_value(after):
+                entry = repaired_fields_by_name.get(field_name)
+                if entry is not None:
+                    entry["reason"] = "non_destructive_skip"
+                continue
             updated = repaired_model
-            updated_payload = repaired_model.model_dump(mode="json")
+            updated_payload = repaired_dump
             diag["stages"]["targeted_llm"]["repaired"] += 1
             entry = repaired_fields_by_name.get(field_name)
             if entry is not None:
@@ -3150,7 +3952,7 @@ def _targeted_field_repair(
                     {
                         "repaired": True,
                         "before": before,
-                        "after": updated_payload.get(field_name),
+                        "after": after,
                         "method": "targeted_llm",
                     }
                 )
@@ -3447,6 +4249,7 @@ def _repair_failed_critical_fields_with_refine(
 
     updated = model_instance
     updated_payload = payload
+    validation_schema = _build_partial_schema(schema_class, name_suffix="CriticalRepairPartial") if think == "deep" else schema_class
 
     # Fast deterministic backfill from section/label blocks before any extra LLM calls.
     remaining_failed_fields: list[str] = []
@@ -3463,9 +4266,9 @@ def _repair_failed_critical_fields_with_refine(
         try:
             trial_payload = dict(updated_payload)
             trial_payload[field_name] = backfilled_value
-            coerced = _coerce_payload_to_schema(trial_payload, schema_class)
-            repaired_model = schema_class.model_validate(coerced)
-            repaired_payload = repaired_model.model_dump()
+            coerced = _coerce_payload_to_schema(trial_payload, validation_schema)
+            repaired_model = validation_schema.model_validate(coerced)
+            repaired_payload = repaired_model.model_dump(mode="json")
             after = repaired_payload.get(field_name)
             if _is_missing_value(after):
                 remaining_failed_fields.append(field_name)
@@ -3514,12 +4317,14 @@ def _repair_failed_critical_fields_with_refine(
         return updated, diag
 
     refine_candidates = list(remaining_failed_fields)
-    if bool(getattr(cfg, "refine_only_missing", True)):
+    if think != "deep" and bool(getattr(cfg, "refine_only_missing", True)):
         refine_candidates = [
             name for name in refine_candidates if _is_missing_value(updated_payload.get(name))
         ]
 
     max_refine_fields = max(0, int(getattr(cfg, "refine_max_fields", 3) or 0))
+    if think == "deep":
+        max_refine_fields = max(max_refine_fields, len(refine_candidates))
     if max_refine_fields > 0 and len(refine_candidates) > max_refine_fields:
         overflow = refine_candidates[max_refine_fields:]
         for field_name in overflow:
@@ -3605,8 +4410,8 @@ def _repair_failed_critical_fields_with_refine(
                 candidate_value = raw
             trial_payload = dict(updated_payload)
             trial_payload[field_name] = candidate_value
-            coerced = _coerce_payload_to_schema(trial_payload, schema_class)
-            repaired_model = schema_class.model_validate(coerced)
+            coerced = _coerce_payload_to_schema(trial_payload, validation_schema)
+            repaired_model = validation_schema.model_validate(coerced)
             repaired_payload = repaired_model.model_dump(mode="json")
             after = repaired_payload.get(field_name)
             if _is_missing_value(after):
@@ -4068,12 +4873,11 @@ def _route_think_level(schema_class: type[BaseModel]) -> str:
 def _resolve_think_level(user_think: str, schema_class: type[BaseModel] | None) -> str:
     """Resolve effective think level from user choice and template analysis.
 
+    - explicit "fast" / "standard" / "deep": respect the user
     - "auto": let router pick freely
-    - "fast": max(fast, template_floor) -- won't go below template minimum
-    - "deep": always deep
     """
-    if user_think == "deep":
-        return "deep"
+    if user_think in {"fast", "standard", "deep"}:
+        return user_think
 
     if schema_class is None:
         # No schema to analyze -- fall back to user choice or standard
@@ -4081,13 +4885,7 @@ def _resolve_think_level(user_think: str, schema_class: type[BaseModel] | None) 
 
     if user_think == "auto":
         return _route_think_level(schema_class)
-
-    # user_think == "fast": enforce floor
-    template_floor = _route_think_level(schema_class)
-    user_rank = _THINK_LEVEL_ORDER.get(user_think, 0)
-    floor_rank = _THINK_LEVEL_ORDER.get(template_floor, 0)
-    effective_rank = max(user_rank, floor_rank)
-    return _THINK_LEVEL_BY_RANK.get(effective_rank, "standard")
+    return "standard"
 
 
 def _chunk_schema(schema_class: type[BaseModel]) -> list[dict[str, Any]]:
@@ -4124,16 +4922,17 @@ def _chunk_schema(schema_class: type[BaseModel]) -> list[dict[str, Any]]:
 
         if is_list_of_obj:
             # This field becomes its own chunk
-            default = field_info.default if field_info.default is not None else ...
-            if not field_info.is_required():
-                default = field_info.default
+            default = None
             chunk_field_def = (ann, Field(
                 default=default,
                 description=field_info.description,
             ))
             chunk_model = pydantic_create_model(
                 f"_Chunk_{field_name}",
-                **{field_name: chunk_field_def},
+                **{field_name: (
+                    _optionalize_annotation(ann),
+                    Field(default=None, description=field_info.description),
+                )},
             )
             chunks.append({
                 "name": field_name,
@@ -4143,11 +4942,8 @@ def _chunk_schema(schema_class: type[BaseModel]) -> list[dict[str, Any]]:
             })
         else:
             scalar_fields.append(field_name)
-            default = field_info.default if field_info.default is not None else ...
-            if not field_info.is_required():
-                default = field_info.default
-            scalar_field_defs[field_name] = (ann, Field(
-                default=default,
+            scalar_field_defs[field_name] = (_optionalize_annotation(ann), Field(
+                default=None,
                 description=field_info.description,
             ))
 
@@ -4587,8 +5383,31 @@ def _build_dspy_classes():
                     desc="JSON object keyed by field name with canonical_value, confidence, reasoning",
                     type_=str,
                 )
+                reconcile_family_sig = dspy.Signature(
+                    "candidates_json -> reconciled_json",
+                    instructions=(
+                        "You receive a JSON list of extracted medical fields from the same semantic family. "
+                        "Each item has: field, family, current_value, source_value, local_evidence, evidence_context, reasoning, allowed_values, field_description. "
+                        "Use local_evidence as the primary ground truth when present, even when it is multilingual. "
+                        "Use evidence_context as secondary support. "
+                        "Use current_value and reasoning only as tertiary hints and ignore them when they conflict with local_evidence. "
+                        "When a local qualifier immediately precedes or follows the finding mention, that qualifier determines the label. "
+                        "For each field return ONLY a JSON object keyed by field name. "
+                        "Each field must be {\"canonical_value\": ..., \"confidence\": 0-1, \"reasoning\": ...}. "
+                        "Be conservative: if evidence_context does not clearly support a value, return canonical_value as null."
+                    ),
+                ).with_updated_fields(
+                    "candidates_json",
+                    desc="JSON list of field-family reconciliation candidates",
+                    type_=str,
+                ).with_updated_fields(
+                    "reconciled_json",
+                    desc="JSON object keyed by field name with reconciled canonical_value, confidence, reasoning",
+                    type_=str,
+                )
                 self.extract_json_fallback = dspy.Predict(fallback_sig)
                 self.semantic_canonicalize = dspy.Predict(canonicalize_sig)
+                self.reconcile_field_family = dspy.Predict(reconcile_family_sig)
                 # Deep mode: verification + fix modules
                 self.verify_extraction = dspy.ChainOfThought(VerifyExtractionSig)
                 self.fix_field = dspy.ChainOfThought(FixFieldSig)
@@ -4597,6 +5416,7 @@ def _build_dspy_classes():
                 self.infer_schema = dspy.ChainOfThought(InferSchemaFromDocument)
                 # extract_custom is created dynamically in forward()
                 self.semantic_canonicalize = None
+                self.reconcile_field_family = None
                 self.verify_extraction = dspy.ChainOfThought(VerifyExtractionSig)
                 self.fix_field = dspy.ChainOfThought(FixFieldSig)
 
@@ -4607,6 +5427,7 @@ def _build_dspy_classes():
             from mosaicx.metrics import track_step
 
             chunks = _chunk_schema(schema)
+            partial_schema = _build_partial_schema(schema, name_suffix="DeepPartial")
             logger.info("Deep mode: %d chunks for %s", len(chunks), schema.__name__)
             assembled: dict[str, Any] = {}
             chunk_diags: list[dict[str, Any]] = []
@@ -4652,7 +5473,7 @@ def _build_dspy_classes():
                         clean_chunk, chunk_evidence = _split_evidence_from_extracted(
                             chunk_data, chunk_schema
                         )
-                        assembled.update(clean_chunk)
+                        assembled = _merge_partial_payloads(assembled, clean_chunk)
                         _last_outlines_evidence.update(chunk_evidence)
                         chunk_diags.append({
                             "chunk": chunk_name,
@@ -4673,16 +5494,450 @@ def _build_dspy_classes():
                 coerced = _coerce_payload_to_schema(assembled, schema)
                 model_instance = schema.model_validate(coerced)
             except Exception as exc:
-                logger.warning("Deep chunk assembly failed: %s, falling back to CoT", exc)
-                # Fallback: run standard CoT on the full schema
-                pred = self.extract_custom(document_text=document_text)
-                extracted = getattr(pred, "extracted", pred)
-                model_instance = _coerce_extracted_to_model_instance(
-                    extracted=extracted, schema_class=schema,
-                )
-                chunk_diags.append({"fallback": "full_cot", "reason": str(exc)})
+                logger.warning("Deep chunk assembly failed: %s, falling back to full-schema recovery", exc)
+                json_fallback_exc: Exception | None = None
+                cot_fallback_exc: Exception | None = None
+                model_instance = None
+
+                # Prefer the plain JSON-object fallback here. The deep pathology path can
+                # produce flat JSON that DSPy's ChainOfThought adapter fails to parse as
+                # {reasoning, extracted}, even though the model output itself is usable.
+                if getattr(self, "extract_json_fallback", None) is not None:
+                    try:
+                        fallback_pred = self.extract_json_fallback(document_text=document_text)
+                        raw_json = str(getattr(fallback_pred, "extracted_json", "") or "")
+                        fallback_instance, dropped = _recover_partial_schema_instance_from_raw(
+                            raw_json, partial_schema,
+                        )
+                        assembled = _merge_partial_payloads(
+                            assembled,
+                            fallback_instance.model_dump(mode="json"),
+                        )
+                        fallback_diag: dict[str, Any] = {
+                            "fallback": "full_json_object",
+                            "reason": str(exc),
+                        }
+                        if dropped:
+                            fallback_diag["dropped_fields"] = dropped
+                        chunk_diags.append(fallback_diag)
+                    except Exception as fallback_exc:
+                        json_fallback_exc = fallback_exc
+                        logger.warning("Deep JSON fallback failed: %s, falling back to CoT", fallback_exc)
+
+                try:
+                    pred = self.extract_custom(document_text=document_text)
+                    extracted = getattr(pred, "extracted", pred)
+                    cot_instance, dropped = _coerce_extracted_to_partial_model_instance(
+                        extracted=extracted, schema_class=partial_schema,
+                    )
+                    assembled = _merge_partial_payloads(
+                        assembled,
+                        cot_instance.model_dump(mode="json"),
+                    )
+                    diag = {"fallback": "full_cot", "reason": str(exc)}
+                    if json_fallback_exc is not None:
+                        diag["json_fallback_error"] = f"{type(json_fallback_exc).__name__}: {json_fallback_exc}"
+                    if dropped:
+                        diag["dropped_fields"] = dropped
+                    chunk_diags.append(diag)
+                except Exception as cot_exc:
+                    cot_fallback_exc = cot_exc
+                    logger.warning("Deep CoT fallback failed: %s", cot_exc)
+
+                try:
+                    coerced = _coerce_payload_to_schema(assembled, schema)
+                    model_instance = schema.model_validate(coerced)
+                except Exception as final_exc:
+                    partial_instance, dropped = _validate_payload_lenient(
+                        payload=assembled,
+                        schema_class=partial_schema,
+                    )
+                    model_instance = partial_instance
+                    final_diag: dict[str, Any] = {
+                        "final_partial_return": True,
+                        "reason": f"{type(final_exc).__name__}: {final_exc}",
+                    }
+                    if json_fallback_exc is not None:
+                        final_diag["json_fallback_error"] = (
+                            f"{type(json_fallback_exc).__name__}: {json_fallback_exc}"
+                        )
+                    if cot_fallback_exc is not None:
+                        final_diag["cot_fallback_error"] = (
+                            f"{type(cot_fallback_exc).__name__}: {cot_fallback_exc}"
+                        )
+                    if dropped:
+                        final_diag["dropped_fields"] = dropped
+                    chunk_diags.append(final_diag)
 
             return model_instance, {"chunks": chunk_diags}
+
+        def _deep_reconcile_unresolved_groups(
+            self,
+            *,
+            model_instance: BaseModel,
+            document_text: str,
+            schema: type[BaseModel],
+            metrics,
+            tracker,
+            field_evidence: dict[str, dict[str, Any]] | None = None,
+        ) -> tuple[BaseModel, dict[str, Any]]:
+            """Run one focused LLM reconcile pass only for unresolved deep fields."""
+            from mosaicx.metrics import track_step
+
+            diag: dict[str, Any] = {
+                "triggered": False,
+                "reason": None,
+                "unresolved_fields": [],
+                "groups": [],
+                "merged_fields": [],
+            }
+
+            payload = model_instance.model_dump(mode="json")
+            suspicious = _identify_suspicious_fields(
+                model_instance=model_instance,
+                schema_class=schema,
+                source_text=document_text,
+                field_evidence=field_evidence,
+            )
+            suspicious_fields = {str(item.get("field") or "") for item in suspicious}
+            unresolved_fields: list[str] = []
+            for field_name in schema.model_fields.keys():
+                if field_name.startswith("_"):
+                    continue
+                value = payload.get(field_name)
+                if _is_missing_value(value):
+                    unresolved_fields.append(field_name)
+                    continue
+                if field_name in suspicious_fields:
+                    unresolved_fields.append(field_name)
+
+            unresolved_fields = list(dict.fromkeys(name for name in unresolved_fields if name))
+            diag["triggered"] = bool(unresolved_fields)
+            diag["unresolved_fields"] = list(unresolved_fields)
+            if not unresolved_fields:
+                diag["reason"] = "no_unresolved_fields"
+                return model_instance, diag
+
+            try:
+                from mosaicx.runtime_env import import_dspy
+
+                dspy = import_dspy()
+            except Exception as exc:
+                diag["reason"] = f"dspy_import_failed:{type(exc).__name__}"
+                return model_instance, diag
+            if getattr(dspy.settings, "lm", None) is None:
+                diag["reason"] = "lm_not_configured"
+                return model_instance, diag
+
+            validation_schema = _build_partial_schema(schema, name_suffix="DeepReconcilePartial")
+            updated = model_instance
+            updated_payload = payload
+            source_context = str(document_text or "")[:14000]
+            execution_policy = _resolve_deep_execution_policy()
+            diag["execution_policy"] = execution_policy
+
+            chunk_specs = _chunk_schema(schema)
+            max_groups = max(1, int(execution_policy.get("parallel_groups") or 1))
+            selected_groups: list[tuple[dict[str, Any], list[str]]] = []
+            for chunk in chunk_specs:
+                target_fields = [
+                    field_name for field_name in chunk["fields"]
+                    if field_name in unresolved_fields
+                ]
+                if not target_fields:
+                    continue
+                if len(selected_groups) >= max_groups:
+                    diag["groups"].append(
+                        {
+                            "chunk": chunk["name"],
+                            "fields": target_fields,
+                            "skipped": True,
+                            "reason": f"group_limit:{max_groups}",
+                        }
+                    )
+                    continue
+                selected_groups.append((chunk, target_fields))
+
+            def _evaluate_group(
+                chunk: dict[str, Any],
+                target_fields: list[str],
+                baseline_payload: dict[str, Any],
+            ) -> dict[str, Any]:
+                subset_schema = _build_subset_schema(
+                    schema,
+                    target_fields,
+                    name_suffix=f"DeepReconcile{chunk['name'].title()}",
+                    optional=True,
+                )
+                augmented_subset = _augment_schema_with_evidence(subset_schema)
+
+                typed_sig = dspy.Signature(
+                    "document_text -> extracted",
+                    instructions=(
+                        "Extract ONLY the requested fields from the document. "
+                        "Return null when the source does not support a value. "
+                        "Do not infer unstated values. "
+                        f"Focus on: {', '.join(target_fields)}. "
+                        f"Match the {augmented_subset.__name__} schema and fill the "
+                        "field-specific excerpt and reasoning entries."
+                    ),
+                ).with_updated_fields(
+                    "document_text",
+                    desc="Relevant document text",
+                    type_=str,
+                ).with_updated_fields(
+                    "extracted",
+                    desc=f"Focused extraction for {', '.join(target_fields)}",
+                    type_=augmented_subset,
+                )
+                typed_module = dspy.ChainOfThought(typed_sig)
+
+                json_sig = dspy.Signature(
+                    "document_text -> extracted_json",
+                    instructions=(
+                        "Extract ONLY the requested fields from the document. "
+                        "Return ONLY a JSON object containing those fields. "
+                        "Use null when unsupported and do not add commentary. "
+                        f"Focus on: {', '.join(target_fields)}."
+                    ),
+                ).with_updated_fields(
+                    "document_text",
+                    desc="Relevant document text",
+                    type_=str,
+                ).with_updated_fields(
+                    "extracted_json",
+                    desc="Strict JSON object as text",
+                    type_=str,
+                )
+                json_module = dspy.Predict(json_sig)
+
+                group_candidates: list[dict[str, Any]] = []
+                group_diag: dict[str, Any] = {
+                    "chunk": chunk["name"],
+                    "fields": target_fields,
+                    "candidates": [],
+                    "merged_fields": [],
+                    "selected_path": None,
+                    "reason": None,
+                }
+
+                baseline_payload = {
+                    field_name: baseline_payload.get(field_name)
+                    for field_name in target_fields
+                    if not _is_missing_value(baseline_payload.get(field_name))
+                }
+                if baseline_payload:
+                    baseline_model, _ = _coerce_extracted_to_partial_model_instance(
+                        extracted=baseline_payload,
+                        schema_class=subset_schema,
+                    )
+                    baseline_score, baseline_components = _score_extraction_candidate(
+                        extracted=baseline_model,
+                        schema_class=subset_schema,
+                        source_text=document_text,
+                    )
+                    group_candidates.append(
+                        {
+                            "path": "baseline",
+                            "model": baseline_model,
+                            "score": baseline_score,
+                            "components": baseline_components,
+                            "field_evidence": {},
+                        }
+                    )
+
+                try:
+                    typed_pred = typed_module(document_text=source_context)
+                    typed_extracted = getattr(typed_pred, "extracted", typed_pred)
+                    typed_raw = (
+                        typed_extracted.model_dump(mode="json")
+                        if hasattr(typed_extracted, "model_dump")
+                        else typed_extracted
+                        if isinstance(typed_extracted, dict)
+                        else {}
+                    )
+                    clean_typed, typed_field_evidence = _split_evidence_from_extracted(
+                        typed_raw,
+                        subset_schema,
+                    )
+                    typed_model, dropped = _coerce_extracted_to_partial_model_instance(
+                        extracted=clean_typed,
+                        schema_class=subset_schema,
+                    )
+                    typed_score, typed_components = _score_extraction_candidate(
+                        extracted=typed_model,
+                        schema_class=subset_schema,
+                        source_text=document_text,
+                    )
+                    group_candidates.append(
+                        {
+                            "path": "focused_cot",
+                            "model": typed_model,
+                            "score": typed_score,
+                            "components": typed_components,
+                            "field_evidence": typed_field_evidence,
+                            "dropped_fields": dropped,
+                        }
+                    )
+                except Exception as exc:
+                    group_diag["candidates"].append(
+                        {
+                            "path": "focused_cot",
+                            "ok": False,
+                            "error": f"{type(exc).__name__}: {exc}",
+                        }
+                    )
+
+                try:
+                    json_pred = json_module(document_text=source_context)
+                    raw_json = str(getattr(json_pred, "extracted_json", "") or "")
+                    json_model, dropped = _recover_partial_schema_instance_from_raw(
+                        raw_json,
+                        subset_schema,
+                    )
+                    json_score, json_components = _score_extraction_candidate(
+                        extracted=json_model,
+                        schema_class=subset_schema,
+                        source_text=document_text,
+                    )
+                    group_candidates.append(
+                        {
+                            "path": "focused_json",
+                            "model": json_model,
+                            "score": json_score,
+                            "components": json_components,
+                            "field_evidence": {},
+                            "dropped_fields": dropped,
+                        }
+                    )
+                except Exception as exc:
+                    group_diag["candidates"].append(
+                        {
+                            "path": "focused_json",
+                            "ok": False,
+                            "error": f"{type(exc).__name__}: {exc}",
+                        }
+                    )
+
+                if not group_candidates:
+                    group_diag["reason"] = "no_candidates"
+                    return {"diag": group_diag, "chosen": None}
+
+                for candidate in group_candidates:
+                    group_diag["candidates"].append(
+                        {
+                            "path": candidate["path"],
+                            "ok": True,
+                            "score": candidate["score"],
+                            "components": candidate["components"],
+                        }
+                    )
+
+                chosen, adjudication = _adjudicate_conflicting_candidates(
+                    candidates=group_candidates,
+                    source_text=document_text,
+                )
+                if chosen is None:
+                    group_diag["reason"] = "no_chosen_candidate"
+                    group_diag["adjudication"] = adjudication
+                    return {"diag": group_diag, "chosen": None}
+
+                group_diag["selected_path"] = chosen.get("path")
+                group_diag["selected_score"] = chosen.get("score")
+                group_diag["adjudication"] = adjudication
+                return {"diag": group_diag, "chosen": chosen}
+
+            group_results: list[dict[str, Any]] = []
+            if (
+                bool(execution_policy.get("allow_parallel_groups"))
+                and len(selected_groups) > 1
+            ):
+                import concurrent.futures
+
+                ordered_results: list[dict[str, Any] | None] = [None] * len(selected_groups)
+                with concurrent.futures.ThreadPoolExecutor(
+                    max_workers=min(
+                        int(execution_policy.get("parallel_groups") or 1),
+                        len(selected_groups),
+                    )
+                ) as pool:
+                    future_map = {
+                        pool.submit(
+                            _evaluate_group,
+                            chunk,
+                            target_fields,
+                            dict(updated_payload),
+                        ): index
+                        for index, (chunk, target_fields) in enumerate(selected_groups)
+                    }
+                    for future in concurrent.futures.as_completed(future_map):
+                        index = future_map[future]
+                        try:
+                            ordered_results[index] = future.result()
+                        except Exception as exc:
+                            chunk, target_fields = selected_groups[index]
+                            ordered_results[index] = {
+                                "diag": {
+                                    "chunk": chunk["name"],
+                                    "fields": target_fields,
+                                    "candidates": [],
+                                    "merged_fields": [],
+                                    "selected_path": None,
+                                    "reason": f"parallel_group_error:{type(exc).__name__}",
+                                },
+                                "chosen": None,
+                            }
+                group_results = [result for result in ordered_results if result is not None]
+            else:
+                group_results = [
+                    _evaluate_group(chunk, target_fields, dict(updated_payload))
+                    for chunk, target_fields in selected_groups
+                ]
+
+            for result in group_results:
+                group_diag = result["diag"]
+                chosen = result.get("chosen")
+                target_fields = list(group_diag.get("fields") or [])
+                if chosen is None:
+                    diag["groups"].append(group_diag)
+                    continue
+
+                chosen_payload = chosen["model"].model_dump(mode="json")
+                merged_payload = _merge_partial_payloads(updated_payload, chosen_payload)
+                merged_model, _ = _validate_payload_lenient(
+                    payload=merged_payload,
+                    schema_class=validation_schema,
+                )
+                merged_dump = merged_model.model_dump(mode="json")
+                merged_fields = [
+                    field_name
+                    for field_name in target_fields
+                    if (
+                        _normalize_semantic_probe(updated_payload.get(field_name))
+                        != _normalize_semantic_probe(merged_dump.get(field_name))
+                    )
+                    and not _is_missing_value(merged_dump.get(field_name))
+                ]
+
+                chosen_evidence = chosen.get("field_evidence") or {}
+                if field_evidence is not None and isinstance(chosen_evidence, dict):
+                    for field_name, evidence in chosen_evidence.items():
+                        if field_name in merged_fields and isinstance(evidence, dict):
+                            field_evidence[field_name] = evidence
+
+                updated = merged_model
+                updated_payload = merged_dump
+                group_diag["merged_fields"] = merged_fields
+                group_diag["reason"] = "merged" if merged_fields else "selected_no_change"
+                diag["merged_fields"].extend(merged_fields)
+                diag["groups"].append(group_diag)
+
+            diag["merged_fields"] = list(dict.fromkeys(diag["merged_fields"]))
+            if not diag["merged_fields"]:
+                diag["reason"] = "no_group_repair_applied"
+            else:
+                diag["reason"] = "group_reconcile_applied"
+            return updated, diag
 
         def _verify_extraction_pass(self, extracted, document_text: str, schema: type[BaseModel], metrics, tracker):
             """Deep mode: verification pass. Returns list of flagged issues."""
@@ -4957,10 +6212,40 @@ def _build_dspy_classes():
                 field_evidence=_last_outlines_evidence if _last_outlines_evidence else None,
                 think=think,
             )
+            deep_reconcile_diag: dict[str, Any] = {}
+            if think == "deep":
+                model_instance, deep_reconcile_diag = self._deep_reconcile_unresolved_groups(
+                    model_instance=model_instance,
+                    document_text=document_text,
+                    schema=schema,
+                    metrics=metrics,
+                    tracker=tracker,
+                    field_evidence=_last_outlines_evidence if _last_outlines_evidence else None,
+                )
+            critical_repair_diag: dict[str, Any] = {}
+            if think == "deep":
+                model_instance, critical_repair_diag = _repair_failed_critical_fields_with_refine(
+                    model_instance=model_instance,
+                    schema_class=schema,
+                    source_text=document_text,
+                    think=think,
+                    field_evidence=_last_outlines_evidence if _last_outlines_evidence else None,
+                )
             if think == "deep" and verify_diag.get("issues") and isinstance(repair_diag, dict):
                 repair_diag["verification_flagged_count"] = int(verify_diag.get("flagged_count") or 0)
             if int(repair_diag.get("repaired_count") or 0) > 0:
                 with track_step(metrics, "Recompute after field repair", tracker):
+                    model_instance = _compute_derived_fields(
+                        model_instance, schema, document_text,
+                    )
+            if think == "deep" and int(len(deep_reconcile_diag.get("merged_fields") or [])) > 0:
+                with track_step(metrics, "Recompute after deep reconcile", tracker):
+                    model_instance = _compute_derived_fields(
+                        model_instance, schema, document_text,
+                    )
+            critical_repair_count = len(critical_repair_diag.get("repaired_fields") or []) if think == "deep" else 0
+            if think == "deep" and critical_repair_count > 0:
+                with track_step(metrics, "Recompute after critical repair", tracker):
                     model_instance = _compute_derived_fields(
                         model_instance, schema, document_text,
                     )
@@ -4972,10 +6257,21 @@ def _build_dspy_classes():
                     field_evidence=_last_outlines_evidence,
                     semantic_canonicalize=getattr(self, "semantic_canonicalize", None),
                 )
+            field_family_reconciliation_diag: dict[str, Any] = {}
+            if _last_outlines_evidence:
+                model_instance, field_family_reconciliation_diag = _apply_field_family_reconciliation(
+                    model_instance=model_instance,
+                    schema_class=schema,
+                    source_text=document_text,
+                    field_evidence=_last_outlines_evidence,
+                    reconcile_field_family=getattr(self, "reconcile_field_family", None),
+                    families={"polarity"},
+                )
 
             model_instance, semantic_validation_diag = _apply_deterministic_semantic_validation(
                 model_instance=model_instance,
                 schema_class=schema,
+                field_evidence=_last_outlines_evidence if _last_outlines_evidence else None,
             )
 
             # Assemble diagnostics
@@ -4986,10 +6282,16 @@ def _build_dspy_classes():
             planner_diag["bestofn"] = chain_diag.get("bestofn", {})
             planner_diag["adjudication"] = chain_diag.get("adjudication", {})
             planner_diag["repair"] = repair_diag
+            if critical_repair_diag:
+                planner_diag["critical_repair"] = critical_repair_diag
+            if deep_reconcile_diag:
+                planner_diag["deep_reconcile"] = deep_reconcile_diag
             if think == "standard":
                 planner_diag["field_repair"] = repair_diag
             if semantic_canonicalization_diag:
                 planner_diag["semantic_canonicalization"] = semantic_canonicalization_diag
+            if field_family_reconciliation_diag:
+                planner_diag["field_family_reconciliation"] = field_family_reconciliation_diag
             planner_diag["deterministic_validation"] = semantic_validation_diag
             planner_diag["think_level"] = think
             planner_diag["user_think"] = self._user_think

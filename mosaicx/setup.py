@@ -238,7 +238,7 @@ def _probe_single(
     timeout: float,
 ) -> BackendInfo | None:
     """Probe a single backend port. Return BackendInfo or None."""
-    base_url = f"http://localhost:{port}"
+    base_url = f"http://127.0.0.1:{port}"
 
     # Ollama uses /api/tags; everything else uses /v1/models.
     if name == "ollama":
@@ -282,6 +282,11 @@ def _probe_remote(
         api_base = os.environ.get("MOSAICX_API_BASE", "").strip()
     if not api_base:
         return None
+    api_base = (
+        api_base.replace("://localhost", "://127.0.0.1")
+        .replace("://[::1]", "://127.0.0.1")
+        .rstrip("/")
+    )
 
     if api_key is None:
         api_key = os.environ.get("MOSAICX_API_KEY", "").strip()

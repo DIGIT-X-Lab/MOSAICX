@@ -11,7 +11,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -26,10 +26,10 @@ class MosaicxConfig(BaseSettings):
     )
 
     # --- LLM ---
-    lm: str = "openai/gpt-oss:120b"
+    lm: str = "openai/mlx-community/gpt-oss-120b-4bit"
     lm_cheap: str = "openai/gpt-oss:20b"
-    api_key: str = "ollama"
-    api_base: str = "http://localhost:11434/v1"
+    api_key: str = "dummy"
+    api_base: str = "http://127.0.0.1:8000/v1"
     lm_temperature: float = 0.0
     max_tokens: int = 32768
     num_ctx: int = 131072
@@ -44,6 +44,8 @@ class MosaicxConfig(BaseSettings):
     outlines_timeout: int = 120
     planner_min_chars: int = 4000
     structured_json_fallback: bool = False
+    deep_execution_profile: Literal["auto", "serial", "limited", "parallel"] = "auto"
+    deep_parallel_groups: int = 2
 
     # --- Processing ---
     default_template: str = "auto"
@@ -97,6 +99,18 @@ class MosaicxConfig(BaseSettings):
     # --- Signals (proprietary) ---
     signals_api_key: str = ""
     signals_api_base: str = "https://zyqsznjjxqmuyxeguqif.supabase.co/functions/v1/signals-api"
+
+    @field_validator("api_base", mode="before")
+    @classmethod
+    def _normalize_loopback_api_base(cls, value: str) -> str:
+        text = str(value or "").strip()
+        if not text:
+            return text
+        return (
+            text.replace("://localhost", "://127.0.0.1")
+            .replace("://[::1]", "://127.0.0.1")
+            .rstrip("/")
+        )
 
 
 @lru_cache(maxsize=1)
