@@ -443,6 +443,42 @@ def _normalize_model_name_for_openai_compatible(model_name: str) -> str:
     return model_name
 
 
+def _resolve_openai_compatible_model_name(
+    *,
+    client: object,
+    configured_model_name: str,
+    fallback_model_name: str = "mlx-community/gpt-oss-120b-4bit",
+) -> str:
+    model_name = _normalize_model_name_for_openai_compatible(configured_model_name)
+    if not model_name:
+        model_name = fallback_model_name
+    try:
+        models = client.models.list()  # type: ignore[union-attr]
+        data = list(getattr(models, "data", []) or [])
+    except Exception:
+        return model_name
+
+    available_ids = [
+        str(getattr(item, "id", "") or "").strip()
+        for item in data
+        if str(getattr(item, "id", "") or "").strip()
+    ]
+    if not available_ids:
+        return model_name
+    if model_name in available_ids:
+        return model_name
+
+    probe = re.sub(r"[^a-z0-9]+", "", model_name.lower())
+    for candidate in available_ids:
+        candidate_probe = re.sub(r"[^a-z0-9]+", "", candidate.lower())
+        if probe and probe in candidate_probe:
+            return candidate
+
+    if len(available_ids) == 1:
+        return available_ids[0]
+    return model_name
+
+
 def _is_missing_value(value: Any) -> bool:
     if value is None:
         return True
@@ -2066,11 +2102,11 @@ def _recover_schema_instance_with_outlines(
 
         cfg = get_config()
         base_url = _normalize_local_api_base(str(cfg.api_base or "http://127.0.0.1:8000/v1"))
-        model_name = _normalize_model_name_for_openai_compatible(str(cfg.lm or ""))
-        if not model_name:
-            model_name = "mlx-community/gpt-oss-120b-4bit"
-
         client = openai.OpenAI(base_url=base_url, api_key=(cfg.api_key or "ollama"))
+        model_name = _resolve_openai_compatible_model_name(
+            client=client,
+            configured_model_name=str(cfg.lm or ""),
+        )
         augmented_schema = _augment_schema_with_evidence(schema_class)
         prompt = (
             "Extract structured medical data from the document.\n"
@@ -2424,6 +2460,9 @@ def _apply_semantic_canonicalization(
         "classified_count": 0,
         "updated_fields": [],
         "fields": [],
+        "fallback_used": False,
+        "primary_error": None,
+        "fallback_error": None,
         "reason": None,
     }
     if not field_evidence:
@@ -2453,8 +2492,16 @@ def _apply_semantic_canonicalization(
 
         parsed = parse_json_like(raw) if raw else {}
     except Exception as exc:
-        diag["reason"] = f"semantic_classifier_failed:{type(exc).__name__}"
-        return model_instance, diag
+        diag["primary_error"] = type(exc).__name__
+        try:
+            parsed = _call_semantic_canonicalization_json_fallback(
+                candidates=candidates[:8],
+            )
+            diag["fallback_used"] = True
+        except Exception as fallback_exc:
+            diag["fallback_error"] = type(fallback_exc).__name__
+            diag["reason"] = f"semantic_classifier_failed:{type(exc).__name__}"
+            return model_instance, diag
 
     if not isinstance(parsed, dict):
         diag["reason"] = "semantic_classifier_invalid_json"
@@ -2524,6 +2571,66 @@ def _apply_semantic_canonicalization(
 
     diag["reason"] = "semantic_canonicalization_applied" if diag["classified_count"] else "no_semantic_updates"
     return updated_model, diag
+
+
+def _call_semantic_canonicalization_json_fallback(
+    *,
+    candidates: list[dict[str, Any]],
+) -> dict[str, Any]:
+    import openai
+
+    from mosaicx.config import get_config
+    from mosaicx.verify.parse_utils import parse_json_like
+
+    cfg = get_config()
+    base_url = _normalize_local_api_base(str(cfg.api_base or "http://127.0.0.1:8000/v1"))
+    client = openai.OpenAI(base_url=base_url, api_key=(cfg.api_key or "ollama"))
+    model_name = _resolve_openai_compatible_model_name(
+        client=client,
+        configured_model_name=str(cfg.lm or ""),
+    )
+    schema_json = json.dumps(
+        {
+            "type": "object",
+            "description": "Semantic canonicalization result keyed by field name.",
+            "properties": {
+                str(candidate.get("field") or ""): {
+                    "type": "object",
+                    "properties": {
+                        "canonical_value": {
+                            "description": "Canonicalized value supported by source_value or null.",
+                        },
+                        "confidence": {"type": "number"},
+                        "reasoning": {"type": "string"},
+                    },
+                    "required": ["canonical_value", "confidence", "reasoning"],
+                    "additionalProperties": False,
+                }
+                for candidate in candidates
+                if str(candidate.get("field") or "").strip()
+            },
+            "additionalProperties": False,
+        },
+        indent=2,
+    )
+    prompt = (
+        "Canonicalize the following extraction fields using source_value as ground truth.\n"
+        "Return ONLY a JSON object keyed by field name.\n"
+        "Only emit a canonical_value when source_value clearly supports it.\n"
+        "If a candidate is not clearly supported, return canonical_value as null and confidence as 0.\n\n"
+        f"Candidates:\n{json.dumps(candidates, ensure_ascii=False, indent=2)}"
+    )
+    raw = _call_json_object_mode(
+        client=client,
+        model_name=model_name,
+        prompt=prompt,
+        schema_json=schema_json,
+        max_tokens=1200,
+    )
+    parsed = parse_json_like(raw) if raw else {}
+    if not isinstance(parsed, dict):
+        raise ValueError("semantic_canonicalization_json_fallback_invalid_json")
+    return parsed
 
 
 def _field_value_matches_block(

@@ -625,6 +625,54 @@ class TestAdjudicationAndRepair:
         assert field_evidence["location"]["canonicalization"]["from"] == "RUL"
         assert field_evidence["location"]["canonicalization"]["to"] == "Right upper lobe"
 
+    def test_apply_semantic_canonicalization_uses_json_fallback_when_predict_fails(self, monkeypatch):
+        from mosaicx.pipelines.extraction import _apply_semantic_canonicalization
+
+        class Report(BaseModel):
+            sex: str | None = None
+
+        class _FailingSemanticCanonicalize:
+            def __call__(self, *, candidates_json: str):  # noqa: ARG002
+                raise RuntimeError("backend rejected dspy request shape")
+
+        def _fake_json_fallback(*, candidates):
+            assert len(candidates) == 1
+            assert candidates[0]["field"] == "sex"
+            return {
+                "sex": {
+                    "canonical_value": "Female",
+                    "confidence": 0.98,
+                    "reasoning": "F expands to Female.",
+                }
+            }
+
+        monkeypatch.setattr(
+            "mosaicx.pipelines.extraction._call_semantic_canonicalization_json_fallback",
+            _fake_json_fallback,
+        )
+
+        field_evidence = {
+            "sex": {
+                "excerpt": "F",
+                "reasoning": "The source token F denotes female sex.",
+            },
+        }
+        model = Report(sex="Female")
+
+        updated, diag = _apply_semantic_canonicalization(
+            model_instance=model,
+            schema_class=Report,
+            field_evidence=field_evidence,
+            semantic_canonicalize=_FailingSemanticCanonicalize(),
+        )
+
+        assert updated.sex == "Female"
+        assert diag["fallback_used"] is True
+        assert diag["primary_error"] == "RuntimeError"
+        assert diag["classified_count"] == 1
+        assert field_evidence["sex"]["canonicalization"]["method"] == "semantic_classifier"
+        assert field_evidence["sex"]["canonicalization"]["to"] == "Female"
+
     def test_conflicting_candidates_are_adjudicated_with_mcc(self, monkeypatch):
         from mosaicx.pipelines.extraction import _adjudicate_conflicting_candidates
 
