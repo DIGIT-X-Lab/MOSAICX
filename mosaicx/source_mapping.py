@@ -18,6 +18,8 @@ Usage (both pipelines)::
 
 from __future__ import annotations
 
+import difflib
+import re
 from typing import Any
 
 from .documents.models import LoadedDocument
@@ -27,6 +29,105 @@ def _normalize_textish(value: Any) -> str:
     """Normalize a scalar-ish value for loose equality checks."""
     text = str(value or "").strip()
     return " ".join(text.split()).lower()
+
+
+def _normalize_compact_text(value: Any) -> str:
+    """Normalize text for OCR block matching across spacing / punctuation drift."""
+    text = str(value or "").strip().lower()
+    return re.sub(r"[^0-9a-z]+", "", text)
+
+
+def _find_best_text_block_span(
+    doc: LoadedDocument,
+    *,
+    candidates: list[str],
+) -> tuple[list[dict[str, Any]], str | None] | None:
+    """Find the best matching OCR text block for a field.
+
+    PPStructureV3 OCR often preserves the right block geometry while the
+    reconstructed document text adds Markdown headings, collapses spaces, or
+    duplicates repeated headers across pages.  For source highlighting we
+    prefer matching directly against ``doc.text_blocks`` before falling back
+    to global-text offset lookup.
+    """
+    if not doc.text_blocks:
+        return None
+
+    normalized_candidates: list[tuple[str, str, str]] = []
+    for raw in candidates:
+        text = str(raw or "").strip()
+        compact = _normalize_compact_text(text)
+        if len(compact) < 4:
+            continue
+        normalized_candidates.append((text, compact, _normalize_textish(text)))
+
+    if not normalized_candidates:
+        return None
+
+    best: tuple[float, int, int, dict[str, Any], str] | None = None
+
+    for block in doc.text_blocks:
+        block_text = str(getattr(block, "text", "") or "").strip()
+        if not block_text:
+            continue
+
+        block_compact = _normalize_compact_text(block_text)
+        if len(block_compact) < 4:
+            continue
+
+        best_score = 0.0
+        best_excerpt = None
+        for original, cand_compact, _cand_loose in normalized_candidates:
+            score = 0.0
+            if cand_compact in block_compact:
+                # Strong exact-ish match after stripping punctuation / spaces.
+                score = 1.0 + min(0.5, len(cand_compact) / max(len(block_compact), 1))
+            elif block_compact in cand_compact and len(block_compact) >= max(4, len(cand_compact) // 2):
+                score = 0.88 + min(0.08, len(block_compact) / max(len(cand_compact), 1))
+            else:
+                ratio = difflib.SequenceMatcher(
+                    None,
+                    cand_compact,
+                    block_compact,
+                    autojunk=False,
+                ).ratio()
+                if ratio >= 0.9:
+                    score = ratio
+
+            if score > best_score:
+                best_score = score
+                best_excerpt = original
+
+        if best_score <= 0 or best_excerpt is None:
+            continue
+
+        span = {
+            "page": block.page,
+            "bbox": list(block.bbox),
+            "start": block.start,
+            "end": block.end,
+        }
+        candidate = (best_score, block.page, block.start, span, best_excerpt)
+        if best is None:
+            best = candidate
+            continue
+
+        prev_score, prev_page, prev_start, *_ = best
+        # Prefer higher score, then earlier page, then earlier block position.
+        if (
+            best_score > prev_score
+            or (
+                abs(best_score - prev_score) < 1e-6
+                and (block.page < prev_page or (block.page == prev_page and block.start < prev_start))
+            )
+        ):
+            best = candidate
+
+    if best is None:
+        return None
+
+    _score, _page, _start, span, excerpt = best
+    return [span], excerpt
 
 
 def _derive_source_value_metadata(
@@ -278,6 +379,7 @@ def build_source_block(
     else:
         guide["coordinate_space"] = "pdf_points"
         guide["origin"] = "bottom-left"
+        guide["matcher"] = "ocr_block_v2"
         guide["render_dpi"] = 200
         guide["page_dimensions"] = [list(d) for d in page_dims]
         guide["to_fitz_rect"] = "fitz.Rect(x0, page_h - y1, x1, page_h - y0)"
@@ -319,13 +421,28 @@ def build_source_block(
                 llm_excerpt = field_ev.get("excerpt", "") or ""
 
             excerpt, start, end = None, None, None
-            if llm_excerpt:
+            spans: list[dict[str, Any]] = []
+            explicit_source_value = ""
+            if isinstance(field_ev, dict):
+                explicit_source_value = str(field_ev.get("source_value") or "").strip()
+
+            block_match = _find_best_text_block_span(
+                doc,
+                candidates=[llm_excerpt, explicit_source_value, val_str],
+            )
+            if block_match is not None:
+                spans, matched_excerpt = block_match
+                excerpt = llm_excerpt or matched_excerpt
+                if spans:
+                    start = spans[0].get("start")
+                    end = spans[0].get("end")
+
+            if excerpt is None and llm_excerpt:
                 excerpt, start, end = _find_tight_excerpt(doc.text, llm_excerpt)
             if excerpt is None and val_str:
                 excerpt, start, end = _find_tight_excerpt(doc.text, val_str)
 
-            spans: list[dict[str, Any]] = []
-            if start is not None and end is not None and doc.text_blocks:
+            if not spans and start is not None and end is not None and doc.text_blocks:
                 raw_spans = locate_in_document(doc, start, end)
                 if raw_spans:
                     spans = raw_spans
