@@ -37,10 +37,297 @@ def _normalize_compact_text(value: Any) -> str:
     return re.sub(r"[^0-9a-z]+", "", text)
 
 
+_HEADER_DEMOGRAPHIC_FIELDS = {
+    "patient_name",
+    "name",
+    "patient_age",
+    "age",
+    "patient_sex",
+    "sex",
+    "gender",
+    "date_of_birth",
+    "dob",
+    "patient_id",
+    "mrn",
+    "uhid",
+    "ip_no",
+}
+
+
+def _field_candidate_variants(field_key: str, value: Any) -> list[str]:
+    """Expand short demographic fields into OCR-friendly match variants."""
+    text = str(value or "").strip()
+    if not text:
+        return []
+
+    variants = [text]
+    key = field_key.lower()
+
+    if key in {"patient_age", "age"} and text.isdigit():
+        variants.extend([
+            text,
+            f"{text}y",
+            f"{text} y",
+            f"{text}yr",
+            f"{text} yr",
+            f"{text}yrs",
+            f"{text} yrs",
+            f"{text}year",
+            f"{text} years",
+        ])
+    elif key in {"patient_sex", "sex", "gender"}:
+        lowered = text.lower()
+        if lowered.startswith("f"):
+            variants.extend(["female", "f"])
+        elif lowered.startswith("m"):
+            variants.extend(["male", "m"])
+    elif key in {"patient_name", "name"}:
+        stripped = re.sub(r"^(mr|mrs|ms|miss|dr)\.?\s+", "", text, flags=re.IGNORECASE).strip()
+        if stripped and stripped.lower() != text.lower():
+            variants.append(stripped)
+
+    seen: set[str] = set()
+    out: list[str] = []
+    for variant in variants:
+        cleaned = str(variant or "").strip()
+        if not cleaned:
+            continue
+        token = cleaned.lower()
+        if token in seen:
+            continue
+        seen.add(token)
+        out.append(cleaned)
+    return out
+
+
+def _block_priority_bonus(doc: LoadedDocument, block: Any, field_key: str, block_text: str) -> float:
+    """Bias header demographic fields toward top-of-page header blocks."""
+    key = field_key.lower()
+    if key not in _HEADER_DEMOGRAPHIC_FIELDS:
+        return 0.0
+
+    bonus = 0.0
+    page = int(getattr(block, "page", 1) or 1)
+    if page == 1:
+        bonus += 0.08
+
+    bbox = getattr(block, "bbox", None) or [0, 0, 0, 0]
+    page_dims = doc.page_dimensions or []
+    if 1 <= page <= len(page_dims) and len(bbox) == 4:
+        _page_w, page_h = page_dims[page - 1]
+        if page_h:
+            top_from_top = max(0.0, page_h - float(bbox[3])) / float(page_h)
+            if top_from_top <= 0.25:
+                bonus += 0.10
+            elif top_from_top <= 0.40:
+                bonus += 0.05
+
+    compact = _normalize_compact_text(block_text)
+    if key in {"patient_age", "age", "patient_sex", "sex", "gender"}:
+        if re.search(r"\d", block_text) and ("female" in compact or "male" in compact or compact.endswith("f") or compact.endswith("m")):
+            bonus += 0.10
+    if key in {"patient_id", "mrn", "uhid", "ip_no"}:
+        if re.search(r"\d{6,}", block_text):
+            bonus += 0.06
+        if any(token in compact for token in ("uhid", "ipno", "patientid", "mrn", "ipnumber")):
+            bonus += 0.06
+
+    return bonus
+
+
+def _blocks_share_line(left: Any, right: Any) -> bool:
+    """Return True when two OCR blocks are plausibly on the same text line."""
+    if getattr(left, "page", None) != getattr(right, "page", None):
+        return False
+
+    lx0, ly0, lx1, ly1 = list(getattr(left, "bbox", None) or [0, 0, 0, 0])
+    rx0, ry0, rx1, ry1 = list(getattr(right, "bbox", None) or [0, 0, 0, 0])
+    lheight = max(1.0, ly1 - ly0)
+    rheight = max(1.0, ry1 - ry0)
+    lmid = (ly0 + ly1) / 2.0
+    rmid = (ry0 + ry1) / 2.0
+    vertical_gap = abs(lmid - rmid)
+    overlap = min(ly1, ry1) - max(ly0, ry0)
+
+    return (
+        overlap >= 0.35 * min(lheight, rheight)
+        or vertical_gap <= 0.65 * max(lheight, rheight)
+    )
+
+
+def _merge_spans(blocks: list[Any]) -> tuple[list[dict[str, Any]], str]:
+    """Create one merged span across contiguous OCR blocks and combined text."""
+    sorted_blocks = sorted(
+        blocks,
+        key=lambda block: (
+            int(getattr(block, "page", 1) or 1),
+            float((getattr(block, "bbox", [0, 0, 0, 0])[0])),
+            int(getattr(block, "start", 0) or 0),
+        ),
+    )
+    page = int(getattr(sorted_blocks[0], "page", 1) or 1)
+    x0 = min(float(block.bbox[0]) for block in sorted_blocks)
+    y0 = min(float(block.bbox[1]) for block in sorted_blocks)
+    x1 = max(float(block.bbox[2]) for block in sorted_blocks)
+    y1 = max(float(block.bbox[3]) for block in sorted_blocks)
+    start = min(int(getattr(block, "start", 0) or 0) for block in sorted_blocks)
+    end = max(int(getattr(block, "end", 0) or 0) for block in sorted_blocks)
+    text = " ".join(str(getattr(block, "text", "") or "").strip() for block in sorted_blocks).strip()
+    return [{
+        "page": page,
+        "bbox": [x0, y0, x1, y1],
+        "start": start,
+        "end": end,
+    }], text
+
+
+def _union_anchor(anchor: dict[str, Any] | None, spans: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """Expand a demographic anchor with newly accepted spans on the same page."""
+    if not spans:
+        return anchor
+
+    page = spans[0]["page"]
+    x0 = min(float(span["bbox"][0]) for span in spans)
+    y0 = min(float(span["bbox"][1]) for span in spans)
+    x1 = max(float(span["bbox"][2]) for span in spans)
+    y1 = max(float(span["bbox"][3]) for span in spans)
+    if anchor is None:
+        return {"page": page, "bbox": [x0, y0, x1, y1]}
+
+    if int(anchor.get("page", page)) != int(page):
+        return anchor
+
+    ax0, ay0, ax1, ay1 = list(anchor.get("bbox", [x0, y0, x1, y1]))
+    return {
+        "page": page,
+        "bbox": [
+            min(float(ax0), x0),
+            min(float(ay0), y0),
+            max(float(ax1), x1),
+            max(float(ay1), y1),
+        ],
+    }
+
+
+def _anchor_priority_bonus(anchor: dict[str, Any] | None, spans: list[dict[str, Any]]) -> float:
+    """Prefer demographic spans that stay inside the same header cluster."""
+    if anchor is None or not spans:
+        return 0.0
+
+    page = int(spans[0]["page"])
+    if int(anchor.get("page", page)) != page:
+        return 0.0
+
+    ax0, ay0, ax1, ay1 = list(anchor.get("bbox", [0, 0, 0, 0]))
+    sx0 = min(float(span["bbox"][0]) for span in spans)
+    sy0 = min(float(span["bbox"][1]) for span in spans)
+    sx1 = max(float(span["bbox"][2]) for span in spans)
+    sy1 = max(float(span["bbox"][3]) for span in spans)
+    smid_y = (sy0 + sy1) / 2.0
+    amid_y = (float(ay0) + float(ay1)) / 2.0
+    vertical_gap = abs(smid_y - amid_y)
+    overlap_y = min(float(ay1), sy1) - max(float(ay0), sy0)
+    overlap_x = min(float(ax1), sx1) - max(float(ax0), sx0)
+
+    bonus = 0.22
+    if overlap_y >= 0:
+        bonus += 0.12
+    elif vertical_gap <= 24.0:
+        bonus += 0.08
+
+    if overlap_x >= -18.0:
+        bonus += 0.06
+
+    return bonus
+
+
+def _candidate_units(doc: LoadedDocument, field_key: str) -> list[tuple[list[dict[str, Any]], str]]:
+    """Return OCR units to rank against: single blocks plus header line windows."""
+    units: list[tuple[list[dict[str, Any]], str]] = []
+    if not doc.text_blocks:
+        return units
+
+    # Always keep single-block candidates.
+    for block in doc.text_blocks:
+        text = str(getattr(block, "text", "") or "").strip()
+        if not text:
+            continue
+        units.append((
+            [{
+                "page": block.page,
+                "bbox": list(block.bbox),
+                "start": block.start,
+                "end": block.end,
+            }],
+            text,
+        ))
+
+    key = field_key.lower()
+    if key not in _HEADER_DEMOGRAPHIC_FIELDS:
+        return units
+
+    by_page: dict[int, list[Any]] = {}
+    for block in doc.text_blocks:
+        text = str(getattr(block, "text", "") or "").strip()
+        if not text:
+            continue
+        by_page.setdefault(int(getattr(block, "page", 1) or 1), []).append(block)
+
+    for page, page_blocks in by_page.items():
+        sorted_blocks = sorted(
+            page_blocks,
+            key=lambda block: (
+                -float((getattr(block, "bbox", [0, 0, 0, 0])[3])),
+                float((getattr(block, "bbox", [0, 0, 0, 0])[0])),
+                int(getattr(block, "start", 0) or 0),
+            ),
+        )
+
+        rows: list[list[Any]] = []
+        for block in sorted_blocks:
+            placed = False
+            for row in rows:
+                if _blocks_share_line(row[-1], block):
+                    row.append(block)
+                    placed = True
+                    break
+            if not placed:
+                rows.append([block])
+
+        for row in rows:
+            row.sort(key=lambda block: float((getattr(block, "bbox", [0, 0, 0, 0])[0])))
+            n = len(row)
+            for start_idx in range(n):
+                window: list[Any] = [row[start_idx]]
+                for end_idx in range(start_idx, n):
+                    if end_idx > start_idx:
+                        prev = row[end_idx - 1]
+                        curr = row[end_idx]
+                        gap = float(curr.bbox[0]) - float(prev.bbox[2])
+                        row_height = max(
+                            1.0,
+                            max(float(item.bbox[3]) - float(item.bbox[1]) for item in window + [curr]),
+                        )
+                        if gap > max(18.0, row_height * 2.5):
+                            break
+                        window.append(curr)
+
+                    if len(window) < 2:
+                        continue
+
+                    spans, text = _merge_spans(window)
+                    if text:
+                        units.append((spans, text))
+
+    return units
+
+
 def _find_best_text_block_span(
     doc: LoadedDocument,
     *,
     candidates: list[str],
+    field_key: str = "",
+    preferred_anchor: dict[str, Any] | None = None,
 ) -> tuple[list[dict[str, Any]], str | None] | None:
     """Find the best matching OCR text block for a field.
 
@@ -53,22 +340,24 @@ def _find_best_text_block_span(
     if not doc.text_blocks:
         return None
 
+    short_variant_fields = {"patient_age", "age", "patient_sex", "sex", "gender"}
+    min_candidate_len = 2 if field_key.lower() in short_variant_fields else 4
+
     normalized_candidates: list[tuple[str, str, str]] = []
     for raw in candidates:
         text = str(raw or "").strip()
         compact = _normalize_compact_text(text)
-        if len(compact) < 4:
+        if len(compact) < min_candidate_len:
             continue
         normalized_candidates.append((text, compact, _normalize_textish(text)))
 
     if not normalized_candidates:
         return None
 
-    best: tuple[float, int, int, dict[str, Any], str] | None = None
+    best: tuple[float, int, int, list[dict[str, Any]], str] | None = None
 
-    for block in doc.text_blocks:
-        block_text = str(getattr(block, "text", "") or "").strip()
-        if not block_text:
+    for spans, block_text in _candidate_units(doc, field_key):
+        if not block_text or not spans:
             continue
 
         block_compact = _normalize_compact_text(block_text)
@@ -81,9 +370,15 @@ def _find_best_text_block_span(
             score = 0.0
             if cand_compact in block_compact:
                 # Strong exact-ish match after stripping punctuation / spaces.
-                score = 1.0 + min(0.5, len(cand_compact) / max(len(block_compact), 1))
+                # Prefer tighter OCR regions over merged row windows that only
+                # contain the value as a substring. Earlier versions capped
+                # both the tight block and the larger row at the same score,
+                # which let a larger merged row win on tie-break.
+                tightness = min(1.0, len(cand_compact) / max(len(block_compact), 1))
+                score = 1.0 + 0.5 * tightness
             elif block_compact in cand_compact and len(block_compact) >= max(4, len(cand_compact) // 2):
-                score = 0.88 + min(0.08, len(block_compact) / max(len(cand_compact), 1))
+                tightness = min(1.0, len(block_compact) / max(len(cand_compact), 1))
+                score = 0.88 + 0.08 * tightness
             else:
                 ratio = difflib.SequenceMatcher(
                     None,
@@ -101,13 +396,15 @@ def _find_best_text_block_span(
         if best_score <= 0 or best_excerpt is None:
             continue
 
-        span = {
-            "page": block.page,
-            "bbox": list(block.bbox),
-            "start": block.start,
-            "end": block.end,
-        }
-        candidate = (best_score, block.page, block.start, span, best_excerpt)
+        unit = type("SourceUnit", (), {
+            "page": spans[0]["page"],
+            "bbox": spans[0]["bbox"],
+            "start": spans[0]["start"],
+        })()
+        best_score += _block_priority_bonus(doc, unit, field_key, block_text)
+        best_score += _anchor_priority_bonus(preferred_anchor, spans)
+
+        candidate = (best_score, spans[0]["page"], spans[0]["start"], spans, best_excerpt)
         if best is None:
             best = candidate
             continue
@@ -118,7 +415,10 @@ def _find_best_text_block_span(
             best_score > prev_score
             or (
                 abs(best_score - prev_score) < 1e-6
-                and (block.page < prev_page or (block.page == prev_page and block.start < prev_start))
+                and (
+                    spans[0]["page"] < prev_page
+                    or (spans[0]["page"] == prev_page and spans[0]["start"] < prev_start)
+                )
             )
         ):
             best = candidate
@@ -126,8 +426,8 @@ def _find_best_text_block_span(
     if best is None:
         return None
 
-    _score, _page, _start, span, excerpt = best
-    return [span], excerpt
+    _score, _page, _start, spans, excerpt = best
+    return spans, excerpt
 
 
 def _derive_source_value_metadata(
@@ -379,7 +679,7 @@ def build_source_block(
     else:
         guide["coordinate_space"] = "pdf_points"
         guide["origin"] = "bottom-left"
-        guide["matcher"] = "ocr_block_v2"
+        guide["matcher"] = "ocr_block_v3"
         guide["render_dpi"] = 200
         guide["page_dimensions"] = [list(d) for d in page_dims]
         guide["to_fitz_rect"] = "fitz.Rect(x0, page_h - y1, x1, page_h - y0)"
@@ -405,6 +705,7 @@ def build_source_block(
             flat = dict(fields)
 
         ev = field_evidence or {}
+        demographic_anchor: dict[str, Any] | None = None
 
         for field_key, value in flat.items():
             if field_key.startswith("_"):
@@ -426,9 +727,15 @@ def build_source_block(
             if isinstance(field_ev, dict):
                 explicit_source_value = str(field_ev.get("source_value") or "").strip()
 
+            candidates = [llm_excerpt, explicit_source_value, val_str]
+            for expanded in _field_candidate_variants(field_key, value):
+                candidates.append(expanded)
+
             block_match = _find_best_text_block_span(
                 doc,
-                candidates=[llm_excerpt, explicit_source_value, val_str],
+                candidates=candidates,
+                field_key=field_key,
+                preferred_anchor=demographic_anchor if field_key.lower() in _HEADER_DEMOGRAPHIC_FIELDS else None,
             )
             if block_match is not None:
                 spans, matched_excerpt = block_match
@@ -470,6 +777,10 @@ def build_source_block(
             if canonicalization is not None:
                 entry["canonicalization"] = canonicalization
             source_fields[field_key] = entry
+
+            lowered = field_key.lower()
+            if entry["grounded"] and spans and lowered in {"patient_name", "name", "patient_id", "mrn", "uhid", "ip_no", "sex", "gender"}:
+                demographic_anchor = _union_anchor(demographic_anchor, spans)
 
     elif redaction_map is not None:
         # Deidentification mode
