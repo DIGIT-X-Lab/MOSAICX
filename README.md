@@ -48,8 +48,10 @@ We recommend **Gemma 4 31B** via **vLLM**:
 
 ```bash
 pip install vllm
-vllm serve google/gemma-4-31B-it --port 8000
+vllm serve google/gemma-4-31B-it --port 8000 --max-num-seqs 16
 ```
+
+> Adjust `--max-num-seqs` based on your GPU: 16 for 96GB (A6000 Pro), 8 for 80GB (A100), 4 for 24GB (4090).
 
 **Apple Silicon (Mac M1/M2/M3/M4):**
 
