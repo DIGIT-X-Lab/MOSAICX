@@ -1284,12 +1284,7 @@ def template_create(
         console.print(theme.info(f"Saved: {dest}"))
 
         theme.section("Template Preview", console, "02")
-        from rich.syntax import Syntax
-
-        console.print(Padding(
-            Syntax(yaml_str, "yaml", theme="monokai", line_numbers=False),
-            (0, 0, 0, 2),
-        ))
+        _render_template_preview(yaml_str, console)
 
         metrics = getattr(generator, "_last_metrics", None)
         if metrics is not None:
@@ -1435,6 +1430,37 @@ def template_create(
         from .cli_display import render_metrics
 
         render_metrics(metrics, console)
+
+
+def _render_template_preview(yaml_str: str, console: Console) -> None:
+    """Render a template YAML as a clean field table in coral/greige."""
+    from .schemas.template_compiler import parse_template
+
+    meta = parse_template(yaml_str)
+    t = theme.make_clean_table()
+    t.add_column("Field", style=f"bold {theme.CORAL}", no_wrap=True)
+    t.add_column("Type", style=theme.GREIGE)
+    t.add_column("Required", style=theme.MUTED)
+    t.add_column("Description", style=theme.MUTED, ratio=1)
+
+    def _add_fields(sections, prefix=""):
+        for s in sections:
+            field_name = f"{prefix}{s.name}" if prefix else s.name
+            type_str = s.type
+            if s.type == "enum" and s.values:
+                type_str = f"enum ({', '.join(s.values[:3])}{'...' if len(s.values) > 3 else ''})"
+            if s.type == "list" and s.item:
+                type_str = f"list[{s.item.type}]"
+            req = "yes" if s.required else ""
+            desc = s.description or ""
+            t.add_row(field_name, type_str, req, desc)
+            if s.type == "object" and s.fields:
+                _add_fields(s.fields, prefix=f"  {field_name}.")
+            if s.type == "list" and s.item and s.item.type == "object" and s.item.fields:
+                _add_fields(s.item.fields, prefix=f"  {field_name}[].")
+
+    _add_fields(meta.sections)
+    console.print(Padding(t, (0, 0, 0, 2)))
 
 
 def _save_template_yaml(
