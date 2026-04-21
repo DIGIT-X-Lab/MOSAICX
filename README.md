@@ -79,15 +79,15 @@ source ~/.mosaicx-venv/bin/activate
 uv pip install git+https://github.com/DIGIT-X-Lab/MOSAICX.git
 ```
 
-Then configure MOSAICX to talk to your server:
+Then create a `.env` file in your working directory:
 
-```bash
-export MOSAICX_LM=openai/google/gemma-4-31B-it
-export MOSAICX_API_BASE=http://localhost:8000/v1
-export MOSAICX_API_KEY=not-needed
+```env
+MOSAICX_LM=openai/google/gemma-4-31B-it
+MOSAICX_API_BASE=http://localhost:8000/v1
+MOSAICX_API_KEY=not-needed
 ```
 
-Check everything works:
+MOSAICX reads this automatically. Check everything works:
 
 ```bash
 mosaicx doctor
@@ -183,17 +183,21 @@ Override with `MOSAICX_OCR_ENGINE=paddleocr` if needed.
 
 ## Configuration
 
-```bash
-# Point at your LLM server
-export MOSAICX_LM=openai/google/gemma-4-31B-it
-export MOSAICX_API_BASE=http://localhost:8000/v1
-export MOSAICX_API_KEY=not-needed
+All settings live in a `.env` file (recommended) or environment variables with the `MOSAICX_` prefix:
 
+```env
+MOSAICX_LM=openai/google/gemma-4-31B-it
+MOSAICX_API_BASE=http://localhost:8000/v1
+MOSAICX_API_KEY=not-needed
+MOSAICX_OCR_ENGINE=chandra
+```
+
+```bash
 # View active config
 mosaicx config show
 ```
 
-All settings can be set via environment variables (`MOSAICX_*` prefix) or a `.env` file. See [docs/configuration.md](docs/configuration.md) for the full reference.
+See [docs/configuration.md](docs/configuration.md) for the full reference.
 
 ## Documentation
 
