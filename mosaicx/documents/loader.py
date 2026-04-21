@@ -34,6 +34,7 @@ def load_document(
     force_ocr: bool = False,
     ocr_langs: list[str] | None = None,
     chandra_backend: str | None = None,
+    chandra_server_url: str | None = None,
     quality_threshold: float = 0.6,
     page_timeout: int = 60,
 ) -> LoadedDocument:
@@ -111,6 +112,7 @@ def load_document(
             ocr_engine=ocr_engine,
             ocr_langs=ocr_langs or ["en"],
             chandra_backend=chandra_backend,
+            chandra_server_url=chandra_server_url,
         )
 
         return _assemble_document(
@@ -358,12 +360,13 @@ def _run_engine(
     ocr_engine: str,
     ocr_langs: list[str],
     chandra_backend: str | None,
+    chandra_server_url: str | None = None,
 ) -> list[PageResult]:
     """Dispatch a single OCR engine in the main thread and return results."""
     if ocr_engine == "chandra":
         try:
             from .engines.chandra_engine import ChandraEngine
-            engine = ChandraEngine(backend=chandra_backend)
+            engine = ChandraEngine(backend=chandra_backend, server_url=chandra_server_url)
             return engine.ocr_pages(images)
         except Exception:
             logger.warning("OCR engine 'chandra' failed, skipping", exc_info=True)

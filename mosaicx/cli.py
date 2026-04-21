@@ -188,6 +188,7 @@ def _load_doc_with_config(
             force_ocr=force_ocr if force_ocr is not None else cfg.force_ocr,
             ocr_langs=cfg.ocr_langs,
             chandra_backend=cfg.chandra_backend if cfg.chandra_backend != "auto" else None,
+            chandra_server_url=cfg.chandra_server_url or None,
             quality_threshold=cfg.quality_threshold,
             page_timeout=cfg.ocr_page_timeout,
         )

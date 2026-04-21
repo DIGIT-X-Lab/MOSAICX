@@ -92,17 +92,32 @@ def _patch_chandra_hf_device() -> None:
 
 
 @lru_cache(maxsize=1)
-def _get_chandra_manager(backend: str | None = None):
+def _get_chandra_manager(backend: str | None = None, server_url: str | None = None):
     """Lazily load and cache the Chandra inference manager."""
     from chandra.model import InferenceManager
 
-    _patch_chandra_hf_device()
+    # If a server URL is provided, always use vLLM backend (remote server)
+    if server_url:
+        from chandra.model import settings as chandra_settings
+        chandra_settings.VLLM_API_BASE = server_url
+        return InferenceManager(method="vllm")
+
     method = backend or _detect_backend()
+    if method == "hf":
+        _patch_chandra_hf_device()
     return InferenceManager(method=method)
 
 
 class ChandraEngine:
-    """OCR engine backed by Chandra VLM."""
+    """OCR engine backed by Chandra VLM.
+
+    Supports three modes:
+    - **vLLM server** (recommended): Set ``server_url`` to a running Chandra
+      vLLM server (e.g. ``http://gpu-server:8000/v1``). Lightweight, no
+      local model loading.
+    - **vLLM local**: Auto-detected when CUDA is available.
+    - **HuggingFace**: Loads the 9B model in-process. Needs ~20GB RAM.
+    """
 
     def __init__(self, backend: str | None = None, server_url: str | None = None):
         self._backend = backend
@@ -116,12 +131,15 @@ class ChandraEngine:
         if not images:
             return []
 
-        manager = _get_chandra_manager(self._backend)
+        manager = _get_chandra_manager(self._backend, self._server_url)
         try:
             from chandra.model import BatchInputItem
 
             batch = [BatchInputItem(image=img, prompt_type="ocr") for img in images]
-            results = manager.generate(batch)
+            kwargs = {}
+            if self._server_url:
+                kwargs["vllm_api_base"] = self._server_url
+            results = manager.generate(batch, **kwargs)
         except Exception:
             logger.exception("Chandra OCR failed")
             return [
@@ -138,7 +156,7 @@ class ChandraEngine:
                     page_number=i + 1,
                     text=text,
                     engine="chandra",
-                    confidence=0.9,  # Chandra doesn't expose per-page confidence
+                    confidence=0.9,
                     layout_html=html,
                 )
             )

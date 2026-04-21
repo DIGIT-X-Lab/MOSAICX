@@ -168,13 +168,34 @@ Output:
 
 ## OCR
 
-MOSAICX uses [Chandra](https://github.com/ChandraVLM/chandra) by default -- a VLM-based OCR (fine-tuned Qwen3-VL 9B) that handles handwriting, complex forms, tables, and mixed layouts. Falls back to PaddleOCR if Chandra is not installed.
+MOSAICX uses [Chandra](https://github.com/datalab-to/chandra) by default -- a VLM-based OCR (fine-tuned Qwen3-VL 9B) that handles handwriting, complex forms, tables, and mixed layouts.
+
+**NVIDIA GPU (recommended)** -- run Chandra as a vLLM server:
 
 ```bash
-pip install chandra    # recommended
+pip install chandra-ocr
+chandra_vllm    # starts the Chandra vLLM server on port 8000
 ```
 
-Override with `MOSAICX_OCR_ENGINE=paddleocr` if needed.
+Then tell MOSAICX where the server is:
+
+```env
+MOSAICX_CHANDRA_SERVER_URL=http://localhost:8000/v1
+```
+
+**Apple Silicon / CPU** -- if you have enough RAM (~20GB), Chandra runs locally via HuggingFace:
+
+```bash
+pip install chandra-ocr[hf]
+```
+
+No server needed -- MOSAICX loads the model in-process automatically.
+
+**Fallback** -- if Chandra is not installed, MOSAICX falls back to PaddleOCR:
+
+```env
+MOSAICX_OCR_ENGINE=paddleocr
+```
 
 ## Privacy
 
@@ -190,6 +211,7 @@ MOSAICX_LM=openai/google/gemma-4-31B-it
 MOSAICX_API_BASE=http://localhost:8000/v1
 MOSAICX_API_KEY=not-needed
 MOSAICX_OCR_ENGINE=chandra
+MOSAICX_CHANDRA_SERVER_URL=http://localhost:8000/v1   # if running Chandra as vLLM server
 ```
 
 ```bash
