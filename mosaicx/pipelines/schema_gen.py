@@ -1353,7 +1353,7 @@ def _build_dspy_classes():
             desc="Optional full document text to infer schema structure from",
             default="",
         )
-        schema_spec: SchemaSpec = dspy.OutputField(
+        schema_spec: str = dspy.OutputField(
             desc="The generated schema specification as a SchemaSpec JSON object"
         )
 
@@ -1378,8 +1378,8 @@ def _build_dspy_classes():
         validation_issues: str = dspy.InputField(
             desc="Line-separated validation issues and compile errors to fix",
         )
-        repaired_schema: SchemaSpec = dspy.OutputField(
-            desc="A corrected SchemaSpec that resolves the listed issues",
+        repaired_schema: str = dspy.OutputField(
+            desc="A corrected SchemaSpec that resolves the listed issues as JSON",
         )
 
     class AssessSchemaGranularity(dspy.Signature):
