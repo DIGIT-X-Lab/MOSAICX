@@ -1,12 +1,23 @@
-"""Batch processing engine with checkpointing."""
+"""Batch processing engine with checkpointing.
+
+Uses a pipelined architecture: OCR (sequential producer) feeds a queue that
+extraction workers (parallel consumers) drain concurrently.  This keeps both
+the OCR server and the LLM server busy simultaneously.
+"""
 
 from __future__ import annotations
 
 import json
+import logging
+import queue
 import threading
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Optional
+
+logger = logging.getLogger(__name__)
+
+_SENTINEL = None  # signals OCR producer is done
 
 
 class BatchCheckpoint:
@@ -43,7 +54,7 @@ class BatchCheckpoint:
 
 
 class BatchProcessor:
-    """Parallel document processor with error isolation."""
+    """Pipelined document processor: OCR producer -> extraction consumers."""
 
     MAX_WORKERS = 32
 
@@ -62,6 +73,10 @@ class BatchProcessor:
         on_progress: Optional[Callable[[str, bool], None]] = None,
     ) -> dict[str, Any]:
         """Process all documents in a directory.
+
+        OCR runs sequentially (pypdfium2 is not thread-safe) but feeds a
+        queue that extraction workers drain in parallel.  This overlaps OCR
+        and LLM extraction so both servers stay busy.
 
         Args:
             input_dir: Directory of input documents.
@@ -117,24 +132,27 @@ class BatchProcessor:
                 return load_document(path).text
             load_fn = _default_load
 
-        # Load documents sequentially — pypdfium2 is not thread-safe.
-        # Only LLM extraction is parallelized.
-        loaded: list[tuple[Path, str | None, str | None]] = []
-        for doc_path in docs:
-            try:
-                text = load_fn(doc_path)
-                loaded.append((doc_path, text, None))
-            except Exception as exc:
-                loaded.append((doc_path, None, str(exc)))
+        # --- Pipeline: OCR producer -> extraction consumers ---
 
-        # Skip docs that failed to load
-        to_process = [(p, t) for p, t, e in loaded if e is None and t]
-        for doc_path, _, err_msg in loaded:
-            if err_msg is not None:
-                failed += 1
-                errors.append({"file": doc_path.name, "error": err_msg})
-                if on_progress:
-                    on_progress(doc_path.name, False)
+        # Queue holds (doc_path, text) tuples; _SENTINEL signals end.
+        ocr_queue: queue.Queue[tuple[Path, str] | None] = queue.Queue(
+            maxsize=self.workers * 2,
+        )
+        ocr_errors: list[tuple[Path, str]] = []
+
+        def _ocr_producer() -> None:
+            """Load documents sequentially (pypdfium2 not thread-safe) and
+            enqueue them for extraction workers."""
+            for doc_path in docs:
+                try:
+                    text = load_fn(doc_path)
+                    if text:
+                        ocr_queue.put((doc_path, text))
+                    else:
+                        ocr_errors.append((doc_path, "Empty document"))
+                except Exception as exc:
+                    ocr_errors.append((doc_path, str(exc)))
+            ocr_queue.put(_SENTINEL)
 
         _write_lock = threading.Lock()
 
@@ -149,26 +167,58 @@ class BatchProcessor:
             except Exception as exc:
                 return doc_path.name, None, f"{type(exc).__name__}: {exc}"
 
+        # Start OCR producer thread
+        producer = threading.Thread(target=_ocr_producer, daemon=True)
+        producer.start()
+
+        # Extraction consumers pull from queue as OCR results arrive
         try:
             with ThreadPoolExecutor(max_workers=self.workers) as pool:
-                futures = {pool.submit(_process_one, p, t): p for p, t in to_process}
+                futures: dict[Any, Path] = {}
                 processed = 0
-                for future in as_completed(futures):
-                    name, result, error = future.result()
-                    processed += 1
-                    if error:
-                        failed += 1
-                        errors.append({"file": name, "error": error})
-                    else:
-                        succeeded += 1
-                        if checkpoint:
-                            checkpoint.mark_completed(name, result or {})
-                            if processed % self.checkpoint_every == 0:
-                                checkpoint.save()
-                    if on_progress:
-                        on_progress(name, error is None)
+                producer_done = False
+
+                while not producer_done or futures:
+                    # Submit new work from OCR queue while we have capacity
+                    while not producer_done and len(futures) < self.workers:
+                        try:
+                            item = ocr_queue.get(timeout=0.1)
+                        except queue.Empty:
+                            break
+                        if item is _SENTINEL:
+                            producer_done = True
+                            break
+                        doc_path, text = item
+                        fut = pool.submit(_process_one, doc_path, text)
+                        futures[fut] = doc_path
+
+                    # Collect completed extraction results (non-blocking)
+                    done = [f for f in futures if f.done()]
+                    for future in done:
+                        name, result, error = future.result()
+                        processed += 1
+                        del futures[future]
+                        if error:
+                            failed += 1
+                            errors.append({"file": name, "error": error})
+                        else:
+                            succeeded += 1
+                            if checkpoint:
+                                checkpoint.mark_completed(name, result or {})
+                                if processed % self.checkpoint_every == 0:
+                                    checkpoint.save()
+                        if on_progress:
+                            on_progress(name, error is None)
+
+            # Report OCR failures
+            for doc_path, err_msg in ocr_errors:
+                failed += 1
+                errors.append({"file": doc_path.name, "error": err_msg})
+                if on_progress:
+                    on_progress(doc_path.name, False)
+
         finally:
-            # Always save checkpoint on exit (including Ctrl+C)
+            producer.join(timeout=5)
             if checkpoint:
                 checkpoint.save()
 
