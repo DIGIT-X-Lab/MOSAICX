@@ -22,9 +22,9 @@
 
 ```mermaid
 flowchart LR
-    A["PDF / Image / Text"] --> B["Dual-Engine OCR"]
-    B --> C["DSPy Pipeline"]
-    C --> D["Validated JSON"]
+    A["PDF / Image / Text"] --> B["Chandra OCR"]
+    B --> C["LLM Extraction"]
+    C --> D["Structured JSON"]
 
     style A fill:#B5A89A,stroke:#8a7e72,color:#fff
     style B fill:#E87461,stroke:#c25a49,color:#fff
@@ -32,188 +32,184 @@ flowchart LR
     style D fill:#B5A89A,stroke:#8a7e72,color:#fff
 ```
 
-MOSAICX ships with specialized pipelines for **radiology** and **pathology** reports, a **generic extraction** mode that adapts to any document, plus **de-identification** and **patient timeline summarization**. Every pipeline is a DSPy module -- meaning it can be optimized with labeled data for your specific use case.
+MOSAICX converts medical documents (radiology reports, pathology summaries, clinical notes) into structured JSON. Define what to extract with a YAML template, point it at your documents, get clean data back. Every field comes with an excerpt citing the source text.
 
-**Why MOSAICX?** -- Fully local (no PHI leaves your machine), schema-driven (define exactly what to extract), dual-engine OCR (handles scans and handwriting), and DSPy-optimizable (improve accuracy with your own labeled data). One CLI for radiology, pathology, de-identification, and summarization.
+**Why MOSAICX?** Fully local (no PHI leaves your machine), schema-driven (you define exactly what to extract), VLM-powered OCR via [Chandra](https://github.com/ChandraVLM/chandra) (handles scans, handwriting, tables), and HIPAA-conformant de-identification built in.
 
-## Quick Start
+## Prerequisites
 
-**One-line install** (Mac or Linux):
+Before installing MOSAICX, you need an LLM server running. We recommend **Gemma 4 31B** via **vLLM**:
+
+**NVIDIA GPU (recommended):**
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/DIGIT-X-Lab/MOSAICX/master/scripts/setup.sh | bash
+pip install vllm
+vllm serve google/gemma-4-31B-it --port 8000
 ```
 
-Or install manually and let the setup wizard configure everything:
+**Apple Silicon (Mac M1/M2/M3/M4):**
+
+```bash
+pip install vllm-mlx
+vllm-mlx serve mlx-community/gemma-4-31b-it-bf16 --port 8000
+```
+
+Verify it's running:
+
+```bash
+curl -s http://localhost:8000/v1/models
+```
+
+> [!TIP]
+> Any OpenAI-compatible server works (Ollama, llama.cpp, SGLang). vLLM + Gemma 4 31B is what we test against.
+
+## Install
 
 ```bash
 pip install git+https://github.com/DIGIT-X-Lab/MOSAICX.git
-mosaicx setup
 ```
 
 With [uv](https://docs.astral.sh/uv/) (faster):
 
 ```bash
 uv pip install git+https://github.com/DIGIT-X-Lab/MOSAICX.git
-mosaicx setup
 ```
 
-Then extract structured data from a report:
+Then configure MOSAICX to talk to your server:
 
 ```bash
-mosaicx extract --document report.pdf --mode radiology
+export MOSAICX_LM=openai/google/gemma-4-31B-it
+export MOSAICX_API_BASE=http://localhost:8000/v1
+export MOSAICX_API_KEY=not-needed
 ```
 
-Check health anytime with `mosaicx doctor`. See the full [Quickstart guide](docs/quickstart.md) for details.
-
-### Install Extras
+Check everything works:
 
 ```bash
-pip install 'mosaicx[mcp] @ git+https://github.com/DIGIT-X-Lab/MOSAICX.git'       # + MCP server
-pip install 'mosaicx[query] @ git+https://github.com/DIGIT-X-Lab/MOSAICX.git'     # + query stack
-pip install 'mosaicx[all] @ git+https://github.com/DIGIT-X-Lab/MOSAICX.git'       # everything
+mosaicx doctor
 ```
 
-### Developer Fast Loop (Mac + vLLM-MLX, 120B)
+## Three Things You Can Do
+
+### 1. Create a Template
+
+Tell MOSAICX what to extract using natural language:
 
 ```bash
-# 1) serve your local model (already downloaded)
-vllm-mlx serve mlx-community/gpt-oss-120b-4bit --port 8000
-
-# 2) point MOSAICX to that server
-export MOSAICX_LM=openai/mlx-community/gpt-oss-120b-4bit
-export MOSAICX_API_BASE=http://127.0.0.1:8000/v1
-export MOSAICX_API_KEY=dummy
-
-# 3) verify the endpoint
-curl -sS --max-time 5 http://127.0.0.1:8000/v1/models
-
-# 4) run extraction + claim verify + query
-mosaicx extract --document report.pdf --mode radiology -o output.json
-mosaicx verify --document report.pdf --claim "patient BP is 128/82" --level thorough
-mosaicx query --document report.pdf --chat --trace
+mosaicx template create --describe "chest CT with nodules, lung-rads score, and impression"
 ```
 
-> [!TIP]
-> **Not on Apple Silicon?** Use [Ollama](https://ollama.com), [vLLM](https://docs.vllm.ai), or any OpenAI-compatible server. See the [Getting Started guide](docs/getting-started.md) for all backend options.
-
-> [!TIP]
-> **Want the fastest first success?** Follow [docs/quickstart.md](docs/quickstart.md) to run `extract`, `verify`, and `query` end-to-end in ~10 minutes.
-
-## What You Can Do
-
-| Capability | Commands | Guide |
-|------------|----------|-------|
-| **Extract structured data** from clinical documents | `mosaicx extract` | [Pipelines](docs/pipelines.md) |
-| **Create and manage templates** for custom extraction targets | `mosaicx template create / list / refine` | [Schemas & Templates](docs/schemas-and-templates.md) |
-| **Verify claims and outputs** against source evidence | `mosaicx verify` | [CLI Reference](docs/cli-reference.md) |
-| **Query sources conversationally** with citations | `mosaicx query` | [CLI Reference](docs/cli-reference.md) |
-| **De-identify** reports (LLM + regex belt-and-suspenders) | `mosaicx deidentify` | [CLI Reference](docs/cli-reference.md) |
-| **Summarize patient timelines** across multiple reports | `mosaicx summarize` | [CLI Reference](docs/cli-reference.md) |
-| **Optimize pipelines** with labeled data (DSPy) | `mosaicx optimize`, `mosaicx eval` | [Optimization](docs/optimization.md) |
-| **Extend** with custom pipelines, MCP server, Python SDK | `mosaicx pipeline new`, `mosaicx mcp serve` | [Developer Guide](docs/developer-guide.md) |
-
-Run any command with `--help` for full options. Complete reference: [docs/cli-reference.md](docs/cli-reference.md)
-
-## Recipes
+This generates a YAML template with typed fields (strings, numbers, enums, nested objects, lists). MOSAICX also ships with built-in templates:
 
 ```bash
-# Radiology report -> structured JSON
-mosaicx extract --document ct_chest.pdf --mode radiology
-
-# Template-driven extraction (define your own fields)
-mosaicx template create --describe "echo report with LVEF, valve grades, impression"
-mosaicx extract --document echo.pdf --template EchoReport
-
-# Batch-process a folder of reports
-mosaicx extract --dir ./reports --output-dir ./structured --mode radiology --format jsonl
-
-# De-identify a clinical note
-mosaicx deidentify --document note.txt
-
-# Patient timeline from multiple reports
-mosaicx summarize --dir ./patient_001/ --patient P001
+mosaicx template list
 ```
 
-See the full [CLI Reference](docs/cli-reference.md) for every flag and option.
+### 2. Extract Structured Data
+
+Single document:
+
+```bash
+mosaicx extract --document report.pdf --template chest_ct
+```
+
+Batch (parallel):
+
+```bash
+mosaicx extract --dir ./reports/ --template chest_ct --workers 8 --output-dir ./results/
+```
+
+Output is clean JSON with `{value, excerpt}` for every field:
+
+```json
+{
+  "indication": {
+    "value": "Follow-up pulmonary nodule",
+    "excerpt": "Indication: Follow-up of incidentally detected pulmonary nodule"
+  },
+  "impression": {
+    "value": "Stable 6mm nodule, recommend 12-month follow-up",
+    "excerpt": "Impression: Stable 6mm solid nodule in right lower lobe"
+  }
+}
+```
+
+### 3. De-identify Documents
+
+Remove PHI with HIPAA conformance (LLM + regex safety net):
+
+```bash
+mosaicx deidentify --document note.pdf
+mosaicx deidentify --document note.pdf -o redacted.json
+```
+
+Batch:
+
+```bash
+mosaicx deidentify --dir ./notes/ --workers 4 --output-dir ./cleaned/
+```
+
+Output:
+
+```json
+{
+  "conformance": "hipaa",
+  "redacted_text": "Patient [REDACTED] presented with...",
+  "phi": [
+    {"value": "John Doe", "type": "NAME", "excerpt": "Patient John Doe presented"},
+    {"value": "01/15/1990", "type": "DATE", "excerpt": "DOB: 01/15/1990"}
+  ]
+}
+```
+
+## OCR
+
+MOSAICX uses [Chandra](https://github.com/ChandraVLM/chandra) by default -- a VLM-based OCR (fine-tuned Qwen3-VL 9B) that handles handwriting, complex forms, tables, and mixed layouts. Falls back to PaddleOCR if Chandra is not installed.
+
+```bash
+pip install chandra    # recommended
+```
+
+Override with `MOSAICX_OCR_ENGINE=paddleocr` if needed.
 
 ## Privacy
 
 > [!IMPORTANT]
-> **Data stays on your machine.** MOSAICX runs against a local inference server by default -- no external API calls, no cloud uploads. For HIPAA/GDPR compliance guidance and cloud backend caveats, see [Configuration](docs/configuration.md).
-
-## LLM Backends
-
-MOSAICX talks to any OpenAI-compatible endpoint via DSPy + litellm. Pick the backend that fits your hardware -- override with env vars.
-
-| Backend | Port | Example |
-|---------|------|---------|
-| **Ollama** | 11434 | Works out-of-the-box, no config needed |
-| **llama.cpp** | 8080 | `llama-server -m model.gguf --port 8080` |
-| **vLLM** | 8000 | `vllm serve gpt-oss:120b` |
-| **SGLang** | 30000 | `python -m sglang.launch_server --model-path gpt-oss:120b` |
-| **vLLM-MLX** | 8000 | `vllm-mlx serve mlx-community/gpt-oss-20b-MXFP4-Q8` (Apple Silicon) |
-
-```bash
-export MOSAICX_LM=openai/gpt-oss:120b
-export MOSAICX_API_BASE=http://localhost:8000/v1   # point at your server
-export MOSAICX_API_KEY=dummy                       # or your real key for cloud APIs
-```
-
-SSH tunneling, vLLM-MLX setup, batch tuning, and benchmarking: [docs/configuration.md](docs/configuration.md)
-
-## OCR Engines
-
-| Engine | Approach | Best for |
-|--------|----------|----------|
-| **Surya** | Layout detection + recognition | Clean printed text, fast |
-| **Chandra** | Vision-Language Model (Qwen3-VL 9B) | Handwriting, complex layouts, tables |
-
-By default both engines run in parallel, score each page, and pick the best result. Override with `MOSAICX_OCR_ENGINE=surya` or `chandra`.
+> **Data stays on your machine.** MOSAICX runs against a local LLM server -- no external API calls, no cloud uploads. De-identification follows HIPAA Safe Harbor rules by default.
 
 ## Configuration
 
 ```bash
-# Essential vars -- point at your local server
-export MOSAICX_LM=openai/mlx-community/gpt-oss-20b-MXFP4-Q8   # model name
-export MOSAICX_API_BASE=http://localhost:8000/v1                # server URL
-export MOSAICX_API_KEY=dummy                                    # or real key for cloud
+# Point at your LLM server
+export MOSAICX_LM=openai/google/gemma-4-31B-it
+export MOSAICX_API_BASE=http://localhost:8000/v1
+export MOSAICX_API_KEY=not-needed
 
 # View active config
 mosaicx config show
 ```
 
-Full variable reference, `.env` file setup, and backend scenarios: [docs/configuration.md](docs/configuration.md)
+All settings can be set via environment variables (`MOSAICX_*` prefix) or a `.env` file. See [docs/configuration.md](docs/configuration.md) for the full reference.
 
 ## Documentation
 
 | Guide | Description |
 |-------|-------------|
-| [Quickstart](docs/quickstart.md) | Fast setup and first successful run in ~10 minutes |
+| [Quickstart](docs/quickstart.md) | First successful run in ~10 minutes |
 | [Getting Started](docs/getting-started.md) | Install, first extraction, basics |
-| [Verify Guide](docs/verify.md) | Truth/adjudication workflows for claims and extraction output |
-| [Query Guide](docs/query.md) | Grounded multi-turn querying with evidence and confidence |
-| [Troubleshooting](docs/troubleshooting.md) | Debug slow query, wrong stats, fallback, and runtime issues |
-| [Production Checklist](docs/production-checklist.md) | Deploy with reproducibility, gating, and auditability controls |
 | [CLI Reference](docs/cli-reference.md) | Every command, every flag, examples |
-| [Pipelines](docs/pipelines.md) | Pipeline inputs/outputs, JSONL formats |
-| [Schemas & Templates](docs/schemas-and-templates.md) | Create and manage extraction schemas |
-| [Optimization](docs/optimization.md) | Improve accuracy with DSPy optimizers |
+| [Schemas & Templates](docs/schemas-and-templates.md) | Create and manage extraction templates |
 | [Configuration](docs/configuration.md) | Env vars, backends, OCR, export formats |
-| [MCP Server](docs/mcp-server.md) | AI agent integration via MCP |
-| [Developer Guide](docs/developer-guide.md) | Custom pipelines, Python SDK |
-| [Architecture](docs/architecture.md) | System design, key decisions |
+| [Developer Guide](docs/developer-guide.md) | Custom pipelines, Python SDK, MCP server |
 
 ## Development
 
 ```bash
 git clone https://github.com/DIGIT-X-Lab/MOSAICX.git
 cd MOSAICX
-pip install -e ".[dev]"          # or: uv sync --group dev
+pip install -e ".[dev]"
 pytest tests/ -q
 ```
-
-See [Developer Guide](docs/developer-guide.md) for custom pipelines and the Python SDK.
 
 ## Citation
 
