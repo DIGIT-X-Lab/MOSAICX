@@ -38,9 +38,13 @@ MOSAICX converts medical documents (radiology reports, pathology summaries, clin
 
 ## Prerequisites
 
-Before installing MOSAICX, you need an LLM server running. We recommend **Gemma 4 31B** via **vLLM**:
+MOSAICX needs two servers running: an **LLM** for extraction and **Chandra** for OCR.
 
-**NVIDIA GPU (recommended):**
+### 1. LLM Server
+
+We recommend **Gemma 4 31B** via **vLLM**:
+
+**NVIDIA GPU:**
 
 ```bash
 pip install vllm
@@ -54,14 +58,26 @@ pip install vllm-mlx
 vllm-mlx serve mlx-community/gemma-4-31b-it-bf16 --port 8000
 ```
 
-Verify it's running:
+### 2. OCR Server (for PDFs and images)
+
+[Chandra](https://github.com/datalab-to/chandra) is a VLM-based OCR that handles handwriting, tables, and complex layouts. Run it as a vLLM server on a GPU:
 
 ```bash
-curl -s http://localhost:8000/v1/models
+pip install chandra-ocr
+chandra_vllm    # starts on port 8000 by default
+```
+
+> [!NOTE]
+> Chandra is only needed for PDF/image documents. If you're extracting from `.txt` or `.md` files, you can skip this. Without Chandra, MOSAICX falls back to PaddleOCR automatically.
+
+### Verify
+
+```bash
+curl -s http://localhost:8000/v1/models    # LLM server
 ```
 
 > [!TIP]
-> Any OpenAI-compatible server works (Ollama, llama.cpp, SGLang). vLLM + Gemma 4 31B is what we test against.
+> Any OpenAI-compatible LLM server works (Ollama, llama.cpp, SGLang). vLLM + Gemma 4 31B is what we test against.
 
 ## Install
 
@@ -85,6 +101,7 @@ Then create a `.env` file in your working directory:
 MOSAICX_LM=openai/google/gemma-4-31B-it
 MOSAICX_API_BASE=http://localhost:8000/v1
 MOSAICX_API_KEY=not-needed
+MOSAICX_CHANDRA_SERVER_URL=http://localhost:8000/v1
 ```
 
 MOSAICX reads this automatically. Check everything works:
@@ -165,26 +182,6 @@ Output:
   ]
 }
 ```
-
-## OCR
-
-MOSAICX uses [Chandra](https://github.com/datalab-to/chandra) by default -- a VLM-based OCR (fine-tuned Qwen3-VL 9B) that handles handwriting, complex forms, tables, and mixed layouts.
-
-Chandra runs as a vLLM server on a GPU:
-
-```bash
-pip install chandra-ocr
-chandra_vllm    # starts the Chandra vLLM server on port 8000
-```
-
-Then tell MOSAICX where the server is (in your `.env` file):
-
-```env
-MOSAICX_CHANDRA_SERVER_URL=http://localhost:8000/v1
-```
-
-> [!NOTE]
-> If `MOSAICX_CHANDRA_SERVER_URL` is not set, MOSAICX falls back to PaddleOCR automatically. You can also set `MOSAICX_OCR_ENGINE=paddleocr` explicitly.
 
 ## Privacy
 
