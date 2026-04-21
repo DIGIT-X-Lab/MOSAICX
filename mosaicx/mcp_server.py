@@ -76,17 +76,12 @@ _dspy_configured = False
 
 
 def _ensure_dspy() -> None:
-    """Configure DSPy with the LM from MosaicxConfig.
-
-    Called lazily on the first tool invocation that needs the LLM.
-    Subsequent calls are no-ops.
-    """
+    """Configure DSPy — direct dspy.LM + BAMLAdapter, same as CLI and SDK."""
     global _dspy_configured
     if _dspy_configured:
         return
 
     from .config import get_config
-    from .runtime_env import configure_dspy_lm
 
     cfg = get_config()
     if not cfg.api_key:
@@ -94,23 +89,23 @@ def _ensure_dspy() -> None:
             "No API key configured. Set MOSAICX_API_KEY or add api_key to your config."
         )
 
-    from .metrics import TokenTracker, make_harmony_lm, set_tracker
-
-    lm = make_harmony_lm(cfg.lm, api_key=cfg.api_key, api_base=cfg.api_base, temperature=cfg.lm_temperature, max_tokens=cfg.max_tokens, num_ctx=cfg.num_ctx)
     try:
-        dspy, _adapter_name = configure_dspy_lm(
-            lm,
-            preferred_cache_dir=cfg.home_dir / ".dspy_cache",
-        )
+        import dspy
+        from dspy.adapters.baml_adapter import BAMLAdapter
     except ImportError as exc:
         raise RuntimeError(
-            "DSPy is required for MOSAICX pipelines. Install with: pip install dspy"
+            "DSPy + baml-py required. Install with: pip install dspy baml-py"
         ) from exc
 
-    tracker = TokenTracker()
-    set_tracker(tracker)
-    dspy.settings.usage_tracker = tracker
-    dspy.settings.track_usage = True
+    lm = dspy.LM(
+        model=cfg.lm,
+        api_base=cfg.api_base,
+        api_key=cfg.api_key,
+        temperature=cfg.lm_temperature,
+        max_tokens=cfg.max_tokens,
+        cache=False,
+    )
+    dspy.settings.configure(lm=lm, adapter=BAMLAdapter())
 
     _dspy_configured = True
     logger.info("DSPy configured with model: %s", cfg.lm)

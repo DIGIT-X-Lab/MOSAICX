@@ -250,9 +250,9 @@ def make_harmony_lm(model: str, **kwargs: object) -> object:
             lm_kwargs["timeout"] = 180.0
     if "num_retries" not in lm_kwargs:
         try:
-            lm_kwargs["num_retries"] = int(lm_retries) if lm_retries else 6
+            lm_kwargs["num_retries"] = int(lm_retries) if lm_retries else 0
         except ValueError:
-            lm_kwargs["num_retries"] = 6
+            lm_kwargs["num_retries"] = 0
     if "api_base" in lm_kwargs:
         lm_kwargs["api_base"] = _normalize_local_api_base(lm_kwargs.get("api_base"))
     if "base_url" in lm_kwargs:

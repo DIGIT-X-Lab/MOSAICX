@@ -62,36 +62,21 @@ def _configure_dspy() -> None:
         )
     try:
         import dspy
+        from dspy.adapters.baml_adapter import BAMLAdapter
     except ImportError:
         raise RuntimeError(
-            "DSPy is required for this function. Install with: pip install dspy"
+            "DSPy + baml-py required. Install with: pip install dspy baml-py"
         )
-    from .metrics import TokenTracker, make_harmony_lm, set_tracker
 
-    lm = make_harmony_lm(cfg.lm, api_key=cfg.api_key, api_base=cfg.api_base, temperature=cfg.lm_temperature, max_tokens=cfg.max_tokens, num_ctx=cfg.num_ctx)
-    adapter = None
-    try:
-        adapter = dspy.JSONAdapter()
-    except Exception:
-        adapter = None
-    try:
-        if adapter is not None:
-            dspy.configure(lm=lm, adapter=adapter)
-        else:
-            dspy.configure(lm=lm)
-    except TypeError:
-        dspy.configure(lm=lm)
-        if adapter is not None:
-            try:
-                dspy.settings.adapter = adapter
-            except Exception:
-                pass
-
-    # Install token usage tracker
-
-    tracker = TokenTracker()
-    set_tracker(tracker)
-    dspy.settings.usage_tracker = tracker
+    lm = dspy.LM(
+        model=cfg.lm,
+        api_base=cfg.api_base,
+        api_key=cfg.api_key,
+        temperature=cfg.lm_temperature,
+        max_tokens=cfg.max_tokens,
+        cache=False,
+    )
+    dspy.settings.configure(lm=lm, adapter=BAMLAdapter())
     dspy.settings.track_usage = True
 
 

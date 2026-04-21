@@ -295,6 +295,115 @@ def compile_template_file(path: str | Path) -> type[BaseModel]:
     return compile_template(content)
 
 
+def _generate_objective(meta: "TemplateMeta", cache_path: Path) -> str:
+    """Generate extraction objective from field descriptions via one LLM call. Cache to disk."""
+    if cache_path.exists():
+        return cache_path.read_text(encoding="utf-8").strip()
+
+    # Collect all field descriptions that contain rules
+    descriptions = []
+
+    def _collect(sections, prefix=""):
+        for s in sections:
+            desc = s.description or ""
+            if desc:
+                name = f"{prefix}{s.name}" if prefix else s.name
+                descriptions.append(f"{name}: {desc}")
+            if s.fields:
+                _collect(s.fields, prefix=f"{s.name}.")
+
+    _collect(meta.sections)
+
+    prompt = (
+        "Below are field descriptions from a medical data extraction template.\n"
+        "Write a single concise paragraph (2-3 sentences max) that summarizes "
+        "the key extraction rules and format requirements. "
+        "Use shorthand like 'TUR=Biopsie' or 'Gleason=X+Y=Z'. "
+        "Only include rules that constrain values or formats — skip plain descriptions. "
+        "This will be used as the extraction objective for an LLM.\n\n"
+        "Field descriptions:\n"
+        + "\n".join(f"- {d}" for d in descriptions)
+    )
+
+    try:
+        import dspy
+        result = dspy.settings.lm(prompt=prompt, max_tokens=200, temperature=0.0)
+        if isinstance(result, list) and result:
+            objective = result[0] if isinstance(result[0], str) else str(result[0])
+        else:
+            objective = str(result)
+        objective = objective.strip()
+    except Exception:
+        # Fallback: extract rules deterministically
+        objective = _generate_objective_deterministic(descriptions)
+
+    cache_path.write_text(objective, encoding="utf-8")
+    return objective
+
+
+def _generate_objective_deterministic(descriptions: list[str]) -> str:
+    """Fallback: extract rules from descriptions using keyword matching."""
+    rule_keywords = ["must be", "always", "use ", "not ", "format", "count", "exactly", "highest", "overall"]
+    rules = []
+    for desc in descriptions:
+        lower = desc.lower()
+        if any(kw in lower for kw in rule_keywords):
+            # Extract the rule part after the colon
+            parts = desc.split(": ", 1)
+            if len(parts) > 1:
+                rules.append(parts[1].strip())
+    if rules:
+        return "Extract structured data. " + " ".join(rules[:10])
+    return "Extract structured data from the document. Cite exact excerpts for each field."
+
+
+def compile_template_file_inline(path: str | Path) -> type[BaseModel]:
+    """Compile YAML template with inline evidence: each leaf field becomes {value, excerpt}.
+
+    Auto-generates extraction objective from field descriptions (cached to disk).
+    """
+    from typing import Any as _Any
+
+    path = Path(path)
+    content = path.read_text(encoding="utf-8")
+    meta = parse_template(content)
+
+    # Generate and cache objective
+    cache_path = path.parent / f".{path.stem}.objective.cache"
+    objective = _generate_objective(meta, cache_path)
+
+    def _make_evidence_field(name: str, desc: str) -> type[BaseModel]:
+        return create_model(
+            name.title().replace("_", "") + "F",
+            value=(Optional[_Any], Field(default=None, description=desc)),
+            excerpt=(Optional[str], Field(default=None, description="Exact quote from report")),
+        )
+
+    def _resolve_inline(section: "SectionSpec", parent_name: str = "") -> tuple:
+        desc = section.description or ""
+        if section.type == "object" and section.fields:
+            nested: dict[str, Any] = {}
+            for sub in section.fields:
+                nested[sub.name] = _resolve_inline(sub, section.name)
+            nm = create_model(section.name.title().replace("_", ""), **nested)
+            if section.required:
+                return (nm, Field(description=desc))
+            return (Optional[nm], Field(default=None, description=desc))
+        ev_model = _make_evidence_field(section.name, desc)
+        if section.required:
+            return (ev_model, Field(description=desc))
+        return (Optional[ev_model], Field(default=None, description=desc))
+
+    fields: dict[str, Any] = {}
+    for section in meta.sections:
+        fields[section.name] = _resolve_inline(section)
+
+    model = create_model(meta.name + "Inline", **fields)
+    # Attach objective to model so DocumentExtractor can read it
+    model.__extraction_objective__ = objective
+    return model
+
+
 # ---------------------------------------------------------------------------
 # SchemaSpec → YAML conversion
 # ---------------------------------------------------------------------------

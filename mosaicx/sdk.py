@@ -58,21 +58,10 @@ _configured: bool = False
 
 
 def _ensure_configured() -> None:
-    """Configure DSPy if not already done. Called automatically by all SDK functions.
-
-    Uses :func:`mosaicx.config.get_config` to read settings and configures
-    the DSPy LM exactly the same way the CLI does.
-
-    Raises
-    ------
-    RuntimeError
-        If DSPy is not installed or the API key is missing.
-    """
+    """Configure DSPy — direct dspy.LM + BAMLAdapter, same as CLI."""
     global _configured
     if _configured:
         return
-
-    from .runtime_env import configure_dspy_lm
 
     from .config import get_config
 
@@ -83,23 +72,23 @@ def _ensure_configured() -> None:
             "to your config."
         )
 
-    from .metrics import TokenTracker, make_harmony_lm, set_tracker
-
-    lm = make_harmony_lm(cfg.lm, api_key=cfg.api_key, api_base=cfg.api_base, temperature=cfg.lm_temperature, max_tokens=cfg.max_tokens, num_ctx=cfg.num_ctx)
     try:
-        dspy, _adapter_name = configure_dspy_lm(
-            lm,
-            preferred_cache_dir=cfg.home_dir / ".dspy_cache",
-        )
+        import dspy
+        from dspy.adapters.baml_adapter import BAMLAdapter
     except ImportError as exc:
         raise RuntimeError(
-            "DSPy is required for SDK functions. Install with: pip install dspy"
+            "DSPy + baml-py required. Install with: pip install dspy baml-py"
         ) from exc
 
-    tracker = TokenTracker()
-    set_tracker(tracker)
-    dspy.settings.usage_tracker = tracker
-    dspy.settings.track_usage = True
+    lm = dspy.LM(
+        model=cfg.lm,
+        api_base=cfg.api_base,
+        api_key=cfg.api_key,
+        temperature=cfg.lm_temperature,
+        max_tokens=cfg.max_tokens,
+        cache=False,
+    )
+    dspy.settings.configure(lm=lm, adapter=BAMLAdapter())
 
     _configured = True
     logger.info("DSPy configured with model %s", cfg.lm)
@@ -1058,8 +1047,9 @@ def _extract_single_text(
     verify: bool,
     verify_level: str,
     provenance: bool,
-    think: str = "auto",
+    think: str = "normal",
     loaded_doc: Any | None = None,
+    _shared_extractor: Any | None = None,
 ) -> dict[str, Any]:
     """Core extraction logic for a single text input.
 
@@ -1179,11 +1169,14 @@ def _extract_single_text(
         elif template_model is not None:
             from .pipelines.extraction import DocumentExtractor
 
-            extractor = DocumentExtractor(output_schema=template_model, think=think)
-            if optimized is not None:
-                from .evaluation.optimize import load_optimized
+            if _shared_extractor is not None:
+                extractor = _shared_extractor
+            else:
+                extractor = DocumentExtractor(output_schema=template_model, think=think)
+                if optimized is not None:
+                    from .evaluation.optimize import load_optimized
 
-                extractor = load_optimized(DocumentExtractor, Path(optimized))
+                    extractor = load_optimized(DocumentExtractor, Path(optimized))
             result = extractor(document_text=text)
             output: dict[str, Any] = {}
             planner_diag = getattr(result, "planner", None) or getattr(extractor, "_last_planner", None)
@@ -1382,32 +1375,57 @@ def extract(
     # Resolve documents: load all files sequentially (OCR not thread-safe)
     loaded = _resolve_documents(documents, filename=filename)
 
+    # Pre-build extractor once for batch reuse (avoid per-doc overhead)
+    # Pre-build extractor ONCE — same pattern as the raw bench script that works
+    _shared_extractor = None
+    if template is not None:
+        _ensure_configured()
+        from .pipelines.extraction import DocumentExtractor
+
+        from .schemas.template_compiler import compile_template_file_inline
+        template_model = compile_template_file_inline(template)
+        if template_model is not None:
+            _shared_extractor = DocumentExtractor(output_schema=template_model, think=think)
+
     # Determine if this is a single-input call (smart return)
     is_single = (
         isinstance(documents, bytes)
         or (isinstance(documents, (str, Path)) and Path(documents).is_file())
     )
 
-    # Extract from each loaded document
+    # Extract from each loaded document — call extractor DIRECTLY, no intermediaries
     def _do_extract(
         name: str, doc_text: str, doc_meta: dict[str, Any], ldoc: Any,
     ) -> tuple[str, dict[str, Any] | None, str | None]:
         try:
-            result = _extract_single_text(
-                doc_text,
-                template=template,
-                mode=mode,
-                score=score,
-                optimized=optimized,
-                verify=verify,
-                verify_level=verify_level,
-                provenance=provenance,
-                think=think,
-                loaded_doc=ldoc,
-            )
-            result["_document"] = doc_meta
-            _set_envelope_fields(result, document=doc_meta, provenance=provenance)
-            return name, result, None
+            if _shared_extractor is not None:
+                # Direct call — same as raw bench script
+                result_pred = _shared_extractor(document_text=doc_text)
+                val = result_pred.extracted
+                if hasattr(val, "model_dump"):
+                    output = val.model_dump(mode="json")
+                elif isinstance(val, dict):
+                    output = val
+                else:
+                    output = {"extracted": val}
+                return name, output, None
+            else:
+                result = _extract_single_text(
+                    doc_text,
+                    template=template,
+                    mode=mode,
+                    score=score,
+                    optimized=optimized,
+                    verify=verify,
+                    verify_level=verify_level,
+                    provenance=provenance,
+                    think=think,
+                    loaded_doc=ldoc,
+                    _shared_extractor=None,
+                )
+                result["_document"] = doc_meta
+                _set_envelope_fields(result, document=doc_meta, provenance=provenance)
+                return name, result, None
         except Exception as exc:
             return name, None, f"{type(exc).__name__}: {exc}"
 

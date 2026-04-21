@@ -81,6 +81,34 @@ class TestConvenienceFunctions:
 
 
 class TestExtractionPlannerRouting:
+    def test_focus_document_text_for_schema_selects_relevant_sections(self):
+        from mosaicx.pipelines.extraction import _focus_document_text_for_schema
+
+        class Report(BaseModel):
+            comparison: str | None = None
+            impression: str | None = None
+
+        doc = (
+            "Clinical Information:\n"
+            "Chest pain.\n\n"
+            "Biomarkers:\n"
+            "EGFR negative.\n\n"
+            "Comparison:\n"
+            "Prior CT chest from last month.\n\n"
+            "Impression:\n"
+            "Stable disease."
+        )
+
+        focused_text, diag = _focus_document_text_for_schema(
+            document_text=doc,
+            schema_class=Report,
+        )
+
+        assert "Comparison:" in focused_text
+        assert "Impression:" in focused_text
+        assert "Biomarkers:" not in focused_text
+        assert diag["focused"] is True
+
     def test_plan_routes_fallback_assigns_easy_and_hard_sections(self, monkeypatch):
         from mosaicx.pipelines.extraction import (
             _plan_section_routes_with_react,
@@ -142,11 +170,16 @@ class TestExtractionPlannerRouting:
         assert diag.get("original_chars", 0) >= diag.get("planned_chars", 0)
 
     def test_schema_mode_uses_planned_text_and_exposes_planner(self, monkeypatch):
+        from mosaicx.config import MosaicxConfig
         from mosaicx.pipelines.extraction import DocumentExtractor
 
         class CustomReport(BaseModel):
             summary: str
 
+        monkeypatch.setattr(
+            "mosaicx.config.get_config",
+            lambda: MosaicxConfig(extract_context_strategy="planned"),
+        )
         extractor = DocumentExtractor(output_schema=CustomReport, think="standard")
 
         planned = "Findings:\nRouted concise context."
@@ -190,6 +223,181 @@ class TestExtractionPlannerRouting:
         for key, value in planner_diag.items():
             assert extractor._last_planner[key] == value
 
+    def test_schema_mode_prefers_focused_text_after_planning(self, monkeypatch):
+        from mosaicx.config import MosaicxConfig
+        from mosaicx.pipelines.extraction import DocumentExtractor
+
+        class CustomReport(BaseModel):
+            summary: str
+
+        monkeypatch.setattr(
+            "mosaicx.config.get_config",
+            lambda: MosaicxConfig(extract_context_strategy="focused"),
+        )
+        extractor = DocumentExtractor(output_schema=CustomReport, think="standard")
+
+        planned = "Findings:\nLonger planned context."
+        focused = "Impression:\nFocused context."
+        planner_diag = {"planner": "short_doc_bypass", "react_used": False, "routes": []}
+        focus_diag = {
+            "focused": True,
+            "reason": "focused",
+            "original_chars": len(planned),
+            "focused_chars": len(focused),
+            "compression_ratio": len(focused) / len(planned),
+            "selected_candidates": [{"kind": "section", "label": "Impression", "score": 0.91}],
+        }
+
+        monkeypatch.setattr(
+            "mosaicx.pipelines.extraction._plan_extraction_document_text",
+            lambda *, document_text, schema_name: (planned, planner_diag),
+        )
+        monkeypatch.setattr(
+            "mosaicx.pipelines.extraction._focus_document_text_for_schema",
+            lambda **kwargs: (focused, focus_diag),
+        )
+
+        captured: dict[str, str] = {}
+
+        def _fake_chain(*, document_text, schema_class, **kwargs):
+            captured["document_text"] = document_text
+            return schema_class(summary="stable"), {
+                "selected_path": "dspy_typed_direct",
+                "attempts": [],
+                "fallback_used": False,
+                "bestofn": {},
+                "adjudication": {},
+            }
+
+        monkeypatch.setattr(
+            "mosaicx.pipelines.extraction._extract_schema_with_structured_chain",
+            _fake_chain,
+        )
+
+        result = extractor.forward("Original source text.")
+
+        assert captured["document_text"] == focused
+        assert result.planner["selected_input_source"] == "focused"
+        assert result.planner["focused_text_used"] is True
+        assert result.planner["focus"] == focus_diag
+
+    def test_schema_mode_rescues_from_focused_text_to_planned_text(self, monkeypatch):
+        from mosaicx.config import MosaicxConfig
+        from mosaicx.pipelines.extraction import DocumentExtractor
+
+        class CustomReport(BaseModel):
+            summary: str
+
+        monkeypatch.setattr(
+            "mosaicx.config.get_config",
+            lambda: MosaicxConfig(extract_context_strategy="focused"),
+        )
+        extractor = DocumentExtractor(output_schema=CustomReport, think="standard")
+
+        planned = "Findings:\nPlanned context."
+        focused = "Impression:\nOver-trimmed context."
+
+        monkeypatch.setattr(
+            "mosaicx.pipelines.extraction._plan_extraction_document_text",
+            lambda *, document_text, schema_name: (
+                planned,
+                {"planner": "short_doc_bypass", "react_used": False, "routes": []},
+            ),
+        )
+        monkeypatch.setattr(
+            "mosaicx.pipelines.extraction._focus_document_text_for_schema",
+            lambda **kwargs: (
+                focused,
+                {
+                    "focused": True,
+                    "reason": "focused",
+                    "original_chars": len(planned),
+                    "focused_chars": len(focused),
+                    "compression_ratio": len(focused) / len(planned),
+                },
+            ),
+        )
+
+        attempts: list[str] = []
+
+        def _fake_chain(*, document_text, schema_class, **kwargs):
+            attempts.append(document_text)
+            if document_text == focused:
+                raise ValueError("focused failure")
+            return schema_class(summary="rescued"), {
+                "selected_path": "dspy_typed_direct",
+                "attempts": [],
+                "fallback_used": False,
+                "bestofn": {},
+                "adjudication": {},
+            }
+
+        monkeypatch.setattr(
+            "mosaicx.pipelines.extraction._extract_schema_with_structured_chain",
+            _fake_chain,
+        )
+
+        result = extractor.forward("Original source text that differs from planned.")
+
+        assert attempts[:2] == [focused, planned]
+        assert result.planner["focused_text_rescue_used"] is True
+        assert result.planner["selected_input_source"] == "planned"
+
+    def test_schema_mode_full_context_strategy_skips_planner_and_focus(self, monkeypatch):
+        from mosaicx.config import MosaicxConfig
+        from mosaicx.pipelines.extraction import DocumentExtractor
+
+        class CustomReport(BaseModel):
+            summary: str
+
+        monkeypatch.setattr(
+            "mosaicx.config.get_config",
+            lambda: MosaicxConfig(extract_context_strategy="full"),
+        )
+
+        extractor = DocumentExtractor(output_schema=CustomReport, think="standard")
+
+        def _planner_should_not_run(**kwargs):  # noqa: ARG001
+            raise AssertionError("planner should not run for full strategy")
+
+        def _focus_should_not_run(**kwargs):  # noqa: ARG001
+            raise AssertionError("focus should not run for full strategy")
+
+        monkeypatch.setattr(
+            "mosaicx.pipelines.extraction._plan_extraction_document_text",
+            _planner_should_not_run,
+        )
+        monkeypatch.setattr(
+            "mosaicx.pipelines.extraction._focus_document_text_for_schema",
+            _focus_should_not_run,
+        )
+
+        captured: dict[str, str] = {}
+
+        def _fake_chain(*, document_text, schema_class, **kwargs):
+            captured["document_text"] = document_text
+            return schema_class(summary="full"), {
+                "selected_path": "dspy_typed_direct",
+                "attempts": [],
+                "fallback_used": False,
+                "bestofn": {},
+                "adjudication": {},
+            }
+
+        monkeypatch.setattr(
+            "mosaicx.pipelines.extraction._extract_schema_with_structured_chain",
+            _fake_chain,
+        )
+
+        source = "Original source text."
+        result = extractor.forward(source)
+
+        assert captured["document_text"] == source
+        assert result.planner["context_strategy"] == "full"
+        assert result.planner["selected_input_source"] == "full"
+        assert result.planner["planner"] == "disabled_by_context_strategy"
+        assert result.planner["focused_text_used"] is False
+
 
 class TestStructuredExtractionChain:
     def test_chain_prefers_outlines_primary_when_available(self, monkeypatch):
@@ -222,7 +430,7 @@ class TestStructuredExtractionChain:
         monkeypatch.setattr("mosaicx.runtime_env.import_dspy", lambda: fake_dspy)
 
         model, diag = _extract_schema_with_structured_chain(
-            document_text="sample",
+            document_text="Findings: outlines",
             schema_class=Report,
             typed_extract=_typed_extract,
             json_extract=None,
@@ -234,6 +442,45 @@ class TestStructuredExtractionChain:
         assert called["typed"] == 0
         assert diag["attempts"][0]["step"] == "outlines_primary"
         assert diag["attempts"][0]["ok"] is True
+
+    def test_chain_rejects_ungrounded_outlines_primary(self, monkeypatch):
+        from mosaicx.pipelines.extraction import _extract_schema_with_structured_chain
+
+        class Report(BaseModel):
+            summary: str
+
+        monkeypatch.setattr(
+            "mosaicx.pipelines.extraction._recover_schema_instance_with_outlines",
+            lambda **kwargs: Report(summary="hallucinated finding"),
+        )
+
+        class _Ctx:
+            def __enter__(self):
+                return None
+
+            def __exit__(self, exc_type, exc, tb):  # noqa: ARG002
+                return False
+
+        fake_dspy = SimpleNamespace(
+            settings=SimpleNamespace(lm=object()),
+            context=lambda adapter=None: _Ctx(),
+            JSONAdapter=None,
+            TwoStepAdapter=None,
+        )
+        monkeypatch.setattr("mosaicx.runtime_env.import_dspy", lambda: fake_dspy)
+
+        model, diag = _extract_schema_with_structured_chain(
+            document_text="Findings: disc bulge at C3-C4.",
+            schema_class=Report,
+            typed_extract=lambda **kwargs: SimpleNamespace(extracted={"summary": "disc bulge"}),
+            json_extract=None,
+        )
+
+        assert model.summary == "disc bulge"
+        assert diag["selected_path"] == "dspy_typed_direct"
+        assert diag["attempts"][0]["step"] == "outlines_primary"
+        assert diag["attempts"][0]["ok"] is False
+        assert "outlines_rejected" in str(diag["attempts"][0].get("error", ""))
 
     def test_chain_order_json_adapter_then_two_step(self, monkeypatch):
         from mosaicx.pipelines.extraction import _extract_schema_with_structured_chain
@@ -386,6 +633,30 @@ class TestBestOfNSelectiveRouting:
         assert components["null_overuse_penalty"] > 0.0
         assert score < 0.8
 
+    def test_score_ignores_evidence_helper_fields_for_optional_schema(self):
+        from mosaicx.pipelines.extraction import (
+            _augment_schema_with_evidence,
+            _score_extraction_candidate,
+        )
+
+        class Report(BaseModel):
+            modality: str | None = None
+
+        augmented = _augment_schema_with_evidence(Report)
+        score, components = _score_extraction_candidate(
+            extracted={
+                "modality": "Ultrasound",
+                "modality_excerpt": "",
+                "modality_reasoning": "",
+            },
+            schema_class=augmented,
+            source_text="Study modality: Ultrasound abdomen.",
+        )
+
+        assert score > 0.7
+        assert components["critical_completeness"] == 1.0
+        assert components["critical_grounding"] == 1.0
+
     def test_bestofn_only_triggers_for_uncertain_routes(self, monkeypatch):
         from mosaicx.pipelines.extraction import _try_bestofn_for_uncertain_sections
 
@@ -503,7 +774,7 @@ class TestAdjudicationAndRepair:
 
         monkeypatch.setattr(
             "mosaicx.config.get_config",
-            lambda: MosaicxConfig(use_refine=True),
+            lambda: MosaicxConfig(use_refine=True, extract_context_strategy="focused"),
         )
 
         class _FakeDspy:
@@ -629,7 +900,7 @@ class TestAdjudicationAndRepair:
 
         monkeypatch.setattr(
             "mosaicx.config.get_config",
-            lambda: MosaicxConfig(use_refine=True),
+            lambda: MosaicxConfig(use_refine=True, extract_context_strategy="focused"),
         )
 
         # Mock DSPy import to fail — this tests the gate was passed
@@ -647,6 +918,78 @@ class TestAdjudicationAndRepair:
 
         # Should have passed the use_refine gate and hit dspy import failure
         assert diag["reason"] == "dspy_import_failed:RuntimeError"
+
+    def test_refine_repair_uses_focused_field_window(self, monkeypatch):
+        from mosaicx.pipelines.extraction import _repair_failed_critical_fields_with_refine
+
+        class Report(BaseModel):
+            summary: str | None = None
+
+        from mosaicx.config import MosaicxConfig
+
+        monkeypatch.setattr(
+            "mosaicx.config.get_config",
+            lambda: MosaicxConfig(use_refine=True, extract_context_strategy="focused"),
+        )
+        monkeypatch.setattr(
+            "mosaicx.pipelines.extraction._focus_document_text_for_schema",
+            lambda **kwargs: (
+                "Focused repair window",
+                {
+                    "focused": True,
+                    "reason": "focused",
+                    "original_chars": 120,
+                    "focused_chars": 21,
+                    "compression_ratio": 0.175,
+                },
+            ),
+        )
+
+        captured: dict[str, str] = {}
+
+        class _FakeDspy:
+            settings = SimpleNamespace(lm=object())
+
+            class Signature:
+                pass
+
+            @staticmethod
+            def InputField(**kwargs):  # noqa: ARG004
+                return None
+
+            @staticmethod
+            def OutputField(**kwargs):  # noqa: ARG004
+                return None
+
+            class _RepairModule:
+                def __call__(self, **kwargs):
+                    captured["source_text"] = kwargs.get("source_text", "")
+                    return SimpleNamespace(repaired_value="stable disease")
+
+            @staticmethod
+            def ChainOfThought(_sig):  # noqa: ARG004
+                return _FakeDspy._RepairModule()
+
+            class _Refine:
+                def __init__(self, module, N, reward_fn, threshold):  # noqa: N803, ARG002
+                    self.module = module
+
+                def __call__(self, **kwargs):
+                    return self.module(**kwargs)
+
+            Refine = _Refine
+
+        monkeypatch.setattr("mosaicx.runtime_env.import_dspy", lambda: _FakeDspy())
+
+        repaired, diag = _repair_failed_critical_fields_with_refine(
+            model_instance=Report(summary=None),
+            schema_class=Report,
+            source_text="Diffuse narrative without a labeled summary block.",
+        )
+
+        assert repaired.summary == "stable disease"
+        assert captured["source_text"] == "Focused repair window"
+        assert diag["field_windows"]["summary"]["focused"] is True
 
 
 class TestPlannerShortDocBypass:
@@ -869,6 +1212,39 @@ class TestThinkParameter:
 
         with pytest.raises(ValueError, match="think"):
             DocumentExtractor(output_schema=SimpleReport, think="invalid")
+
+    def test_forward_clears_stale_field_evidence(self, monkeypatch):
+        from mosaicx.pipelines import extraction as extraction_mod
+        from mosaicx.pipelines.extraction import DocumentExtractor
+        from pydantic import BaseModel
+
+        class SimpleReport(BaseModel):
+            summary: str
+
+        class _Ctx:
+            def __enter__(self):
+                return None
+
+            def __exit__(self, exc_type, exc, tb):  # noqa: ARG002
+                return False
+
+        fake_dspy = SimpleNamespace(
+            settings=SimpleNamespace(lm=object()),
+            context=lambda adapter=None: _Ctx(),
+        )
+        monkeypatch.setattr("mosaicx.runtime_env.import_dspy", lambda: fake_dspy)
+        monkeypatch.setattr(
+            "mosaicx.pipelines.extraction._recover_schema_instance_with_outlines",
+            lambda **kwargs: SimpleReport(summary="stable"),
+        )
+
+        extraction_mod._last_outlines_evidence.clear()
+        extraction_mod._last_outlines_evidence["stale"] = {"excerpt": "old evidence"}
+
+        extractor = DocumentExtractor(output_schema=SimpleReport, think="fast")
+        result = extractor.forward("Summary: stable")
+
+        assert getattr(result, "field_evidence", None) is None
 
 
 class TestThinkFastMode:
