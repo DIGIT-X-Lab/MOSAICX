@@ -2071,6 +2071,12 @@ def _deidentify_batch(
     show_default=True,
     help="De-identification strategy.",
 )
+@click.option(
+    "--conformance",
+    type=str,
+    default=None,
+    help="Privacy conformance standard (default: hipaa).",
+)
 @click.option("--workers", type=int, default=1, show_default=True, help="Number of parallel workers.")
 @click.option("--output", "-o", type=click.Path(path_type=Path), default=None, help="Save output to file (.json or .yaml/.yml) for single-file de-identification.")
 @click.option("--output-dir", type=click.Path(path_type=Path), default=None, help="Output directory for batch results (used with --dir).")
@@ -2083,6 +2089,7 @@ def deidentify(
     document: Path | None,
     directory: Path | None,
     mode: str,
+    conformance: str | None,
     workers: int,
     output: Path | None,
     output_dir: Path | None,
@@ -2149,7 +2156,11 @@ def deidentify(
     _configure_dspy()
     from .pipelines.deidentifier import Deidentifier
 
-    deid = Deidentifier()
+    effective_conformance = conformance or get_config().conformance
+    try:
+        deid = Deidentifier(conformance=effective_conformance)
+    except KeyError as exc:
+        raise click.ClickException(str(exc))
     _SCRUB_QUIPS = [
         "nothing to see here",
         "witness protection program activated",
@@ -2167,12 +2178,8 @@ def deidentify(
     ):
         result = deid(document_text=doc.text, mode=mode)
     redacted = result.redacted_text
-    redaction_map = getattr(result, "redaction_map", None) or []
-
-    if provenance and redaction_map:
-        from .pipelines.provenance import enrich_redaction_map
-
-        redaction_map = enrich_redaction_map(doc, redaction_map)
+    phi = getattr(result, "phi", [])
+    result_conformance = getattr(result, "conformance", effective_conformance)
 
     console.print(theme.ok("Scrubbed -- PHI has left the chat"))
 
@@ -2184,8 +2191,15 @@ def deidentify(
         _native_formats = {".pdf", ".png", ".jpg", ".jpeg", ".tiff", ".tif",
                            ".bmp", ".txt", ".md"}
         if suffix in _native_formats:
-            # Auto-enable provenance for coordinate mapping
-            if not provenance and redaction_map:
+            # Reconstruct redaction_map from phi for coordinate-based redaction
+            from .pipelines.deidentifier import _build_redaction_map_from_entities
+            phi_as_entities = [
+                {"text": item["value"], "type": item["type"], "excerpt": item.get("excerpt", "")}
+                for item in phi
+            ]
+            redaction_map = _build_redaction_map_from_entities(doc.text, phi_as_entities)
+
+            if redaction_map:
                 from .pipelines.provenance import enrich_redaction_map as _enrich
                 redaction_map = _enrich(doc, redaction_map)
 
@@ -2201,14 +2215,12 @@ def deidentify(
             )
             console.print(theme.ok(f"Redacted document saved to {output}"))
         elif suffix in (".yaml", ".yml"):
-            save_data: dict[str, Any] = {"redacted_text": redacted, "mode": mode}
-            if redaction_map:
-                save_data["redaction_map"] = redaction_map
-                from .source_mapping import build_source_block
-
-                save_data["_source"] = build_source_block(
-                    doc, redaction_map=redaction_map
-                )
+            output_data: dict[str, Any] = {
+                "conformance": result_conformance,
+                "redacted_text": redacted,
+            }
+            if phi:
+                output_data["phi"] = phi
             try:
                 import yaml
             except ImportError:
@@ -2218,7 +2230,7 @@ def deidentify(
             output.parent.mkdir(parents=True, exist_ok=True)
             output.write_text(
                 yaml.dump(
-                    save_data,
+                    output_data,
                     default_flow_style=False,
                     sort_keys=False,
                     allow_unicode=True,
@@ -2227,19 +2239,17 @@ def deidentify(
             )
             console.print(theme.ok(f"Saved to {output}"))
         else:
-            save_data = {"redacted_text": redacted, "mode": mode}
-            if redaction_map:
-                save_data["redaction_map"] = redaction_map
-                from .source_mapping import build_source_block
-
-                save_data["_source"] = build_source_block(
-                    doc, redaction_map=redaction_map
-                )
+            output_data = {
+                "conformance": result_conformance,
+                "redacted_text": redacted,
+            }
+            if phi:
+                output_data["phi"] = phi
             if not suffix:
                 output = output.with_suffix(".json")
             output.parent.mkdir(parents=True, exist_ok=True)
             output.write_text(
-                json.dumps(_apply_output_tier(save_data), indent=2, default=str, ensure_ascii=False),
+                json.dumps(output_data, indent=2, default=str, ensure_ascii=False),
                 encoding="utf-8",
             )
             console.print(theme.ok(f"Saved to {output}"))
@@ -2262,31 +2272,20 @@ def deidentify(
         )
     )
 
-    # Display redaction map summary
-    if redaction_map:
+    # Display PHI summary
+    if phi:
         theme.section("PHI Detected", console, "02")
-        console.print(theme.info(f"{len(redaction_map)} items"))
-        original_text = doc.text
-        rt = theme.make_clean_table(show_header=True)
-        rt.add_column("Type", style=f"bold {theme.CORAL}", no_wrap=True)
-        rt.add_column("Original")
-        rt.add_column("Position", no_wrap=True)
-        rt.add_column("Method", no_wrap=True)
-        for entry in redaction_map:
-            phi_type = entry.get("phi_type", "OTHER")
-            orig_text = entry.get("original", "")
-            start = entry.get("start", 0)
-            end = entry.get("end", 0)
-            entry_method = entry.get("method", "")
-            # Compute line number from original text
-            line_no = original_text[:start].count("\n") + 1
-            rt.add_row(
-                phi_type,
-                _esc(repr(orig_text)),
-                f"line {line_no}, pos {start}-{end}",
-                f"[{entry_method}]",
+        t = theme.make_clean_table()
+        t.add_column("Type", style=f"bold {theme.CORAL}")
+        t.add_column("Value")
+        t.add_column("Excerpt", style=theme.MUTED)
+        for item in phi:
+            t.add_row(
+                item.get("type", "OTHER"),
+                item.get("value", ""),
+                item.get("excerpt", ""),
             )
-        console.print(Padding(rt, (0, 0, 0, 2)))
+        console.print(Padding(t, (0, 0, 0, 2)))
 
     doc_metrics = getattr(deid, "_last_metrics", None)
     if doc_metrics is not None:

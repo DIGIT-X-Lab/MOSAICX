@@ -81,6 +81,7 @@ class MosaicxConfig(BaseSettings):
 
     # --- De-identification ---
     deidentify_mode: Literal["remove", "pseudonymize", "dateshift"] = "remove"
+    conformance: str = "hipaa"  # MOSAICX_CONFORMANCE — privacy standard for de-identification
 
     # --- Export ---
     default_export_formats: list[str] = Field(
@@ -88,7 +89,7 @@ class MosaicxConfig(BaseSettings):
     )
 
     # --- Document loading ---
-    ocr_engine: Literal["paddleocr", "chandra"] = "paddleocr"
+    ocr_engine: Literal["paddleocr", "chandra"] = "chandra"
     chandra_backend: Literal["vllm", "hf", "auto"] = "auto"
     chandra_server_url: str = ""
     quality_threshold: float = 0.6
