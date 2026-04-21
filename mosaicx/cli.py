@@ -70,45 +70,37 @@ def _check_api_key() -> None:
 
 
 def _configure_dspy() -> None:
-    """Configure DSPy with the LM from MosaicxConfig.
-
-    Raises ``click.ClickException`` if DSPy cannot be imported or the
-    API key is missing.
-    """
+    """Configure DSPy — same as raw bench script. Direct dspy.LM, BAMLAdapter, no wrappers."""
     import os
+    import logging
 
     cfg = get_config()
     if not cfg.api_key:
         raise click.ClickException(
             "No API key configured. Set MOSAICX_API_KEY or add api_key to your config."
         )
-    import logging
 
-    # Keep interactive CLI output clean; surface failures via MOSAICX messages.
-    logging.getLogger("dspy.predict.rlm").setLevel(logging.ERROR)
     logging.getLogger("LiteLLM").setLevel(logging.ERROR)
     logging.getLogger("litellm").setLevel(logging.ERROR)
     os.environ.setdefault("LITELLM_LOG", "ERROR")
 
-    from .metrics import TokenTracker, make_harmony_lm, set_tracker
-    from .runtime_env import configure_dspy_lm
-
-    lm = make_harmony_lm(cfg.lm, api_key=cfg.api_key, api_base=cfg.api_base, temperature=cfg.lm_temperature, max_tokens=cfg.max_tokens, num_ctx=cfg.num_ctx)
     try:
-        dspy, _adapter_name = configure_dspy_lm(
-            lm,
-            preferred_cache_dir=cfg.home_dir / ".dspy_cache",
-        )
+        import dspy
+        from dspy.adapters.baml_adapter import BAMLAdapter
     except ImportError as exc:
         raise click.ClickException(
-            "DSPy is required for this command. Install with: pip install dspy"
+            "DSPy + baml-py required. Install with: pip install dspy baml-py"
         ) from exc
 
-    # Install token usage tracker
-
-    tracker = TokenTracker()
-    set_tracker(tracker)
-    dspy.settings.usage_tracker = tracker
+    lm = dspy.LM(
+        model=cfg.lm,
+        api_base=cfg.api_base,
+        api_key=cfg.api_key,
+        temperature=cfg.lm_temperature,
+        max_tokens=cfg.max_tokens,
+        cache=False,
+    )
+    dspy.settings.configure(lm=lm, adapter=BAMLAdapter())
     dspy.settings.track_usage = True
 
 
@@ -306,6 +298,23 @@ def _render_styled_help(plain: str, width: int = 80) -> str:
     return buf.getvalue()
 
 
+def _print_banner_with_config(cfg: "MosaicxConfig") -> None:
+    """Resolve runtime info and print the banner."""
+    from .runtime_env import detect_inference_engine
+
+    engine = cfg.inference_engine or detect_inference_engine(cfg.api_base)
+
+    theme.print_banner(
+        _VERSION_NUMBER,
+        console,
+        lm=cfg.lm,
+        num_ctx=cfg.num_ctx,
+        inference_engine=engine,
+        ocr_engine=cfg.ocr_engine,
+        ocr_langs=cfg.ocr_langs,
+    )
+
+
 class MosaicxGroup(click.Group):
     """Click group with DIGITX-styled help output."""
 
@@ -313,7 +322,7 @@ class MosaicxGroup(click.Group):
         # Show banner at the top of root-level help (mosaicx --help)
         if ctx.parent is None:
             cfg = get_config()
-            theme.print_banner(_VERSION_NUMBER, console, lm=cfg.lm, lm_cheap=cfg.lm_cheap)
+            _print_banner_with_config(cfg)
         tmp = click.HelpFormatter(width=formatter.width)
         super().format_help(ctx, tmp)
         formatter.write(_render_styled_help(tmp.getvalue(), formatter.width or 80))
@@ -361,7 +370,7 @@ def cli(ctx: click.Context) -> None:
     cfg = get_config()
     if ctx.invoked_subcommand is not None:
         # Subcommand execution — show banner before running the command
-        theme.print_banner(_VERSION_NUMBER, console, lm=cfg.lm, lm_cheap=cfg.lm_cheap)
+        _print_banner_with_config(cfg)
     else:
         # No subcommand — show help (banner included via format_help)
         click.echo(ctx.get_help())
@@ -465,25 +474,16 @@ def _extract_batch(
                 return output_data
         elif template_model is not None:
             from mosaicx.pipelines.extraction import DocumentExtractor
+            from .schemas.template_compiler import compile_template_file_inline
 
             _configure_dspy()
-            extractor = DocumentExtractor(output_schema=template_model, think=think)
-            if optimized is not None:
-                from .evaluation.optimize import load_optimized
-                extractor = load_optimized(type(extractor), optimized)
+            inline_model = compile_template_file_inline(template)
+            extractor = DocumentExtractor(output_schema=inline_model, think=think)
 
             def process_fn(text: str) -> dict:
                 result = extractor(document_text=text)
-                doc_metrics = getattr(extractor, "_last_metrics", None)
-                if doc_metrics is not None:
-                    batch_metrics.steps.extend(doc_metrics.steps)
-                output = {}
-                if hasattr(result, "extracted"):
-                    val = result.extracted
-                    output["extracted"] = val.model_dump(mode="json") if hasattr(val, "model_dump") else val
-                if hasattr(result, "field_evidence") and result.field_evidence:
-                    output["field_evidence"] = result.field_evidence
-                return output
+                val = result.extracted
+                return val.model_dump(mode="json") if hasattr(val, "model_dump") else val
         else:
             raise click.ClickException(
                 f"Template {template!r} resolved but produced no extraction template."
@@ -523,27 +523,9 @@ def _extract_batch(
     resume_id = "resume" if resume else None
     checkpoint_dir = output_dir_path / ".checkpoints" if resume else None
 
-    # Wrap process_fn to attach _source mapping per document.
-    # Map text content → doc object so _process_with_source can find
-    # the correct doc even when BatchProcessor pre-loads all docs.
-    _doc_by_text: dict[int, Any] = {}
-
-    def _load_and_cache(p: Path) -> str:
+    def _load_doc(p: Path) -> str:
         doc = _load_doc_with_config(p, force_ocr=force_ocr or None)
-        _doc_by_text[id(doc.text)] = doc
         return doc.text
-
-    def _process_with_source(text: str) -> dict:
-        output = process_fn(text)
-        doc = _doc_by_text.pop(id(text), None)
-        if doc is not None:
-            from .source_mapping import build_source_block
-            extracted_fields = output.get("extracted", output)
-            output["_source"] = build_source_block(
-                doc, fields=extracted_fields,
-                field_evidence=output.get("field_evidence"),
-            )
-        return output
 
     # Count documents for progress bar
     supported = {".txt", ".md", ".pdf", ".docx", ".png", ".jpg", ".jpeg", ".tif", ".tiff"}
@@ -553,10 +535,10 @@ def _extract_batch(
         result = processor.process_directory(
             input_dir=directory,
             output_dir=output_dir_path,
-            process_fn=_process_with_source,
+            process_fn=process_fn,
             resume_id=resume_id,
             checkpoint_dir=checkpoint_dir,
-            load_fn=_load_and_cache,
+            load_fn=_load_doc,
             on_progress=lambda name, success: advance(),
         )
 
@@ -633,52 +615,34 @@ def _extract_batch(
 @cli.command()
 @click.option("--document", type=click.Path(exists=True, path_type=Path), default=None, help="Path to clinical document (single file).")
 @click.option("--dir", "directory", type=click.Path(exists=True, file_okay=False, path_type=Path), default=None, help="Directory of documents to process (batch mode).")
-@click.option("--template", type=str, default=None, help="Template name, YAML file path, or saved template name.")
-@click.option("--mode", type=str, default=None, help="Extraction mode name (e.g., radiology, pathology).")
-@click.option("--score", is_flag=True, default=False, help="Score completeness of extracted data against the template.")
-@click.option("--verify", "do_verify", is_flag=True, default=False, help="Verify extracted output against the source document.")
-@click.option(
-    "--verify-level",
-    type=click.Choice(["quick", "standard", "thorough"], case_sensitive=False),
-    default="quick",
-    show_default=True,
-    help="Verification depth used with --verify.",
-)
-@click.option("--provenance", is_flag=True, default=False, help="Attach deterministic field-level provenance.")
-@click.option("--optimized", type=click.Path(exists=True, path_type=Path), default=None, help="Path to optimized program.")
-@click.option("--output", "-o", type=click.Path(path_type=Path), default=None, help="Save output to file (.json or .yaml/.yml) for single-file extraction.")
-@click.option("--output-dir", type=click.Path(path_type=Path), default=None, help="Output directory for batch results (used with --dir).")
-@click.option("--format", "formats", type=click.Choice(["json", "jsonl", "csv", "parquet"], case_sensitive=False), multiple=True, default=("json",), show_default=True, help="Output format(s) for batch results.")
-@click.option("--workers", type=int, default=1, show_default=True, help="Number of parallel workers for batch processing.")
-@click.option("--resume", is_flag=True, default=False, help="Resume batch processing from last checkpoint.")
-@click.option("--list-modes", is_flag=True, default=False, help="Print available modes and exit.")
+@click.option("--template", type=str, default=None, help="Template name or YAML file path.")
+@click.option("--optimized", type=click.Path(exists=True, path_type=Path), default=None, help="Path to optimized program (GEPA).")
+@click.option("--output", "-o", type=click.Path(path_type=Path), default=None, help="Save output to file (.json or .yaml/.yml).")
+@click.option("--output-dir", type=click.Path(path_type=Path), default=None, help="Output directory for batch results.")
+@click.option("--format", "formats", type=click.Choice(["json", "jsonl", "csv", "parquet"], case_sensitive=False), multiple=True, default=("json",), show_default=True, help="Output format(s).")
+@click.option("--workers", type=int, default=1, show_default=True, help="Number of parallel workers.")
+@click.option("--resume", is_flag=True, default=False, help="Resume batch from last checkpoint.")
 @click.option(
     "--think",
-    type=click.Choice(["auto", "fast", "deep"], case_sensitive=False),
-    default="auto",
+    type=click.Choice(["normal", "deep"], case_sensitive=False),
+    default="normal",
     show_default=True,
-    help="Reasoning depth: auto (router picks based on template complexity), fast (minimal reasoning), deep (chunked extraction + verify + fix).",
+    help="normal: fast (Predict). deep: chain-of-thought (slower).",
 )
-@click.option("--dump-ocr", is_flag=True, default=False, help="Save raw OCR text to .ocr.txt for debugging.")
-@click.option("--force-ocr", is_flag=True, default=False, help="Run OCR even on PDFs with a text layer (enables layout-aware table detection).")
+@click.option("--dump-ocr", is_flag=True, default=False, help="Save raw OCR text to .ocr.txt.")
+@click.option("--force-ocr", is_flag=True, default=False, help="Run OCR even on PDFs with a text layer.")
 @click.pass_context
 def extract(
     ctx: click.Context,
     document: Path | None,
     directory: Path | None,
     template: str | None,
-    mode: str | None,
-    score: bool,
-    do_verify: bool,
-    verify_level: str,
-    provenance: bool,
     optimized: Path | None,
     output: Path | None,
     output_dir: Path | None,
     formats: tuple[str, ...],
     workers: int,
     resume: bool,
-    list_modes: bool,
     think: str,
     dump_ocr: bool,
     force_ocr: bool,
@@ -686,82 +650,25 @@ def extract(
     """Extract structured data from a clinical document or directory.
 
     \b
-    Supports single-file extraction (--document) and batch processing
-    (--dir). When --dir is used, all supported documents in the directory
-    are processed and results are written to --output-dir.
-
-    \b
-    The --template flag is the unified way to specify what to extract.
-    It resolves in order:
-      1. YAML file path (if suffix is .yaml/.yml and file exists)
-      2. Built-in template name (e.g. chest_ct, brain_mri)
-      3. Legacy saved schema (from ~/.mosaicx/schemas/)
-
-    \b
-    Examples (single file):
-      mosaicx extract --document scan.pdf
-      mosaicx extract --document scan.pdf --template chest_ct
-      mosaicx extract --document scan.pdf --template chest_ct --score
-
-    \b
-    Examples (batch / directory):
-      mosaicx extract --dir reports/ --template chest_ct
-      mosaicx extract --dir reports/ --workers 4 --output-dir results/
-      mosaicx extract --dir reports/ --format json csv
-      mosaicx extract --dir reports/ --resume
+    Examples:
+      mosaicx extract --document report.pdf --template prostate_pathology
+      mosaicx extract --dir reports/ --template prostate_pathology --workers 13
+      mosaicx extract --dir reports/ --output-dir results/
     """
-
-    # --list-modes: print available modes and exit (no document needed)
-    if list_modes:
-        import mosaicx.pipelines.pathology  # noqa: F401
-        import mosaicx.pipelines.radiology  # noqa: F401
-
-        from .pipelines.modes import list_modes as _list_modes
-
-        theme.section("Extraction Modes", console)
-        t = theme.make_clean_table(width=len(theme.TAGLINE))
-        t.add_column("Mode", style=f"bold {theme.CORAL}", no_wrap=True)
-        t.add_column("Description", style=theme.MUTED, ratio=1)
-        for name, desc in _list_modes():
-            t.add_row(name, desc)
-        console.print(Padding(t, (0, 0, 0, 2)))
-        console.print()
-        console.print(theme.info(f"{len(_list_modes())} mode(s) available"))
-        console.print(theme.info("Use --template <name> for template-based extraction"))
-        ctx.exit()
-        return
-
-    # --verify-level implies --verify
-    if not do_verify and ctx.get_parameter_source("verify_level") == click.core.ParameterSource.COMMANDLINE:
-        do_verify = True
-
-    # Mutual exclusivity: --document and --dir
-    if document is not None and directory is not None:
-        raise click.UsageError(
-            "--document and --dir are mutually exclusive. Provide one or the other."
-        )
-
-    # Validate: either --document or --dir is required for extraction
     if document is None and directory is None:
-        raise click.ClickException(
-            "--document or --dir is required. Usage:\n"
-            "  mosaicx extract --document <file>    (single file)\n"
-            "  mosaicx extract --dir <directory>     (batch mode)"
-        )
+        raise click.ClickException("--document or --dir is required.")
+    if document is not None and directory is not None:
+        raise click.UsageError("--document and --dir are mutually exclusive.")
+    if template is None:
+        raise click.ClickException("--template is required.")
 
-    # Mutual exclusivity: --template and --mode
-    if template is not None and mode is not None:
-        raise click.ClickException(
-            "--template and --mode are mutually exclusive. Provide at most one."
-        )
-
-    # Route to batch processing when --dir is used
+    # Route to batch when --dir is used
     if directory is not None:
         _extract_batch(
             ctx=ctx,
             directory=directory,
             template=template,
-            mode=mode,
+            mode=None,
             optimized=optimized,
             output_dir_path=output_dir,
             formats=formats,
@@ -772,293 +679,40 @@ def extract(
         )
         return
 
-    # Validate template/mode early (cheap checks before expensive I/O)
-    if template is not None:
-        from .report import resolve_template
-        try:
-            resolve_template(template=template)
-        except (ValueError, FileNotFoundError) as exc:
-            raise click.ClickException(str(exc))
+    # Single file extraction
+    from .pipelines.extraction import DocumentExtractor
+    from .schemas.template_compiler import compile_template_file_inline
 
-    if mode is not None and template is None:
-        import mosaicx.pipelines.pathology  # noqa: F401
-        import mosaicx.pipelines.radiology  # noqa: F401
+    _configure_dspy()
 
-        from .pipelines.modes import get_mode
-        try:
-            get_mode(mode)
-        except ValueError as exc:
-            raise click.ClickException(str(exc))
+    inline_model = compile_template_file_inline(template)
+    extractor = DocumentExtractor(output_schema=inline_model, think=think)
 
-    # Preflight: check API key before expensive document loading
-    _check_api_key()
+    # Load document
+    doc = _load_doc_with_config(document, force_ocr=force_ocr or None)
+    text = doc.text
 
-    # Load the document
-    from .documents.models import DocumentLoadError
+    if dump_ocr:
+        ocr_path = document.with_suffix(".ocr.txt")
+        ocr_path.write_text(text, encoding="utf-8")
+        console.print(theme.info(f"OCR text saved to {ocr_path}"))
 
-    try:
-        doc = _load_doc_with_config(document, force_ocr=force_ocr or None)
-    except (FileNotFoundError, ValueError, DocumentLoadError) as exc:
-        raise click.ClickException(str(exc))
+    with theme.spinner("Extracting...", console):
+        result = extractor(document_text=text)
 
-    if dump_ocr and output is not None:
-        ocr_path = _dump_ocr_text(doc, output)
-        console.print(theme.ok(f"OCR text dumped to {ocr_path}"))
+    val = result.extracted
+    output_data = val.model_dump(mode="json") if hasattr(val, "model_dump") else val
 
-    if doc.quality_warning:
-        console.print(theme.warn("Low OCR quality detected \u2014 results may be unreliable"))
-
-    if doc.ocr_engine_used == "paddleocr":
-        console.print(theme.warn(
-            "PPStructure layout engine unavailable \u2014 using basic PaddleOCR "
-            "(no table/layout detection). Run 'mosaicx doctor' to diagnose."
-        ))
-
-    if doc.is_empty:
-        hint = " Try --force-ocr if the document is a scanned image." if document.suffix.lower() == ".pdf" else ""
-        raise click.ClickException(f"Document is empty: {document}.{hint}")
-
-    # Build a descriptive load line
-    parts = [f"{doc.format} document", f"{doc.char_count:,} chars"]
-    if doc.ocr_engine_used:
-        parts.append(f"OCR: {doc.ocr_engine_used}")
-    if doc.ocr_confidence:
-        parts.append(f"confidence: {doc.ocr_confidence:.0%}")
-    console.print(theme.info(" \u00b7 ".join(parts)))
-
-    # Determine extraction path
-    output_data: dict = {}
-    metrics = None  # PipelineMetrics, if available
-    _extract_model_instance = None  # Pydantic model for completeness scoring
-
-    if template is not None:
-        # Unified template resolution
-        from .report import detect_mode, resolve_template
-
-        try:
-            template_model, tpl_name = resolve_template(template=template)
-        except (ValueError, FileNotFoundError) as exc:
-            raise click.ClickException(str(exc))
-
-        if tpl_name:
-            console.print(theme.info(f"Template: {tpl_name}"))
-
-        # Detect mode from template (for built-in templates)
-        effective_mode = detect_mode(tpl_name)
-
-        if effective_mode is not None and template_model is None:
-            # Built-in template with mode pipeline but no YAML schema
-            # (e.g. chest_ct without a .yaml file) -- use the mode pipeline
-            import mosaicx.pipelines.pathology  # noqa: F401
-            import mosaicx.pipelines.radiology  # noqa: F401
-
-            console.print(theme.info(f"Mode: {effective_mode}"))
-            _configure_dspy()
-
-            if score:
-                from .pipelines.extraction import extract_with_mode_raw
-                from .report import _find_primary_model
-
-                with theme.spinner("Extracting with mode... patience you must have", console):
-                    output_data, metrics, raw_pred = extract_with_mode_raw(
-                        doc.text, effective_mode
-                    )
-                _extract_model_instance = _find_primary_model(raw_pred)
-            else:
-                from .pipelines.extraction import extract_with_mode
-
-                with theme.spinner("Extracting with mode... patience you must have", console):
-                    output_data, metrics = extract_with_mode(doc.text, effective_mode)
-        elif template_model is not None:
-            # Template resolved to a Pydantic model -- use DocumentExtractor
-            from .pipelines.extraction import DocumentExtractor
-
-            _configure_dspy()
-            extractor = DocumentExtractor(output_schema=template_model, think=think)
-            if optimized is not None:
-                from .evaluation.optimize import load_optimized
-                extractor = load_optimized(type(extractor), optimized)
-            with theme.spinner("Extracting... patience you must have", console):
-                result = extractor(document_text=doc.text)
-            output_data = {}
-            planner_diag = getattr(result, "planner", None) or getattr(extractor, "_last_planner", None)
-            if hasattr(result, "extracted"):
-                val = result.extracted
-                if hasattr(val, "model_dump"):
-                    _extract_model_instance = val
-                    output_data["extracted"] = val.model_dump(mode="json")
-                else:
-                    output_data["extracted"] = val
-            if isinstance(planner_diag, dict):
-                output_data["_planner"] = planner_diag
-            metrics = getattr(extractor, "_last_metrics", None)
-        else:
-            # Template resolved but no model and no mode -- shouldn't happen
-            raise click.ClickException(
-                f"Template {template!r} resolved but produced no extraction template."
-            )
-
-    elif mode is not None:
-        # --mode X: run registered mode pipeline
-        import mosaicx.pipelines.pathology  # noqa: F401
-        import mosaicx.pipelines.radiology  # noqa: F401
-
-        from .pipelines.modes import get_mode
-
-        # Validate mode name early (before configuring DSPy)
-        try:
-            get_mode(mode)
-        except ValueError as exc:
-            raise click.ClickException(str(exc))
-
-        _configure_dspy()
-        if score:
-            from .pipelines.extraction import extract_with_mode_raw
-            from .report import _find_primary_model
-
-            with theme.spinner("Extracting with mode... patience you must have", console):
-                output_data, metrics, raw_pred = extract_with_mode_raw(doc.text, mode)
-            _extract_model_instance = _find_primary_model(raw_pred)
-        else:
-            from .pipelines.extraction import extract_with_mode
-
-            with theme.spinner("Extracting with mode... patience you must have", console):
-                output_data, metrics = extract_with_mode(doc.text, mode)
-
-    else:
-        # Auto mode: no flags -- LLM infers schema
-        if score:
-            console.print(theme.warn(
-                "--score requires a --template or --mode to score against (ignored in auto mode)"
-            ))
-
-        from .pipelines.extraction import DocumentExtractor
-
-        _configure_dspy()
-        extractor = DocumentExtractor(think=think)
-        if optimized is not None:
-            from .evaluation.optimize import load_optimized
-            extractor = load_optimized(type(extractor), optimized)
-        with theme.spinner("Extracting... patience you must have", console):
-            result = extractor(document_text=doc.text)
-        output_data = {}
-        planner_diag = getattr(result, "planner", None) or getattr(extractor, "_last_planner", None)
-        if hasattr(result, "extracted"):
-            val = result.extracted
-            if hasattr(val, "model_dump"):
-                _extract_model_instance = val
-                output_data["extracted"] = val.model_dump(mode="json")
-            else:
-                output_data["extracted"] = val
-        if hasattr(result, "inferred_schema"):
-            output_data["inferred_schema"] = result.inferred_schema.model_dump(mode="json")
-        if isinstance(planner_diag, dict):
-            output_data["_planner"] = planner_diag
-        metrics = getattr(extractor, "_last_metrics", None)
-
-    # Always attach _source mapping (text search + coordinates — cheap, no LLM)
-    from .source_mapping import build_source_block
-
-    extracted_fields = output_data.get("extracted", output_data)
-    output_data["_source"] = build_source_block(doc, fields=extracted_fields)
-
-    # Merge LLM-provided reasoning + excerpt into _source fields
-    field_evidence = getattr(result, "field_evidence", None)
-    if isinstance(field_evidence, dict):
-        for key, ev in field_evidence.items():
-            if key in output_data["_source"]["fields"] and isinstance(ev, dict):
-                if ev.get("reasoning"):
-                    output_data["_source"]["fields"][key]["reasoning"] = ev["reasoning"]
-                if ev.get("excerpt"):
-                    output_data["_source"]["fields"][key]["llm_excerpt"] = ev["excerpt"]
-
-    # Merge LLM-provided reasoning + excerpt into _source fields
-    field_evidence = getattr(result, "field_evidence", None)
-    if isinstance(field_evidence, dict):
-        for key, ev in field_evidence.items():
-            if key in output_data["_source"]["fields"] and isinstance(ev, dict):
-                if "reasoning" in ev:
-                    output_data["_source"]["fields"][key]["reasoning"] = ev["reasoning"]
-                if "excerpt" in ev:
-                    # LLM excerpt overrides text-search excerpt if present
-                    output_data["_source"]["fields"][key]["llm_excerpt"] = ev["excerpt"]
-
-    if do_verify:
-        from .sdk import verify as sdk_verify
-
-        verify_target = output_data.get("extracted", output_data)
-        with theme.spinner("Verifying extracted output...", console):
-            verification = sdk_verify(
-                extraction=verify_target,
-                source_text=doc.text,
-                level=verify_level,
-            )
-        output_data["_verification"] = verification
-
-    from .pipelines.extraction import apply_extraction_contract
-
-    apply_extraction_contract(output_data, source_text=doc.text)
-
-    console.print(theme.ok("Extracted \u2014 this is the way"))
-
-    # Save to file if --output specified
+    # Output
     if output is not None:
-        suffix = output.suffix.lower()
-        if suffix in (".yaml", ".yml"):
-            try:
-                import yaml
-            except ImportError:
-                raise click.ClickException("PyYAML required for YAML output: pip install pyyaml")
-            output.parent.mkdir(parents=True, exist_ok=True)
-            output.write_text(yaml.dump(output_data, default_flow_style=False, sort_keys=False, allow_unicode=True), encoding="utf-8")
-        else:
-            # Default to JSON
-            if not suffix:
-                output = output.with_suffix(".json")
-            output.parent.mkdir(parents=True, exist_ok=True)
-            output.write_text(
-                json.dumps(_apply_output_tier(output_data), indent=2, default=str, ensure_ascii=False),
-                encoding="utf-8",
-            )
-        console.print(theme.ok(f"Saved to {output}"))
-
-    theme.section("Extracted Data", console)
-    from .cli_display import (
-        render_completeness,
-        render_extracted_data,
-        render_metrics,
-        render_verification,
-    )
-
-    render_extracted_data(output_data, console)
-
-    if metrics is not None:
-        render_metrics(metrics, console)
-
-    # Completeness scoring (when --score flag is set)
-    if score and _extract_model_instance is not None:
-        from dataclasses import asdict
-
-        from .evaluation.completeness import compute_report_completeness
-
-        comp = compute_report_completeness(
-            _extract_model_instance, doc.text, type(_extract_model_instance)
-        )
-        render_completeness(asdict(comp), console)
-
-    if do_verify and "_verification" in output_data:
-        contract = output_data.get("_extraction_contract", {})
-        template_field_count = len(contract.get("critical_fields", [])) or None
-        render_verification(output_data["_verification"], console, template_field_count=template_field_count)
-
-    if output is None:
-        console.print()
-        console.print(theme.info("Use -o/--output file.json to save full structured data"))
-
-
-# ---------------------------------------------------------------------------
-# pipeline (group)
-# ---------------------------------------------------------------------------
+        import json as _json
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(_json.dumps(output_data, indent=2, ensure_ascii=False, default=str), encoding="utf-8")
+        console.print(theme.info(f"Saved to {output}"))
+    else:
+        from rich.syntax import Syntax
+        import json as _json
+        console.print(Syntax(_json.dumps(output_data, indent=2, ensure_ascii=False, default=str), "json"))
 
 
 @cli.group()

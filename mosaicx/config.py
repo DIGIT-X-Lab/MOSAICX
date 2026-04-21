@@ -33,6 +33,7 @@ class MosaicxConfig(BaseSettings):
     lm_temperature: float = 0.0
     max_tokens: int = 32768
     num_ctx: int = 131072
+    inference_engine: str = ""  # Auto-detected; override with MOSAICX_INFERENCE_ENGINE
 
     # --- Self-healing ---
     # Keep extraction fast by default; enable targeted LLM repair via MOSAICX_USE_REFINE=1.
@@ -43,6 +44,11 @@ class MosaicxConfig(BaseSettings):
     refine_max_fields: int = 3
     outlines_timeout: int = 120
     planner_min_chars: int = 4000
+    # Extraction context policy:
+    # - full: send full parsed text to the extractor
+    # - planned: use planner-compressed text first, then fall back to full
+    # - focused: use schema-focused text first, then planned/full fallbacks
+    extract_context_strategy: Literal["full", "planned", "focused"] = "full"
 
     # --- Processing ---
     default_template: str = "auto"
