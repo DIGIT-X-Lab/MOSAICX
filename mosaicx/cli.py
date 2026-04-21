@@ -1416,14 +1416,8 @@ def template_create(
     console.print(theme.ok(f"Template created -- {spec.class_name} ({len(spec.fields)} fields)"))
     console.print(theme.info(f"Saved: {dest}"))
 
-    # Preview the YAML
     theme.section("Template Preview", console, "02")
-    from rich.syntax import Syntax
-
-    console.print(Padding(
-        Syntax(yaml_str, "yaml", theme="monokai", line_numbers=False),
-        (0, 0, 0, 2),
-    ))
+    _render_template_preview(yaml_str, console)
 
     metrics = getattr(generator, "_last_metrics", None)
     if metrics is not None:
