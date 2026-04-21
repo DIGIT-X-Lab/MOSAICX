@@ -131,6 +131,16 @@ class ChandraEngine:
         if not images:
             return []
 
+        if not self._server_url:
+            raise RuntimeError(
+                "Chandra requires a vLLM server. Set MOSAICX_CHANDRA_SERVER_URL "
+                "in your .env file (e.g. http://localhost:8000/v1).\n\n"
+                "To start a Chandra server:\n"
+                "  pip install chandra-ocr\n"
+                "  chandra_vllm\n\n"
+                "Or use PaddleOCR instead: MOSAICX_OCR_ENGINE=paddleocr"
+            )
+
         manager = _get_chandra_manager(self._backend, self._server_url)
         try:
             from chandra.model import BatchInputItem
