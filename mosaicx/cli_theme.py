@@ -39,7 +39,16 @@ MUTED = "dim"
 # ── Banner ────────────────────────────────────────────────────────
 
 
-def print_banner(version: str, console: Console, lm: str = "", lm_cheap: str = "") -> None:
+def print_banner(
+    version: str,
+    console: Console,
+    lm: str = "",
+    *,
+    num_ctx: int = 0,
+    inference_engine: str = "",
+    ocr_engine: str = "",
+    ocr_langs: list[str] | None = None,
+) -> None:
     """Print the MOSAICX banner using cfonts with coral-to-greige gradient."""
     try:
         from cfonts import render
@@ -63,17 +72,38 @@ def print_banner(version: str, console: Console, lm: str = "", lm_cheap: str = "
     console.print(f"  [{GREIGE}]{TAGLINE}[/{GREIGE}]")
     console.print(f"  [{MUTED}]v{version} \u00b7 {ORG}[/{MUTED}]")
 
-    # Status strip: model badges
-    if lm or lm_cheap:
-        lm_short = lm.split("/", 1)[-1] if "/" in lm else lm
-        lm_cheap_short = lm_cheap.split("/", 1)[-1] if "/" in lm_cheap else lm_cheap
+    # Status strip
+    if lm or ocr_engine:
         rule = "\u2500" * len(TAGLINE)
         console.print(f"  [{GREIGE}]{rule}[/{GREIGE}]")
-        console.print(
-            f"  [reverse {CORAL}] chonk [/reverse {CORAL}] [{MUTED}]\u25b8[/{MUTED}] [{CORAL}]{lm_short}[/{CORAL}]"
-            f"   "
-            f"[reverse {GREIGE}] smol [/reverse {GREIGE}] [{MUTED}]\u25b8[/{MUTED}] [{CORAL}]{lm_cheap_short}[/{CORAL}]"
-        )
+
+    # Line 1: model
+    if lm:
+        lm_short = lm.split("/", 1)[-1] if "/" in lm else lm
+        t = Text("  ")
+        t.append(" model ", style=f"reverse {CORAL}")
+        t.append(f"  {lm_short}", style="bold")
+        if num_ctx > 0:
+            ctx_human = f"{num_ctx // 1000}k"
+            t.append("  \u00b7  ", style=GREIGE)
+            t.append("ctx ", style=MUTED)
+            t.append(ctx_human, style=GREIGE)
+        if inference_engine:
+            t.append("  \u00b7  ", style=GREIGE)
+            t.append("via ", style=MUTED)
+            t.append(inference_engine, style=GREIGE)
+        console.print(t)
+
+    # Line 2: OCR
+    if ocr_engine:
+        t = Text("  ")
+        t.append("  ocr  ", style=f"reverse {GREIGE}")
+        t.append(f"  {ocr_engine}", style="bold")
+        if ocr_langs:
+            t.append("  \u00b7  ", style=GREIGE)
+            t.append("langs ", style=MUTED)
+            t.append(", ".join(ocr_langs), style=GREIGE)
+        console.print(t)
 
     console.print()
 
