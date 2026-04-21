@@ -1431,13 +1431,11 @@ def _render_template_preview(yaml_str: str, console: Console) -> None:
     from .schemas.template_compiler import parse_template
 
     meta = parse_template(yaml_str)
-    t = theme.make_clean_table()
-    t.add_column("Field", style=f"bold {theme.CORAL}", no_wrap=True)
-    t.add_column("Type", style=theme.GREIGE)
-    t.add_column("Required", style=theme.MUTED)
-    t.add_column("Description", style=theme.MUTED, ratio=1)
 
-    def _add_fields(sections, prefix=""):
+    # Collect rows first to check if descriptions exist
+    rows: list[tuple[str, str, str, str]] = []
+
+    def _collect_fields(sections, prefix=""):
         for s in sections:
             field_name = f"{prefix}{s.name}" if prefix else s.name
             type_str = s.type
@@ -1447,13 +1445,29 @@ def _render_template_preview(yaml_str: str, console: Console) -> None:
                 type_str = f"list[{s.item.type}]"
             req = "yes" if s.required else ""
             desc = s.description or ""
-            t.add_row(field_name, type_str, req, desc)
+            rows.append((field_name, type_str, req, desc))
             if s.type == "object" and s.fields:
-                _add_fields(s.fields, prefix=f"  {field_name}.")
+                _collect_fields(s.fields, prefix=f"  {field_name}.")
             if s.type == "list" and s.item and s.item.type == "object" and s.item.fields:
-                _add_fields(s.item.fields, prefix=f"  {field_name}[].")
+                _collect_fields(s.item.fields, prefix=f"  {field_name}[].")
 
-    _add_fields(meta.sections)
+    _collect_fields(meta.sections)
+
+    has_descriptions = any(desc for _, _, _, desc in rows)
+
+    t = theme.make_clean_table()
+    t.add_column("Field", style=f"bold {theme.CORAL}", no_wrap=True)
+    t.add_column("Type", style=theme.GREIGE)
+    t.add_column("Required", style=theme.MUTED)
+    if has_descriptions:
+        t.add_column("Description", style=theme.MUTED, ratio=1)
+
+    for field_name, type_str, req, desc in rows:
+        if has_descriptions:
+            t.add_row(field_name, type_str, req, desc)
+        else:
+            t.add_row(field_name, type_str, req)
+
     console.print(Padding(t, (0, 0, 0, 2)))
 
 
