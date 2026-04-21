@@ -363,17 +363,21 @@ class TestMergeMappings:
 
 
 class TestDeidentifierSignature:
-    def test_redact_phi_signature(self):
-        from mosaicx.pipelines.deidentifier import RedactPHI
-        assert "document_text" in RedactPHI.input_fields
-        assert "redacted_text" in RedactPHI.output_fields
+    def test_phi_extraction_model(self):
+        from mosaicx.pipelines.deidentifier import PHIExtraction, PHIEntity
+        # PHIExtraction has phi_entities field
+        assert "phi_entities" in PHIExtraction.model_fields
+        # PHIEntity has value, type, excerpt
+        assert "value" in PHIEntity.model_fields
+        assert "type" in PHIEntity.model_fields
+        assert "excerpt" in PHIEntity.model_fields
 
 
 class TestDeidentifierModule:
     def test_module_has_submodules(self):
         from mosaicx.pipelines.deidentifier import Deidentifier
         d = Deidentifier()
-        assert hasattr(d, "redact")
+        assert hasattr(d, "extract_phi")
 
 
 class TestConformanceAwareRegex:

@@ -2068,49 +2068,53 @@ def _deidentify_batch(
     _configure_dspy()
     from .pipelines.deidentifier import Deidentifier
 
-    deid = Deidentifier()
+    effective_conformance = get_config().conformance
+    try:
+        deid = Deidentifier(conformance=effective_conformance)
+    except KeyError as exc:
+        raise click.ClickException(str(exc))
 
     def process_fn(text: str) -> dict:
         result = deid(document_text=text, mode=mode)
-        payload: dict[str, Any] = {"redacted_text": result.redacted_text, "mode": mode}
-        redaction_map = getattr(result, "redaction_map", None)
-        if redaction_map is not None:
-            payload["redaction_map"] = redaction_map
-        return payload
+        output: dict[str, Any] = {
+            "conformance": getattr(result, "conformance", effective_conformance),
+            "redacted_text": result.redacted_text,
+        }
+        phi = getattr(result, "phi", [])
+        if phi:
+            output["phi"] = phi
+        return output
 
     resume_id = "resume" if resume else None
     checkpoint_dir = output_dir_path / ".checkpoints" if resume else None
 
-    # Wrap process_fn to attach _source mapping per document
-    _last_loaded_doc_deid: dict[str, Any] = {}
-
-    def _load_and_cache_deid(p: Path) -> str:
+    def _load_doc(p: Path) -> str:
         doc = _load_doc_with_config(p)
-        _last_loaded_doc_deid["doc"] = doc
         return doc.text
 
-    def _process_with_source_deid(text: str) -> dict:
-        output = process_fn(text)
-        doc = _last_loaded_doc_deid.get("doc")
-        if doc is not None and output.get("redaction_map"):
-            from .source_mapping import build_source_block
-            output["_source"] = build_source_block(
-                doc, redaction_map=output["redaction_map"]
-            )
-        return output
+    _DEID_QUIPS = [
+        "Nothing to see here",
+        "Witness protection program activated",
+        "Making it HIPAA-friendly",
+        "Anonymizing like a pro",
+        "Hiding in plain sight",
+        "Your secrets are safe with me",
+        "I'm gonna make him a redaction he can't refuse",
+        "These aren't the identifiers you're looking for",
+        "First rule of de-identification: you don't talk about PHI",
+        "Who you gonna call? Deidentifier!",
+        "With great data comes great anonymity",
+        "Perfectly redacted, as all things should be",
+    ]
 
-    supported = {".txt", ".md", ".pdf", ".docx"}
-    total_docs = sum(1 for p in directory.iterdir() if p.is_file() and p.suffix.lower() in supported)
-
-    with theme.progress(total_docs, "documents", console) as advance:
+    with theme.wave_spinner("De-identifying...", console, quips=_DEID_QUIPS):
         result = processor.process_directory(
             input_dir=directory,
             output_dir=output_dir_path,
-            process_fn=_process_with_source_deid,
+            process_fn=process_fn,
             resume_id=resume_id,
             checkpoint_dir=checkpoint_dir,
-            load_fn=_load_and_cache_deid,
-            on_progress=lambda name, success: advance(),
+            load_fn=_load_doc,
         )
 
     console.print(theme.ok(f"Batch complete -- {result['succeeded']}/{result['total']} succeeded"))

@@ -487,50 +487,35 @@ def _build_dspy_classes():
     Called on first access via module-level ``__getattr__``.
     """
     import dspy  # noqa: F811 -- intentional lazy import
+    from pydantic import BaseModel, Field
+    from typing import Optional
 
-    # -- Signature ---------------------------------------------------------
+    # -- Pydantic output model (same as extract's {value, excerpt} pattern) --
 
-    class RedactPHI(dspy.Signature):
-        """Remove or replace Protected Health Information (PHI) from a
-        medical document while preserving clinical content.
+    class PHIEntity(BaseModel):
+        """A single detected PHI item — same {value, excerpt} pattern as extract."""
+        value: str = Field(description="Exact PHI string as it appears in the document")
+        type: str = Field(description="PHI category (e.g. NAME, DATE, SSN, MRN)")
+        excerpt: Optional[str] = Field(default=None, description="The full line from the document containing this PHI")
 
-        Modes:
-            - remove: Replace PHI with [REDACTED].
-            - pseudonymize: Replace PHI with realistic fake values.
-            - dateshift: Shift all dates by a consistent random offset.
-        """
+    class PHIExtraction(BaseModel):
+        """Just the PHI entities — the LLM only finds them, redaction is deterministic."""
+        phi_entities: list[PHIEntity] = Field(description="All PHI entities found in the document")
 
-        document_text: str = dspy.InputField(
-            desc="Full text of the medical document to de-identify"
-        )
-        mode: str = dspy.InputField(
-            desc="De-identification mode: 'remove', 'pseudonymize', or 'dateshift'",
-            default="remove",
-        )
-        redacted_text: str = dspy.OutputField(
-            desc="De-identified text with PHI removed or replaced"
-        )
-        phi_entities: str = dspy.OutputField(
-            desc="JSON list of PHI entities found, each with 'text' (the "
-                 "exact original PHI string as it appears in document_text), "
-                 "'type' (PHI category), "
-                 "'excerpt' (the full line from the document "
-                 "containing this PHI). "
-                 "Be thorough: detect ALL identifiers including names of "
-                 "physicians, institutions, dates, locations, and any "
-                 "unique identifying numbers. "
-                 'Example: '
-                 '[{"text": "Jane Doe", "type": "NAME", '
-                 '"excerpt": "Patient Name: Jane Doe"}]'
-        )
+    # -- Signature (identical to extract: input str -> output Pydantic model) -
 
-    # -- Module ------------------------------------------------------------
+    # No RedactPHI signature needed — we use the same pattern as extract:
+    # dspy.Signature("input -> output") with Pydantic output type.
+
+    # -- Module (same architecture as DocumentExtractor) ----------------------
 
     class Deidentifier(dspy.Module):
         """DSPy Module implementing the belt-and-suspenders de-identifier.
 
-        Accepts a ``conformance`` name to select which privacy standard
-        governs detection (regex patterns + LLM prompt). Defaults to HIPAA.
+        Same architecture as DocumentExtractor:
+        1. Single dspy.Predict call to EXTRACT PHI entities (not rewrite the doc)
+        2. Deterministic string replacement to build redacted text
+        3. Regex safety net catches format-based PHI the LLM missed
         """
 
         def __init__(self, conformance: str = "hipaa") -> None:
@@ -539,108 +524,98 @@ def _build_dspy_classes():
 
             self._spec = get_conformance(conformance)
 
-            # Build signature with conformance-specific prompt
-            conformance_desc = (
+            # Same pattern as DocumentExtractor: str -> Pydantic model
+            objective = (
                 self._spec.prompt_fragment + " "
-                "For each PHI entity, return a JSON object with 'text', 'type' "
+                "Find ALL PHI entities in the document. For each, record the "
+                "exact text as it appears, its type "
                 f"(one of: {', '.join(self._spec.phi_categories)}), "
-                "and 'excerpt' (the full line from the document containing this PHI). "
-                "Be thorough: detect ALL identifiers including names of "
-                "physicians, institutions, dates, locations, and any "
-                "unique identifying numbers. "
-                'Example: '
-                '[{"text": "Jane Doe", "type": "NAME", '
-                '"excerpt": "Patient Name: Jane Doe"}]'
+                "and the full line containing it as excerpt."
             )
-            custom_sig = RedactPHI.with_updated_fields(
-                "phi_entities", desc=conformance_desc,
+
+            custom_sig = dspy.Signature(
+                "document -> extraction",
+                instructions=objective,
+            ).with_updated_fields(
+                "document", desc="Full text of the medical document", type_=str,
+            ).with_updated_fields(
+                "extraction", desc="Extracted PHI entities", type_=PHIExtraction,
             )
-            self.redact = dspy.ChainOfThought(custom_sig)
+
+            self.extract_phi = dspy.Predict(custom_sig)
 
         def forward(
             self, document_text: str, mode: str = "remove"
         ) -> dspy.Prediction:
-            """Run the de-identification pipeline.
+            """Extract PHI, then redact deterministically.
 
-            Returns a simplified output:
-            - ``conformance`` (str) -- which standard was applied.
-            - ``redacted_text`` (str) -- the de-identified text.
-            - ``phi`` (list[dict]) -- PHI items, each with ``value``,
-              ``type``, and ``excerpt``.
+            Same flow as extract: one Predict call, structured output.
+            Redaction is just string.replace() — instant.
             """
             from mosaicx.metrics import PipelineMetrics, get_tracker, track_step
 
             metrics = PipelineMetrics()
             tracker = get_tracker()
 
-            # Layer 1: LLM-based redaction
-            with track_step(metrics, "LLM redaction", tracker):
-                llm_result = self.redact(
-                    document_text=document_text,
-                    mode=mode,
-                )
-            llm_text: str = llm_result.redacted_text
+            # Step 1: Extract PHI entities (same as extract — small output)
+            with track_step(metrics, "PHI extraction", tracker):
+                pred = self.extract_phi(document=document_text)
+                extraction = pred.extraction
+                if hasattr(extraction, "model_dump"):
+                    extraction = extraction.model_dump(mode="json")
 
-            # Layer 2: regex safety net (only in "remove" mode)
-            if mode == "remove":
-                with track_step(metrics, "Regex guard", tracker):
-                    scrubbed_text, _ = regex_scrub_phi_conformance(
-                        llm_text, self._spec,
-                    )
-            else:
-                scrubbed_text = llm_text
+            llm_entities = extraction.get("phi_entities", [])
 
-            # Build simplified PHI list
+            # Step 2: Build PHI list from LLM + regex
             with track_step(metrics, "PHI mapping", tracker):
-                import json as _json
-                try:
-                    raw_entities = _json.loads(
-                        getattr(llm_result, "phi_entities", "[]")
-                    )
-                    if not isinstance(raw_entities, list):
-                        raw_entities = []
-                except (ValueError, TypeError):
-                    raw_entities = []
-
-                # LLM-detected PHI
                 phi: list[dict[str, str]] = []
                 seen: set[str] = set()
-                for entity in raw_entities:
-                    value = entity.get("text", "").strip()
-                    if not value or value in seen:
+                for entity in llm_entities:
+                    val = entity.get("value", "").strip() if isinstance(entity, dict) else ""
+                    if not val or val in seen:
                         continue
-                    seen.add(value)
+                    seen.add(val)
                     phi.append({
-                        "value": value,
-                        "type": entity.get("type", "OTHER").upper(),
-                        "excerpt": entity.get("excerpt", ""),
+                        "value": val,
+                        "type": (entity.get("type", "OTHER") or "OTHER").upper(),
+                        "excerpt": entity.get("excerpt", "") or "",
                     })
 
-                # Regex-detected PHI (on original text, remove mode only)
-                if mode == "remove":
-                    _, regex_mappings = regex_scrub_phi_conformance(
-                        document_text, self._spec,
-                    )
-                    for m in regex_mappings:
-                        value = m["original"]
-                        if value not in seen:
-                            seen.add(value)
-                            phi.append({
-                                "value": value,
-                                "type": m["phi_type"],
-                                "excerpt": "",
-                            })
+                # Regex catches format-based PHI the LLM missed
+                _, regex_mappings = regex_scrub_phi_conformance(
+                    document_text, self._spec,
+                )
+                for m in regex_mappings:
+                    val = m["original"]
+                    if val not in seen:
+                        seen.add(val)
+                        phi.append({
+                            "value": val,
+                            "type": m["phi_type"],
+                            "excerpt": "",
+                        })
+
+            # Step 3: Deterministic redaction (instant, case-insensitive)
+            with track_step(metrics, "Redaction", tracker):
+                redacted_text = document_text
+                # Sort by length descending so longer matches replace first
+                # (avoids partial replacements e.g. "Dr. Smith" before "Smith")
+                for item in sorted(phi, key=lambda x: len(x["value"]), reverse=True):
+                    # Case-insensitive replace using re.sub with escaped pattern
+                    pattern = re.escape(item["value"])
+                    redacted_text = re.sub(pattern, _REDACTED, redacted_text, flags=re.IGNORECASE)
 
             self._last_metrics = metrics
 
             return dspy.Prediction(
                 conformance=self._spec.name,
-                redacted_text=scrubbed_text,
+                redacted_text=redacted_text,
                 phi=phi,
             )
 
     return {
-        "RedactPHI": RedactPHI,
+        "PHIEntity": PHIEntity,
+        "PHIExtraction": PHIExtraction,
         "Deidentifier": Deidentifier,
     }
 
@@ -649,7 +624,8 @@ def _build_dspy_classes():
 _dspy_classes: dict[str, type] | None = None
 
 _DSPY_CLASS_NAMES = frozenset({
-    "RedactPHI",
+    "PHIEntity",
+    "PHIExtraction",
     "Deidentifier",
 })
 
