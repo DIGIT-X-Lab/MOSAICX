@@ -517,6 +517,29 @@ _DEID_QUIPS = [
     "I just like redacting. Redacting is my favorite",         # Elf
 ]
 
+_TEMPLATE_QUIPS = [
+    "I'm gonna make him a schema he can't refuse",             # The Godfather
+    "Show me the fields!",                                     # Jerry Maguire
+    "You had me at --describe",                                # You've Got Mail
+    "One does not simply describe a template",                 # LOTR
+    "Use the YAML, Luke",                                      # Star Wars
+    "I find your lack of fields disturbing",                   # Star Wars
+    "These aren't the types you're looking for",               # Star Wars
+    "The schema really ties the data together",                # Big Lebowski
+    "I see enum people",                                       # Sixth Sense
+    "Why so untyped?",                                         # Dark Knight
+    "We're gonna need a bigger schema",                        # Jaws
+    "With great fields comes great responsibility",            # Spider-Man
+    "Perfectly typed, as all things should be",                # Thanos
+    "I can do this all day",                                   # Captain America
+    "That's what I do. I type and I know things",              # Tyrion
+    "Anyone can schema",                                       # Ratatouille
+    "Elementary, my dear YAML",                                # Sherlock
+    "60% of the time, it types every time",                    # Anchorman
+    "What is this, a schema for ants?",                        # Zoolander
+    "Could this BE any more structured?",                      # Chandler
+]
+
 
 def _extract_batch(
     ctx: click.Context,
@@ -1213,8 +1236,22 @@ def template_create(
             validate_schema_spec,
         )
 
+        # Config summary
+        theme.section("Template Creation", console, "01")
+        rt = theme.make_clean_table(show_header=False)
+        rt.add_column("Key", style=f"bold {theme.CORAL}", no_wrap=True)
+        rt.add_column("Value")
+        rt.add_row("Source", f"RadReport {from_radreport}")
+        rt.add_row("Title", rr_template.title)
+        if name:
+            rt.add_row("Name", name)
+        rt.add_row("Mode", effective_mode)
+        console.print(Padding(rt, (0, 0, 0, 2)))
+
         generator = SchemaGenerator()
-        with theme.spinner("Enriching template with LLM... hold my beer", console):
+
+        console.print()
+        with theme.wave_spinner("Generating...", console, quips=_TEMPLATE_QUIPS):
             result = generator(
                 description=rr_description,
                 example_text=llm_context,
@@ -1226,7 +1263,6 @@ def template_create(
         if name:
             spec.class_name = name
         elif not spec.class_name or spec.class_name == "Schema":
-            # Generate a sensible name from the RadReport title
             spec.class_name = re.sub(r"[^a-zA-Z0-9]", "", rr_template.title.title())
         spec = normalize_schema_spec(spec, default_class_name="GeneratedSchema")
         issues = validate_schema_spec(spec)
@@ -1244,17 +1280,14 @@ def template_create(
             raise click.ClickException(f"Generated template failed validation: {exc}")
         dest = _save_template_yaml(spec.class_name, yaml_str, output)
 
-        console.print(theme.ok("Template created from RadReport"))
-        console.print(theme.info(f"Name: {spec.class_name}"))
-        console.print(theme.info(f"Fields: {len(spec.fields)}"))
+        console.print(theme.ok(f"Template created -- {spec.class_name} ({len(spec.fields)} fields)"))
         console.print(theme.info(f"Saved: {dest}"))
 
-        # Preview the YAML
-        theme.section("Template Preview", console)
+        theme.section("Template Preview", console, "02")
         from rich.syntax import Syntax
 
         console.print(Padding(
-            Syntax(yaml_str, "yaml", theme="ansi_dark", line_numbers=False),
+            Syntax(yaml_str, "yaml", theme="monokai", line_numbers=False),
             (0, 0, 0, 2),
         ))
 
@@ -1337,9 +1370,28 @@ def template_create(
         validate_schema_spec,
     )
 
+    # Config summary (consistent with extract/deidentify)
+    theme.section("Template Creation", console, "01")
+    t = theme.make_clean_table(show_header=False)
+    t.add_column("Key", style=f"bold {theme.CORAL}", no_wrap=True)
+    t.add_column("Value")
+    if description:
+        t.add_row("Description", description)
+    if from_document is not None:
+        t.add_row("Document", from_document.name)
+    if from_url is not None:
+        t.add_row("URL", from_url)
+    if name:
+        t.add_row("Name", name)
+    if mode:
+        t.add_row("Mode", mode)
+    console.print(Padding(t, (0, 0, 0, 2)))
+
     generator = SchemaGenerator()
     runtime_dryrun = bool(document_text)
-    with theme.spinner("Generating template... hold my beer", console):
+
+    console.print()
+    with theme.wave_spinner("Generating...", console, quips=_TEMPLATE_QUIPS):
         result = generator(
             description=description,
             example_text=example_text,
@@ -1366,17 +1418,15 @@ def template_create(
         raise click.ClickException(f"Generated template failed validation: {exc}")
     dest = _save_template_yaml(spec.class_name, yaml_str, output)
 
-    console.print(theme.ok("Template created"))
-    console.print(theme.info(f"Name: {spec.class_name}"))
-    console.print(theme.info(f"Fields: {len(spec.fields)}"))
+    console.print(theme.ok(f"Template created -- {spec.class_name} ({len(spec.fields)} fields)"))
     console.print(theme.info(f"Saved: {dest}"))
 
     # Preview the YAML
-    theme.section("Template Preview", console)
+    theme.section("Template Preview", console, "02")
     from rich.syntax import Syntax
 
     console.print(Padding(
-        Syntax(yaml_str, "yaml", theme="ansi_dark", line_numbers=False),
+        Syntax(yaml_str, "yaml", theme="monokai", line_numbers=False),
         (0, 0, 0, 2),
     ))
 
