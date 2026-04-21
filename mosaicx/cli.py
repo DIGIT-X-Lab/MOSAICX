@@ -380,6 +380,110 @@ def cli(ctx: click.Context) -> None:
 # extract -- batch helper
 # ---------------------------------------------------------------------------
 
+_EXTRACT_QUIPS = [
+    "I'm gonna make him a JSON he can't refuse",              # The Godfather
+    "Show me the structured data!",                            # Jerry Maguire
+    "You had me at --template",                                # You've Got Mail
+    "Here's looking at you, PDF",                              # Casablanca
+    "One does not simply parse unstructured text",             # LOTR
+    "It's over 9000... tokens",                                # Dragon Ball Z
+    "This is fine",                                            # Meme
+    "May the fields be ever in your favor",                    # Hunger Games
+    "I find your lack of structure disturbing",                # Star Wars
+    "To extract, or not to extract",                           # Shakespeare
+    "They see me parsin', they hatin'",                        # Chamillionaire
+    "Not the parser Gotham deserves, but the one it needs",    # Batman
+    "Houston, we have structured data",                        # Apollo 13
+    "I'll be back... with your JSON",                          # Terminator
+    "You shall not pass... without an excerpt",                # LOTR
+    "There is no spoon, only key-value pairs",                 # Matrix
+    "Life is like a box of PDFs",                              # Forrest Gump
+    "To infinity and beyond... the context window",            # Toy Story
+    "We're gonna need a bigger context window",                # Jaws
+    "Use the schema, Luke",                                    # Star Wars
+    "Are you not extracted?!",                                 # Gladiator
+    "As you wish... generating JSON",                          # Princess Bride
+    "I have a very particular set of regex",                   # Taken
+    "Everything the light touches is parseable",               # Lion King
+    "First rule of extraction: always cite your excerpts",     # Fight Club
+    "We need to go deeper... into the nested fields",          # Inception
+    "Where we're going, we don't need manual entry",           # Back to the Future
+    "Why so unstructured?",                                    # Dark Knight
+    "We're not in free text anymore",                          # Wizard of Oz
+    "I feel the need, the need for schema",                    # Top Gun
+    "You complete me... r JSON schema",                        # Jerry Maguire
+    "I'm kind of a big deal in NLP",                           # Anchorman
+    "Game over, man! ...Just kidding, 3 more docs",            # Aliens
+    "Yeah, if you could go ahead and structure that data",     # Office Space
+    "On Wednesdays we parse PDFs",                             # Mean Girls
+    "I know kung fu... and regex",                             # Matrix
+    "It's just a flesh wound... missing one field",            # Monty Python
+    "These aren't the fields you're looking for",              # Star Wars
+    "The schema really ties the data together",                # Big Lebowski
+    "Who you gonna call? DocumentExtractor!",                  # Ghostbusters
+    "Life, uh, finds a way... into structured JSON",           # Jurassic Park
+    "Yo Adrian, I extracted it!",                              # Rocky
+    "Your mission, should you choose to accept it",            # Mission Impossible
+    "I'm the king of the schema!",                             # Titanic
+    "They may take our PDFs, but they'll never take our JSON!",# Braveheart
+    "I see structured data",                                   # Sixth Sense
+    "Life moves pretty fast. Parse it or miss it",             # Ferris Bueller
+    "Say hello to my little schema",                           # Scarface
+    "E.T. phone home... with the extraction results",          # E.T.
+    "Keep your friends close, and your schemas closer",        # Godfather II
+    "What we have here is failure to parse",                   # Cool Hand Luke
+    "You can't handle the unstructured truth!",                # A Few Good Men
+    "Just keep parsing, just keep parsing",                    # Finding Nemo
+    "Good morning! And in case I don't see you, good JSON",    # Truman Show
+    "This is SPARTA... I mean, JSON",                          # 300
+    "The spice must flow... into the output fields",           # Dune
+    "My precious... structured data",                          # LOTR
+    "Don't let me leave without the extraction!",              # Interstellar
+    "You will always remember this as the day you almost lost your JSON",  # Pirates
+    "It's LeviOsa, not LevioSAA... anyway, extracting",       # Harry Potter
+    "No capes! Just key-value pairs",                          # Incredibles
+    "I can do this all day",                                   # Captain America
+    "With great data comes great responsibility",              # Spider-Man
+    "Wakanda schema is this?",                                 # Black Panther
+    "I am the god of structured output",                       # Thor
+    "I am inevitable... ly going to finish this batch",        # Thanos
+    "I've come to bargain... with your unstructured text",     # Doctor Strange
+    "Let it go, let it flow... into JSON",                     # Frozen
+    "Adventure is out there! So is your data",                 # Up
+    "Anyone can parse",                                        # Ratatouille
+    "Directive: extract",                                      # WALL-E
+    "Remember me... when the JSON is done",                    # Coco
+    "Welcome to the real world... of structured data",         # Matrix
+    "I'm the guy who does his job. You must be the other thing",  # Departed
+    "As far back as I can remember, I always wanted to be a parser",  # Goodfellas
+    "People keep asking if I'm back. Yeah, I'm thinking I'm parsing",  # John Wick
+    "What happens in extraction, stays in the JSON",           # Hangover
+    "Vote for Pedro... and structured output",                 # Napoleon Dynamite
+    "60% of the time, it works every time",                    # Anchorman
+    "What is this, a schema for ants?",                        # Zoolander
+    "I just like parsing. Parsing is my favorite",             # Elf
+    "That'll do, parser. That'll do",                          # Babe
+    "After all this time? Always... extracting",               # Harry Potter
+    "I am Groot... and so is this JSON",                       # Guardians
+    "To the schema and beyond!",                               # Buzz Lightyear
+    "It's a beautiful day in the neighborhood... of key-value pairs",  # Mr Rogers
+    "Elementary, my dear data",                                # Sherlock
+    "May the JSON be with you",                                # Star Wars
+    "That's what I do. I parse and I know things",             # Tyrion
+    "Not all those who wander are lost... some are just parsing",  # Tolkien
+    "So you're telling me there's a chance... it parses",      # Dumb and Dumber
+    "Here's a fun fact: structured data is better",            # The Office vibes
+    "I volunteer as parser!",                                  # Hunger Games
+    "Perfectly balanced, as all schemas should be",            # Thanos
+    "I'm not superstitious, but I am a little structured",     # The Office
+    "Run, Forrest, parse!",                                    # Forrest Gump
+    "How you doin'? ...Your extraction, I mean",               # Joey
+    "Could this BE any more structured?",                      # Chandler
+    "Pivot! Pivot! ...the schema, I mean",                     # Ross
+    "We were on a parse!",                                     # Ross
+    "Smelly cat, smelly cat, what are they feeding your JSON", # Phoebe
+]
+
 
 def _extract_batch(
     ctx: click.Context,
@@ -453,9 +557,6 @@ def _extract_batch(
         except (ValueError, FileNotFoundError) as exc:
             raise click.ClickException(str(exc))
 
-        if tpl_name:
-            console.print(theme.info(f"Template: {tpl_name}"))
-
         effective_mode = detect_mode(tpl_name)
 
         if effective_mode is not None and template_model is None:
@@ -527,11 +628,11 @@ def _extract_batch(
         doc = _load_doc_with_config(p, force_ocr=force_ocr or None)
         return doc.text
 
-    # Count documents for progress bar
-    supported = {".txt", ".md", ".pdf", ".docx", ".png", ".jpg", ".jpeg", ".tif", ".tiff"}
-    total_docs = sum(1 for p in directory.iterdir() if p.is_file() and p.suffix.lower() in supported)
-
-    with theme.progress(total_docs, "documents", console) as advance:
+    with theme.wave_spinner(
+        "Extracting...",
+        console,
+        quips=_EXTRACT_QUIPS,
+    ):
         result = processor.process_directory(
             input_dir=directory,
             output_dir=output_dir_path,
@@ -539,7 +640,6 @@ def _extract_batch(
             resume_id=resume_id,
             checkpoint_dir=checkpoint_dir,
             load_fn=_load_doc,
-            on_progress=lambda name, success: advance(),
         )
 
     console.print(theme.ok(f"Batch complete -- {result['succeeded']}/{result['total']} succeeded"))
@@ -688,6 +788,18 @@ def extract(
     inline_model = compile_template_file_inline(template)
     extractor = DocumentExtractor(output_schema=inline_model, think=think)
 
+    # Config summary (consistent with batch mode)
+    tpl_name = Path(template).stem if "/" in template or template.endswith(".yaml") else template
+    theme.section("Extraction", console, "01")
+    from rich.padding import Padding
+    t = theme.make_clean_table(show_header=False)
+    t.add_column("Key", style=f"bold {theme.CORAL}", no_wrap=True)
+    t.add_column("Value")
+    t.add_row("Document", document.name)
+    t.add_row("Template", tpl_name)
+    t.add_row("Think", think)
+    console.print(Padding(t, (0, 0, 0, 2)))
+
     # Load document
     doc = _load_doc_with_config(document, force_ocr=force_ocr or None)
     text = doc.text
@@ -697,7 +809,7 @@ def extract(
         ocr_path.write_text(text, encoding="utf-8")
         console.print(theme.info(f"OCR text saved to {ocr_path}"))
 
-    with theme.spinner("Extracting...", console):
+    with theme.wave_spinner("Extracting...", console, quips=_EXTRACT_QUIPS):
         result = extractor(document_text=text)
 
     val = result.extracted
@@ -708,11 +820,11 @@ def extract(
         import json as _json
         output.parent.mkdir(parents=True, exist_ok=True)
         output.write_text(_json.dumps(output_data, indent=2, ensure_ascii=False, default=str), encoding="utf-8")
-        console.print(theme.info(f"Saved to {output}"))
+        console.print(theme.ok(f"Saved to {output}"))
     else:
-        from rich.syntax import Syntax
-        import json as _json
-        console.print(Syntax(_json.dumps(output_data, indent=2, ensure_ascii=False, default=str), "json"))
+        from .cli_display import render_extracted_data
+        theme.section("Result", console, "02")
+        render_extracted_data(output_data, console)
 
 
 @cli.group()

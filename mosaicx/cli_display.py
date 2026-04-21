@@ -73,40 +73,58 @@ def render_extracted_data(data: dict[str, Any], console: Console) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _render_dict_items(data: dict[str, Any], console: Console, depth: int) -> None:
-    """Render a dict by grouping adjacent scalars into a KV table and
-    dispatching non-scalar values to specialised renderers."""
-    scalar_buf: list[tuple[str, Any]] = []
+def _is_evidence_field(value: Any) -> bool:
+    """Check if a dict is a {value, excerpt} evidence field."""
+    if not isinstance(value, dict):
+        return False
+    keys = set(value.keys())
+    return keys <= {"value", "excerpt"} and "value" in keys
 
-    def flush_scalars() -> None:
-        if not scalar_buf:
-            return
-        t = theme.make_clean_table(show_header=False)
-        t.add_column("Key", style=f"bold {theme.CORAL}", max_width=28)
-        t.add_column("Value", ratio=1)
-        for k, v in scalar_buf:
-            t.add_row(_pretty_key(k), _format_value(v))
-        console.print(Padding(t, (0, 0, 0, 2)))
-        scalar_buf.clear()
+
+def _render_dict_items(data: dict[str, Any], console: Console, depth: int) -> None:
+    """Render a dict by grouping adjacent scalars and evidence fields into
+    a compact KV table, dispatching complex values to specialised renderers."""
+
+    # Check if this dict is mostly evidence fields — render as one compact table
+    evidence_buf: list[tuple[str, Any, str]] = []  # (key, value, excerpt)
+    complex_items: list[tuple[str, Any]] = []
 
     for key, value in data.items():
-        if isinstance(value, (str, int, float, bool)) or value is None:
-            scalar_buf.append((key, value))
-        elif isinstance(value, dict):
-            flush_scalars()
+        if _is_evidence_field(value):
+            evidence_buf.append((key, value.get("value"), value.get("excerpt", "")))
+        elif isinstance(value, (str, int, float, bool)) or value is None:
+            evidence_buf.append((key, value, ""))
+        else:
+            complex_items.append((key, value))
+
+    # Render evidence/scalar fields as one clean table
+    if evidence_buf:
+        has_excerpts = any(exc for _, _, exc in evidence_buf)
+        t = theme.make_clean_table(show_header=False)
+        t.add_column("Field", style=f"bold {theme.CORAL}", max_width=28, no_wrap=True)
+        t.add_column("Value", ratio=1)
+        if has_excerpts:
+            t.add_column("Excerpt", style=theme.MUTED, ratio=1)
+        for key, val, excerpt in evidence_buf:
+            row = [_pretty_key(key), _format_value(val)]
+            if has_excerpts:
+                row.append(excerpt or "")
+            t.add_row(*row)
+        console.print(Padding(t, (0, 0, 0, 2)))
+
+    # Render complex items (nested objects, lists) after the table
+    for key, value in complex_items:
+        if isinstance(value, dict):
+            if _is_evidence_field(value):
+                continue  # already handled
             _render_subsection(key, value, console, depth)
         elif isinstance(value, list):
-            flush_scalars()
             if not value:
                 continue
             if all(isinstance(item, dict) for item in value):
                 _render_list_table(key, value, console)
             else:
                 _render_bullet_list(key, value, console)
-        else:
-            scalar_buf.append((key, value))
-
-    flush_scalars()
 
 
 def _render_subsection(key: str, data: dict[str, Any], console: Console, depth: int) -> None:
