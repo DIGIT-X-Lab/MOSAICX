@@ -2377,38 +2377,38 @@ def deidentify(
             )
             console.print(theme.ok(f"Saved to {output}"))
 
-    # Display — highlight [REDACTED] markers in coral for visual hierarchy
-    display_text = redacted.replace(
-        "[REDACTED]", f"[white on {theme.CORAL}]\\[REDACTED][/white on {theme.CORAL}]"
-    )
-    theme.section("Redacted Document", console, "01")
-    console.print(theme.info(document.name))
-    console.print(
-        Padding(
-            Panel(
-                display_text,
-                box=box.ROUNDED,
-                border_style=theme.GREIGE,
-                padding=(1, 2),
-            ),
-            (0, 0, 0, 2),
+    # Display only when not saving to file (consistent with extract)
+    if output is None:
+        # Highlight [REDACTED] markers in coral
+        display_text = redacted.replace(
+            "[REDACTED]", f"[white on {theme.CORAL}]\\[REDACTED][/white on {theme.CORAL}]"
         )
-    )
-
-    # Display PHI summary
-    if phi:
-        theme.section("PHI Detected", console, "02")
-        t = theme.make_clean_table()
-        t.add_column("Type", style=f"bold {theme.CORAL}")
-        t.add_column("Value")
-        t.add_column("Excerpt", style=theme.MUTED)
-        for item in phi:
-            t.add_row(
-                item.get("type", "OTHER"),
-                item.get("value", ""),
-                item.get("excerpt", ""),
+        theme.section("Result", console, "02")
+        console.print(
+            Padding(
+                Panel(
+                    display_text,
+                    box=box.ROUNDED,
+                    border_style=theme.GREIGE,
+                    padding=(1, 2),
+                ),
+                (0, 0, 0, 2),
             )
-        console.print(Padding(t, (0, 0, 0, 2)))
+        )
+
+        if phi:
+            theme.section("PHI Detected", console, "03")
+            t = theme.make_clean_table()
+            t.add_column("Type", style=f"bold {theme.CORAL}")
+            t.add_column("Value")
+            t.add_column("Excerpt", style=theme.MUTED)
+            for item in phi:
+                t.add_row(
+                    item.get("type", "OTHER"),
+                    item.get("value", ""),
+                    item.get("excerpt", ""),
+                )
+            console.print(Padding(t, (0, 0, 0, 2)))
 
     doc_metrics = getattr(deid, "_last_metrics", None)
     if doc_metrics is not None:
