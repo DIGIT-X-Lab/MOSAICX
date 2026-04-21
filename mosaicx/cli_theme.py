@@ -408,14 +408,8 @@ class LiveSpinner:
             if self._show_elapsed:
                 elapsed = time.monotonic() - self._start_time
                 mins, secs = divmod(int(elapsed), 60)
-                dim = "\033[2m"
-                # Line 1: star + wave quip
-                # Line 2: dim elapsed timer, indented under the quip text
-                line = (
-                    f"\r\033[K  {spinner_color}{frame}{self._reset} {colored}{self._reset}\n"
-                    f"\033[K    {dim}elapsed {mins}:{secs:02d}{self._reset}"
-                    f"\033[A\r"  # move cursor back up to line 1
-                )
+                # Timer replaces the star — bold coral timer + wave quip
+                line = f"\r\033[K  {spinner_color}\033[1m{mins}:{secs:02d}{self._reset} {colored}{self._reset}"
             else:
                 line = f"\r\033[K  {spinner_color}{frame}{self._reset} {colored}{self._reset}"
             tty.write(line)
@@ -434,8 +428,7 @@ class LiveSpinner:
         self.running = False
         if self.thread:
             self.thread.join(timeout=0.5)
-        # Clear both lines (line 1 + elapsed line below)
-        clear = "\r\033[K\n\033[K\033[A\r\033[K" if self._show_elapsed else "\r\033[K"
+        clear = "\r\033[K"
         try:
             tty = open("/dev/tty", "w")  # noqa: SIM115
             tty.write(clear)
