@@ -661,6 +661,7 @@ def _extract_batch(
         doc = _load_doc_with_config(p, force_ocr=force_ocr or None)
         return doc.text
 
+    console.print()
     with theme.wave_spinner(
         "Extracting...",
         console,
@@ -842,6 +843,7 @@ def extract(
         ocr_path.write_text(text, encoding="utf-8")
         console.print(theme.info(f"OCR text saved to {ocr_path}"))
 
+    console.print()
     with theme.wave_spinner("Extracting...", console, quips=_EXTRACT_QUIPS):
         result = extractor(document_text=text)
 
@@ -2131,6 +2133,7 @@ def _deidentify_batch(
         doc = _load_doc_with_config(p)
         return doc.text
 
+    console.print()
     with theme.wave_spinner("De-identifying...", console, quips=_DEID_QUIPS):
         result = processor.process_directory(
             input_dir=directory,
@@ -2304,6 +2307,7 @@ def deidentify(
     t.add_row("Conformance", effective_conformance)
     console.print(Padding(t, (0, 0, 0, 2)))
 
+    console.print()
     with theme.wave_spinner("De-identifying...", console, quips=_DEID_QUIPS):
         result = deid(document_text=doc.text, mode=mode)
     redacted = result.redacted_text
