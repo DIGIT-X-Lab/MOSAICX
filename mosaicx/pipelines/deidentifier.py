@@ -163,6 +163,45 @@ def regex_scrub_phi_with_mappings(
     return result, mappings
 
 
+def regex_scrub_phi_conformance(
+    text: str,
+    spec: "ConformanceSpec",
+) -> tuple[str, list[dict[str, Any]]]:
+    """Run regex PHI scrubbing using patterns from a ConformanceSpec.
+
+    Same logic as ``regex_scrub_phi_with_mappings`` but uses the
+    conformance-specific patterns instead of the hardcoded module-level ones.
+    """
+    raw_matches: list[tuple[int, int, str, str]] = []
+    for pattern, phi_type in spec.regex_patterns:
+        for m in pattern.finditer(text):
+            raw_matches.append((m.start(), m.end(), m.group(), phi_type))
+
+    raw_matches.sort(key=lambda x: (x[0], -(x[1] - x[0])))
+
+    merged: list[tuple[int, int, str, str]] = []
+    for start, end, matched_text, phi_type in raw_matches:
+        if merged and start < merged[-1][1]:
+            continue
+        merged.append((start, end, matched_text, phi_type))
+
+    mappings: list[dict[str, Any]] = []
+    result = text
+    for start, end, matched_text, phi_type in reversed(merged):
+        result = result[:start] + _REDACTED + result[end:]
+        mappings.append({
+            "original": matched_text,
+            "replacement": _REDACTED,
+            "start": start,
+            "end": end,
+            "phi_type": phi_type,
+            "method": "regex",
+        })
+
+    mappings.reverse()
+    return result, mappings
+
+
 # ---------------------------------------------------------------------------
 # Redaction mapping helpers (no dspy dependency)
 # ---------------------------------------------------------------------------
@@ -474,19 +513,15 @@ def _build_dspy_classes():
         phi_entities: str = dspy.OutputField(
             desc="JSON list of PHI entities found, each with 'text' (the "
                  "exact original PHI string as it appears in document_text), "
-                 "'type' (one of the HIPAA Safe Harbor categories: "
-                 "NAME, DATE, AGE, ADDRESS, ZIP, PHONE, FAX, EMAIL, URL, "
-                 "SSN, MRN, ID, ACCOUNT, LICENSE, INSURANCE, CERTIFICATE, "
-                 "DEVICE_ID, IP_ADDRESS, BIOMETRIC, PHOTO, OTHER), "
+                 "'type' (PHI category), "
                  "'excerpt' (the full line from the document "
-                 "containing this PHI), and 'reasoning' (why this is PHI). "
+                 "containing this PHI). "
                  "Be thorough: detect ALL identifiers including names of "
                  "physicians, institutions, dates, locations, and any "
                  "unique identifying numbers. "
-                 "Example: "
+                 'Example: '
                  '[{"text": "Jane Doe", "type": "NAME", '
-                 '"excerpt": "Patient Name: Jane Doe", '
-                 '"reasoning": "Patient name is protected health information"}]'
+                 '"excerpt": "Patient Name: Jane Doe"}]'
         )
 
     # -- Module ------------------------------------------------------------
@@ -494,45 +529,44 @@ def _build_dspy_classes():
     class Deidentifier(dspy.Module):
         """DSPy Module implementing the belt-and-suspenders de-identifier.
 
-        Sub-modules:
-            - ``redact`` -- ChainOfThought for LLM-based PHI redaction.
-
-        The ``forward`` method runs LLM redaction first (catches
-        context-dependent PHI like names and addresses), then applies
-        ``regex_scrub_phi`` as a deterministic safety net for
-        format-based PHI.
-
-        The returned Prediction includes a ``redaction_map`` list that
-        records every PHI span found, its position in the original text,
-        the PHI type, and whether it was caught by the LLM or the regex
-        guard.
+        Accepts a ``conformance`` name to select which privacy standard
+        governs detection (regex patterns + LLM prompt). Defaults to HIPAA.
         """
 
-        def __init__(self) -> None:
+        def __init__(self, conformance: str = "hipaa") -> None:
             super().__init__()
-            self.redact = dspy.ChainOfThought(RedactPHI)
+            from mosaicx.conformance import get_conformance
+
+            self._spec = get_conformance(conformance)
+
+            # Build signature with conformance-specific prompt
+            conformance_desc = (
+                self._spec.prompt_fragment + " "
+                "For each PHI entity, return a JSON object with 'text', 'type' "
+                f"(one of: {', '.join(self._spec.phi_categories)}), "
+                "and 'excerpt' (the full line from the document containing this PHI). "
+                "Be thorough: detect ALL identifiers including names of "
+                "physicians, institutions, dates, locations, and any "
+                "unique identifying numbers. "
+                'Example: '
+                '[{"text": "Jane Doe", "type": "NAME", '
+                '"excerpt": "Patient Name: Jane Doe"}]'
+            )
+            custom_sig = RedactPHI.with_updated_fields(
+                "phi_entities", desc=conformance_desc,
+            )
+            self.redact = dspy.ChainOfThought(custom_sig)
 
         def forward(
             self, document_text: str, mode: str = "remove"
         ) -> dspy.Prediction:
             """Run the de-identification pipeline.
 
-            Parameters
-            ----------
-            document_text:
-                Full text of the medical document to de-identify.
-            mode:
-                De-identification mode.  One of ``"remove"``
-                (default), ``"pseudonymize"``, or ``"dateshift"``.
-
-            Returns
-            -------
-            dspy.Prediction
-                Keys:
-                - ``redacted_text`` (str) -- the de-identified text.
-                - ``redaction_map`` (list[dict]) -- one entry per PHI
-                  span with ``original``, ``replacement``, ``start``,
-                  ``end``, ``phi_type``, and ``method``.
+            Returns a simplified output:
+            - ``conformance`` (str) -- which standard was applied.
+            - ``redacted_text`` (str) -- the de-identified text.
+            - ``phi`` (list[dict]) -- PHI items, each with ``value``,
+              ``type``, and ``excerpt``.
             """
             from mosaicx.metrics import PipelineMetrics, get_tracker, track_step
 
@@ -547,25 +581,17 @@ def _build_dspy_classes():
                 )
             llm_text: str = llm_result.redacted_text
 
-            # Layer 2: regex safety net (only in "remove" mode -- in
-            # pseudonymize/dateshift the LLM output intentionally
-            # contains date-like and phone-like fake values that the
-            # regex would incorrectly redact).
+            # Layer 2: regex safety net (only in "remove" mode)
             if mode == "remove":
                 with track_step(metrics, "Regex guard", tracker):
-                    scrubbed_text = regex_scrub_phi(llm_text)
+                    scrubbed_text, _ = regex_scrub_phi_conformance(
+                        llm_text, self._spec,
+                    )
             else:
                 scrubbed_text = llm_text
 
-            # -- Build redaction map ------------------------------------------
-            # Strategy:
-            # 1. Parse the LLM's phi_entities output to get PHI text + type.
-            # 2. find() each entity in the ORIGINAL text to get positions.
-            # 3. Run regex on the ORIGINAL text to get regex mappings.
-            # 4. Merge: regex mappings take priority for type labeling;
-            #    LLM mappings add context-dependent detections.
-            with track_step(metrics, "Redaction mapping", tracker):
-                # Parse LLM-reported PHI entities
+            # Build simplified PHI list
+            with track_step(metrics, "PHI mapping", tracker):
                 import json as _json
                 try:
                     raw_entities = _json.loads(
@@ -576,25 +602,41 @@ def _build_dspy_classes():
                 except (ValueError, TypeError):
                     raw_entities = []
 
-                llm_mappings = _build_redaction_map_from_entities(
-                    document_text, raw_entities,
-                )
+                # LLM-detected PHI
+                phi: list[dict[str, str]] = []
+                seen: set[str] = set()
+                for entity in raw_entities:
+                    value = entity.get("text", "").strip()
+                    if not value or value in seen:
+                        continue
+                    seen.add(value)
+                    phi.append({
+                        "value": value,
+                        "type": entity.get("type", "OTHER").upper(),
+                        "excerpt": entity.get("excerpt", ""),
+                    })
 
+                # Regex-detected PHI (on original text, remove mode only)
                 if mode == "remove":
-                    _, regex_mappings = regex_scrub_phi_with_mappings(
-                        document_text,
+                    _, regex_mappings = regex_scrub_phi_conformance(
+                        document_text, self._spec,
                     )
-                    redaction_map = _merge_mappings(
-                        llm_mappings, regex_mappings,
-                    )
-                else:
-                    redaction_map = llm_mappings
+                    for m in regex_mappings:
+                        value = m["original"]
+                        if value not in seen:
+                            seen.add(value)
+                            phi.append({
+                                "value": value,
+                                "type": m["phi_type"],
+                                "excerpt": "",
+                            })
 
             self._last_metrics = metrics
 
             return dspy.Prediction(
+                conformance=self._spec.name,
                 redacted_text=scrubbed_text,
-                redaction_map=redaction_map,
+                phi=phi,
             )
 
     return {

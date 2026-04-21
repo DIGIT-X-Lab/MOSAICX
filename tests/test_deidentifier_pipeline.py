@@ -374,3 +374,28 @@ class TestDeidentifierModule:
         from mosaicx.pipelines.deidentifier import Deidentifier
         d = Deidentifier()
         assert hasattr(d, "redact")
+
+
+class TestConformanceAwareRegex:
+    """Test that regex scrubbing uses conformance patterns."""
+
+    def test_scrub_with_hipaa_conformance(self):
+        from mosaicx.conformance import get_conformance
+        from mosaicx.pipelines.deidentifier import regex_scrub_phi_conformance
+
+        spec = get_conformance("hipaa")
+        text = "Patient SSN 123-45-6789 presents with cough."
+        scrubbed, mappings = regex_scrub_phi_conformance(text, spec)
+        assert "123-45-6789" not in scrubbed
+        assert "cough" in scrubbed
+        assert any(m["phi_type"] == "SSN" for m in mappings)
+
+    def test_scrub_conformance_clean_text(self):
+        from mosaicx.conformance import get_conformance
+        from mosaicx.pipelines.deidentifier import regex_scrub_phi_conformance
+
+        spec = get_conformance("hipaa")
+        text = "Normal chest radiograph. No acute findings."
+        scrubbed, mappings = regex_scrub_phi_conformance(text, spec)
+        assert scrubbed == text
+        assert len(mappings) == 0
