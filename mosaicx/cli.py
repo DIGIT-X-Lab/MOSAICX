@@ -848,6 +848,12 @@ def extract(
     val = result.extracted
     output_data = val.model_dump(mode="json") if hasattr(val, "model_dump") else val
 
+    # Completion
+    doc_metrics = getattr(extractor, "_last_metrics", None)
+    if doc_metrics is not None:
+        from .cli_display import render_metrics
+        render_metrics(doc_metrics, console)
+
     # Output
     if output is not None:
         import json as _json

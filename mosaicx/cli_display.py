@@ -466,10 +466,7 @@ def render_metrics(metrics: "PipelineMetrics", console: Console) -> None:
     )
     n = len(metrics.steps)
     console.print(
-        f"  [{theme.CORAL}]{metrics.total_tokens:,}[/{theme.CORAL}]"
-        f" [{theme.GREIGE}]tokens[/{theme.GREIGE}]"
-        f" [{theme.GREIGE}]·[/{theme.GREIGE}]"
-        f" [{theme.CORAL}]{metrics.total_duration_s:.1f}s[/{theme.CORAL}]"
+        f"  [{theme.CORAL}]{metrics.total_duration_s:.1f}s[/{theme.CORAL}]"
         f" [{theme.GREIGE}]·[/{theme.GREIGE}]"
         f" [{theme.CORAL}]{n}[/{theme.CORAL}]"
         f" [{theme.GREIGE}]step{'s' if n != 1 else ''}[/{theme.GREIGE}]"

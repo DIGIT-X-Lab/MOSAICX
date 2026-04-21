@@ -405,11 +405,12 @@ class LiveSpinner:
                 colored += self._lerp_color(t) + char
 
             spinner_color = self._lerp_color(0)
+            dim = "\033[2m"
             if self._show_elapsed:
                 elapsed = time.monotonic() - self._start_time
                 mins, secs = divmod(int(elapsed), 60)
-                # Timer replaces the star — bold coral timer + wave quip
-                line = f"\r\033[K  {spinner_color}\033[1m{mins}:{secs:02d}{self._reset} {colored}{self._reset}"
+                # [0:42] wave quip
+                line = f"\r\033[K  {dim}[{self._reset}{spinner_color}\033[1m{mins}:{secs:02d}{self._reset}{dim}]{self._reset} {colored}{self._reset}"
             else:
                 line = f"\r\033[K  {spinner_color}{frame}{self._reset} {colored}{self._reset}"
             tty.write(line)
