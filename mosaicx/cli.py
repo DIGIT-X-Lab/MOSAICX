@@ -838,15 +838,21 @@ def extract(
 
     # Single file extraction
     from .pipelines.extraction import DocumentExtractor
+    from .report import resolve_template_path
     from .schemas.template_compiler import compile_template_file_inline
 
     _configure_dspy()
 
-    inline_model = compile_template_file_inline(template)
+    try:
+        tpl_path = resolve_template_path(template)
+    except ValueError as exc:
+        raise click.ClickException(str(exc))
+
+    inline_model = compile_template_file_inline(tpl_path)
     extractor = DocumentExtractor(output_schema=inline_model, think=think)
 
     # Config summary (consistent with batch mode)
-    tpl_name = Path(template).stem if "/" in template or template.endswith(".yaml") else template
+    tpl_name = tpl_path.stem
     theme.section("Extraction", console, "01")
     from rich.padding import Padding
     t = theme.make_clean_table(show_header=False)

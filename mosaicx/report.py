@@ -129,6 +129,47 @@ def resolve_template(
     )
 
 
+def resolve_template_path(template: str) -> Path:
+    """Resolve a template name or path to a filesystem path.
+
+    Same resolution order as ``resolve_template`` but returns the
+    YAML file path instead of a compiled Pydantic model.
+
+    Raises ``ValueError`` if the template cannot be found.
+    """
+    # 1. File path (.yaml/.yml suffix + exists on disk)
+    path = Path(template)
+    if path.suffix.lower() in (".yaml", ".yml") and path.exists():
+        return path
+
+    # Expand ~ in paths
+    expanded = Path(template).expanduser()
+    if expanded.suffix.lower() in (".yaml", ".yml") and expanded.exists():
+        return expanded
+
+    # 2. User templates dir (~/.mosaicx/templates/<name>.yaml)
+    user_path = _find_user_template_yaml(template)
+    if user_path is not None:
+        return user_path
+
+    # 3. Built-in YAML template
+    builtin_path = _find_builtin_template_yaml(template)
+    if builtin_path is not None:
+        return builtin_path
+
+    from .config import get_config
+
+    cfg = get_config()
+    templates_dir = Path(__file__).parent / "schemas" / "radreport" / "templates"
+    raise ValueError(
+        f"Template {template!r} not found. Searched:\n"
+        f"  1. File path (as .yaml/.yml)\n"
+        f"  2. User templates: {cfg.templates_dir}\n"
+        f"  3. Built-in templates: {templates_dir}\n"
+        f"Run 'mosaicx template list' to see available templates."
+    )
+
+
 def _try_load_saved_schema(
     name: str, schema_dir: Path | None = None
 ) -> type[BaseModel] | None:
