@@ -14,3 +14,6 @@ __all__ = [
     "list_conformances",
     "register_conformance",
 ]
+
+# Auto-register built-in conformances
+from . import hipaa as _hipaa  # noqa: F401

@@ -37,3 +37,50 @@ def test_list_conformances():
 
     result = list_conformances()
     assert isinstance(result, list)
+
+
+def test_hipaa_registered_on_import():
+    import mosaicx.conformance  # noqa: F401
+    from mosaicx.conformance.registry import get_conformance
+
+    spec = get_conformance("hipaa")
+    assert spec.name == "hipaa"
+    assert "NAME" in spec.phi_categories
+    assert "DATE" in spec.phi_categories
+    assert "SSN" in spec.phi_categories
+    assert "MRN" in spec.phi_categories
+    assert len(spec.regex_patterns) > 0
+    assert len(spec.prompt_fragment) > 0
+
+
+def test_hipaa_regex_catches_ssn():
+    import mosaicx.conformance  # noqa: F401
+    from mosaicx.conformance.registry import get_conformance
+
+    spec = get_conformance("hipaa")
+    text = "SSN: 123-45-6789"
+    matches = []
+    for pattern, phi_type in spec.regex_patterns:
+        for m in pattern.finditer(text):
+            matches.append((m.group(), phi_type))
+    assert any(phi_type == "SSN" for _, phi_type in matches)
+
+
+def test_hipaa_regex_no_false_positive_on_clean_text():
+    import mosaicx.conformance  # noqa: F401
+    from mosaicx.conformance.registry import get_conformance
+
+    spec = get_conformance("hipaa")
+    text = "The lungs are clear. No pleural effusion."
+    matches = []
+    for pattern, phi_type in spec.regex_patterns:
+        for m in pattern.finditer(text):
+            matches.append(m.group())
+    assert len(matches) == 0
+
+
+def test_hipaa_in_list_conformances():
+    import mosaicx.conformance  # noqa: F401
+    from mosaicx.conformance.registry import list_conformances
+
+    assert "hipaa" in list_conformances()
