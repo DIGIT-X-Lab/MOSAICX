@@ -34,7 +34,7 @@ flowchart LR
 
 MOSAICX converts medical documents (radiology reports, pathology summaries, clinical notes) into structured JSON. Define what to extract with a YAML template, point it at your documents, get clean data back. Every field comes with an excerpt citing the source text.
 
-**Why MOSAICX?** Fully local (no PHI leaves your machine), schema-driven (you define exactly what to extract), VLM-powered OCR via [Chandra](https://github.com/ChandraVLM/chandra) (handles scans, handwriting, tables), and HIPAA-conformant de-identification built in.
+**Why MOSAICX?** Fully local (no PHI leaves your machine), schema-driven (you define exactly what to extract), VLM-powered OCR via [Chandra](https://github.com/datalab-to/chandra) (handles scans, handwriting, tables), and HIPAA-conformant de-identification built in.
 
 ## Prerequisites
 
@@ -170,32 +170,21 @@ Output:
 
 MOSAICX uses [Chandra](https://github.com/datalab-to/chandra) by default -- a VLM-based OCR (fine-tuned Qwen3-VL 9B) that handles handwriting, complex forms, tables, and mixed layouts.
 
-**NVIDIA GPU (recommended)** -- run Chandra as a vLLM server:
+Chandra runs as a vLLM server on a GPU:
 
 ```bash
 pip install chandra-ocr
 chandra_vllm    # starts the Chandra vLLM server on port 8000
 ```
 
-Then tell MOSAICX where the server is:
+Then tell MOSAICX where the server is (in your `.env` file):
 
 ```env
 MOSAICX_CHANDRA_SERVER_URL=http://localhost:8000/v1
 ```
 
-**Apple Silicon / CPU** -- if you have enough RAM (~20GB), Chandra runs locally via HuggingFace:
-
-```bash
-pip install chandra-ocr[hf]
-```
-
-No server needed -- MOSAICX loads the model in-process automatically.
-
-**Fallback** -- if Chandra is not installed, MOSAICX falls back to PaddleOCR:
-
-```env
-MOSAICX_OCR_ENGINE=paddleocr
-```
+> [!NOTE]
+> If `MOSAICX_CHANDRA_SERVER_URL` is not set, MOSAICX falls back to PaddleOCR automatically. You can also set `MOSAICX_OCR_ENGINE=paddleocr` explicitly.
 
 ## Privacy
 
@@ -211,7 +200,7 @@ MOSAICX_LM=openai/google/gemma-4-31B-it
 MOSAICX_API_BASE=http://localhost:8000/v1
 MOSAICX_API_KEY=not-needed
 MOSAICX_OCR_ENGINE=chandra
-MOSAICX_CHANDRA_SERVER_URL=http://localhost:8000/v1   # if running Chandra as vLLM server
+MOSAICX_CHANDRA_SERVER_URL=http://localhost:8000/v1
 ```
 
 ```bash
