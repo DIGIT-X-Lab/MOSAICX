@@ -234,86 +234,10 @@ def import_dspy(*, preferred_cache_dir: Path | str | None = None):
     return dspy
 
 
-def _adapter_policy_sequence(dspy: Any, policy: str, lm: Any) -> list[tuple[str, Any | None]]:
-    policy_norm = " ".join(str(policy or "auto").lower().split())
-    if policy_norm not in {"auto", "json", "twostep", "none"}:
-        policy_norm = "auto"
 
-    order = {
-        "auto": ["json", "twostep", "none"],
-        "json": ["json", "twostep", "none"],
-        "twostep": ["twostep", "json", "none"],
-        "none": ["none"],
-    }[policy_norm]
-
-    sequence: list[tuple[str, Any | None]] = []
-    for item in order:
-        if item == "none":
-            sequence.append(("none", None))
-            continue
-        if item == "json":
-            try:
-                sequence.append(("json", dspy.JSONAdapter()))
-            except Exception:
-                continue
-            continue
-        if item == "twostep":
-            try:
-                try:
-                    sequence.append(("twostep", dspy.TwoStepAdapter(extraction_model=lm)))
-                except TypeError:
-                    sequence.append(("twostep", dspy.TwoStepAdapter()))
-            except Exception:
-                continue
-    if not sequence:
-        sequence.append(("none", None))
-    return sequence
-
-
-def configure_dspy_lm(
-    lm: Any,
-    *,
-    preferred_cache_dir: Path | str | None = None,
-    adapter_policy: str | None = None,
-) -> tuple[Any, str]:
-    """Configure DSPy LM with adapter fallback policy.
-
-    Returns
-    -------
-    tuple[Any, str]
-        ``(dspy_module, adapter_name)``, where adapter_name is one of
-        ``json``, ``twostep``, or ``none``.
-    """
-    dspy = import_dspy(preferred_cache_dir=preferred_cache_dir)
-    policy = adapter_policy or os.environ.get("MOSAICX_DSPY_ADAPTER_POLICY", "auto")
-    sequence = _adapter_policy_sequence(dspy, policy, lm)
-    last_error: Exception | None = None
-
-    for adapter_name, adapter in sequence:
-        try:
-            if adapter is not None:
-                try:
-                    dspy.configure(lm=lm, adapter=adapter)
-                except TypeError:
-                    # Compatibility path for DSPy versions without adapter kwarg.
-                    dspy.configure(lm=lm)
-                    try:
-                        dspy.settings.adapter = adapter
-                    except Exception:
-                        pass
-            else:
-                dspy.configure(lm=lm)
-            os.environ["MOSAICX_DSPY_ADAPTER_ACTIVE"] = adapter_name
-            return dspy, adapter_name
-        except Exception as exc:
-            last_error = exc
-            continue
-
-    if last_error is not None:
-        raise RuntimeError(
-            f"Unable to configure DSPy LM with adapter policy '{policy}': {last_error}"
-        ) from last_error
-    raise RuntimeError(f"Unable to configure DSPy LM with adapter policy '{policy}'")
+# NOTE: _adapter_policy_sequence and configure_dspy_lm removed.
+# All entry points (CLI, SDK, MCP) now configure DSPy directly:
+#   dspy.LM(...) + dspy.settings.configure(lm=lm, adapter=BAMLAdapter())
 
 
 def check_openai_endpoint_ready(
@@ -492,6 +416,96 @@ def _deno_install_command() -> list[str]:
         "Automatic Deno installation is not supported on this platform. "
         + deno_install_instructions()
     )
+
+
+def _get_origin(api_base: str) -> str:
+    """Strip path from api_base to get the origin (scheme + host + port)."""
+    from urllib.parse import urlparse
+    parsed = urlparse(api_base)
+    port = f":{parsed.port}" if parsed.port else ""
+    return f"{parsed.scheme}://{parsed.hostname}{port}"
+
+
+def _probe_ollama(origin: str, timeout: float) -> str | None:
+    """Try Ollama's /api/version endpoint."""
+    try:
+        req = Request(f"{origin}/api/version", method="GET")
+        with urlopen(req, timeout=timeout) as resp:  # noqa: S310
+            data = json.loads(resp.read().decode("utf-8", errors="ignore") or "{}")
+            version = data.get("version", "")
+            return f"ollama {version}".strip() if version else "ollama"
+    except (URLError, OSError, TimeoutError, json.JSONDecodeError):
+        return None
+
+
+def _probe_vllm(origin: str, timeout: float) -> str | None:
+    """Try vLLM's /version endpoint."""
+    try:
+        req = Request(f"{origin}/version", method="GET")
+        with urlopen(req, timeout=timeout) as resp:  # noqa: S310
+            data = json.loads(resp.read().decode("utf-8", errors="ignore") or "{}")
+            version = data.get("version", "")
+            return f"vllm {version}".strip() if version else "vllm"
+    except (URLError, OSError, TimeoutError, json.JSONDecodeError):
+        return None
+
+
+def _port_heuristic(api_base: str) -> str:
+    """Guess engine from port number, or return hostname."""
+    from urllib.parse import urlparse
+    parsed = urlparse(api_base)
+    port_map = {11434: "ollama", 8000: "vllm"}
+    if parsed.port in port_map:
+        return port_map[parsed.port]
+    return parsed.hostname or "unknown"
+
+
+def detect_inference_engine(
+    api_base: str,
+    *,
+    cache_dir: Path | None = None,
+    timeout: float = 0.3,
+) -> str:
+    """Auto-detect the inference engine behind an OpenAI-compatible endpoint.
+
+    1. Check cache (~/.mosaicx/.engine_cache) — if api_base matches, return cached.
+    2. Probe Ollama (/api/version), then vLLM (/version) with short timeout.
+    3. Fall back to port heuristic (11434=ollama, 8000=vllm, else hostname).
+    4. Cache successful probe results.
+
+    Never raises — always returns a best-effort string.
+    """
+    if cache_dir is None:
+        cache_dir = Path.home() / ".mosaicx"
+    cache_file = cache_dir / ".engine_cache"
+
+    # 1. Check cache
+    try:
+        if cache_file.is_file():
+            cached = json.loads(cache_file.read_text(encoding="utf-8"))
+            if cached.get("api_base") == api_base and cached.get("engine"):
+                return cached["engine"]
+    except (OSError, json.JSONDecodeError, KeyError):
+        pass
+
+    # 2. Probe endpoints
+    origin = _get_origin(api_base)
+    engine = _probe_ollama(origin, timeout) or _probe_vllm(origin, timeout)
+
+    if engine:
+        # Cache the result
+        try:
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            cache_file.write_text(
+                json.dumps({"api_base": api_base, "engine": engine}),
+                encoding="utf-8",
+            )
+        except OSError:
+            pass
+        return engine
+
+    # 3. Port heuristic fallback
+    return _port_heuristic(api_base)
 
 
 def install_deno(*, force: bool = False, non_interactive: bool = False) -> DenoRuntimeStatus:

@@ -317,3 +317,119 @@ def test_check_openai_endpoint_ready_returns_chat_error(monkeypatch):
     assert status.chat_ok is False
     assert status.model_id == "mlx-community/gpt-oss-120b-4bit"
     assert "/chat/completions unreachable" in str(status.reason)
+
+
+def test_detect_inference_engine_ollama(tmp_path, monkeypatch):
+    """Ollama probe returns engine name + version."""
+    from mosaicx.runtime_env import detect_inference_engine
+
+    class _Resp:
+        def read(self, *_a, **_k):
+            return b'{"version":"0.9.2"}'
+        def __enter__(self):
+            return self
+        def __exit__(self, *_):
+            return False
+
+    def _fake_urlopen(req, timeout=0):
+        url = str(req.full_url)
+        if "/api/version" in url:
+            return _Resp()
+        raise OSError("not found")
+
+    monkeypatch.setattr("mosaicx.runtime_env.urlopen", _fake_urlopen)
+
+    result = detect_inference_engine("http://localhost:11434/v1", cache_dir=tmp_path)
+    assert result == "ollama 0.9.2"
+
+
+def test_detect_inference_engine_vllm(tmp_path, monkeypatch):
+    """vLLM probe returns engine name + version."""
+    from mosaicx.runtime_env import detect_inference_engine
+
+    class _Resp:
+        def read(self, *_a, **_k):
+            return b'{"version":"0.6.0"}'
+        def __enter__(self):
+            return self
+        def __exit__(self, *_):
+            return False
+
+    def _fake_urlopen(req, timeout=0):
+        url = str(req.full_url)
+        if "/version" in url and "/api/" not in url:
+            return _Resp()
+        raise OSError("not found")
+
+    monkeypatch.setattr("mosaicx.runtime_env.urlopen", _fake_urlopen)
+
+    result = detect_inference_engine("http://localhost:8000/v1", cache_dir=tmp_path)
+    assert result == "vllm 0.6.0"
+
+
+def test_detect_inference_engine_fallback_port(tmp_path, monkeypatch):
+    """When probes fail, fall back to port heuristic."""
+    from mosaicx.runtime_env import detect_inference_engine
+
+    monkeypatch.setattr(
+        "mosaicx.runtime_env.urlopen",
+        lambda *_a, **_k: (_ for _ in ()).throw(OSError("down")),
+    )
+
+    result = detect_inference_engine("http://localhost:11434/v1", cache_dir=tmp_path)
+    assert result == "ollama"
+
+
+def test_detect_inference_engine_fallback_unknown_port(tmp_path, monkeypatch):
+    """Unknown port falls back to hostname."""
+    from mosaicx.runtime_env import detect_inference_engine
+
+    monkeypatch.setattr(
+        "mosaicx.runtime_env.urlopen",
+        lambda *_a, **_k: (_ for _ in ()).throw(OSError("down")),
+    )
+
+    result = detect_inference_engine("http://gpu-server:9999/v1", cache_dir=tmp_path)
+    assert result == "gpu-server"
+
+
+def test_detect_inference_engine_uses_cache(tmp_path, monkeypatch):
+    """Second call reads from cache, no network."""
+    from mosaicx.runtime_env import detect_inference_engine
+
+    cache_file = tmp_path / ".engine_cache"
+    cache_file.write_text(json.dumps({
+        "api_base": "http://localhost:11434/v1",
+        "engine": "ollama 0.9.2",
+    }), encoding="utf-8")
+
+    call_count = 0
+    def _no_network(*_a, **_k):
+        nonlocal call_count
+        call_count += 1
+        raise AssertionError("should not hit network")
+
+    monkeypatch.setattr("mosaicx.runtime_env.urlopen", _no_network)
+
+    result = detect_inference_engine("http://localhost:11434/v1", cache_dir=tmp_path)
+    assert result == "ollama 0.9.2"
+    assert call_count == 0
+
+
+def test_detect_inference_engine_invalidates_stale_cache(tmp_path, monkeypatch):
+    """Cache for a different api_base is ignored."""
+    from mosaicx.runtime_env import detect_inference_engine
+
+    cache_file = tmp_path / ".engine_cache"
+    cache_file.write_text(json.dumps({
+        "api_base": "http://old-server:11434/v1",
+        "engine": "ollama 0.8.0",
+    }), encoding="utf-8")
+
+    monkeypatch.setattr(
+        "mosaicx.runtime_env.urlopen",
+        lambda *_a, **_k: (_ for _ in ()).throw(OSError("down")),
+    )
+
+    result = detect_inference_engine("http://localhost:11434/v1", cache_dir=tmp_path)
+    assert result == "ollama"  # port fallback, not stale cache
