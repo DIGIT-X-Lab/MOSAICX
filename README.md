@@ -64,7 +64,7 @@ vllm-mlx serve mlx-community/gemma-4-31b-it-bf16 --port 8000
 
 ```bash
 pip install chandra-ocr
-chandra_vllm    # starts on port 8000 by default
+chandra_vllm --port 8001
 ```
 
 > [!NOTE]
@@ -101,7 +101,7 @@ Then create a `.env` file in your working directory:
 MOSAICX_LM=openai/google/gemma-4-31B-it
 MOSAICX_API_BASE=http://localhost:8000/v1
 MOSAICX_API_KEY=not-needed
-MOSAICX_CHANDRA_SERVER_URL=http://localhost:8000/v1
+MOSAICX_CHANDRA_SERVER_URL=http://localhost:8001/v1
 ```
 
 MOSAICX reads this automatically. Check everything works:
