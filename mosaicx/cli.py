@@ -484,6 +484,39 @@ _EXTRACT_QUIPS = [
     "Smelly cat, smelly cat, what are they feeding your JSON", # Phoebe
 ]
 
+_DEID_QUIPS = [
+    "Nothing to see here",                                     # Meme
+    "Witness protection program activated",                    # Crime drama
+    "I'm gonna make him a redaction he can't refuse",          # The Godfather
+    "These aren't the identifiers you're looking for",         # Star Wars
+    "First rule of de-identification: you don't talk about PHI",  # Fight Club
+    "Who you gonna call? Deidentifier!",                       # Ghostbusters
+    "With great data comes great anonymity",                   # Spider-Man
+    "Perfectly redacted, as all things should be",             # Thanos
+    "You shall not pass... with identifiable data",            # LOTR
+    "The name's Redacted. [REDACTED]",                         # Bond
+    "I see PHI people",                                        # Sixth Sense
+    "Say my name. Oh wait, you can't anymore",                 # Breaking Bad
+    "To redact, or not to redact — never the question",        # Shakespeare
+    "Your secrets are safe with me",                           # Generic
+    "Making it HIPAA-friendly",                                # Compliance
+    "Anonymizing like a pro",                                  # Generic
+    "Hiding in plain sight",                                   # Thriller
+    "Keep calm and redact on",                                 # Meme
+    "In a world of PHI, be a [REDACTED]",                      # Movie trailer
+    "We're gonna need a bigger redaction pen",                 # Jaws
+    "They see me redactin', they approvin'",                   # Chamillionaire
+    "One does not simply leave PHI in a document",             # LOTR
+    "Houston, we have a redaction",                            # Apollo 13
+    "I'll be back... without any identifiers",                 # Terminator
+    "May the redaction be with you",                           # Star Wars
+    "Elementary, my dear [REDACTED]",                          # Sherlock
+    "That's what I do. I redact and I know things",            # Tyrion
+    "60% of the time, it redacts every time",                  # Anchorman
+    "What is this, a redaction for ants?",                     # Zoolander
+    "I just like redacting. Redacting is my favorite",         # Elf
+]
+
 
 def _extract_batch(
     ctx: click.Context,
@@ -2092,21 +2125,6 @@ def _deidentify_batch(
         doc = _load_doc_with_config(p)
         return doc.text
 
-    _DEID_QUIPS = [
-        "Nothing to see here",
-        "Witness protection program activated",
-        "Making it HIPAA-friendly",
-        "Anonymizing like a pro",
-        "Hiding in plain sight",
-        "Your secrets are safe with me",
-        "I'm gonna make him a redaction he can't refuse",
-        "These aren't the identifiers you're looking for",
-        "First rule of de-identification: you don't talk about PHI",
-        "Who you gonna call? Deidentifier!",
-        "With great data comes great anonymity",
-        "Perfectly redacted, as all things should be",
-    ]
-
     with theme.wave_spinner("De-identifying...", console, quips=_DEID_QUIPS):
         result = processor.process_directory(
             input_dir=directory,
@@ -2261,14 +2279,6 @@ def deidentify(
     if doc.quality_warning:
         console.print(theme.warn("Low OCR quality detected -- results may be unreliable"))
 
-    if doc.ocr_engine_used == "paddleocr":
-        console.print(theme.warn(
-            "PPStructure layout engine unavailable \u2014 using basic PaddleOCR "
-            "(no table/layout detection). Run 'mosaicx doctor' to diagnose."
-        ))
-
-    console.print(theme.info(f"De-identifying 1 document -- mode: {mode}"))
-
     _configure_dspy()
     from .pipelines.deidentifier import Deidentifier
 
@@ -2277,21 +2287,18 @@ def deidentify(
         deid = Deidentifier(conformance=effective_conformance)
     except KeyError as exc:
         raise click.ClickException(str(exc))
-    _SCRUB_QUIPS = [
-        "nothing to see here",
-        "witness protection program activated",
-        "shredding the evidence",
-        "what PHI? never heard of it",
-        "GDPR sends its regards",
-        "making it HIPAA-friendly",
-        "anonymizing like a pro",
-        "hiding in plain sight",
-    ]
-    with theme.spinner(
-        f"Scrubbing {document.name}... {random.choice(_SCRUB_QUIPS)}",
-        console,
-        quips=_SCRUB_QUIPS,
-    ):
+
+    # Config summary (consistent with batch and extract)
+    theme.section("De-identification", console, "01")
+    t = theme.make_clean_table(show_header=False)
+    t.add_column("Key", style=f"bold {theme.CORAL}", no_wrap=True)
+    t.add_column("Value")
+    t.add_row("Document", document.name)
+    t.add_row("Mode", mode)
+    t.add_row("Conformance", effective_conformance)
+    console.print(Padding(t, (0, 0, 0, 2)))
+
+    with theme.wave_spinner("De-identifying...", console, quips=_DEID_QUIPS):
         result = deid(document_text=doc.text, mode=mode)
     redacted = result.redacted_text
     phi = getattr(result, "phi", [])
