@@ -66,12 +66,16 @@ curl -s http://localhost:8000/v1/models
 ## Install
 
 ```bash
+python -m venv ~/.mosaicx-venv
+source ~/.mosaicx-venv/bin/activate
 pip install git+https://github.com/DIGIT-X-Lab/MOSAICX.git
 ```
 
 With [uv](https://docs.astral.sh/uv/) (faster):
 
 ```bash
+uv venv ~/.mosaicx-venv
+source ~/.mosaicx-venv/bin/activate
 uv pip install git+https://github.com/DIGIT-X-Lab/MOSAICX.git
 ```
 
