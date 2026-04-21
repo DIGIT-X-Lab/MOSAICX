@@ -405,13 +405,19 @@ class LiveSpinner:
                 colored += self._lerp_color(t) + char
 
             spinner_color = self._lerp_color(0)
-            elapsed_str = ""
             if self._show_elapsed:
                 elapsed = time.monotonic() - self._start_time
                 mins, secs = divmod(int(elapsed), 60)
-                greige = self._lerp_color(1.0)
-                elapsed_str = f" {greige}[{mins}:{secs:02d}]{self._reset} "
-            line = f"\r\033[K  {spinner_color}{frame}{self._reset}{elapsed_str}{colored}{self._reset}"
+                dim = "\033[2m"
+                # Line 1: star + wave quip
+                # Line 2: dim elapsed timer, indented under the quip text
+                line = (
+                    f"\r\033[K  {spinner_color}{frame}{self._reset} {colored}{self._reset}\n"
+                    f"\033[K    {dim}elapsed {mins}:{secs:02d}{self._reset}"
+                    f"\033[A\r"  # move cursor back up to line 1
+                )
+            else:
+                line = f"\r\033[K  {spinner_color}{frame}{self._reset} {colored}{self._reset}"
             tty.write(line)
             tty.flush()
 
@@ -428,13 +434,15 @@ class LiveSpinner:
         self.running = False
         if self.thread:
             self.thread.join(timeout=0.5)
+        # Clear both lines (line 1 + elapsed line below)
+        clear = "\r\033[K\n\033[K\033[A\r\033[K" if self._show_elapsed else "\r\033[K"
         try:
             tty = open("/dev/tty", "w")  # noqa: SIM115
-            tty.write("\r\033[K")
+            tty.write(clear)
             tty.flush()
             tty.close()
         except OSError:
-            sys.stderr.write("\r\033[K")
+            sys.stderr.write(clear)
             sys.stderr.flush()
 
 
