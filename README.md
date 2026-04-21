@@ -62,9 +62,17 @@ vllm-mlx serve mlx-community/gemma-4-31b-it-bf16 --port 8000
 
 [Chandra](https://github.com/datalab-to/chandra) is a VLM-based OCR that handles handwriting, tables, and complex layouts. Run it as a vLLM server on a GPU:
 
+**Option A -- Docker (easiest):**
+
 ```bash
 pip install chandra-ocr
-chandra_vllm --port 8001
+VLLM_API_BASE=http://localhost:8001/v1 chandra_vllm
+```
+
+**Option B -- bare vLLM:**
+
+```bash
+vllm serve datalab-to/chandra-ocr-2 --port 8001
 ```
 
 > [!NOTE]
