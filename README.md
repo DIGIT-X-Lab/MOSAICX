@@ -197,7 +197,7 @@ MOSAICX_LM=openai/google/gemma-4-31B-it
 MOSAICX_API_BASE=http://localhost:8000/v1
 MOSAICX_API_KEY=not-needed
 MOSAICX_OCR_ENGINE=chandra
-MOSAICX_CHANDRA_SERVER_URL=http://localhost:8000/v1
+MOSAICX_CHANDRA_SERVER_URL=http://localhost:8001/v1
 ```
 
 ```bash
