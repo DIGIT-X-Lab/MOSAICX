@@ -108,6 +108,7 @@ logs/
 config/local_*
 .env.local
 .env.production
+.core-env
 
 # Jupyter Notebooks
 .ipynb_checkpoints
