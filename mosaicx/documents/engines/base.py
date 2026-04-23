@@ -40,17 +40,22 @@ class OCREngine(Protocol):
 def pdf_to_images(path: Path, dpi: int = 200) -> list[Image.Image]:
     """Convert a PDF file to a list of PIL Images (one per page).
 
-    Uses pypdfium2 — no system dependencies (unlike poppler).
+    Uses pypdfium2 — no system dependencies (unlike poppler). PDFium
+    is not thread-safe so all pypdfium2 calls are guarded by a
+    process-wide lock (see :mod:`mosaicx.documents._pdfium`).
     """
     import pypdfium2 as pdfium
 
-    pdf = pdfium.PdfDocument(str(path))
-    images = []
-    for i in range(len(pdf)):
-        page = pdf[i]
-        bitmap = page.render(scale=dpi / 72)
-        images.append(bitmap.to_pil())
-    pdf.close()
+    from .._pdfium import PDFIUM_LOCK
+
+    with PDFIUM_LOCK:
+        pdf = pdfium.PdfDocument(str(path))
+        images = []
+        for i in range(len(pdf)):
+            page = pdf[i]
+            bitmap = page.render(scale=dpi / 72)
+            images.append(bitmap.to_pil())
+        pdf.close()
     return images
 
 

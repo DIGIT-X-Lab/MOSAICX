@@ -136,9 +136,12 @@ def _get_pdf_page_dims(path: Path) -> list[tuple[float, float]] | None:
     try:
         import pypdfium2
 
-        pdf = pypdfium2.PdfDocument(str(path))
-        dims = [(page.get_width(), page.get_height()) for page in pdf]
-        pdf.close()
+        from ._pdfium import PDFIUM_LOCK
+
+        with PDFIUM_LOCK:
+            pdf = pypdfium2.PdfDocument(str(path))
+            dims = [(page.get_width(), page.get_height()) for page in pdf]
+            pdf.close()
         return dims
     except Exception:
         return None
@@ -187,35 +190,38 @@ def _try_native_pdf_text(path: Path) -> LoadedDocument | None:
     except ImportError:
         return None
 
+    from ._pdfium import PDFIUM_LOCK
+
     try:
-        pdf = pypdfium2.PdfDocument(str(path))
-        pages_text: list[str] = []
-        all_blocks: list[TextBlock] = []
-        page_dimensions: list[tuple[float, float]] = []
-        global_offset = 0
+        with PDFIUM_LOCK:
+            pdf = pypdfium2.PdfDocument(str(path))
+            pages_text: list[str] = []
+            all_blocks: list[TextBlock] = []
+            page_dimensions: list[tuple[float, float]] = []
+            global_offset = 0
 
-        for page_num_zero, page in enumerate(pdf):
-            tp = page.get_textpage()
-            page_text = tp.get_text_bounded()
-            pages_text.append(page_text)
+            for page_num_zero, page in enumerate(pdf):
+                tp = page.get_textpage()
+                page_text = tp.get_text_bounded()
+                pages_text.append(page_text)
 
-            # Collect page dimensions (width, height)
-            page_dimensions.append((page.get_width(), page.get_height()))
+                # Collect page dimensions (width, height)
+                page_dimensions.append((page.get_width(), page.get_height()))
 
-            # Build word-level TextBlocks from character bounding boxes
-            blocks = _build_textblocks_from_textpage(
-                tp, page_text, page_num_zero + 1, global_offset
-            )
-            all_blocks.extend(blocks)
+                # Build word-level TextBlocks from character bounding boxes
+                blocks = _build_textblocks_from_textpage(
+                    tp, page_text, page_num_zero + 1, global_offset
+                )
+                all_blocks.extend(blocks)
 
-            tp.close()
-            page.close()
+                tp.close()
+                page.close()
 
-            # Advance global offset: page text length + 2-char "\n\n" separator
-            # (except after the last page where no separator is appended)
-            global_offset += len(page_text) + 2  # +2 for the "\n\n" joiner
+                # Advance global offset: page text length + 2-char "\n\n" separator
+                # (except after the last page where no separator is appended)
+                global_offset += len(page_text) + 2  # +2 for the "\n\n" joiner
 
-        pdf.close()
+            pdf.close()
 
         full_text = "\n\n".join(pages_text)
         # If native text is too sparse, fall back to OCR

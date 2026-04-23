@@ -1,8 +1,13 @@
 """Batch processing engine with checkpointing.
 
-Uses a pipelined architecture: OCR (sequential producer) feeds a queue that
-extraction workers (parallel consumers) drain concurrently.  This keeps both
-the OCR server and the LLM server busy simultaneously.
+Uses a pipelined architecture: OCR producers feed a queue that extraction
+workers (parallel consumers) drain concurrently. With ``ocr_workers >= 2``
+multiple documents are OCR'd in parallel, which is important when the OCR
+backend (e.g. Chandra on a dedicated GPU) has headroom to serve several
+documents' worth of pages at once. PDFium calls are serialized internally
+via a module-wide lock (``mosaicx.documents._pdfium.PDFIUM_LOCK``) since
+the underlying library is not thread-safe; the lock is held only while
+rasterizing, not across the OCR HTTP calls.
 """
 
 from __future__ import annotations
@@ -54,12 +59,19 @@ class BatchCheckpoint:
 
 
 class BatchProcessor:
-    """Pipelined document processor: OCR producer -> extraction consumers."""
+    """Pipelined document processor: OCR producers -> extraction consumers."""
 
     MAX_WORKERS = 32
+    MAX_OCR_WORKERS = 16
 
-    def __init__(self, workers: int = 4, checkpoint_every: int = 50) -> None:
+    def __init__(
+        self,
+        workers: int = 4,
+        checkpoint_every: int = 50,
+        ocr_workers: int = 1,
+    ) -> None:
         self.workers = min(max(1, workers), self.MAX_WORKERS)
+        self.ocr_workers = min(max(1, ocr_workers), self.MAX_OCR_WORKERS)
         self.checkpoint_every = checkpoint_every
 
     def process_directory(
@@ -74,9 +86,10 @@ class BatchProcessor:
     ) -> dict[str, Any]:
         """Process all documents in a directory.
 
-        OCR runs sequentially (pypdfium2 is not thread-safe) but feeds a
-        queue that extraction workers drain in parallel.  This overlaps OCR
-        and LLM extraction so both servers stay busy.
+        OCR runs in a pool of up to ``ocr_workers`` threads (PDFium calls
+        are serialized internally via a lock; OCR HTTP calls overlap).
+        Results feed a queue that ``workers`` extraction consumers drain
+        in parallel, so OCR, LLM extraction, and JSON writing all overlap.
 
         Args:
             input_dir: Directory of input documents.
@@ -132,27 +145,34 @@ class BatchProcessor:
                 return load_document(path).text
             load_fn = _default_load
 
-        # --- Pipeline: OCR producer -> extraction consumers ---
+        # --- Pipeline: OCR producers -> extraction consumers ---
 
         # Queue holds (doc_path, text) tuples; _SENTINEL signals end.
+        # Size the queue against the *slower* stage so neither starves:
+        # the consumer pool (extraction workers) is usually larger.
         ocr_queue: queue.Queue[tuple[Path, str] | None] = queue.Queue(
-            maxsize=self.workers * 2,
+            maxsize=max(self.workers, self.ocr_workers) * 2,
         )
         ocr_errors: list[tuple[Path, str]] = []
+        _errors_lock = threading.Lock()
 
-        def _ocr_producer() -> None:
-            """Load documents sequentially (pypdfium2 not thread-safe) and
-            enqueue them for extraction workers."""
-            for doc_path in docs:
-                try:
-                    text = load_fn(doc_path)
-                    if text:
-                        ocr_queue.put((doc_path, text))
-                    else:
+        def _ocr_one(doc_path: Path) -> None:
+            """Load and OCR a single document, then enqueue for extraction.
+
+            Called from multiple OCR producer threads concurrently.
+            Exceptions are collected, not raised, so one bad document
+            does not take down the whole batch.
+            """
+            try:
+                text = load_fn(doc_path)
+                if text:
+                    ocr_queue.put((doc_path, text))
+                else:
+                    with _errors_lock:
                         ocr_errors.append((doc_path, "Empty document"))
-                except Exception as exc:
+            except Exception as exc:
+                with _errors_lock:
                     ocr_errors.append((doc_path, str(exc)))
-            ocr_queue.put(_SENTINEL)
 
         _write_lock = threading.Lock()
 
@@ -167,9 +187,27 @@ class BatchProcessor:
             except Exception as exc:
                 return doc_path.name, None, f"{type(exc).__name__}: {exc}"
 
-        # Start OCR producer thread
-        producer = threading.Thread(target=_ocr_producer, daemon=True)
-        producer.start()
+        # Fan OCR across up to self.ocr_workers threads; a single
+        # coordinator thread waits for all OCR tasks to finish and
+        # then signals end-of-stream with _SENTINEL.
+        ocr_pool = ThreadPoolExecutor(
+            max_workers=self.ocr_workers,
+            thread_name_prefix="mosaicx-ocr",
+        )
+        ocr_futures = [ocr_pool.submit(_ocr_one, d) for d in docs]
+
+        def _ocr_coordinator() -> None:
+            for f in as_completed(ocr_futures):
+                # _ocr_one captures its own exceptions; .result() is safe.
+                f.result()
+            ocr_queue.put(_SENTINEL)
+
+        coordinator = threading.Thread(
+            target=_ocr_coordinator,
+            daemon=True,
+            name="mosaicx-ocr-coordinator",
+        )
+        coordinator.start()
 
         # Extraction consumers pull from queue as OCR results arrive
         try:
@@ -211,14 +249,17 @@ class BatchProcessor:
                             on_progress(name, error is None)
 
             # Report OCR failures
-            for doc_path, err_msg in ocr_errors:
+            with _errors_lock:
+                ocr_error_snapshot = list(ocr_errors)
+            for doc_path, err_msg in ocr_error_snapshot:
                 failed += 1
                 errors.append({"file": doc_path.name, "error": err_msg})
                 if on_progress:
                     on_progress(doc_path.name, False)
 
         finally:
-            producer.join(timeout=5)
+            coordinator.join(timeout=5)
+            ocr_pool.shutdown(wait=False)
             if checkpoint:
                 checkpoint.save()
 

@@ -552,8 +552,10 @@ def _extract_batch(
     formats: tuple[str, ...],
     workers: int,
     resume: bool,
+    ocr_workers: int = 1,
     think: str = "auto",
     force_ocr: bool = False,
+    dump_ocr: bool = False,
 ) -> None:
     """Batch-process a directory of documents (called from the extract command)."""
     # Preflight: check API key before expensive document loading
@@ -580,10 +582,12 @@ def _extract_batch(
 
     effective_formats = formats if formats else tuple(cfg.default_export_formats)
     effective_workers = workers
+    effective_ocr_workers = max(1, ocr_workers)
 
     processor = BatchProcessor(
         workers=effective_workers,
         checkpoint_every=cfg.checkpoint_every,
+        ocr_workers=effective_ocr_workers,
     )
 
     theme.section("Batch Processing", console, "01")
@@ -597,7 +601,10 @@ def _extract_batch(
     if mode:
         t.add_row("Mode", mode)
     t.add_row("Export formats", ", ".join(effective_formats))
-    t.add_row("Workers", str(effective_workers))
+    t.add_row("Extraction workers", str(effective_workers))
+    t.add_row("OCR workers", str(effective_ocr_workers))
+    t.add_row("Force OCR", "Yes" if force_ocr else "No")
+    t.add_row("Dump OCR", "Yes" if dump_ocr else "No")
     t.add_row("Resume", theme.badge("Yes", "stable") if resume else "No")
     console.print(Padding(t, (0, 0, 0, 2)))
 
@@ -683,6 +690,8 @@ def _extract_batch(
 
     def _load_doc(p: Path) -> str:
         doc = _load_doc_with_config(p, force_ocr=force_ocr or None)
+        if dump_ocr:
+            (output_dir_path / f"{p.stem}.ocr.txt").write_text(doc.text, encoding="utf-8")
         return doc.text
 
     console.print()
@@ -778,7 +787,8 @@ def _extract_batch(
 @click.option("--output", "-o", type=click.Path(path_type=Path), default=None, help="Save output to file (.json or .yaml/.yml).")
 @click.option("--output-dir", type=click.Path(path_type=Path), default=None, help="Output directory for batch results.")
 @click.option("--format", "formats", type=click.Choice(["json", "jsonl", "csv", "parquet"], case_sensitive=False), multiple=True, default=("json",), show_default=True, help="Output format(s).")
-@click.option("--workers", type=int, default=1, show_default=True, help="Number of parallel workers.")
+@click.option("--workers", type=int, default=1, show_default=True, help="Number of parallel extraction workers (LLM side).")
+@click.option("--ocr-workers", type=int, default=1, show_default=True, help="Number of parallel OCR producers. Raise above 1 to fan multiple documents through the OCR backend at once.")
 @click.option("--resume", is_flag=True, default=False, help="Resume batch from last checkpoint.")
 @click.option(
     "--think",
@@ -800,6 +810,7 @@ def extract(
     output_dir: Path | None,
     formats: tuple[str, ...],
     workers: int,
+    ocr_workers: int,
     resume: bool,
     think: str,
     dump_ocr: bool,
@@ -831,9 +842,11 @@ def extract(
             output_dir_path=output_dir,
             formats=formats,
             workers=workers,
+            ocr_workers=ocr_workers,
             resume=resume,
             think=think,
             force_ocr=force_ocr,
+            dump_ocr=dump_ocr,
         )
         return
 

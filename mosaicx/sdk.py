@@ -1328,8 +1328,9 @@ def extract(
         ``"_provenance"``.
     workers:
         Number of parallel extraction workers for multi-file processing.
-        Document loading is always sequential (pypdfium2 is not
-        thread-safe), but extraction is parallelised.
+        OCR runs in its own pool (see :class:`mosaicx.batch.BatchProcessor`)
+        and is parallelised at the document level; PDFium calls are
+        serialized internally because the library is not thread-safe.
     on_progress:
         Optional callback ``(filename, success, result_or_none)`` called
         after each file completes (multi-file mode only).

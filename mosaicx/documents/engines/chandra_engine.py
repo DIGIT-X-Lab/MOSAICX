@@ -9,6 +9,7 @@ vLLM (CUDA) and HuggingFace transformers (CUDA/MPS) backends.
 from __future__ import annotations
 
 import logging
+import os
 from functools import lru_cache
 
 from PIL import Image
@@ -23,6 +24,54 @@ except ImportError:
     _TORCH_AVAILABLE = False
 
 logger = logging.getLogger(__name__)
+
+
+def _patch_chandra_http_timeout() -> None:
+    """Add a client-side HTTP timeout to chandra's bundled OpenAI client.
+
+    Chandra 0.1.x constructs its ``OpenAI(...)`` inside ``chandra.model.vllm``
+    without a ``timeout=`` argument. The OpenAI SDK then falls back to its
+    600s default, so if a pooled socket is stale (vLLM server-side keep-alive
+    has closed it, client hasn't noticed) the request blocks for up to ten
+    minutes per retry — and chandra retries up to ``MAX_VLLM_RETRIES=6``
+    times. With a single-threaded OCR producer this stalls the entire batch.
+
+    We subclass ``openai.OpenAI`` to inject a per-request timeout and cut
+    ``max_retries`` to 1, then replace the symbol in ``chandra.model.vllm``.
+    Timeout is configurable via ``MOSAICX_CHANDRA_HTTP_TIMEOUT`` (seconds,
+    default 60).
+
+    Safe to call repeatedly: wrapping is idempotent.
+    """
+    try:
+        import chandra.model.vllm as _cv
+        import openai
+    except ImportError:
+        return
+
+    if getattr(_cv.OpenAI, "_mosaicx_patched", False):
+        return
+
+    try:
+        timeout_seconds = float(os.environ.get("MOSAICX_CHANDRA_HTTP_TIMEOUT", "60"))
+    except (TypeError, ValueError):
+        timeout_seconds = 60.0
+
+    orig_openai = _cv.OpenAI
+
+    class _OpenAIWithTimeout(orig_openai):  # type: ignore[misc,valid-type]
+        _mosaicx_patched = True
+
+        def __init__(self, *args, **kwargs):
+            kwargs.setdefault("timeout", timeout_seconds)
+            kwargs.setdefault("max_retries", 1)
+            super().__init__(*args, **kwargs)
+
+    _cv.OpenAI = _OpenAIWithTimeout
+    logger.info(
+        "Patched chandra.model.vllm.OpenAI with timeout=%ss, max_retries=1",
+        timeout_seconds,
+    )
 
 
 def _detect_backend() -> str:
@@ -100,11 +149,17 @@ def _get_chandra_manager(backend: str | None = None, server_url: str | None = No
     if server_url:
         from chandra.model import settings as chandra_settings
         chandra_settings.VLLM_API_BASE = server_url
+        # Wrap the bundled OpenAI client with a sane timeout before the
+        # first InferenceManager is created; otherwise stuck requests
+        # block the OCR producer for up to 600s each.
+        _patch_chandra_http_timeout()
         return InferenceManager(method="vllm")
 
     method = backend or _detect_backend()
     if method == "hf":
         _patch_chandra_hf_device()
+    else:
+        _patch_chandra_http_timeout()
     return InferenceManager(method=method)
 
 
