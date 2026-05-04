@@ -206,7 +206,7 @@ mosaicx template list
 
 ## Creating Templates
 
-There are several ways to create a template: from a description, from a sample document, from a URL, from a RadReport ID, or by converting a legacy JSON schema.
+There are several ways to create a template: from a description, from a sample document, from a CSV/Excel table, from a URL, from a RadReport ID, or by converting a legacy JSON schema.
 
 ### From a Description
 
@@ -239,6 +239,53 @@ You can combine a document with a description for more control:
 mosaicx template create \
   --from-document sample_report.pdf \
   --describe "focus on cardiac measurements and valve assessments"
+```
+
+### From a CSV or Excel Table
+
+Convert a user-fillable table into YAML without calling an LLM:
+
+```bash
+mosaicx template create --from-table fields.csv --name OncologyFields
+```
+
+Recommended compact CSV columns:
+
+```csv
+field_name,type,description,required,values
+diagnosis_reason,enum,Reason that led to diagnostic workup,false,E|F|C|V
+tumor_size_mm,float,Tumor size in millimeters,false,
+impression,str,Free-text clinical impression,true,
+```
+
+`values` is only needed for enum fields. Use `|` between values to avoid conflicts with comma-separated CSV.
+
+An example fillable CSV is available at `docs/template-fields-example.csv`.
+
+MOSAICX also accepts richer field catalog exports with columns like `field_name`, `field_type`, `field_description`, `field_is_mandatory`, and repeated `field_value` rows. Those rows are converted into enum values.
+
+If one table contains several logical forms, split it into one YAML template per form:
+
+```bash
+mosaicx template create \
+  --from-table onkostar_catalog.csv \
+  --split-by form_name \
+  --output-dir ./templates/onkostar
+```
+
+This is the recommended pattern for large registry/catalog exports. Each generated template stays focused enough for `mosaicx extract --template ...`.
+
+For non-standard headers, map the source columns explicitly:
+
+```bash
+mosaicx template create \
+  --from-table data_dictionary.xlsx \
+  --name StudyCRF \
+  --name-column variable \
+  --type-column kind \
+  --description-column label \
+  --required-column mandatory \
+  --values-column allowed_values
 ```
 
 ### From a URL
@@ -640,8 +687,10 @@ You do not need to interact with SchemaSpec directly. It exists for backward com
 |---------|-------------|
 | `mosaicx template list` | List all available templates (built-in and user) |
 | `mosaicx template show <name>` | Display template structure and metadata |
+| `mosaicx template prompt <name>` | Preview the DSPy/BAML prompt schema the LLM sees |
 | `mosaicx template create --describe "..."` | Generate a template from a description |
 | `mosaicx template create --from-document report.pdf` | Generate a template from a sample document |
+| `mosaicx template create --from-table fields.csv` | Convert a CSV/Excel field table to YAML |
 | `mosaicx template create --from-url <url>` | Generate a template from web page content |
 | `mosaicx template create --from-radreport <id>` | Generate a template from a RadReport ID |
 | `mosaicx template create --from-json schema.json` | Convert a JSON schema to YAML |

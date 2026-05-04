@@ -17,7 +17,7 @@ The LLM generates a YAML template and saves it to `~/.mosaicx/templates/`.
 If you have a sample document, the LLM can infer the template from it:
 
 ```bash
-mosaicx template create --document sample_report.pdf --describe "extract all patient vitals and demographics"
+mosaicx template create --from-document sample_report.pdf --describe "extract all patient vitals and demographics"
 ```
 
 ## List Available Templates
@@ -101,7 +101,7 @@ mosaicx template refine PatientVitals --instruction "add a field for attending p
 Check that a template compiles correctly before using it:
 
 ```bash
-mosaicx template validate ~/.mosaicx/templates/PatientVitals.yaml
+mosaicx template validate --file ~/.mosaicx/templates/PatientVitals.yaml
 ```
 
 ## What's Next

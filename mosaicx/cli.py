@@ -1059,9 +1059,20 @@ def template_validate(file_path: Path) -> None:
 @click.option("--from-radreport", "from_radreport", type=str, default=None, help="RadReport template ID (e.g. RPT50890 or 50890).")
 @click.option("--from-json", "from_json", type=click.Path(exists=True, path_type=Path), default=None, help="Convert a legacy JSON schema to YAML template.")
 @click.option("--from-pydantic", "from_pydantic", type=click.Path(exists=True, path_type=Path), default=None, help="Convert a Pydantic model (.py file) to YAML template.")
+@click.option("--from-table", "from_table", type=click.Path(exists=True, path_type=Path), default=None, help="Convert a CSV/TSV/Excel field catalog or table to YAML template.")
+@click.option("--split-by", type=str, default=None, help="For --from-table, create one template per value in this column.")
+@click.option("--name-column", type=str, default=None, help="For --from-table, column containing field names.")
+@click.option("--type-column", type=str, default=None, help="For --from-table, column containing field types.")
+@click.option("--description-column", type=str, default=None, help="For --from-table, column containing field descriptions.")
+@click.option("--required-column", type=str, default=None, help="For --from-table, column containing required/mandatory flags.")
+@click.option("--values-column", type=str, default=None, help="For --from-table, column containing enum values or row-wise catalog values.")
+@click.option("--value-label-column", type=str, default=None, help="For --from-table, column describing enum/catalog values.")
+@click.option("--catalog-id-column", type=str, default=None, help="For --from-table, column containing catalog IDs/names.")
+@click.option("--catalog-version-column", type=str, default=None, help="For --from-table, column containing catalog versions.")
 @click.option("--name", type=str, default=None, help="Template name (default: LLM-chosen).")
 @click.option("--mode", type=str, default=None, help="Pipeline mode to embed (e.g. radiology, pathology).")
 @click.option("--output", type=click.Path(path_type=Path), default=None, help="Save to this path instead of ~/.mosaicx/templates/.")
+@click.option("--output-dir", type=click.Path(path_type=Path), default=None, help="Directory for --from-table split output.")
 def template_create(
     describe: str | None,
     from_document: Path | None,
@@ -1069,15 +1080,27 @@ def template_create(
     from_radreport: str | None,
     from_json: Path | None,
     from_pydantic: Path | None,
+    from_table: Path | None,
+    split_by: str | None,
+    name_column: str | None,
+    type_column: str | None,
+    description_column: str | None,
+    required_column: str | None,
+    values_column: str | None,
+    value_label_column: str | None,
+    catalog_id_column: str | None,
+    catalog_version_column: str | None,
     name: str | None,
     mode: str | None,
     output: Path | None,
+    output_dir: Path | None,
 ) -> None:
-    """Create a new YAML template from a description, document, URL, JSON, or Pydantic schema.
+    """Create a new YAML template from a description, document, URL, JSON, Pydantic schema, or table.
 
     \b
-    Provide exactly one source. The LLM generates a template and saves
-    it to ~/.mosaicx/templates/ (or --output path).
+    Provide a source. LLM-powered sources generate a template; table/JSON/Pydantic
+    sources are converted deterministically. The result is saved to
+    ~/.mosaicx/templates/ (or --output path).
 
     \b
     Examples:
@@ -1086,6 +1109,8 @@ def template_create(
       mosaicx template create --from-radreport 50890
       mosaicx template create --from-json old_schema.json
       mosaicx template create --from-pydantic schema.py
+      mosaicx template create --from-table fields.csv
+      mosaicx template create --from-table onkostar.csv --split-by form_name
       mosaicx template create --from-url https://radreport.org/home/50
     """
     from .schemas.template_compiler import (
@@ -1093,15 +1118,33 @@ def template_create(
         schema_spec_to_template_yaml,
     )
 
-    sources = sum(x is not None for x in (describe, from_document, from_url, from_radreport, from_json, from_pydantic))
+    sources = sum(x is not None for x in (describe, from_document, from_url, from_radreport, from_json, from_pydantic, from_table))
     if sources == 0:
         raise click.ClickException(
-            "Provide --describe, --from-document, --from-url, --from-radreport, --from-json, or --from-pydantic."
+            "Provide --describe, --from-document, --from-url, --from-radreport, --from-json, --from-pydantic, or --from-table."
         )
     if sources > 1 and from_json is not None:
         raise click.ClickException("--from-json cannot be combined with other sources.")
     if sources > 1 and from_pydantic is not None:
         raise click.ClickException("--from-pydantic cannot be combined with other sources.")
+    if from_table is not None and any(x is not None for x in (from_document, from_url, from_radreport, from_json, from_pydantic)):
+        raise click.ClickException("--from-table can only be combined with --describe.")
+    table_options = (
+        split_by,
+        name_column,
+        type_column,
+        description_column,
+        required_column,
+        values_column,
+        value_label_column,
+        catalog_id_column,
+        catalog_version_column,
+        output_dir,
+    )
+    if from_table is None and any(option is not None for option in table_options):
+        raise click.ClickException("--from-table is required when using table column options.")
+    if split_by is not None and output is not None:
+        raise click.ClickException("--output cannot be used with --split-by; use --output-dir.")
 
     # --- Path 1: Convert existing JSON schema to YAML ---
     if from_json is not None:
@@ -1192,6 +1235,69 @@ def template_create(
             console.print(theme.info(f"Name: {spec.class_name}"))
             console.print(theme.info(f"Fields: {len(spec.fields)}"))
             console.print(theme.info(f"Saved: {dest}"))
+        return
+
+    # --- Path 1c: Convert CSV/Excel table to YAML ---
+    if from_table is not None:
+        from .pipelines.schema_gen import validate_schema_spec
+        from .schemas.table_template import TableTemplateColumns, table_to_schema_specs
+
+        try:
+            specs = table_to_schema_specs(
+                from_table,
+                name=name,
+                description=describe,
+                columns=TableTemplateColumns(
+                    name=name_column,
+                    type=type_column,
+                    description=description_column,
+                    required=required_column,
+                    values=values_column,
+                    value_label=value_label_column,
+                    split_by=split_by,
+                    catalog_id=catalog_id_column,
+                    catalog_version=catalog_version_column,
+                ),
+            )
+        except (ImportError, RuntimeError, ValueError) as exc:
+            raise click.ClickException(f"Failed to convert table: {exc}") from exc
+
+        if not specs:
+            raise click.ClickException("Table conversion produced no templates.")
+
+        saved: list[Path] = []
+        for spec in specs:
+            issues = validate_schema_spec(spec)
+            if issues:
+                issues_preview = "\n".join(f"- {issue}" for issue in issues[:8])
+                raise click.ClickException(
+                    f"Table-derived schema {spec.class_name} failed validation:\n"
+                    f"{issues_preview}"
+                )
+
+            yaml_str = schema_spec_to_template_yaml(spec, mode=mode)
+            try:
+                compile_template(yaml_str)
+            except Exception as exc:
+                raise click.ClickException(f"Generated template failed validation: {exc}") from exc
+            if split_by is not None or output_dir is not None:
+                dest = _save_template_yaml_to_dir(spec.class_name, yaml_str, output_dir)
+            else:
+                dest = _save_template_yaml(spec.class_name, yaml_str, output)
+            saved.append(dest)
+
+        if len(specs) == 1:
+            spec = specs[0]
+            console.print(theme.ok("Template created from table"))
+            console.print(theme.info(f"Name: {spec.class_name}"))
+            console.print(theme.info(f"Fields: {len(spec.fields)}"))
+            console.print(theme.info(f"Saved: {saved[0]}"))
+            theme.section("Template Preview", console, "02")
+            _render_template_preview(schema_spec_to_template_yaml(spec, mode=mode), console)
+        else:
+            console.print(theme.ok(f"Created {len(saved)} templates from table"))
+            for dest in saved:
+                console.print(theme.info(f"Saved: {dest}"))
         return
 
     # --- Path 2: RadReport API (deterministic fetch + LLM enrichment) ---
@@ -1494,6 +1600,18 @@ def _save_template_yaml(
     return dest
 
 
+def _save_template_yaml_to_dir(
+    template_name: str, yaml_str: str, output_dir: Path | None
+) -> Path:
+    """Save a YAML template string to a directory."""
+    if output_dir is None:
+        output_dir = get_config().templates_dir
+    output_dir.mkdir(parents=True, exist_ok=True)
+    dest = output_dir / f"{template_name}.yaml"
+    dest.write_text(yaml_str, encoding="utf-8")
+    return dest
+
+
 @template.command("show")
 @click.argument("name")
 def template_show(name: str) -> None:
@@ -1608,6 +1726,102 @@ def template_show(name: str) -> None:
     console.print(Padding(t, (0, 0, 0, 2)))
     console.print()
     console.print(theme.info(f"{len(meta.sections)} sections"))
+
+
+@template.command("prompt")
+@click.argument("name")
+@click.option("--document", type=click.Path(exists=True, dir_okay=False, path_type=Path), default=None, help="Optional document to include in the rendered prompt.")
+@click.option("--max-document-chars", type=int, default=4000, show_default=True, help="Maximum document characters to show in the prompt preview.")
+def template_prompt(name: str, document: Path | None, max_document_chars: int) -> None:
+    """Render the DSPy/BAML prompt preview for a template without calling an LLM.
+
+    NAME is the template name or YAML path. This command compiles the YAML into
+    the same inline evidence Pydantic schema used by ``mosaicx extract`` and
+    renders the BAMLAdapter messages that would be sent to the model.
+
+    \b
+    Examples:
+      mosaicx template prompt OSDiagnose
+      mosaicx template prompt OSDiagnose --document report.pdf
+    """
+    import logging
+    import os
+
+    from rich.padding import Padding
+    from rich.text import Text
+
+    from .report import resolve_template_path
+    from .schemas.template_compiler import compile_template_file_inline
+
+    if max_document_chars < 0:
+        raise click.ClickException("--max-document-chars must be >= 0.")
+
+    # Importing DSPy/BAML is enough for prompt rendering. No LM is configured
+    # and no API/server call is made.
+    os.environ.setdefault("LITELLM_LOCAL_MODEL_COST_MAP", "True")
+    os.environ.setdefault("LITELLM_LOG", "ERROR")
+    os.environ.setdefault("DSPY_CACHEDIR", "/tmp/mosaicx/dspy_cache")
+    Path(os.environ["DSPY_CACHEDIR"]).mkdir(parents=True, exist_ok=True)
+    logging.getLogger("LiteLLM").setLevel(logging.ERROR)
+    logging.getLogger("litellm").setLevel(logging.ERROR)
+
+    try:
+        import dspy
+        from dspy.adapters.baml_adapter import BAMLAdapter
+    except ImportError as exc:
+        raise click.ClickException(
+            "DSPy + baml-py required. Install with: pip install dspy baml-py"
+        ) from exc
+
+    try:
+        tpl_path = resolve_template_path(name)
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    inline_model = compile_template_file_inline(tpl_path)
+    objective = getattr(
+        inline_model,
+        "__extraction_objective__",
+        "Extract structured data from the document. Cite exact excerpts for each field.",
+    )
+    signature = dspy.Signature(
+        "report -> extraction",
+        instructions=objective,
+    ).with_updated_fields(
+        "report",
+        desc="Full text of the document",
+        type_=str,
+    ).with_updated_fields(
+        "extraction",
+        desc="Extraction",
+        type_=inline_model,
+    )
+
+    report_text = "{document text}"
+    if document is not None:
+        doc = _load_doc_with_config(document)
+        report_text = doc.text
+        if max_document_chars == 0:
+            report_text = ""
+        elif len(report_text) > max_document_chars:
+            report_text = report_text[:max_document_chars] + "\n...[truncated]"
+    elif max_document_chars == 0:
+        report_text = ""
+
+    messages = BAMLAdapter().format(signature, demos=[], inputs={"report": report_text})
+
+    theme.section("BAML Prompt Preview", console, "01")
+    console.print(theme.info(f"Template: {tpl_path}"))
+    console.print(theme.info("No LLM server/API call is made by this command."))
+    console.print()
+
+    for message in messages:
+        role = str(message.get("role", "message")).upper()
+        content = message.get("content", "")
+        if not isinstance(content, str):
+            content = str(content)
+        console.print(f"[bold {theme.CORAL}]{role}[/bold {theme.CORAL}]")
+        console.print(Padding(Text(content), (0, 0, 1, 2)))
 
 
 @template.command("refine")

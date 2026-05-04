@@ -5,6 +5,7 @@ import pytest
 import yaml
 from pathlib import Path
 from pydantic import BaseModel
+from typing import get_args
 
 
 SAMPLE_TEMPLATE_YAML = """\
@@ -109,3 +110,33 @@ sections:
         by_name = {f.name: f for f in findings.fields}
         assert by_name["stenosis"].values == ["Mild", "Severe", "None"]
         assert by_name["bulge"].values == ["disc", "annular", "none"]
+
+    def test_inline_template_exposes_enum_values_in_descriptions(self, tmp_path):
+        from mosaicx.schemas.template_compiler import compile_template_file_inline
+
+        yaml_file = tmp_path / "enum_template.yaml"
+        yaml_file.write_text(
+            """\
+name: DiagnosisReason
+sections:
+  - name: diagnosis_reason
+    type: enum
+    required: false
+    values: ["E", "F", "Z"]
+    description: Reason that led to diagnostic workup
+""",
+            encoding="utf-8",
+        )
+
+        Model = compile_template_file_inline(yaml_file)
+        field_desc = Model.model_fields["diagnosis_reason"].description
+        assert field_desc is not None
+        assert "allowed: E, F, Z" in field_desc
+
+        evidence_annotation = Model.model_fields["diagnosis_reason"].annotation
+        evidence_model = next(
+            arg for arg in get_args(evidence_annotation) if hasattr(arg, "model_fields")
+        )
+        value_desc = evidence_model.model_fields["value"].description
+        assert value_desc is not None
+        assert "allowed: E, F, Z" in value_desc

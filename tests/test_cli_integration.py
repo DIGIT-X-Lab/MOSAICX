@@ -426,6 +426,8 @@ class TestTemplateCreate:
         assert "--from-document" in result.output
         assert "--from-url" in result.output
         assert "--from-json" in result.output
+        assert "--from-table" in result.output
+        assert "--split-by" in result.output
 
     def test_template_create_no_source_error(self, runner: CliRunner):
         result = runner.invoke(cli, ["template", "create"])
@@ -562,6 +564,157 @@ class TestTemplateCreate:
         finally:
             get_config.cache_clear()
 
+    def test_template_create_from_standard_table(self, runner: CliRunner, tmp_path: Path, monkeypatch):
+        """--from-table converts a simple user-fillable CSV to YAML template."""
+        monkeypatch.setenv("MOSAICX_HOME_DIR", str(tmp_path))
+        from mosaicx.config import get_config
+
+        get_config.cache_clear()
+        try:
+            csv_file = tmp_path / "fields.csv"
+            csv_file.write_text(
+                "field_name,type,description,required,values\n"
+                "sex,enum,Patient sex,true,F|M|Other\n"
+                "age,int,Patient age,false,\n",
+                encoding="utf-8",
+            )
+            result = runner.invoke(
+                cli,
+                ["template", "create", "--from-table", str(csv_file), "--name", "PatientTable"],
+            )
+            assert result.exit_code == 0
+            assert "Template created from table" in result.output
+            yaml_path = tmp_path / "templates" / "PatientTable.yaml"
+            content = yaml_path.read_text(encoding="utf-8")
+            assert "name: sex" in content
+            assert "type: enum" in content
+            assert "- Other" in content
+            assert "name: age" in content
+            assert "type: int" in content
+        finally:
+            get_config.cache_clear()
+
+    def test_template_create_from_field_catalog_table(self, runner: CliRunner, tmp_path: Path, monkeypatch):
+        """--from-table converts registry-style field catalogs with enum rows."""
+        monkeypatch.setenv("MOSAICX_HOME_DIR", str(tmp_path))
+        from mosaicx.config import get_config
+
+        get_config.cache_clear()
+        try:
+            csv_file = tmp_path / "catalog.csv"
+            csv_file.write_text(
+                "field_type;field_name;field_description;field_note;field_is_mandatory;field_value;field_value_shortdesc\n"
+                "combobox;Diagnoseanlass;Diagnoseanlass;Reason for diagnosis;0;E;Eigenuntersuchung\n"
+                "combobox;Diagnoseanlass;Diagnoseanlass;Reason for diagnosis;0;F;Frueherkennung\n",
+                encoding="utf-8",
+            )
+            result = runner.invoke(
+                cli,
+                ["template", "create", "--from-table", str(csv_file), "--name", "DiagnosisReason"],
+            )
+            assert result.exit_code == 0
+            yaml_path = tmp_path / "templates" / "DiagnosisReason.yaml"
+            content = yaml_path.read_text(encoding="utf-8")
+            assert "name: diagnoseanlass" in content
+            assert "type: enum" in content
+            assert "- E" in content
+            assert "- F" in content
+            assert "value_labels:" in content
+            assert "E: Eigenuntersuchung" in content
+        finally:
+            get_config.cache_clear()
+
+    def test_template_create_from_table_split_by_form(self, runner: CliRunner, tmp_path: Path, monkeypatch):
+        """--split-by creates one template per logical form in a catalog table."""
+        monkeypatch.setenv("MOSAICX_HOME_DIR", str(tmp_path))
+        from mosaicx.config import get_config
+
+        get_config.cache_clear()
+        try:
+            csv_file = tmp_path / "onkostar.csv"
+            csv_file.write_text(
+                "form_name;field_type;field_name;field_description;field_is_mandatory;field_value;field_value_description;catalog_id;catalog_version_description\n"
+                "OS.Diagnose;combobox;Diagnoseanlass;Diagnoseanlass;0;E;Eigenuntersuchung;CDA.Diagnoseanlass;v1\n"
+                "OS.Diagnose;combobox;Diagnoseanlass;Diagnoseanlass;0;Z;Zufallsbefund;CDA.Diagnoseanlass;v1\n"
+                "OS.TNM;combobox;T_Kategorie;T classification;0;T1;T1 tumor;TNM;v8\n"
+                "OS.TNM;combobox;T_Kategorie;T classification;0;T2;T2 tumor;TNM;v8\n",
+                encoding="utf-8",
+            )
+            output_dir = tmp_path / "templates_out"
+            result = runner.invoke(
+                cli,
+                [
+                    "template",
+                    "create",
+                    "--from-table",
+                    str(csv_file),
+                    "--split-by",
+                    "form_name",
+                    "--output-dir",
+                    str(output_dir),
+                ],
+            )
+            assert result.exit_code == 0
+            assert "Created 2 templates" in result.output
+
+            diagnose = output_dir / "OSDiagnose.yaml"
+            tnm = output_dir / "OSTNM.yaml"
+            assert diagnose.exists()
+            assert tnm.exists()
+            assert "name: diagnoseanlass" in diagnose.read_text(encoding="utf-8")
+            tnm_content = tnm.read_text(encoding="utf-8")
+            assert "name: t_kategorie" in tnm_content
+            assert "catalog_version_description:" in tnm_content
+            assert "v8" in tnm_content
+        finally:
+            get_config.cache_clear()
+
+    def test_template_create_from_table_custom_columns(self, runner: CliRunner, tmp_path: Path, monkeypatch):
+        """Column mapping makes --from-table usable with non-MOSAICX headers."""
+        monkeypatch.setenv("MOSAICX_HOME_DIR", str(tmp_path))
+        from mosaicx.config import get_config
+
+        get_config.cache_clear()
+        try:
+            csv_file = tmp_path / "custom.csv"
+            csv_file.write_text(
+                "variable,kind,label,must,allowed\n"
+                "sex,select,Patient sex,yes,F|M|Other\n"
+                "age,integer,Patient age,no,\n",
+                encoding="utf-8",
+            )
+            result = runner.invoke(
+                cli,
+                [
+                    "template",
+                    "create",
+                    "--from-table",
+                    str(csv_file),
+                    "--name",
+                    "CustomDictionary",
+                    "--name-column",
+                    "variable",
+                    "--type-column",
+                    "kind",
+                    "--description-column",
+                    "label",
+                    "--required-column",
+                    "must",
+                    "--values-column",
+                    "allowed",
+                ],
+            )
+            assert result.exit_code == 0
+            yaml_path = tmp_path / "templates" / "CustomDictionary.yaml"
+            content = yaml_path.read_text(encoding="utf-8")
+            assert "name: sex" in content
+            assert "type: enum" in content
+            assert "- Other" in content
+            assert "name: age" in content
+            assert "type: int" in content
+        finally:
+            get_config.cache_clear()
+
 
 class TestTemplateCreateFromRadReport:
     """Tests for the --from-radreport flag (no actual API calls)."""
@@ -650,6 +803,61 @@ class TestTemplateShow:
         get_config.cache_clear()
         try:
             result = runner.invoke(cli, ["template", "show", "nonexistent"])
+            assert result.exit_code != 0
+            assert "not found" in result.output.lower()
+        finally:
+            get_config.cache_clear()
+
+
+class TestTemplatePrompt:
+    """Tests for the template prompt preview command."""
+
+    def test_template_prompt_renders_baml_schema_without_llm(self, runner: CliRunner, tmp_path: Path, monkeypatch):
+        monkeypatch.setenv("MOSAICX_HOME_DIR", str(tmp_path))
+        monkeypatch.setenv("LITELLM_LOCAL_MODEL_COST_MAP", "True")
+        from mosaicx.config import get_config
+
+        get_config.cache_clear()
+        try:
+            tpl_dir = tmp_path / "templates"
+            tpl_dir.mkdir()
+            (tpl_dir / "OSDiagnose.yaml").write_text(
+                "name: OSDiagnose\n"
+                "sections:\n"
+                "  - name: diagnoseanlass\n"
+                "    type: enum\n"
+                "    required: false\n"
+                "    description: Diagnoseanlass\n"
+                "    values:\n"
+                "      - E\n"
+                "      - Z\n"
+                "    value_labels:\n"
+                "      E: Eigenuntersuchung\n"
+                "      Z: Zufallsbefund\n",
+                encoding="utf-8",
+            )
+
+            result = runner.invoke(
+                cli,
+                ["template", "prompt", "OSDiagnose", "--max-document-chars", "0"],
+            )
+            assert result.exit_code == 0
+            assert "BAML PROMPT PREVIEW" in result.output.upper()
+            assert "No LLM server/API call is made" in result.output
+            assert "diagnoseanlass" in result.output
+            assert "allowed: E=Eigenuntersuchung, Z=Zufallsbefund" in result.output
+            assert "value: Any or null" in result.output
+            assert "Respond with a JSON object" in result.output
+        finally:
+            get_config.cache_clear()
+
+    def test_template_prompt_not_found(self, runner: CliRunner, tmp_path: Path, monkeypatch):
+        monkeypatch.setenv("MOSAICX_HOME_DIR", str(tmp_path))
+        from mosaicx.config import get_config
+
+        get_config.cache_clear()
+        try:
+            result = runner.invoke(cli, ["template", "prompt", "missing"])
             assert result.exit_code != 0
             assert "not found" in result.output.lower()
         finally:

@@ -1,0 +1,5 @@
+field_name,type,description,required,values
+patient_id,str,Patient identifier,false,
+diagnosis_reason,enum,Reason that led to diagnostic workup,false,E|F|C|V
+tumor_size_mm,float,Tumor size in millimeters,false,
+impression,str,Free-text clinical impression,true,

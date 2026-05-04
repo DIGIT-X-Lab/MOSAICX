@@ -53,6 +53,14 @@ class FieldSpec(BaseModel):
         None,
         description="Nested fields when type is 'object' or 'list[object]'",
     )
+    value_labels: Optional[dict[str, str]] = Field(
+        None,
+        description="Optional labels/descriptions for enum values",
+    )
+    metadata: Optional[dict[str, Any]] = Field(
+        None,
+        description="Optional source metadata for generated templates",
+    )
 
 
 FieldSpec.model_rebuild()
@@ -365,6 +373,14 @@ def _normalize_field_spec(field: FieldSpec, *, index: int, used_names: set[str])
         normalized_nested = None
 
     desc = " ".join(str(field.description or "").split())
+    value_labels = dict(field.value_labels or {}) or None
+    if enum_values and value_labels:
+        value_labels = {
+            value: label
+            for value, label in value_labels.items()
+            if value in enum_values and str(label).strip()
+        } or None
+
     return FieldSpec(
         name=name,
         type=normalized_type,
@@ -372,6 +388,8 @@ def _normalize_field_spec(field: FieldSpec, *, index: int, used_names: set[str])
         required=bool(field.required),
         enum_values=enum_values,
         fields=normalized_nested,
+        value_labels=value_labels if normalized_type == "enum" else None,
+        metadata=dict(field.metadata or {}) or None,
     )
 
 

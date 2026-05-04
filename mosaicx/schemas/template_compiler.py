@@ -48,6 +48,8 @@ class FieldSpec(BaseModel):
     required: bool = True
     description: Optional[str] = None
     values: Optional[List[str]] = None  # for enum type
+    value_labels: Optional[dict[str, str]] = None  # optional enum value labels
+    metadata: Optional[dict[str, Any]] = None  # optional source/catalog metadata
     fields: Optional[List["FieldSpec"]] = None  # for nested object type
     item: Optional["FieldSpec"] = None  # for list type
 
@@ -60,6 +62,8 @@ class SectionSpec(BaseModel):
     required: bool = True
     description: Optional[str] = None
     values: Optional[List[str]] = None  # for enum type
+    value_labels: Optional[dict[str, str]] = None  # optional enum value labels
+    metadata: Optional[dict[str, Any]] = None  # optional source/catalog metadata
     item: Optional[FieldSpec] = None  # for list type (describes each element)
     fields: Optional[List[FieldSpec]] = None  # for object type
 
@@ -153,6 +157,19 @@ def _normalize_optional_enum_absence_values(meta: TemplateMeta) -> None:
         _visit_field(section)
 
 
+def _description_with_values(spec: FieldSpec | SectionSpec) -> str:
+    """Build a field description that exposes enum constraints to extraction."""
+    desc = spec.description or ""
+    if spec.type == "enum" and spec.values:
+        labels = spec.value_labels or {}
+        values_str = ", ".join(
+            f"{value}={labels[value]}" if value in labels else str(value)
+            for value in spec.values
+        )
+        return f"{desc} (allowed: {values_str})" if desc else f"One of: {values_str}"
+    return desc
+
+
 # ---------------------------------------------------------------------------
 # Type compilation helpers
 # ---------------------------------------------------------------------------
@@ -185,10 +202,7 @@ def _build_nested_model(
     for fspec in fields:
         assert fspec.name is not None, "Fields inside an object must have a name."
         py_type = _resolve_type(fspec, parent_name=model_name)
-        desc = fspec.description or ""
-        if fspec.type == "enum" and fspec.values:
-            values_str = ", ".join(fspec.values)
-            desc = f"{desc} (allowed: {values_str})" if desc else f"One of: {values_str}"
+        desc = _description_with_values(fspec)
         if fspec.required:
             field_definitions[fspec.name] = (py_type, Field(..., description=desc or None))
         else:
@@ -266,10 +280,7 @@ def compile_template(yaml_content: str) -> type[BaseModel]:
     for section in meta.sections:
         py_type = _resolve_type(section, parent_name=meta.name)
         # Build description — for enum fields, include allowed values
-        desc = section.description or ""
-        if section.type == "enum" and section.values:
-            values_str = ", ".join(section.values)
-            desc = f"{desc} (allowed: {values_str})" if desc else f"One of: {values_str}"
+        desc = _description_with_values(section)
         if section.required:
             field_definitions[section.name] = (py_type, Field(..., description=desc or None))
         else:
@@ -305,7 +316,7 @@ def _generate_objective(meta: "TemplateMeta", cache_path: Path) -> str:
 
     def _collect(sections, prefix=""):
         for s in sections:
-            desc = s.description or ""
+            desc = _description_with_values(s)
             if desc:
                 name = f"{prefix}{s.name}" if prefix else s.name
                 descriptions.append(f"{name}: {desc}")
@@ -380,7 +391,7 @@ def compile_template_file_inline(path: str | Path) -> type[BaseModel]:
         )
 
     def _resolve_inline(section: "SectionSpec", parent_name: str = "") -> tuple:
-        desc = section.description or ""
+        desc = _description_with_values(section)
         if section.type == "object" and section.fields:
             nested: dict[str, Any] = {}
             for sub in section.fields:
@@ -460,6 +471,12 @@ def schema_spec_to_template_yaml(
             enum_values = getattr(field, "enum_values", None) or getattr(field, "values", None)
             if enum_values:
                 payload["values"] = list(enum_values)
+            value_labels = getattr(field, "value_labels", None)
+            if value_labels:
+                payload["value_labels"] = dict(value_labels)
+        metadata = getattr(field, "metadata", None)
+        if metadata:
+            payload["metadata"] = dict(metadata)
 
         if normalized_type == "object":
             nested = getattr(field, "fields", None)
@@ -518,6 +535,9 @@ def schema_spec_to_template_yaml(
             section["type"] = "enum"
             if field.enum_values:
                 section["values"] = list(field.enum_values)
+            value_labels = getattr(field, "value_labels", None)
+            if value_labels:
+                section["value_labels"] = dict(value_labels)
         elif type_str == "object":
             nested = getattr(field, "fields", None)
             if nested:
@@ -538,6 +558,9 @@ def schema_spec_to_template_yaml(
             section["required"] = False
         if field.description:
             section["description"] = field.description
+        metadata = getattr(field, "metadata", None)
+        if metadata:
+            section["metadata"] = dict(metadata)
 
         sections.append(section)
 

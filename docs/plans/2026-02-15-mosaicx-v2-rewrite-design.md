@@ -423,9 +423,9 @@ mosaicx batch --input-dir /data/reports/ --template auto --output-dir /data/stru
 mosaicx batch --resume batch_20260215_143022
 
 # --- Template management ---
-mosaicx template create my_template.yaml
+mosaicx template create --describe "Cardiac MRI report with ejection fraction and wall motion" --output my_template.yaml
 mosaicx template list
-mosaicx template validate my_template.yaml
+mosaicx template validate --file my_template.yaml
 
 # --- Schema generation ---
 mosaicx schema generate --desc "Cardiac MRI report with ejection fraction and wall motion"

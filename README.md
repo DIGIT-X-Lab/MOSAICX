@@ -136,6 +136,46 @@ This generates a YAML template with typed fields (strings, numbers, enums, neste
 mosaicx template list
 ```
 
+You can also create templates deterministically from CSV, TSV, or Excel data dictionaries:
+
+```bash
+mosaicx template create --from-table fields.csv --name OncologyFields
+```
+
+Recommended fillable CSV format:
+
+```csv
+field_name,type,description,required,values
+diagnosis_reason,enum,Reason that led to diagnostic workup,false,E|F|Z
+tumor_size_mm,float,Tumor size in millimeters,false,
+impression,str,Clinical impression,true,
+```
+
+For large catalog exports that contain several forms in one file, create one YAML template per form:
+
+```bash
+mosaicx template create \
+  --from-table onkostar_catalog.csv \
+  --split-by form_name \
+  --output-dir ./templates/onkostar
+```
+
+For example, `form_name=OS.Diagnose` becomes `OSDiagnose.yaml`, and `form_name=OS.TNM` becomes `OSTNM.yaml`.
+
+Use the generated YAML exactly like any other MOSAICX template:
+
+```bash
+mosaicx extract --document report.pdf --template ./templates/onkostar/OSDiagnose.yaml
+```
+
+To inspect what the LLM will see before running extraction, render the DSPy/BAML prompt preview locally:
+
+```bash
+mosaicx template prompt ./templates/onkostar/OSDiagnose.yaml
+```
+
+This does not call an LLM server. It shows the schema text produced from the YAML, including enum codes and labels such as `Z=Zufallsbefund`.
+
 ### 2. Extract Structured Data
 
 Single document:

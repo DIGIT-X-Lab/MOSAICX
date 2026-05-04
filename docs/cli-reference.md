@@ -132,7 +132,7 @@ When `--score` is used, a completeness report is shown after the extracted data,
 
 ## `mosaicx template create`
 
-Create a new YAML template from a description, sample document, web page, RadReport ID, or JSON schema.
+Create a new YAML template from a description, sample document, CSV/Excel table, web page, RadReport ID, or JSON schema.
 
 Templates are saved to `~/.mosaicx/templates/` by default and can be reused with `mosaicx extract --template`.
 
@@ -145,13 +145,27 @@ Templates are saved to `~/.mosaicx/templates/` by default and can be reused with
 | `--from-url` | TEXT | No* | Infer template from a web page (e.g. RadReport URL) |
 | `--from-radreport` | TEXT | No* | RadReport template ID (e.g. `RPT50890` or `50890`) |
 | `--from-json` | PATH | No* | Convert a saved SchemaSpec JSON to YAML template |
+| `--from-pydantic` | PATH | No* | Convert Pydantic model definitions to YAML template(s) |
+| `--from-table` | PATH | No* | Convert a CSV/TSV/Excel field table or data table to YAML template |
+| `--split-by` | TEXT | No | For `--from-table`, create one template per value in this column |
+| `--name-column` | TEXT | No | For `--from-table`, column containing field names |
+| `--type-column` | TEXT | No | For `--from-table`, column containing field types |
+| `--description-column` | TEXT | No | For `--from-table`, column containing field descriptions |
+| `--required-column` | TEXT | No | For `--from-table`, column containing required/mandatory flags |
+| `--values-column` | TEXT | No | For `--from-table`, column containing enum values or row-wise catalog values |
+| `--value-label-column` | TEXT | No | For `--from-table`, column describing enum/catalog values |
+| `--catalog-id-column` | TEXT | No | For `--from-table`, column containing catalog IDs/names |
+| `--catalog-version-column` | TEXT | No | For `--from-table`, column containing catalog versions |
 | `--name` | TEXT | No | Override the template name (default: LLM-chosen) |
 | `--mode` | TEXT | No | Pipeline mode to embed (e.g. `radiology`, `pathology`) |
 | `--output` | PATH | No | Custom save path (default: `~/.mosaicx/templates/`) |
+| `--output-dir` | PATH | No | Directory for `--from-table --split-by` output |
 
 **Important:**
-- Must provide at least one source: `--describe`, `--from-document`, `--from-url`, `--from-radreport`, or `--from-json`
+- Must provide at least one source: `--describe`, `--from-document`, `--from-url`, `--from-radreport`, `--from-json`, `--from-pydantic`, or `--from-table`
 - `--from-json` cannot be combined with other sources
+- `--from-table` can only be combined with `--describe`
+- `--output` cannot be used with `--split-by`; use `--output-dir`
 - `--describe` and `--from-document` can be combined for better results
 - Templates are saved as YAML files in `~/.mosaicx/templates/{name}.yaml`
 
@@ -164,6 +178,25 @@ mosaicx template create \
 
 # Generate from sample document
 mosaicx template create --from-document sample_echo.pdf
+
+# Convert a CSV/Excel field table without an LLM
+mosaicx template create --from-table fields.csv --name OncologyFields
+
+# Split a data dictionary into one template per form
+mosaicx template create \
+  --from-table onkostar_catalog.csv \
+  --split-by form_name \
+  --output-dir ./templates/onkostar
+
+# Map custom data-dictionary headers
+mosaicx template create \
+  --from-table data_dictionary.xlsx \
+  --name StudyCRF \
+  --name-column variable \
+  --type-column kind \
+  --description-column label \
+  --required-column mandatory \
+  --values-column allowed_values
 
 # Combine description and document
 mosaicx template create \
@@ -266,6 +299,32 @@ Displays:
 - Description
 - Mode and RDES ID (if applicable)
 - Table of sections/fields with name, type, required status, and description
+
+---
+
+## `mosaicx template prompt`
+
+Render the DSPy/BAML prompt preview for a template without calling an LLM.
+
+Use this to inspect what schema, field descriptions, enum values, and catalog labels the model will see during `mosaicx extract`.
+
+**Usage:**
+
+```bash
+mosaicx template prompt <name>
+```
+
+**Examples:**
+
+```bash
+# Show the BAML-rendered schema for a template
+mosaicx template prompt OSDiagnose
+
+# Include a truncated document preview in the rendered user message
+mosaicx template prompt OSDiagnose --document report.pdf
+```
+
+This command imports DSPy/BAML locally but does not configure a model and does not require an LLM server or API key.
 
 ---
 
