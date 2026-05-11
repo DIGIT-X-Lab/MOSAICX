@@ -3373,11 +3373,20 @@ def _build_dspy_classes():
 
         def __init__(self, output_schema: type[BaseModel] | None = None, think: str = "normal", optimize_mode: bool = False) -> None:
             super().__init__()
-            if think not in ("normal", "deep"):
+            # `think` arrives in one of two vocabularies: the "mode" one used here
+            # (normal/deep) or the broader "level" one used by sdk.extract and the
+            # CLI (auto/standard/fast/deep). Accept both; map the level names onto
+            # the mode names for the Predict-vs-ChainOfThought choice.
+            _think_modes = {
+                "normal": "normal", "deep": "deep",
+                "auto": "normal", "standard": "normal", "fast": "normal",
+            }
+            if think not in _think_modes:
                 raise ValueError(
-                    f"think must be 'normal' or 'deep', got {think!r}"
+                    f"think must be one of normal, deep (or auto, standard, fast); got {think!r}"
                 )
             self._user_think = think
+            think = _think_modes[think]
             self._think = think
             self._output_schema = output_schema
             self._optimize_mode = optimize_mode
