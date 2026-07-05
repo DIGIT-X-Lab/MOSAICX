@@ -293,6 +293,3 @@ pytest tests/ -q
 
 Apache 2.0 -- see [LICENSE](LICENSE).
 
-## Contact
-
-**Research:** [lalith.shiyam@med.uni-muenchen.de](mailto:lalith.shiyam@med.uni-muenchen.de) | **Commercial:** [lalith@zenta.solutions](mailto:lalith@zenta.solutions) | **Issues:** [github.com/DIGIT-X-Lab/MOSAICX/issues](https://github.com/DIGIT-X-Lab/MOSAICX/issues)
