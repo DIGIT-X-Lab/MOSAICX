@@ -35,6 +35,7 @@ from __future__ import annotations
 import logging
 import re
 import tempfile
+import threading
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
@@ -50,6 +51,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 _configured: bool = False
+_config_lock = threading.Lock()
 
 
 # ---------------------------------------------------------------------------
@@ -58,40 +60,50 @@ _configured: bool = False
 
 
 def _ensure_configured() -> None:
-    """Configure DSPy — direct dspy.LM + BAMLAdapter, same as CLI."""
+    """Configure DSPy — direct dspy.LM + BAMLAdapter, same as CLI.
+
+    DSPy 3.x locks ``dspy.settings`` to the thread that first configures it, so
+    this must run on the calling thread before any work is fanned out to a
+    thread pool. The lock guards against concurrent first-calls racing on the
+    ``_configured`` flag.
+    """
     global _configured
     if _configured:
         return
 
-    from .config import get_config
+    with _config_lock:
+        if _configured:
+            return
 
-    cfg = get_config()
-    if not cfg.api_key:
-        raise RuntimeError(
-            "No API key configured. Set MOSAICX_API_KEY or add api_key "
-            "to your config."
+        from .config import get_config
+
+        cfg = get_config()
+        if not cfg.api_key:
+            raise RuntimeError(
+                "No API key configured. Set MOSAICX_API_KEY or add api_key "
+                "to your config."
+            )
+
+        try:
+            import dspy
+            from dspy.adapters.baml_adapter import BAMLAdapter
+        except ImportError as exc:
+            raise RuntimeError(
+                "DSPy + baml-py required. Install with: pip install dspy baml-py"
+            ) from exc
+
+        lm = dspy.LM(
+            model=cfg.lm,
+            api_base=cfg.api_base,
+            api_key=cfg.api_key,
+            temperature=cfg.lm_temperature,
+            max_tokens=cfg.max_tokens,
+            cache=False,
         )
+        dspy.settings.configure(lm=lm, adapter=BAMLAdapter())
 
-    try:
-        import dspy
-        from dspy.adapters.baml_adapter import BAMLAdapter
-    except ImportError as exc:
-        raise RuntimeError(
-            "DSPy + baml-py required. Install with: pip install dspy baml-py"
-        ) from exc
-
-    lm = dspy.LM(
-        model=cfg.lm,
-        api_base=cfg.api_base,
-        api_key=cfg.api_key,
-        temperature=cfg.lm_temperature,
-        max_tokens=cfg.max_tokens,
-        cache=False,
-    )
-    dspy.settings.configure(lm=lm, adapter=BAMLAdapter())
-
-    _configured = True
-    logger.info("DSPy configured with model %s", cfg.lm)
+        _configured = True
+        logger.info("DSPy configured with model %s", cfg.lm)
 
 
 # ---------------------------------------------------------------------------
@@ -1354,6 +1366,10 @@ def extract(
         raise ValueError("Provide either text or documents, not both.")
     if text is None and documents is None:
         raise ValueError("Provide text or documents.")
+
+    # Configure DSPy on the calling thread before any worker pool is spawned —
+    # DSPy 3.x locks its settings to whichever thread configures them first.
+    _ensure_configured()
 
     # --- Text-only path (single result) ---
     if text is not None:
